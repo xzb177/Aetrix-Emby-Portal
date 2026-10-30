@@ -14,12 +14,15 @@ v2.18.0 起不再包含「分享链接转存 / 下载任务」那一套（解析
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import time
 from base64 import b64encode
+from email.utils import formatdate
+import xml.etree.ElementTree as ET
 from binascii import b2a_hex, crc32
 from typing import Optional
 from urllib.parse import urlencode
@@ -60,10 +63,11 @@ PAN115_UA = os.getenv(
 #   block）包着的 JSON；status：2 = 秒传命中（reuse，文件已落用户
 #   盘）、7 = 需 sign_check 二轮校验（按 sign_check 区间算 sha1
 #   回填 sign_val 重发）、1 = 未命中（需走 OSS 上传）。
-# 本模块只做到「命中判定」为止：未命中由调用方回落 simple_upload
-# 全量上传，不在此实现 initupload 的 OSS 多段上传（status=1 的
-# bucket/object 参数直接忽略）。**真实端到端未实测**（不许用生产
-# 用户 Cookie 做开发测试），协议正确性靠上述开源实现对照 + mock。
+# 秒传只做到「命中判定」为止；未命中（status=1）的 OSS 落盘由
+# 本模块的 multipart_upload 接完（见下「分片上传」节），调用方
+# 按大小在 simple_upload（≤5 GiB）与 multipart_upload（>5 GiB）
+# 之间路由。**真实端到端未实测**（不许用生产用户 Cookie 做
+# 开发测试），协议正确性靠上述开源实现对照 + mock。
 
 PAN115_PROAPI_BASE = os.getenv(
     "PAN115_PROAPI_BASE", "https://proapi.115.com").rstrip("/")
@@ -76,6 +80,172 @@ _P115_AES_PUBKEY = (
     b"\x8d\x8e\xd9\xdd\xcfU\xaea\xedF\xea\x12\x1a\x1c\xfc\x81")
 _P115_AES_KEY = b"\xfb\x1a\x19\xd6R\xf5\xaa\xf7\xbce\x1d\x0fi\xbfB/"
 _P115_AES_IV = b"i\xbfB/I\x96\x05P\xa0\xadD\xec4F\xcbL"
+
+
+
+# ==================== 分片上传（initupload + 阿里云 OSS 多段） ====================
+# 协议对照 p115oss 0.1.2（upload.py 的 upload_file_init /
+# upload_file、oss.py 的 oss_sign / oss_multipart_*）与 py115
+# 0.1.1（UploadInitApi / UploadTokenApi / Cloud.request_upload_stream），
+# 2026-10-30 对照确认，步骤：
+# 1. 与秒传同一 initupload 初始化（含 sign_check 二轮）：status=2
+#    存量命中；status=1 返回 bucket / object / callback{callback,
+#    callback_var} / pickcode（#1526 秒传在此止步，本节接第 2 步）；
+# 2. GET uplb /3.0/gettoken.php（Cookie 鉴权）取 OSS STS 临时凭据
+#    {AccessKeyId, AccessKeySecret, SecurityToken, Expiration}；
+# 3. OSS InitiateMultipartUpload：POST {bucket}.
+#    oss-cn-shenzhen.aliyuncs.com/{object}?sequential=1&uploads=1，
+#    HMAC-SHA1 头签名（见 _oss_auth_headers），XML 响应取 UploadId；
+# 4. 逐片 UploadPart：PUT ?partNumber=N&uploadId=…，串行；每片
+#    校验响应 ETag == 本片 MD5（大写 hex），单片有限重试；
+# 5. CompleteMultipartUpload：POST ?uploadId=…，body 为 parts 的
+#    XML 清单，带 x-oss-callback / x-oss-callback-var（init 回的
+#    callback 两段 base64；callbackBody 里的 ${sha1} 占位先按
+#    py115 口径替换为整文件 sha1）触发 115 回调落盘，响应体即
+#    回调 JSON（与 simple_upload 回调同形态）；
+# 6. 任一步失败 best-effort AbortMultipartUpload（DELETE
+#    ?uploadId=…）再抛错——未 complete 前不声称成功、不登记。
+# **真实端到端未实测**（与秒传同状态：不许用生产用户 Cookie 做
+# 开发测试），协议正确性靠上述开源实现对照 + mock，上线后靠
+# 真实大文件 job 观察。
+
+#: OSS 端点（p115oss DEFAULT_ENDPOINT）；可用环境变量覆盖（同
+#: PAN115_UPLB_BASE 口径，便于测试指向本地假服务）。
+PAN115_OSS_ENDPOINT = os.getenv(
+    "PAN115_OSS_ENDPOINT", "http://oss-cn-shenzhen.aliyuncs.com").rstrip("/")
+#: init 响应缺 bucket 时的缺省桶（p115oss DEFAULT_BUCKET）。
+PAN115_OSS_DEFAULT_BUCKET = "fhnfile"
+#: 分片大小下限：p115oss determine_partsize 的算法下限是 100 KiB，
+#: 但 p115client 明确分片至少 10 MB，且分片过小徒增请求数——
+#: 取 10 MiB 为下限，倍增算法与 determine_partsize 同源。
+_MULTIPART_MIN_PART_SIZE = 10 * 1024 * 1024
+#: 分片数上限（OSS 协议上限，determine_partsize 同值）。
+_MULTIPART_MAX_PARTS = 10000
+#: 单片 PUT 有限重试次数（与搬运层有界重试同口径；整单最终成败
+#: 仍由 job 层有界重试兜底）。
+_MULTIPART_PART_ATTEMPTS = 3
+
+#: 进 OSS 签名 CanonicalizedResource 的子资源键（p115oss
+#: SUBRESOURCE_KEYS 中与分片上传相关者）。
+_OSS_SUBRESOURCE_KEYS = frozenset({
+    "uploads", "uploadId", "partNumber", "sequential",
+})
+
+
+def _determine_partsize(length, *, min_partsize=None, max_parts=None):
+    """分片大小（p115oss determine_partsize 移植）：自下限倍增至
+    分片数不超过上限。length 不大于下限时回下限。"""
+    if min_partsize is None:
+        min_partsize = _MULTIPART_MIN_PART_SIZE
+    if max_parts is None:
+        max_parts = _MULTIPART_MAX_PARTS
+    if length <= min_partsize:
+        return min_partsize
+    n = -(-length // max_parts)
+    partsize = min_partsize
+    while partsize < n:
+        partsize <<= 1
+    return partsize
+
+
+def _oss_object_url(bucket, object_key, query=None):
+    """虚拟主机式 OSS URL：{scheme}://{bucket}.{host}/{object}。"""
+    scheme, _, host = PAN115_OSS_ENDPOINT.partition("://")
+    url = f"{scheme}://{bucket}.{host}/{object_key}"
+    if query:
+        url += "?" + urlencode(query)
+    return url
+
+
+def _oss_auth_headers(token, method, bucket, object_key, query=None,
+                      extra_headers=None, content_type=""):
+    """阿里云 OSS 头签名（p115oss oss_sign 移植，STS 凭据）。
+
+    待签名串 = METHOD + "\n" + Content-MD5（空）+ "\n" +
+    Content-Type + "\n" + Date + "\n" + 排序后的 x-oss-* 头
+    （每行 "k:v\n"）+ CanonicalizedResource（/{bucket}/{object}
+    + 命中的子资源 query 按键排序 urlencode）。签名 =
+    base64(HMAC-SHA1(AccessKeySecret, 待签名串))。
+    """
+    headers = dict(extra_headers or {})
+    headers["date"] = formatdate(usegmt=True)
+    if token.get("SecurityToken"):
+        headers["x-oss-security-token"] = token["SecurityToken"]
+    if content_type:
+        headers["content-type"] = content_type
+    canon = "".join(
+        f"{key}:{headers[key]}\n"
+        for key in sorted(headers) if key.startswith("x-oss-"))
+    resource = f"/{bucket}/{object_key}"
+    if query:
+        subs = sorted((k, v) for k, v in query.items()
+                      if k in _OSS_SUBRESOURCE_KEYS)
+        if subs:
+            resource += "?" + urlencode(subs)
+    string_to_sign = (
+        f"{method}\n\n{content_type}\n{headers['date']}\n"
+        f"{canon}{resource}")
+    signature = b64encode(hmac.new(
+        str(token.get("AccessKeySecret") or "").encode("utf-8"),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha1).digest()).decode("ascii")
+    headers["Authorization"] = f"OSS {token.get('AccessKeyId')}:{signature}"
+    return headers
+
+
+def _xml_find_text(content, tag):
+    """OSS XML 响应里按本地名找第一个元素的文本（命名空间容错）。"""
+    try:
+        root = ET.fromstring(content)
+    except Exception:  # noqa: BLE001 — XML 不可解析即提不到
+        return ""
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == tag:
+            return (el.text or "").strip()
+    return ""
+
+
+def _http_full(method: str, url: str, *, headers: Optional[dict] = None,
+               data=None, client=None):
+    """OSS 专用底层请求：返回 (status, 小写键响应头 dict, content)。
+
+    与 _http_bytes 同分工（测试可替换本函数）。非 2xx 统一抛
+    Pan115Error 并摘录响应体——OSS 的错误是 XML，且 STS 令牌失效
+    与 115 Cookie 失效是两回事，不套 _http_bytes 的 401/403 →
+    AuthError 换算。超时按大文件口径放大（单片可达数十 MiB）。
+    """
+    import httpx
+
+    own = client is None
+    c = client or httpx.Client(
+        timeout=httpx.Timeout(connect=30.0, read=600.0, write=600.0,
+                              pool=30.0),
+        follow_redirects=True)
+    try:
+        resp = c.request(method, url, headers=headers or {}, data=data)
+    except httpx.HTTPError as exc:
+        raise Pan115Error(f"115 OSS 请求失败：{exc}") from exc
+    finally:
+        if own:
+            c.close()
+    if resp.status_code >= 400:
+        raise Pan115Error(
+            f"115 OSS 返回 HTTP {resp.status_code}："
+            f"{resp.content[:200]!r}")
+    return (resp.status_code,
+            {k.lower(): v for k, v in resp.headers.items()},
+            resp.content)
+
+
+def _read_exact(fileobj, n):
+    """从 fileobj 顺序读满 n 字节（读短返回实得字节，调用方判失败）。"""
+    buf = bytearray()
+    while len(buf) < n:
+        piece = fileobj.read(n - len(buf))
+        if not piece:
+            break
+        buf += piece
+    return bytes(buf)
 
 
 def _pkcs7_pad(data: bytes) -> bytes:
@@ -597,7 +767,7 @@ class Pan115Client:
            JSON（含 file_id/file_name/pick_code/sha1/file_size）。
 
         上限：115cli 的 MAX_SIMPLE_UPLOAD_SIZE = 5 GiB，超限文件不
-        走本方法（调用方先拦，记 unsupported，不静默拆段）。
+        走本方法（调用方先拦，超限改走 multipart_upload 分片）。
         本方法入口亦自带同一上限守卫：能用 seek/tell 测出大小时，
         超限直接报 Pan115Error，绝不在初始化 OSS 会话后再失败；
         测不出大小时才放行（调用方已拦，守卫是第二道、不是唯一一道）。
@@ -626,7 +796,8 @@ class Pan115Client:
         if _end is not None and _end > _max:
             raise Pan115Error(
                 f"文件 {_end} 字节超过 115 简单上传 5 GiB 上限；"
-                "多段上传需 initupload 加密协议（未实测），暂不支持")
+                "超限文件走 multipart_upload（initupload 分片），"
+                "本方法不接")
 
         init = self._call(
             "POST", f"{PAN115_UPLB_BASE}/3.0/sampleinitupload.php",
@@ -717,6 +888,24 @@ class Pan115Client:
         回落全量上传与绑定落态一律由调用方决定，本方法不吞异常。
         命中回执的 fid/pickcode 只作期望值，调用方仍须列目录核对。
         """
+        resp = self._upload_init(filename, filesize, file_sha1, pid,
+                                 range_reader=range_reader)
+        if resp.get("status") == 2:
+            fid, pickcode = _extract_init_result(resp)
+            return {"outcome": "hit", "fid": fid, "pickcode": pickcode,
+                    "raw": resp}
+        return {"outcome": "miss", "fid": "", "pickcode": "",
+                "raw": resp}
+
+    def _upload_init(self, filename: str, filesize: int, file_sha1: str,
+                     pid: str, range_reader=None) -> dict:
+        """initupload 初始化（秒传与分片共用）：收敛到 status 1
+        （未命中、需 OSS 上传）或 2（存量命中）后返回最终响应。
+
+        status 7 时按 sign_check 区间算 sign_val 二轮重发（缺
+        range_reader 或区间信息不全抛 Pan115Error，与旧口径同）；
+        两轮后仍非 1/2 抛 Pan115Error（未知状态）。
+        """
         info = self.upload_info()
         payload = {
             "appid": 0,
@@ -732,8 +921,7 @@ class Pan115Client:
             "topupload": "true",
         }
         resp = self._upload_init_once(payload)
-        status = (resp or {}).get("status")
-        if status == 7:
+        if (resp or {}).get("status") == 7:
             sign_key = str(resp.get("sign_key") or "")
             rng = _parse_sign_check_range(resp.get("sign_check"))
             if not sign_key or rng is None or range_reader is None:
@@ -748,17 +936,210 @@ class Pan115Client:
             payload["sign_key"] = sign_key
             payload["sign_val"] = sign_val
             resp = self._upload_init_once(payload)
-            status = (resp or {}).get("status")
-        if status == 2:
+        status = (resp or {}).get("status")
+        if status not in (1, 2):
+            raise Pan115Error(
+                f"115 initupload 返回未知状态 status={status} "
+                f"statuscode={(resp or {}).get('statuscode')}")
+        return resp
+
+    # ---- 分片上传（initupload + OSS 多段，>5 GiB 全量路） ----
+
+    def upload_token(self) -> dict:
+        """gettoken.php → OSS STS 临时凭据（Cookie 鉴权）。
+
+        返回 {AccessKeyId, AccessKeySecret, SecurityToken}；缺任一
+        抛 Pan115Error。Expiration 不透出（单次上传内用完即弃）。
+        """
+        body = self._call("GET", f"{PAN115_UPLB_BASE}/3.0/gettoken.php")
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        if not isinstance(data, dict):
+            raise Pan115Error("115 gettoken 响应形态异常")
+        token = {
+            "AccessKeyId": str(data.get("AccessKeyId") or ""),
+            "AccessKeySecret": str(data.get("AccessKeySecret") or ""),
+            "SecurityToken": str(data.get("SecurityToken") or ""),
+        }
+        if not all(token.values()):
+            raise Pan115Error("115 gettoken 未返回完整 STS 凭据")
+        return token
+
+    def multipart_upload(self, fileobj, filename: str, filesize: int,
+                         file_sha1: str, pid: str, range_reader=None) -> dict:
+        """分片（多段）上传：initupload + OSS multipart（>5 GiB 全量路）。
+
+        协议步骤见模块「分片上传」节。与 rapid_upload 共用
+        _upload_init：初始化直接判 status=2 时回
+        ``{"outcome": "hit", ...}``（调用方按秒传命中收尾）；
+        status=1 才走 OSS 三步（init → 逐片 PUT → complete）。
+        fileobj 须支持 read/seek（从头串行读，内存 O(分片大小)，
+        不整文件进内存）。返回 ``{"outcome": "uploaded", "fid",
+        "pickcode", "sha1", "raw"}``，sha1 为 complete 回调值
+        （115 对实际落盘字节算的整文件哈希，可空——调用方与源端
+        透传哈希交叉核对）。任一步失败：best-effort abort 后抛
+        Pan115Error / Pan115AuthError，绝不半成品冒充完成。
+        """
+        filesize = int(filesize)
+        if filesize <= 0:
+            raise Pan115Error("分片上传文件大小非法")
+        resp = self._upload_init(filename, filesize, file_sha1, pid,
+                                 range_reader=range_reader)
+        if resp.get("status") == 2:
             fid, pickcode = _extract_init_result(resp)
             return {"outcome": "hit", "fid": fid, "pickcode": pickcode,
-                    "raw": resp}
-        if status == 1:
-            return {"outcome": "miss", "fid": "", "pickcode": "",
-                    "raw": resp}
+                    "sha1": str(file_sha1).strip().lower(), "raw": resp}
+        bucket = str(resp.get("bucket") or PAN115_OSS_DEFAULT_BUCKET)
+        object_key = str(resp.get("object") or "")
+        callback = resp.get("callback")
+        if not object_key:
+            raise Pan115Error(
+                "115 initupload 未返回 OSS object（分片上传无从落盘）")
+        if not isinstance(callback, dict) or not callback.get("callback"):
+            raise Pan115Error(
+                "115 initupload 未返回 callback"
+                "（分片上传 complete 后无法落盘）")
+        token = self.upload_token()
+        upload_id = self._oss_multipart_init(token, bucket, object_key)
+        try:
+            parts = self._oss_upload_parts(
+                token, bucket, object_key, upload_id, fileobj, filesize)
+            body = self._oss_multipart_complete(
+                token, bucket, object_key, upload_id, parts, callback,
+                str(file_sha1).strip().upper())
+        except Exception:
+            self._oss_multipart_abort(token, bucket, object_key, upload_id)
+            raise
+        if not isinstance(body, dict):
+            raise Pan115Error("115 分片上传回调形态异常")
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        fid = str(data.get("file_id") or data.get("fid")
+                  or data.get("id") or "")
+        pickcode = str(data.get("pick_code") or data.get("pickcode")
+                       or data.get("pc") or "")
+        sha1 = str(data.get("sha1") or "")
+        return {"outcome": "uploaded", "fid": fid, "pickcode": pickcode,
+                "sha1": sha1, "raw": body}
+
+    def _oss_multipart_init(self, token, bucket, object_key):
+        query = {"sequential": "1", "uploads": "1"}
+        headers = _oss_auth_headers(token, "POST", bucket, object_key,
+                                    query)
+        _status, _h, content = _http_full(
+            "POST", _oss_object_url(bucket, object_key, query),
+            headers=headers)
+        upload_id = _xml_find_text(content, "UploadId")
+        if not upload_id:
+            raise Pan115Error("OSS 分片初始化未返回 UploadId")
+        return upload_id
+
+    def _oss_upload_parts(self, token, bucket, object_key, upload_id,
+                          fileobj, filesize):
+        """串行逐片 PUT：自 fileobj 头部顺序读满整文件。
+
+        每片读满 partsize（尾片除外），读短即协议失败；每片校验
+        ETag，失败按 _MULTIPART_PART_ATTEMPTS 有限重试（同片字节
+        已在内存，重试不重读源）。返回 [{PartNumber, ETag}]。
+        """
+        partsize = _determine_partsize(filesize)
+        try:
+            fileobj.seek(0)
+        except Exception:  # noqa: BLE001 — 不可 seek 的流按当前位读
+            pass
+        parts = []
+        offset = 0
+        number = 1
+        while offset < filesize:
+            want = min(partsize, filesize - offset)
+            chunk = _read_exact(fileobj, want)
+            if len(chunk) != want:
+                raise Pan115Error(
+                    f"分片上传源读取短读：偏移 {offset} 需 {want} "
+                    f"实得 {len(chunk)}")
+            etag = self._oss_upload_part_retry(
+                token, bucket, object_key, upload_id, number, chunk)
+            parts.append({"PartNumber": number, "ETag": etag})
+            offset += want
+            number += 1
+        return parts
+
+    def _oss_upload_part_retry(self, token, bucket, object_key,
+                               upload_id, number, chunk):
+        last_exc = None
+        for attempt in range(1, _MULTIPART_PART_ATTEMPTS + 1):
+            try:
+                return self._oss_upload_part(
+                    token, bucket, object_key, upload_id, number, chunk)
+            except Pan115Error as exc:
+                last_exc = exc
+                logger.info(
+                    "pan115 multipart part=%s attempt=%s failed: %s",
+                    number, attempt, exc)
         raise Pan115Error(
-            f"115 initupload 返回未知状态 status={status} "
-            f"statuscode={(resp or {}).get('statuscode')}")
+            f"OSS 第 {number} 片重试 {_MULTIPART_PART_ATTEMPTS} "
+            f"次仍失败：{last_exc}")
+
+    def _oss_upload_part(self, token, bucket, object_key, upload_id,
+                         number, chunk):
+        query = {"partNumber": str(number), "uploadId": upload_id}
+        headers = _oss_auth_headers(token, "PUT", bucket, object_key,
+                                    query)
+        _status, resp_headers, _content = _http_full(
+            "PUT", _oss_object_url(bucket, object_key, query),
+            headers=headers, data=chunk)
+        etag = (resp_headers.get("etag") or "").strip()
+        if not etag:
+            raise Pan115Error(f"OSS 第 {number} 片未返回 ETag")
+        expect = hashlib.md5(chunk).hexdigest().upper()
+        if etag.strip('"').upper() != expect:
+            raise Pan115Error(
+                f"OSS 第 {number} 片 ETag 不匹配：响应 {etag} "
+                f"本地 MD5 {expect}")
+        return etag
+
+    def _oss_multipart_complete(self, token, bucket, object_key,
+                                upload_id, parts, callback,
+                                file_sha1_upper):
+        cb = str(callback.get("callback") or "")
+        if "${sha1}" in cb:
+            # py115 口径：callbackBody 里的 ${sha1} 占位须先替换为
+            # 整文件 sha1 再 base64 进头，否则 115 回调落盘缺哈希。
+            cb = cb.replace("${sha1}", file_sha1_upper)
+        extra = {}
+        if cb:
+            extra["x-oss-callback"] = b64encode(
+                cb.encode("utf-8")).decode("ascii")
+        cbv = str(callback.get("callback_var") or "")
+        if cbv:
+            extra["x-oss-callback-var"] = b64encode(
+                cbv.encode("utf-8")).decode("ascii")
+        body = "<CompleteMultipartUpload>" + "".join(
+            f"<Part><PartNumber>{p['PartNumber']}</PartNumber>"
+            f"<ETag>{p['ETag']}</ETag></Part>" for p in parts
+        ) + "</CompleteMultipartUpload>"
+        query = {"uploadId": upload_id}
+        headers = _oss_auth_headers(
+            token, "POST", bucket, object_key, query,
+            extra_headers=extra, content_type="text/xml")
+        _status, _h, content = _http_full(
+            "POST", _oss_object_url(bucket, object_key, query),
+            headers=headers, data=body.encode("utf-8"))
+        try:
+            return json.loads(content.decode("utf-8", "replace"))
+        except Exception as exc:  # noqa: BLE001 — 回调非 JSON 即失败
+            raise Pan115Error(f"115 分片上传回调非 JSON：{exc}") from exc
+
+    def _oss_multipart_abort(self, token, bucket, object_key, upload_id):
+        """best-effort 取消分片任务（失败不冒泡：整单已判失败）。"""
+        try:
+            query = {"uploadId": upload_id}
+            headers = _oss_auth_headers(token, "DELETE", bucket,
+                                        object_key, query)
+            _http_full("DELETE",
+                       _oss_object_url(bucket, object_key, query),
+                       headers=headers)
+        except Exception:  # noqa: BLE001
+            logger.info("pan115 multipart abort 未成功 upload=%s（忽略）",
+                        upload_id)
 
     def _upload_init_once(self, payload: dict) -> dict:
         """一轮 initupload：加密请求 → 解密响应 JSON。"""

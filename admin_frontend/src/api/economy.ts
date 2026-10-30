@@ -424,6 +424,8 @@ export interface TransferConfig {
   transfer_fast_lane_concurrency: number
   /** 单用户道内在飞上限（默认 2，范围 1~16） */
   transfer_per_owner_inflight: number
+  /** 115 分片上传开关（默认开；关 = >5 GiB 且秒传未命中判 unsupported） */
+  pan115_multipart_upload_enabled: boolean
 }
 
 export type TransferConfigPayload = TransferConfig

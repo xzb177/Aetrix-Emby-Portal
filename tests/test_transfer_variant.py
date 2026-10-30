@@ -1354,7 +1354,11 @@ def test_segment_reader_window_refill(monkeypatch):
 
 
 def test_cross_drive_to_115_over_limit_unsupported(db, monkeypatch):
+    # 行为变更（2026-10-30 分片上传根治单）：>上限默认走分片
+    # 上传（新路径见 test_pan115_multipart_upload.py）；本用例关
+    # 掉分片开关，钉住「开关关 = 维持旧口径判 unsupported」回退线。
     _enable(monkeypatch)
+    tv.write_transfer_config(db, pan115_multipart_upload_enabled=False)
     _mount(db, 3, "drive", "drive:shared1")
     item = _item(db, file_path="mount://3/电影/a.mkv", size=1)
     _binding(db, 7, provider="pan115")

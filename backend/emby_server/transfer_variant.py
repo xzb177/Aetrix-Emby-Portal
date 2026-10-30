@@ -379,14 +379,28 @@ def pan115_rapid_upload_enabled(db=None):
     return _system_config_bool(db, KEY_PAN115_RAPID_UPLOAD_ENABLED, True)
 
 
+#: 115 分片上传（initupload + OSS 多段）开关 SystemConfig 键；
+#: 默认开（2026-10-30 根治单：>5 GiB 跨转存不再判 unsupported）。
+#: 关 = 大文件且秒传未命中维持旧口径判 unsupported；秒传本身不
+#: 受此开关影响（命中与大小无关）；关时也不为大文件白算哈希遍。
+KEY_PAN115_MULTIPART_UPLOAD_ENABLED = "pan115_multipart_upload_enabled"
+
+
+def pan115_multipart_upload_enabled(db=None):
+    """115 分片上传开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(db, KEY_PAN115_MULTIPART_UPLOAD_ENABLED, True)
+
+
 def transfer_config_payload(db):
-    """管理端转存卡片回包：转存五键当前生效值（默认值已折算）。"""
+    """管理端转存卡片回包：转存六键当前生效值（默认值已折算）。"""
     return {
         "cross_provider_transfer_enabled": cross_provider_enabled(db),
         "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
         "transfer_fast_lane_concurrency": lane_concurrency(db),
         "transfer_per_owner_inflight": per_owner_inflight(db),
         "pan115_rapid_upload_enabled": pan115_rapid_upload_enabled(db),
+        "pan115_multipart_upload_enabled": (
+            pan115_multipart_upload_enabled(db)),
     }
 
 
@@ -394,7 +408,8 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_cross_lane_concurrency=None,
                           transfer_fast_lane_concurrency=None,
                           transfer_per_owner_inflight=None,
-                          pan115_rapid_upload_enabled=None):
+                          pan115_rapid_upload_enabled=None,
+                          pan115_multipart_upload_enabled=None):
     """管理端转存配置写入：走 config_service 的 transfer 家族校验。
 
     None = 该键不改。非法值抛 ConfigValueError（ValueError 子类，
@@ -407,6 +422,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if pan115_rapid_upload_enabled is not None:
         values[KEY_PAN115_RAPID_UPLOAD_ENABLED] = (
             "true" if pan115_rapid_upload_enabled else "false")
+    if pan115_multipart_upload_enabled is not None:
+        values[KEY_PAN115_MULTIPART_UPLOAD_ENABLED] = (
+            "true" if pan115_multipart_upload_enabled else "false")
     if transfer_cross_lane_concurrency is not None:
         values[KEY_TRANSFER_CROSS_LANE_CONCURRENCY] = str(
             transfer_cross_lane_concurrency)
@@ -5000,6 +5018,14 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     上传，不落盘），读取器外包透传哈希计 sha1，与上传回调
     sha1 交叉核对——不一致以回调为准（回调是 115 对实际落盘
     字节算的整文件哈希，是目标端事实），沉淀进条目 content_hash。
+    分片上传（initupload OSS 多段，>5 GiB）：秒传未命中且文件
+    超过 simple 上限时走 multipart_upload（开关
+    pan115_multipart_upload_enabled 默认开，关时维持 unsupported
+    旧口径）；无可信 sha1 的大文件先流式算哈希沉淀再照常试秒传
+    （见下）。分片路 sha1 交叉核对从严：回调与源端透传不一致
+    判 failed/remote_error 不登记（多段拼出的落盘字节与源不是
+    同一份时没有「以回调为准」的余地；simple 路口径不变）；
+    其余收尾（目录按名核对 + 登记）与全量路共用。
     用户 115 Cookie 失效 → 绑定落 expired + failed/auth_error
     （与同 provider 115 执行器同口径）；SA 源下载 401/403 →
     failed/auth_error，但绝不碰用户绑定（失效的是源侧 SA）；
@@ -5081,6 +5107,30 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     # outcome=hit|miss|error|skip 观测（跨用户真实命中率上线后
     # 靠它读）；pan115_rapid 是协议层日志，并行保留。
     stored_sha1 = _trusted_item_sha1(item, size)
+    if (not stored_sha1 and size > _115_SIMPLE_UPLOAD_LIMIT
+            and pan115_multipart_upload_enabled(db)):
+        # initupload（秒传与分片共用）以整文件 sha1 为必填入参：
+        # ≤5 GiB 的 simple_upload 用不上哈希，维持「不为算哈希多
+        # 下一整遍」；大文件无可信 sha1 时没有别的路——流式过一
+        # 遍源字节算 sha1 并沉淀（字节只过 worker 内存、不落盘），
+        # 算完照常先试秒传、未命中再走分片。开关关时不白算。
+        hash_reader = _HashingReader(_SegmentReader(size, _fetch), size)
+        try:
+            while hash_reader.read(_CROSS_SEGMENT):
+                pass
+        except _CrossAuthError as exc:
+            # SA 源凭据失效：只记任务失败，绝不落用户 115 绑定。
+            return _fail_job(db, job, "auth_error", str(exc))
+        except Exception as exc:
+            return {"job_id": job.id,
+                    "outcome": _schedule_retry(db, job, exc)}
+        computed_sha1 = hash_reader.sha1_hexdigest() or ""
+        if computed_sha1:
+            _persist_item_sha1(db, item, computed_sha1,
+                               origin="drive_to_115_hash_pass")
+            stored_sha1 = computed_sha1
+            logger.info("pan115_multipart hash_pass item=%s job=%s "
+                        "size=%s", item.id, job.id, size)
     rapid_enabled = pan115_rapid_upload_enabled(db)
     if not stored_sha1:
         logger.info("transfer_relay outcome=skip item=%s job=%s "
@@ -5124,12 +5174,12 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
             if outcome == "hit":
                 rapid_fid = (rapid or {}).get("fid") or ""
     if rapid_fid is None:
-        if size > _115_SIMPLE_UPLOAD_LIMIT:
+        if size > _115_SIMPLE_UPLOAD_LIMIT \
+                and not pan115_multipart_upload_enabled(db):
             return _fail_job(
                 db, job, "unsupported",
                 f"文件 {size} 字节超过 115 简单上传 5 GiB 上限且秒传"
-                f"未命中；多段上传需 initupload OSS 协议（未实现），"
-                f"暂不支持，不静默回落")
+                f"未命中；115 分片上传开关关闭，不静默回落")
         if client is None:
             try:
                 client, dest_cid = _open_client()
@@ -5139,8 +5189,25 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                 return {"job_id": job.id,
                         "outcome": _schedule_retry(db, job, exc)}
         reader = _HashingReader(_SegmentReader(size, _fetch), size)
+        via_multipart = size > _115_SIMPLE_UPLOAD_LIMIT
         try:
-            result = client.simple_upload(reader, name, dest_cid)
+            if via_multipart:
+                if not stored_sha1:
+                    return _fail_job(
+                        db, job, "unsupported",
+                        "文件超过 115 简单上传 5 GiB 上限且无可信整"
+                        "文件 sha1（initupload 分片协议必填），"
+                        "不静默回落")
+                result = client.multipart_upload(
+                    reader, name, size, stored_sha1, dest_cid,
+                    range_reader=_fetch)
+                if (result or {}).get("outcome") == "hit":
+                    # 秒传开关关时分片初始化可直接判存量命中：与
+                    # 秒传命中同收尾（目录核对 + 登记），不算全量路。
+                    rapid_fid = (result or {}).get("fid") or ""
+                    result = None
+            else:
+                result = client.simple_upload(reader, name, dest_cid)
         except Pan115AuthError as exc:
             return _auth_fail(exc)
         except _CrossAuthError as exc:
@@ -5149,20 +5216,34 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
         except Exception as exc:
             return {"job_id": job.id,
                     "outcome": _schedule_retry(db, job, exc)}
-        resp_fid = (result or {}).get("fid") or ""
-        # sha1 沉淀：回调（115 落盘事实）优先、透传哈希兜底；
-        # 两者不一致打警告并以回调为准（见函数头注释）。
-        callback_sha1 = ((result or {}).get("sha1") or "").strip().lower()
-        stream_sha1 = reader.sha1_hexdigest() or ""
-        if callback_sha1 and stream_sha1 and callback_sha1 != stream_sha1:
-            logger.warning(
-                "pan115 上传 sha1 不一致 item=%s callback=%s "
-                "stream=%s（以回调为准）",
-                item.id, callback_sha1[:12], stream_sha1[:12])
-        chosen_sha1 = callback_sha1 or stream_sha1
-        if chosen_sha1:
-            _persist_item_sha1(db, item, chosen_sha1,
-                               origin="drive_to_115_upload")
+        if result is None:
+            # 分片初始化判存量命中：与秒传命中同收尾。
+            resp_fid = rapid_fid
+        else:
+            resp_fid = (result or {}).get("fid") or ""
+            # sha1 沉淀：回调（115 落盘事实）优先、透传哈希兜底；
+            # 两者不一致打警告并以回调为准（见函数头注释）。
+            # 例外：分片路（字节经 OSS 多段拼接）不一致 = 落盘
+            # 字节与源不是同一份，判失败不登记（函数头注释）。
+            callback_sha1 = ((result or {}).get("sha1") or "").strip().lower()
+            stream_sha1 = reader.sha1_hexdigest() or ""
+            if (via_multipart and callback_sha1 and stream_sha1
+                    and callback_sha1 != stream_sha1):
+                return _fail_job(
+                    db, job, "remote_error",
+                    "115 分片上传 sha1 交叉核对不一致（回调 "
+                    f"{callback_sha1[:12]}… ≠ 源端 {stream_sha1[:12]}…），"
+                    "落盘字节与源不一致，不登记变体")
+            if callback_sha1 and stream_sha1 \
+                    and callback_sha1 != stream_sha1:
+                logger.warning(
+                    "pan115 上传 sha1 不一致 item=%s callback=%s "
+                    "stream=%s（以回调为准）",
+                    item.id, callback_sha1[:12], stream_sha1[:12])
+            chosen_sha1 = callback_sha1 or stream_sha1
+            if chosen_sha1:
+                _persist_item_sha1(db, item, chosen_sha1,
+                                   origin="drive_to_115_upload")
     else:
         resp_fid = rapid_fid
     try:
