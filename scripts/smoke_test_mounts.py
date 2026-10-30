@@ -726,7 +726,22 @@ file_endpoints = [
 check("协议面里 /Items/{id}/File 已被挂载感知实现替换",
       file_endpoints == ["mounted_item_file", "mounted_item_file"], str(file_endpoints))
 
-req = Request({"type": "http", "method": "GET", "path": "/Items/x/File", "headers": []})
+req = Request({"type": "http", "method": "GET", "path": "/Items/x/File", "headers": [], "query_string": b""})
+
+# #1560 起 mounted_item_file 先过绑定门禁：本节测的是门禁之后的
+# File 端点行为（410/302/本地），调用方须先有 active 绑定；按
+# test_mount_file_binding_gate.py 的同款做法建凭据＋绑定行。
+staff_row = db.query(models.WebUser).filter(models.WebUser.username == staff_name).first()
+_smoke_cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=staff_row.id,
+                                  sealed_credential="", key_id="fernet-v1", status="active")
+db.add(_smoke_cred)
+db.flush()
+db.add(em.UserStorageBinding(user_id=staff_row.id, provider="drive",
+                              account_label="smoke", credential_id=_smoke_cred.id,
+                              status="active"))
+# 必须 commit：mounted_item_file 的装饰器每次调用后会关闭 session，
+# 只 flush 不提交的绑定行会在第一次调用后被回滚，后续调用又会 403。
+db.commit()
 
 
 def call_endpoint(value):
@@ -1089,6 +1104,14 @@ for row in cleanup_rows:
     db.delete(row)
 db.query(em.Library).filter(em.Library.id.in_(cleanup_lib_ids)).delete(synchronize_session=False)
 db.query(em.StorageMount).filter(em.StorageMount.name.like(f"%{suf}")).delete(synchronize_session=False)
+db.query(em.UserStorageBinding).filter(
+    em.UserStorageBinding.user_id.in_(
+        db.query(models.WebUser.id).filter(models.WebUser.username == staff_name)
+    )).delete(synchronize_session=False)
+db.query(em.MountCredential).filter(
+    em.MountCredential.owner_user_id.in_(
+        db.query(models.WebUser.id).filter(models.WebUser.username == staff_name)
+    )).delete(synchronize_session=False)
 db.query(models.WebUser).filter(models.WebUser.username == staff_name).delete(synchronize_session=False)
 db.commit()
 removed_items = len(cleanup_rows)
