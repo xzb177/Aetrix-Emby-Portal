@@ -5955,12 +5955,14 @@ async def video_stream(
         if _gate_verdict == "preparing":
             raise HTTPException(
                 status_code=409,
-                detail="转存准备中：正在把文件转存到你的绑定盘，"
-                       "转存完成后可播")
+                detail=(_transfer_gate or {}).get("detail") or
+                "转存准备中：正在把文件转存到你的绑定盘，"
+                "转存完成后可播")
         if _gate_verdict == "failed":
             raise HTTPException(
                 status_code=409,
-                detail="转存失败，不走共享播放：请稍后重试或联系管理员")
+                detail=(_transfer_gate or {}).get("detail") or
+                "转存失败，不走共享播放：请稍后重试或联系管理员")
         if _gate_verdict == "error":
             raise HTTPException(
                 status_code=503,

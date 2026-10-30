@@ -411,6 +411,28 @@ export const fetchItemsDedupCacheConfig = () =>
 export const updateItemsDedupCacheConfig = (payload: ItemsDedupCacheConfigPayload) =>
   put<ItemsDedupCacheConfig>('/items-dedup-cache-config', payload)
 
+// ==================== 转存（v2.55.0） ====================
+// 后端：backend/api/admin_economy.py（/api/admin/transfer-config）
+// 配置读取唯一实现：backend/emby_server/transfer_variant.py
+
+export interface TransferConfig {
+  /** 跨 provider 转存总开关（默认开；关 = 只支持同 provider 转存） */
+  cross_provider_transfer_enabled: boolean
+  /** 跨 provider 搬字节在途并发上限（默认 2，范围 1~8） */
+  transfer_cross_lane_concurrency: number
+  /** 转存执行道并发（默认 8，范围 1~32） */
+  transfer_fast_lane_concurrency: number
+  /** 单用户道内在飞上限（默认 2，范围 1~16） */
+  transfer_per_owner_inflight: number
+}
+
+export type TransferConfigPayload = TransferConfig
+
+export const fetchTransferConfig = () => get<TransferConfig>('/transfer-config')
+
+export const updateTransferConfig = (payload: TransferConfigPayload) =>
+  put<TransferConfig>('/transfer-config', payload)
+
 // ==================== 到期续费提醒（v2.8.0） ====================
 // 后端：backend/api/reminders_admin.py + backend/reminders.py
 

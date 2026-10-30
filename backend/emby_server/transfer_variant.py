@@ -156,6 +156,13 @@ def _env_int(name, default):
 # 拆除（滑动窗口补认领，见 process_claimed_round）；并发与
 # per-owner 上限走 SystemConfig（lane_concurrency /
 # per_owner_inflight）。
+# 2026-10-30 更新（用户亲点，推翻 #1487 关停）：跨 provider 搬字节
+# 转存重开，恢复 2026-10-26 定版"绑哪播哪"——跨单与同 provider
+# 单共用同一条执行道与滑动窗口，但单独限在途并发
+# （cross_lane_concurrency，默认 2），慢单不许占满道；总开关
+# cross_provider_transfer_enabled 关时完整回退 #1487 关停口径。
+# file-only 搬字节后路仍关停（等 drive.readonly 验证恢复），不在
+# 本次重开范围。
 TRANSFER_WORKER_CONCURRENCY = _env_int("TRANSFER_WORKER_CONCURRENCY", 4)
 TRANSFER_WORKER_PER_USER_MAX = _env_int("TRANSFER_WORKER_PER_USER_MAX", 2)
 TRANSFER_WORKER_LEASE_SEC = _env_int("TRANSFER_WORKER_LEASE_SEC", 300)
@@ -308,6 +315,82 @@ def play_inline_concurrency(db=None):
     if configured is not None:
         return max(1, min(16, configured))
     return PLAY_INLINE_TRANSFER_CONCURRENCY_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# 跨 provider 转存配置（2026-10-30 用户亲点重开，推翻 2026-10-29
+# #1487 关停；恢复 2026-10-26 20:54 定版“绑哪播哪”）
+#
+# 跨 provider 副本只能经服务器分段搬字节（Drive↔115 之间没有
+# 服务端 copy），是分钟级慢单：与同 provider 共用同一条执行道
+# 与滑动窗口，但单独限在途并发，防慢单占满道饿死同 provider
+# 的点播 copy。两键走 SystemConfig（管理端可改、保存即生效），
+# 读取口径与 lane_concurrency / per_owner_inflight 同款
+# fail-safe：读不到/非法一律回默认，绝不因配置读取把工人打停。
+# ---------------------------------------------------------------------------
+
+#: 跨 provider 转存总开关 SystemConfig 键；默认开（用户 2026-10-30
+#: 亲点重开）。关 = 完整回退 #1487 关停口径：建单拒绝
+#: （cross_provider_relay_disabled）、门禁对跨单 failed 明示、
+#: 工人在途跨单终态；同 provider 通道不受影响。
+KEY_CROSS_PROVIDER_TRANSFER_ENABLED = "cross_provider_transfer_enabled"
+
+#: 跨 provider 搬字节单独在途并发上限 SystemConfig 键；默认 2
+#: （保守）：字节搬运吃带宽与连接，2 条慢单在途时其余道宽全留给
+#: 同 provider 服务端 copy；钳 [1, 8]。
+KEY_TRANSFER_CROSS_LANE_CONCURRENCY = "transfer_cross_lane_concurrency"
+TRANSFER_CROSS_LANE_DEFAULT = 2
+
+
+def cross_provider_enabled(db=None):
+    """跨 provider 转存总开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(db, KEY_CROSS_PROVIDER_TRANSFER_ENABLED, True)
+
+
+def cross_lane_concurrency(db=None):
+    """跨 provider 在途并发上限：SystemConfig > 默认 2，钳 [1, 8]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_CROSS_LANE_CONCURRENCY)
+    if configured is not None:
+        return max(1, min(8, configured))
+    return TRANSFER_CROSS_LANE_DEFAULT
+
+
+def transfer_config_payload(db):
+    """管理端转存卡片回包：转存四键当前生效值（默认值已折算）。"""
+    return {
+        "cross_provider_transfer_enabled": cross_provider_enabled(db),
+        "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
+        "transfer_fast_lane_concurrency": lane_concurrency(db),
+        "transfer_per_owner_inflight": per_owner_inflight(db),
+    }
+
+
+def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
+                          transfer_cross_lane_concurrency=None,
+                          transfer_fast_lane_concurrency=None,
+                          transfer_per_owner_inflight=None):
+    """管理端转存配置写入：走 config_service 的 transfer 家族校验。
+
+    None = 该键不改。非法值抛 ConfigValueError（ValueError 子类，
+    端点转 400），整批不落库。返回 transfer_config_payload。
+    """
+    values = {}
+    if cross_provider_transfer_enabled is not None:
+        values[KEY_CROSS_PROVIDER_TRANSFER_ENABLED] = (
+            "true" if cross_provider_transfer_enabled else "false")
+    if transfer_cross_lane_concurrency is not None:
+        values[KEY_TRANSFER_CROSS_LANE_CONCURRENCY] = str(
+            transfer_cross_lane_concurrency)
+    if transfer_fast_lane_concurrency is not None:
+        values[KEY_TRANSFER_FAST_LANE_CONCURRENCY] = str(
+            transfer_fast_lane_concurrency)
+    if transfer_per_owner_inflight is not None:
+        values[KEY_TRANSFER_PER_OWNER_INFLIGHT] = str(
+            transfer_per_owner_inflight)
+    if values:
+        from backend import config_service
+        config_service.save_config(db, values, schema="transfer")
+    return transfer_config_payload(db)
 
 
 def worker_lease_sec():
@@ -1130,12 +1213,14 @@ def _newest_ready_for_scheme(db, item_id, owner_scope, owner_ref, scheme):
             .first())
 
 
-#: 跨 provider 转存停用后的稳定 error_kind（建单拒绝与 worker 存量
-#: 兜底共用）：跨 provider 副本只能经服务器搬字节，用户 2026-10-29
-#: 亲令取消该路线（"不从咱们服务器搬，让谷歌自己搬"）。
+#: 跨 provider 转存关闭时的稳定 error_kind（建单拒绝、门禁明示与
+#: worker 在途兜底共用）：2026-10-29 #1487 关停时引入；2026-10-30
+#: 重开后只在总开关 cross_provider_transfer_enabled 关时出现
+#: （建单抛它、工人在途跨单以它终态），开关开时不再产生新行，
+#: 但关停期的存量失败行仍带这个 kind，门禁跨分支对它单独分流。
 CROSS_PROVIDER_DISABLED_KIND = "cross_provider_relay_disabled"
 CROSS_PROVIDER_DISABLED_DETAIL = (
-    "跨 provider 转存已停用：不从服务器搬字节，"
+    "跨 provider 转存已停用（总开关关），"
     "只支持同 provider 转存")
 #: file-only 绑定走不通服务端 copy 时的稳定 error_kind：file-only
 #: 令牌看不见非应用自创文件，copy 永不可能成功；#1470 的搬字节
@@ -1159,17 +1244,17 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     force=True 仅供门禁对 failed-retriable 任务的重触发，语义同
     create_user_job（24h 内已失败的任务不挡重建）。
 
-    2026-10-29 关停（用户亲令"不从咱们服务器搬，让谷歌自己搬"）：
-    跨 provider 转存须经服务器搬字节，整条路线取消——本函数不再
-    建单，一律抛 cross_provider_relay_disabled；全部既有调用方
-    （门禁/预取/quota/重建）都已按 TransferError.kind 映射成
-    failed/skipped，口径自洽。存量 pending 跨单由 worker 执行
-    入口兜底终态化（run_transfer_job_once），不静默吞掉。
+    2026-10-29 曾随搬字节路线一并关停（#1487），2026-10-30 用户
+    亲点重开：恢复建单。总开关 cross_provider_transfer_enabled
+    关时回到关停口径——不建单，抛 cross_provider_relay_disabled；
+    全部既有调用方（门禁/预取/quota/重建）都已按 TransferError.kind
+    映射成 failed/skipped，口径自洽。开关关时的存量 pending 跨单
+    由 worker 执行入口兜底终态化（run_transfer_job_once），不静默
+    吞掉。
     """
-    raise TransferError(
-        CROSS_PROVIDER_DISABLED_KIND,
-        "跨 provider 转存已停用：不从服务器搬字节，"
-        "只支持同 provider 转存")
+    if not cross_provider_enabled(db):
+        raise TransferError(CROSS_PROVIDER_DISABLED_KIND,
+                            CROSS_PROVIDER_DISABLED_DETAIL)
     if not master_enabled():
         raise TransferError("master_off", "转存变体总闸未开")
     item_id = getattr(item, "id", None)
@@ -1224,12 +1309,44 @@ QUOTA_UNAVAILABLE_DETAIL = (
 QUOTA_NO_SHARED_DETAIL = "共享盘额度已满，不改播共享原件"
 SHARED_BLOCKED_DETAIL = "转存未就绪，不走共享播放"
 
+#: provider 人话名（门禁跨 provider 文案用）。
+_PROVIDER_LABELS = {"drive": "谷歌盘", "pan115": "115 网盘"}
+
+
+def _provider_label(provider):
+    return _PROVIDER_LABELS.get((provider or "").strip(), provider or "?")
+
+
+def _cross_preparing_detail(source_provider, dest_provider):
+    """跨 provider 准备中文案：说清片在哪边、往哪边转、备好再播。"""
+    return (f"这部片存放在{_provider_label(source_provider)}，"
+            f"你绑定的是{_provider_label(dest_provider)}："
+            f"正在转存到你的{_provider_label(dest_provider)}，"
+            "转存完成后即可播放")
+
+
+def _cross_failed_detail(dest_provider, job):
+    """跨 provider 失败文案：带任务行上的人话原因，不只给笼统失败。"""
+    reason = (getattr(job, "error_detail", "") or "").strip()
+    if reason:
+        return f"转存到你的{_provider_label(dest_provider)}失败：{reason}"
+    return (f"转存到你的{_provider_label(dest_provider)}失败，"
+            "不走共享播放：请稍后重试或联系管理员")
+
 _TERMINAL_JOB_KINDS = {
     "dead", "auth_error", "unsupported", "retriable", "copy_unresolved",
     "orphan", "item_gone", "no_drive",
     # 2026-10-29 搬字节关停新增终态：门禁见存量失败行直接判
     # failed 明示，不落 preparing/throttled 误导用户继续等。
-    "cross_provider_relay_disabled", "file_only_copy_unavailable",
+    # 2026-10-30 跨 provider 重开后，cross_provider_relay_disabled
+    # 已摘除：它只可能出现在关停期的存量跨单失败行上，门禁跨
+    # 分支对它单独分流（开关开→预算内重触发新单、关→failed
+    # 明示），不再靠本集合直判；同 provider 分支对它另有遗留行
+    # 放行守卫（见门禁实现），不会误伤同 provider 失败行。
+    # file_only_copy_unavailable 保留：file-only 搬字节后路仍
+    # 关停（等 drive.readonly 验证恢复），其失败行继续直判
+    # failed，不许落 preparing 让用户空等。
+    "file_only_copy_unavailable",
 }
 
 
@@ -2295,20 +2412,40 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                         "reason": "has_ready_variant", "variant": ready}
             job = _latest_job_for_dest(db, item_id, "user",
                                        str(user_id), dest)
+            preparing_detail = _cross_preparing_detail(provider, other)
             if job is not None:
                 if job.status in ("pending", "running"):
                     return {"verdict": "preparing",
-                            "reason": "job_in_flight", "job_id": job.id}
+                            "reason": "job_in_flight", "job_id": job.id,
+                            "detail": preparing_detail}
                 if job.status == "failed":
+                    if job.error_kind == CROSS_PROVIDER_DISABLED_KIND:
+                        # 关停期（2026-10-29 #1487）遗留的终态行：它
+                        # 不是真失败，是路线关停的产物。总开关开 →
+                        # 按可重试处理、预算内建新单（不自动复活：
+                        # 只在用户点播走到这里时才建）；关 → failed
+                        # 明示，口径与关停期一致。
+                        if cross_provider_enabled(db):
+                            out = _retrigger_failed_job(
+                                db, item, user_id, provider, job,
+                                cross=True, dest=dest)
+                            if out.get("verdict") == "preparing":
+                                out.setdefault("detail", preparing_detail)
+                            return out
+                        return {"verdict": "failed",
+                                "reason": job.error_kind,
+                                "job_id": job.id,
+                                "detail": CROSS_PROVIDER_DISABLED_DETAIL}
                     if job.error_kind == "retriable":
                         return _retrigger_failed_job(
                             db, item, user_id, provider, job, cross=True,
                             dest=dest)
                     if job.error_kind in _TERMINAL_JOB_KINDS:
                         return {"verdict": "failed", "reason": job.error_kind,
-                                "job_id": job.id}
+                                "job_id": job.id,
+                                "detail": _cross_failed_detail(other, job)}
                     return {"verdict": "preparing", "reason": "throttled",
-                            "job_id": job.id}
+                            "job_id": job.id, "detail": preparing_detail}
                 if job.status == "done":
                     if _recent_job_exists(db, item_id, "user",
                                           str(user_id)):
@@ -2323,10 +2460,12 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                                                     trigger="playback")
             except TransferError as exc:
                 if exc.kind == "throttled":
-                    return {"verdict": "preparing", "reason": "throttled"}
-                return {"verdict": "failed", "reason": exc.kind}
+                    return {"verdict": "preparing", "reason": "throttled",
+                            "detail": preparing_detail}
+                return {"verdict": "failed", "reason": exc.kind,
+                        "detail": str(exc)}
             return {"verdict": "preparing", "reason": "job_created",
-                    "job_id": new_job.id}
+                    "job_id": new_job.id, "detail": preparing_detail}
         orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
         if provider == "pan115" and not orig_fid:
             # 115 无源 fid：不建任务（不污染节流窗），等扫描补 fid。
@@ -2354,16 +2493,25 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                 return {"verdict": "preparing", "reason": "job_in_flight",
                         "job_id": job.id}
             if job.status == "failed":
-                if job.error_kind == "retriable":
+                if (job.error_kind == CROSS_PROVIDER_DISABLED_KIND
+                        and _is_cross_job(job)):
+                    # 关停期遗留的跨单失败行（该用户后来补绑了本
+                    # provider，本分支按“最新一单”捞到了它）：它不是
+                    # 本通道的失败，不许挡住同 provider 建单——不
+                    # 返回，落到下方新建同盘单。真同 provider 失败
+                    # 行（dest 同侧）一律不走这里、不受影响。
+                    pass
+                elif job.error_kind == "retriable":
                     return _retrigger_failed_job(
                         db, item, user_id, provider, job)
-                if job.error_kind in _TERMINAL_JOB_KINDS:
+                elif job.error_kind in _TERMINAL_JOB_KINDS:
                     return {"verdict": "failed", "reason": job.error_kind,
                             "job_id": job.id}
-                # no_binding / no_source_fid：原因可能自愈（重绑/重扫），
-                # 但节流窗内不重复建，呈准备中 + 节流说明。
-                return {"verdict": "preparing", "reason": "throttled",
-                        "job_id": job.id}
+                else:
+                    # no_binding / no_source_fid：原因可能自愈（重绑/
+                    # 重扫），但节流窗内不重复建，呈准备中 + 节流说明。
+                    return {"verdict": "preparing", "reason": "throttled",
+                            "job_id": job.id}
             if job.status == "done":
                 if _recent_job_exists(db, item_id, "user", str(user_id)):
                     # 副本已释放/变 stale（ready 已查过为空）但节流窗未
@@ -2676,8 +2824,9 @@ def _inline_job_eligible(db, job):
     - trigger 必须 playback：预取/批量/重建/Quota 信号等非点播
       触发一律仍走工人，请求路径不当场跑；
     - owner_scope 必须 user：服主盘任务不在用户请求里执行；
-    - 跨 provider 已关停（_is_cross_job）：不进当场路径，照旧
-      以 cross_provider_relay_disabled 明示终态；
+    - 跨 provider 搬字节（_is_cross_job，2026-10-30 重开）：分钟级
+      慢活，绝不在点播请求里当场搬字节——不进当场路径，明确走
+      工人后台队列（门禁呈准备中态，转完才可点）；
     - Drive file-only 绑定无服务端 copy 路（令牌看不见源
       文件）：不进当场路径，照旧由工人落
       file_only_copy_unavailable 明确失败，不在这里假装能办；
@@ -3676,6 +3825,65 @@ class UserDriveApiClient(DriveApiClient):
         raise _CrossRemoteError("Drive 可续传上传循环超限（疑似 308 死循环）")
 
 
+class _SegmentReader:
+    """跨 provider 搬字节的分段读取器（内存 O(段大小)，不落盘）。
+
+    fetch(start, end) -> bytes（闭区间）由调用方提供（Drive 源
+    download_range 或 115 下载直链 Range GET）。内部按
+    _CROSS_SEGMENT 缓存当前窗口；read/seek/tell 语义与文件对象
+    一致，供 httpx 表单上传（seek/tell 算 Content-Length）与
+    Drive 可续传上传（seek 到段首重读）共用。seek 越界抛
+    ValueError；read 到文件尾返回 b""。
+    """
+
+    def __init__(self, size, fetch):
+        self._size = int(size)
+        self._fetch = fetch
+        self._pos = 0
+        self._win_start = 0
+        self._win_data = b""
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, offset, whence=0):
+        if whence == 0:
+            pos = offset
+        elif whence == 1:
+            pos = self._pos + offset
+        elif whence == 2:
+            pos = self._size + offset
+        else:
+            raise ValueError(f"非法 whence：{whence}")
+        if pos < 0 or pos > self._size:
+            raise ValueError(f"seek 越界：{pos}（大小 {self._size}）")
+        self._pos = pos
+        return pos
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self._size - self._pos
+        if n <= 0 or self._pos >= self._size:
+            return b""
+        out = bytearray()
+        while len(out) < n and self._pos < self._size:
+            if not (self._win_start <= self._pos
+                    < self._win_start + len(self._win_data)):
+                win_end = min(self._pos + _CROSS_SEGMENT,
+                              self._size) - 1
+                self._win_start = self._pos
+                self._win_data = self._fetch(self._pos, win_end)
+                if len(self._win_data) != win_end - self._pos + 1:
+                    raise _CrossRemoteError(
+                        f"搬字节取段短读：{self._pos}-{win_end} 实得 "
+                        f"{len(self._win_data)} 字节")
+            off = self._pos - self._win_start
+            take = min(n - len(out), len(self._win_data) - off)
+            out += self._win_data[off:off + take]
+            self._pos += take
+        return bytes(out)
+
+
 # ---------------------------------------------------------------------------
 # 工人（单线程顺序执行，调用方是 worker 守护；内部提交）
 # ---------------------------------------------------------------------------
@@ -4358,6 +4566,353 @@ def _patrol_115_row(db, row, stats, now):
         row.last_checked_at = now
 
 
+# ---------------------------------------------------------------------------
+# 跨 provider 执行器（2026-10-30 重开恢复，机制照 FMBY 形状）
+#
+# 换链与搬字节分离：先解析源端取链/取段凭据，再分段搬字节，
+# 最后用目标端新文件 id 落 ready。源端 Range 取字节口径统一：
+# 401/403 = 凭据过期（_CrossAuthError），其余 = 远端不可用
+# （_CrossRemoteError），搬运层不静默重试；目标端落盘后必列
+# 目标目录按名+fid 核对，核不到记 copy_unresolved 不重试。
+# ---------------------------------------------------------------------------
+
+def _resolve_115_source(db, item):
+    """跨 provider 115→Drive：服主侧解析源 pickcode（换链步骤）。
+
+    绝不用 EA 播放的共享 pickcode 缓存（_get_cached_115_url）：每次
+    现解析。返回 (client, pickcode, size)：
+    - mount:// 路径：按挂载行构造 Pan115Mount（db + 条目所属库，
+      凭据解析与播放侧同一套：源级凭据表 → 挂载/库绑定账号 →
+      默认账号 → 服务器级），_locate 逐级定位；
+    - 115:/ 路径：库绑定账号 → 默认账号 → 服务器级解析 Cookie，
+      直接按段列目录定位。
+    找不到文件 → _NotFound（调用方记 dead）；服主 Cookie 失效 →
+    _CrossAuthError（只记任务失败，绝不落用户绑定）；其它 115
+    失败 → _CrossRemoteError（有界重试）。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    path = (getattr(item, "file_path", "") or "").strip()
+    library_row = None
+    library_id = getattr(item, "library_id", None)
+    if library_id is not None:
+        try:
+            library_row = (db.query(em.Library)
+                           .filter(em.Library.id == library_id).first())
+        except Exception:
+            library_row = None
+    if path.startswith("mount://"):
+        try:
+            from backend.emby_server import mounts as mount_lib
+            parsed = mount_lib.parse_mount_path(path)
+        except Exception:
+            parsed = None
+        if parsed is None:
+            raise _CrossRemoteError("115 源 mount 路径解析失败")
+        mount_id, rel = parsed
+        mount = (db.query(em.StorageMount)
+                 .filter(em.StorageMount.id == mount_id).first())
+        if mount is None or mount.mount_type != getattr(
+                mount_lib, "MOUNT_PAN115", "115"):
+            raise _CrossRemoteError("115 源挂载行不存在或类型非 115")
+        mount_obj = mount_lib.Pan115Mount(mount, db=db,
+                                          library=library_row)
+        try:
+            entry = mount_obj._locate(rel)
+        except mount_lib.MountError as exc:
+            if "找不到" in str(exc):
+                raise _NotFound(str(exc)) from exc
+            raise _CrossRemoteError(str(exc)) from exc
+        except Pan115AuthError as exc:
+            raise _CrossAuthError(
+                f"服主侧 115 凭据失效：{exc}") from exc
+        except Pan115Error as exc:
+            raise _CrossRemoteError(str(exc)) from exc
+        pickcode = (entry.get("pickcode") or "").strip()
+        if not pickcode:
+            raise _NotFound("115 源未返回 pickcode")
+        return (mount_obj._client(), pickcode,
+                _to_int(entry.get("size")))
+    if path.startswith("115:/"):
+        from backend.emby_server import transfer115 as t115
+        try:
+            cookie, _src = t115.resolve_cookie(db, library=library_row)
+        except Pan115Error as exc:
+            raise _CrossRemoteError(str(exc)) from exc
+        if not cookie:
+            raise _CrossAuthError("未解析到服主侧 115 Cookie")
+        client = _make_pan115_client(cookie)
+        rel = path[len("115:"):].lstrip("/")
+        segments = [s for s in rel.split("/") if s]
+        if not segments:
+            raise _NotFound("115 源路径无文件名")
+        try:
+            cid = "0"
+            for seg in segments[:-1]:
+                nxt = next(
+                    (e for e in client.list_dir(cid)
+                     if (e.get("name") or "") == seg
+                     and t115._is_dir(e)),
+                    None)
+                if nxt is None or not (nxt.get("cid") or ""):
+                    raise _NotFound(f"115 源目录缺失：{seg}")
+                cid = str(nxt["cid"])
+            entry = next(
+                (e for e in client.list_dir(cid)
+                 if (e.get("name") or "") == segments[-1]
+                 and not t115._is_dir(e)),
+                None)
+        except Pan115AuthError as exc:
+            raise _CrossAuthError(
+                f"服主侧 115 凭据失效：{exc}") from exc
+        except Pan115Error as exc:
+            raise _CrossRemoteError(str(exc)) from exc
+        if entry is None:
+            raise _NotFound(f"115 源文件不存在：{segments[-1]}")
+        pickcode = (entry.get("pickcode") or "").strip()
+        if not pickcode:
+            raise _NotFound("115 源未返回 pickcode")
+        return (client, pickcode, _to_int(entry.get("size")))
+    raise _CrossRemoteError(f"115 源路径形态未知：{path[:60]}")
+
+
+def _run_cross_drive_to_115(db, job, item, drive_api):
+    """跨 provider Drive→115：SA 源按段取字节 → 用户 115 简单上传。
+
+    字节必经 worker 中转（分段读取器直供 httpx 表单上传，不落盘）。
+    用户 115 Cookie 失效 → 绑定落 expired + failed/auth_error（与
+    同 provider 115 执行器同口径）；SA 源下载 401/403 → _CrossAuthError
+    → failed/auth_error，但绝不碰用户绑定（失效的是源侧 SA 凭据）；
+    其余失败 → 有界重试。上传后必列用户 115 转存目录按名核对
+    （FMBY discover 口径），核不到记 copy_unresolved 不重试。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    from backend.emby_server import user_bindings as ub
+    uid = (getattr(job, "owner_ref", "") or "").strip()
+    try:
+        user_id = int(uid)
+    except (TypeError, ValueError):
+        user_id = None
+    binding = _active_binding(db, user_id, "pan115") if user_id else None
+    if binding is None:
+        return _fail_job(db, job, "no_binding",
+                         "用户 115 绑定已失效或不存在（不重试）")
+    try:
+        cookie = ub.binding_115_cookie(db, user_id, binding.id)
+    except ub.BindingError as exc:
+        if exc.kind == "auth_error":
+            return _fail_job(db, job, "auth_error", str(exc))
+        if exc.kind == "not_found":
+            return _fail_job(db, job, "no_binding", str(exc))
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    orig_fid = (item.drive_file_id or "").strip()
+    source_drive = (getattr(job, "drive_id", "") or "").strip()
+    if not source_drive:
+        return _fail_job(db, job, "no_drive", "跨任务无源 Drive 盘标识")
+    name = _copy_name_for_item(item)
+    try:
+        info = drive_api.get_file(source_drive, orig_fid)
+        size = _to_int((info or {}).get("size"))
+    except (_NotFound, _Forbidden) as exc:
+        return _fail_job(db, job, "dead", f"Drive 源已死/无权：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not size:
+        size = _to_int(getattr(item, "size", None))
+    if size <= 0:
+        return _fail_job(
+            db, job, "unsupported",
+            "Drive 源文件大小未知/为零，无法分段搬运（不猜大小）")
+    if size > _115_SIMPLE_UPLOAD_LIMIT:
+        return _fail_job(
+            db, job, "unsupported",
+            f"文件 {size} 字节超过 115 简单上传 5 GiB 上限；多段上传需 "
+            f"initupload 加密协议（未实测），暂不支持，不静默回落")
+    try:
+        client = _make_pan115_client(cookie)
+        dest_cid = _ensure_115_transfer_dir(client)
+    except Pan115AuthError as exc:
+        try:
+            ub._mark_failed(db, binding, "expired")
+        except Exception:
+            pass
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    reader = _SegmentReader(
+        size,
+        lambda s, e: drive_api.download_range(source_drive, orig_fid, s, e))
+    try:
+        result = client.simple_upload(reader, name, dest_cid)
+    except Pan115AuthError as exc:
+        try:
+            ub._mark_failed(db, binding, "expired")
+        except Exception:
+            pass
+        return _fail_job(db, job, "auth_error", str(exc))
+    except _CrossAuthError as exc:
+        # SA 源凭据失效：只记任务失败，绝不落用户 115 绑定。
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    resp_fid = (result or {}).get("fid") or ""
+    try:
+        new_fid, pickcode = _match_115_copy_in_dir(
+            client, dest_cid, name, size, expected_fid=resp_fid or None)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not new_fid:
+        return _fail_job(
+            db, job, "copy_unresolved",
+            f"115 跨转存上传完成但目标目录核不到新文件（源 fid={orig_fid}，"
+            f"回执 fid={resp_fid or '无'}，目标目录 cid={dest_cid}，"
+            f"请人工核对，不自动重试）")
+    row = _register_ready_variant(db, job, item, new_fid,
+                                  f"pan115:user-{uid}",
+                                  pickcode=pickcode or None, size=size)
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _run_cross_115_to_drive(db, job, item):
+    """跨 provider 115→Drive：服主 115 现解析下载链 → 用户 Drive
+    可续传上传。
+
+    换链与搬字节分离：先 _resolve_115_source 现解析 pickcode（绝
+    不用共享 pickcode 缓存），再现取 download_url 按段取字节，最
+    后用用户 Drive 令牌可续传上传。用户 Drive 令牌失效 →
+    failed/no_binding（与 Path A 同口径）；服主 115 凭据失效 →
+    failed/auth_error 但不碰用户绑定；其余失败 → 有界重试。
+    上传后必补 anyone-reader（失败记 orphan）并列用户 Drive 转存
+    目录按名核对，核不到记 copy_unresolved。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    from backend.emby_server.drive_oauth import DriveOAuthError
+    uid = (getattr(job, "owner_ref", "") or "").strip()
+    try:
+        user_id = int(uid)
+    except (TypeError, ValueError):
+        user_id = None
+    binding = _active_binding(db, user_id, "drive") if user_id else None
+    if binding is None:
+        return _fail_job(db, job, "no_binding",
+                         "用户 Drive 绑定已失效或不存在（不重试）")
+    user_client = UserDriveApiClient(db, binding)
+    user_drive = f"myDrive:{user_id}"
+    name = _copy_name_for_item(item)
+    try:
+        server_client, pickcode, src_size = _resolve_115_source(db, item)
+    except _NotFound as exc:
+        return _fail_job(db, job, "dead", f"115 源已不存在：{exc}")
+    except _CrossAuthError as exc:
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    try:
+        url = server_client.download_url(pickcode)
+    except Pan115AuthError as exc:
+        return _fail_job(db, job, "auth_error",
+                         f"服主侧 115 凭据失效：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    size = src_size or _to_int(getattr(item, "size", None))
+    if size <= 0:
+        return _fail_job(
+            db, job, "unsupported",
+            "115 源文件大小未知/为零，无法分段搬运（不猜大小）")
+    try:
+        folder_id = user_client.ensure_folder(user_drive,
+                                              transfer_dir_name())
+    except DriveOAuthError as exc:
+        return _fail_job(db, job, "no_binding",
+                         f"用户 Drive 令牌失效：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+
+    def _fetch(start, end):
+        headers = {"User-Agent": server_client.ua,
+                   "Referer": "https://115.com/",
+                   "Cookie": server_client.cookie,
+                   "Range": f"bytes={start}-{end}"}
+        try:
+            resp = httpx.request("GET", url, headers=headers, timeout=120)
+        except (httpx.TimeoutException, httpx.ConnectError,
+                httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            raise _CrossRemoteError(
+                f"115 源下载网络异常：{type(exc).__name__}") from exc
+        if resp.status_code in (401, 403):
+            raise _CrossAuthError(
+                f"115 源下载被拒：{resp.status_code}（服主侧凭据失效）")
+        if resp.status_code != 206:
+            raise _CrossRemoteError(
+                f"115 源下载失败：{resp.status_code}（非 206）")
+        data = resp.content or b""
+        if len(data) != end - start + 1:
+            raise _CrossRemoteError(
+                f"115 源下载短读：要 {end - start + 1} 字节，"
+                f"实得 {len(data)} 字节")
+        return data
+
+    reader = _SegmentReader(size, _fetch)
+    try:
+        new_fid = user_client.resumable_upload(user_drive, name, folder_id,
+                                               size, reader)
+    except DriveOAuthError as exc:
+        return _fail_job(db, job, "no_binding",
+                         f"用户 Drive 令牌失效：{exc}")
+    except _CrossAuthError as exc:
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    try:
+        verified_fid = _verify_drive_copy_in_dir(
+            user_client, user_drive, folder_id, name, new_fid)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not verified_fid:
+        return _fail_job(
+            db, job, "copy_unresolved",
+            f"Drive 跨转存上传回执 id={new_fid} 在用户转存目录中核不到"
+            f"（目录 id={folder_id}，文件名={name}），不登记、不回落")
+    try:
+        user_client.add_anyone_reader(user_drive, verified_fid)
+    except Exception as exc:
+        row = em.TransferVariant(
+            item_id=job.item_id, source_file_id=item.drive_file_id.strip(),
+            variant_file_id=verified_fid,
+            variant_drive_id=f"userdrive:{user_id}",
+            owner_scope="user", owner_ref=uid, status="orphan",
+            size_bytes=size)
+        db.add(row)
+        return _fail_job(db, job, "orphan", str(exc))
+    row = _register_ready_variant(db, job, item, verified_fid,
+                                  f"userdrive:{user_id}", size=size)
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _run_cross_job(db, job, item, drive_api):
+    """跨 provider 任务分发：按 dest_drive_id 定方向（不按 provider）。
+
+    dest pan115: 开头 → Drive→115；dest userdrive: 开头 → 115→Drive；
+    其它 dest（理论上到不了，_is_cross_job 已过滤）→ unsupported。
+    """
+    dest = (getattr(job, "dest_drive_id", "") or "").strip()
+    if dest.startswith("pan115:"):
+        return _run_cross_drive_to_115(db, job, item, drive_api)
+    if dest.startswith("userdrive:"):
+        return _run_cross_115_to_drive(db, job, item)
+    return _fail_job(db, job, "unsupported",
+                     f"跨任务落盘标识未知：{dest}（不重试）")
+
+
 def run_transfer_job_once(db, job, drive_api):
     """执行一个转存任务（工人单线程顺序调用；内部提交）。
 
@@ -4407,12 +4962,13 @@ def run_transfer_job_once(db, job, drive_api):
     job.attempts += 1
     db.commit()
     if _is_cross_job(job):
-        # 存量跨 provider 单兜底（2026-10-29 关停）：建单侧已拒绝
-        # 新建（create_cross_provider_job 抛错），这里只处理关停前
-        # 已在队的 pending 单——直接终态，不执行任何搬字节，
-        # 不静默吞掉。
-        return _fail_job(db, job, CROSS_PROVIDER_DISABLED_KIND,
-                         CROSS_PROVIDER_DISABLED_DETAIL)
+        # 跨 provider 单（2026-10-30 重开）：走跨执行器分段搬字节。
+        # 总开关关时回 #1487 关停口径——在途跨单直接终态明示，
+        # 不执行任何搬字节，不静默吞掉。
+        if not cross_provider_enabled(db):
+            return _fail_job(db, job, CROSS_PROVIDER_DISABLED_KIND,
+                             CROSS_PROVIDER_DISABLED_DETAIL)
+        return _run_cross_job(db, job, item, drive_api)
     if provider == "pan115":
         return _run_pan115_job(db, job, item)
     if owner_scope == "user":
@@ -4668,18 +5224,34 @@ def _running_counts_by_owner(db, now=None):
     return counts
 
 
-def _pick_candidates(candidates, limit, running_counts, cap, now=None):
-    """公平挑单：点播组（trigger=playback）在前、后台组在后（原
-    快慢双通道的慢道已随搬字节关停消灭，道内只剩触发优先级）；
+def _running_cross_count(db, now=None):
+    """当前 running（租约未过期）的跨 provider 单数：跨道上限计数。"""
+    now = now or datetime.now()
+    rows = (db.query(em.TransferJob)
+            .filter(em.TransferJob.status == "running")
+            .filter(
+                (em.TransferJob.lease_expires_at.is_(None))
+                | (em.TransferJob.lease_expires_at > now))
+            .all())
+    return sum(1 for row in rows if _is_cross_job(row))
+
+
+def _pick_candidates(candidates, limit, running_counts, cap, now=None,
+                     cross_cap=None, cross_running=0):
+    """公平挑单：点播组（trigger=playback）在前、后台组在后；
     每组内按用户轮流取
     （每轮每用户先取 1 单，再取第 2 单……），直至 limit 或取尽。
     暂停用户直接跳过；已在途达 cap 的用户直接跳过。
+    跨 provider 搬字节单另有全局在途上限（cross_cap，None=不限）：
+    在途（含本轮已挑）达上限后跨单跳过、同 provider 单照常挑——
+    慢单不许占满整条道（2026-10-30 重开硬要求）。
     返回挑中的任务行（不改状态，认领在 claim_due_jobs 里做）。"""
     now = now or datetime.now()
     fast = [c for c in candidates if (c.trigger or "") == "playback"]
     slow = [c for c in candidates if (c.trigger or "") != "playback"]
     picked = []
     used = dict(running_counts)
+    picked_cross = 0
     for lane in (fast, slow):
         # 按用户分组，保持每组内 id 顺序
         by_owner = {}
@@ -4698,7 +5270,13 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None):
                     continue
                 if used.get(key, 0) >= cap:
                     continue
-                picked.append(group[round_no])
+                job = group[round_no]
+                if (cross_cap is not None and _is_cross_job(job)
+                        and cross_running + picked_cross >= cross_cap):
+                    continue
+                picked.append(job)
+                if _is_cross_job(job):
+                    picked_cross += 1
                 used[key] = used.get(key, 0) + 1
                 progressed = True
             if not progressed:
@@ -4738,7 +5316,10 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
         return []
     cap = per_owner_inflight(db)
     running_counts = _running_counts_by_owner(db, now=now)
-    picked = _pick_candidates(due, limit, running_counts, cap, now=now)
+    picked = _pick_candidates(
+        due, limit, running_counts, cap, now=now,
+        cross_cap=cross_lane_concurrency(db),
+        cross_running=_running_cross_count(db, now=now))
     if not picked:
         return []
     lease_until = now + timedelta(seconds=worker_lease_sec())
@@ -5192,6 +5773,8 @@ __all__ = [
     "start_transfer_daemon",
     "worker_concurrency", "worker_per_user_max", "worker_lease_sec",
     "lane_concurrency", "per_owner_inflight",
+    "cross_provider_enabled", "cross_lane_concurrency",
+    "transfer_config_payload", "write_transfer_config",
     "worker_sweep_sec", "notify_transfer_wakeup", "pause_user_queue",
     "is_user_paused", "reclaim_expired_leases", "claim_due_jobs",
     "queue_stats", "queue_alerts", "process_claimed_round",
