@@ -67,6 +67,7 @@ GROUPS = {
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
             {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
         ],
+        [{"text": "🎰 老虎机", "callback_data": "menu:slots"}],
     ]),
     "help": ("❓ 帮助中心", [
         [

@@ -277,6 +277,7 @@ USER_PANEL_GROUPS: dict[str, dict] = {
         "buttons": [
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
             {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
+            {"text": "🎰 老虎机", "callback_data": "menu:slots"},
         ],
     },
     "help": {
@@ -726,6 +727,75 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
     sender_name = html.escape(str(user.username or "朋友"))
     text = redpacket_common.packet_text(packet, sender_name)
     return (text, redpacket_common.claim_markup(packet.id))
+
+
+def slots_markup(db) -> dict:
+    """老虎机注额按钮（一行三档）＋回主界面行；陪玩与结果卡共用。"""
+    from backend import slots as slots_svc
+
+    tier_row = [
+        {"text": f"🎰 {tier} 能量", "callback_data": f"slots_bet:{tier}"}
+        for tier in slots_svc.bet_tiers(db)
+    ]
+    return {"inline_keyboard": [tier_row, layout.home_row()]}
+
+
+def handle_slots(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
+    """老虎机面板（仅私聊可玩，门禁在 callbacks._render_menu 先行拦截）。"""
+    from backend import slots as slots_svc
+
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    if not slots_svc.is_enabled(db):
+        return "🎰 老虎机暂未开启"
+    pays = slots_svc.pay_table(db)
+    tiers = " / ".join(str(t) for t in slots_svc.bet_tiers(db))
+    text = layout.card(
+        layout.title("老虎机"),
+        [
+            layout.row("🏆", "头奖池", f"<b>{slots_svc.pool_balance(db)} 能量</b>"),
+            layout.row("✨", "我的能量", f"<b>{int(user.points or 0)}</b>"),
+            layout.row("🎯", "注额", f"{tiers} 能量三档，点下方按钮开摇"),
+        ],
+        [
+            f"赔付：777 ×{pays['seven']} · BAR 三连 ×{pays['bar']} · "
+            f"葡萄/柠檬三连 ×{pays['fruit']} · 双 7 返注",
+            "结果由 Telegram 原生老虎机决定，公平随机",
+        ],
+    )
+    return (text, slots_markup(db))
+
+
+def slots_result_text(db, spin) -> str:
+    """老虎机结算卡（#1515 卡片骨架）：结果 / 注额 / 奖金 / 余额 / 头奖池。"""
+    from backend import slots as slots_svc
+
+    if spin.reels:
+        reels = tuple(spin.reels.split(","))
+    elif spin.dice_value:
+        reels = slots_svc.decode_dice(int(spin.dice_value))
+    else:
+        reels = ()
+    base = int(spin.base_payout or 0)
+    pool = int(spin.pool_payout or 0)
+    rows = [
+        layout.row("🎰", "结果", f"<b>{slots_svc.reels_text(reels)}</b>"),
+        layout.row("🎯", "注额", f"{int(spin.bet or 0)} 能量"),
+    ]
+    if pool > 0:
+        rows.append(layout.row(
+            "🏆", "头奖", f"<b>+{base + pool} 能量</b>（基础 {base}＋头奖池 {pool}）"))
+    elif base > 0:
+        rows.append(layout.row("🎉", "奖金", f"<b>+{base} 能量</b>"))
+    else:
+        rows.append(layout.row("💨", "奖金", "未中奖，下次好运"))
+    user = db.query(WebUser).filter(WebUser.id == spin.user_id).first()
+    if user is not None:
+        rows.append(layout.row("✨", "余额", f"{int(user.points or 0)} 能量"))
+    rows.append(layout.row("🏆", "头奖池", f"{slots_svc.pool_balance(db)} 能量"))
+    title = "老虎机 · 777 头奖！" if pool > 0 else "老虎机"
+    return layout.card(layout.title(title), rows, ["👇 点下方注额再来一局"])
 
 
 # 扩展功能适配器：业务实现独立于旧命令，避免 handlers.py 继续膨胀。

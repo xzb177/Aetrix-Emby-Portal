@@ -160,6 +160,20 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "lottery_require_group_member": ("bool", "digit"),
     "lottery_min_account_age_days": ("int", 0, _BIG),
     "lottery_max_joins_per_day": ("int", 0, _BIG),
+    # 能量老虎机（backend/slots.py 读取，2026-10-30 用户亲批默认值）：
+    # 总开关 word 风格 ("bool",)（同 register_gift_* 口径，读侧
+    # economy._get_bool_config 只认 "true"）；注额档位逗号列表走 int_list
+    # 校验；赔付倍数/种子/封顶为非负整数；抽水百分比 0-100。
+    "slots_enabled": ("bool",),
+    "slots_bet_tiers": ("int_list", 1, 100000),
+    "slots_pay_777": ("int", 0, _BIG),
+    "slots_pay_bar": ("int", 0, _BIG),
+    "slots_pay_fruit": ("int", 0, _BIG),
+    "slots_pay_two7": ("int", 0, _BIG),
+    "slots_pool_rake_pct": ("int", 0, 100),
+    "slots_pool_seed": ("int", 0, _BIG),
+    "slots_daily_bet_cap": ("int", 0, _BIG),
+    "slots_daily_win_cap": ("int", 0, _BIG),
     # 2026-10-17 第 4 批 4-4：白名单里但此前无 spec 的群 id 列表键（端点现行按原文
     # 存字符串）。注册为 ("str",) 与今天逐字一致：原文直存，None/空串→删行
     # （读侧 _get_str_config 缺行/空行都回默认 ""，等价）。

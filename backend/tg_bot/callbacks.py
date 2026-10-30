@@ -1,4 +1,4 @@
-"""callback_query 处理：主菜单按钮（menu:*）+ 抢红包按钮（redpacket_claim:{id}）+ 抽奖参加按钮（lottery_join:{round_id}）。"""
+"""callback_query 处理：主菜单按钮（menu:*）+ 抢红包按钮（redpacket_claim:{id}）+ 抽奖参加按钮（lottery_join:{round_id}）+ 老虎机下注按钮（slots_bet:{tier}）。"""
 from __future__ import annotations
 
 import html
@@ -30,6 +30,8 @@ def handle_callback(db, callback_query: dict, redpacket_enabled: bool | None = N
         return
     if data.startswith("reconcile:"):
         _handle_reconcile_callback(db, callback_query)
+    if data.startswith("slots_bet:"):
+        _handle_slots_bet(db, callback_query)
         return
 
 
@@ -201,6 +203,21 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
             ["💡 请直接发送命令发红包（按钮不支持输入参数）"],
         )
         markup = handlers.back_markup()
+    elif action == "slots":
+        # 老虎机仅私聊可玩（群里点入口只回私聊提示，与私聊限定功能同口径）
+        if not is_private:
+            text = layout.card(
+                layout.title("老虎机"),
+                [layout.row("🔒", "使用方式", "老虎机请私聊机器人使用")])
+            markup = handlers.back_markup()
+        else:
+            slots_user = resolve(db, int(tg_id))
+            if slots_user is None:
+                text, markup = handlers._bind_guide_text(), handlers.back_markup()
+            else:
+                text, markup = handlers.handle_slots(db, tg_user, chat_id, "")
+                if markup is None:
+                    markup = handlers.back_markup()
     else:
         raise _UnknownMenuAction(action)
     return text, markup
@@ -648,3 +665,96 @@ def _handle_reconcile_callback(db, callback_query: dict) -> None:
         text, markup = reconcile.render_receipt(done, skipped)
     sender.edit_panel(db, chat_id, message_id, text, markup,
                       has_photo=bool(msg.get("photo")))
+
+def _handle_slots_bet(db, callback_query: dict) -> None:
+    """处理老虎机下注按钮（slots_bet:{tier}，仅私聊）。
+
+    流程：begin_spin（幂等扣注）→ sender.send_dice（TG 原生老虎机，
+    结果只认返回的 dice.value）→ settle_spin（按值结算）。骰子发送
+    失败走 fail_spin 全额退注；同一 callback 重放时 begin 返回既有局：
+    已结算的直接重发结果卡，绝不重摇、不重复扣款/赔付。
+    """
+    from backend import slots as slots_svc
+    from . import handlers
+
+    cb_id = callback_query.get("id")
+    data = callback_query.get("data") or ""
+    from_user = callback_query.get("from") or {}
+    tg_id = from_user.get("id")
+    msg = callback_query.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not cb_id or not tg_id or not chat_id:
+        return
+
+    def _answer(text: str, show_alert: bool = False) -> None:
+        sender.answer_callback_query(db, cb_id, text=text, show_alert=show_alert)
+
+    if chat_id != tg_id:
+        _answer("🎰 老虎机请私聊机器人使用", show_alert=True)
+        return
+    try:
+        tier = int(data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        _answer("注额档位无效", show_alert=True)
+        return
+
+    user = resolve(db, int(tg_id))
+    if user is None:
+        _answer("请先绑定账号后再玩老虎机", show_alert=True)
+        return
+
+    spin_key = f"tgcq:{cb_id}"
+    try:
+        begin = slots_svc.begin_spin(db, user, tier, spin_key)
+    except Exception:
+        logger.exception("slots begin failed: user=%s tier=%s", user.id, tier)
+        db.rollback()
+        _answer("系统繁忙，请稍后再试", show_alert=True)
+        return
+    if not begin.get("ok"):
+        extra = {k: v for k, v in begin.items() if k not in ("ok", "reason")}
+        _answer(
+            slots_svc.reason_message(begin.get("reason") or "", **extra),
+            show_alert=True)
+        return
+
+    spin = begin["spin"]
+    if begin.get("duplicate"):
+        if spin.status == "settled":
+            _answer("本局已结算")
+            sender.send_panel(
+                db, chat_id, handlers.slots_result_text(db, spin),
+                handlers.slots_markup(db))
+        else:
+            _answer("上一局结算中，请稍候", show_alert=True)
+        return
+
+    ok, err, dice_value, _dice_mid = sender.send_dice(db, chat_id, "🎰")
+    if not ok or dice_value is None:
+        logger.warning("slots sendDice failed: spin=%s err=%s", spin.id, err)
+        try:
+            slots_svc.fail_spin(db, spin, "dice_failed")
+        except Exception:
+            logger.exception("slots fail_spin failed: spin=%s", spin.id)
+            db.rollback()
+        _answer("老虎机发送失败，注额已退回", show_alert=True)
+        return
+
+    try:
+        result = slots_svc.settle_spin(db, spin, dice_value)
+    except Exception:
+        logger.exception("slots settle failed: spin=%s", spin.id)
+        db.rollback()
+        _answer("结算异常，请联系管理员", show_alert=True)
+        return
+    spin = result["spin"]
+    total = int(result["base_payout"]) + int(result["pool_payout"])
+    if result["pool_payout"] > 0:
+        _answer(f"🎉 777 头奖！+{total} 能量")
+    elif total > 0:
+        _answer(f"🎉 中奖 +{total} 能量")
+    else:
+        _answer("未中奖，再接再厉")
+    sender.send_panel(
+        db, chat_id, handlers.slots_result_text(db, spin),
+        handlers.slots_markup(db))

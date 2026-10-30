@@ -307,6 +307,19 @@ WELFARE_CONFIG_KEYS = {
     "lottery_require_group_member": "1",
     "lottery_min_account_age_days": "0",
     "lottery_max_joins_per_day": "0",
+    # 能量老虎机（2026-10-30 用户亲批）：总开关默认开；注额三档；赔付倍数；
+    # 头奖池抽水 5%＋种子 100（池余额存 slots_pool 表，不在此处）；
+    # 每日下注封顶 200 / 每日赢分封顶 1000（基础赔付计，池奖不计）
+    "slots_enabled": "true",
+    "slots_bet_tiers": "5,10,20",
+    "slots_pay_777": "20",
+    "slots_pay_bar": "10",
+    "slots_pay_fruit": "5",
+    "slots_pay_two7": "1",
+    "slots_pool_rake_pct": "5",
+    "slots_pool_seed": "100",
+    "slots_daily_bet_cap": "200",
+    "slots_daily_win_cap": "1000",
     # 注册后 TG 绑定引导页总开关
     # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
     # C2 积分转账：总开关默认开启，手续费/限额可配（0=不收/不限）

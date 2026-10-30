@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeftRight, Bot, Coins, Gift, KeyRound, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { ArrowLeftRight, Bot, Coins, Dices, Gift, KeyRound, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
@@ -49,6 +49,24 @@ const earnRedeemFields = [
   { key: 'points_chat_daily_cap', label: '发言每日上限', hint: '默认 20', suffix: '积分/天' },
   { key: 'points_redeem_7d', label: '兑换 7 天', hint: '默认 100', suffix: '积分' },
   { key: 'points_redeem_30d', label: '兑换 30 天', hint: '默认 300', suffix: '积分' },
+]
+
+// 能量老虎机总开关：word 风格 true/false（后端 economy._get_bool_config 只认 'true'）
+const slotsEnabled = computed({
+  get: () => (form.value['slots_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['slots_enabled'] = v ? 'true' : 'false' },
+})
+
+const slotsFields = [
+  { key: 'slots_bet_tiers', label: '注额档位', hint: '逗号分隔的能量数，默认 5,10,20', suffix: '能量' },
+  { key: 'slots_pay_777', label: '777 倍数', hint: '777 三连赔付倍数，默认 20（另加抱走头奖池）', suffix: '倍' },
+  { key: 'slots_pay_bar', label: 'BAR 三连倍数', hint: '默认 10', suffix: '倍' },
+  { key: 'slots_pay_fruit', label: '水果三连倍数', hint: '葡萄/柠檬三连赔付倍数，默认 5', suffix: '倍' },
+  { key: 'slots_pay_two7', label: '双 7 倍数', hint: '恰好两个 7 的赔付倍数，默认 1（返注）', suffix: '倍' },
+  { key: 'slots_pool_rake_pct', label: '头奖池抽水', hint: '每注抽入头奖池的比例，默认 5', suffix: '%' },
+  { key: 'slots_pool_seed', label: '头奖池种子', hint: '池首次创建与 777 抱池后的重置额，默认 100', suffix: '能量' },
+  { key: 'slots_daily_bet_cap', label: '每日下注封顶', hint: '每人每日下注总额上限，默认 200，填 0 不限', suffix: '能量/天' },
+  { key: 'slots_daily_win_cap', label: '每日赢分封顶', hint: '只计基础赔付（头奖池部分不计），默认 1000，填 0 不限', suffix: '能量/天' },
 ]
 
 const tgBindEnabled = computed({
@@ -191,6 +209,24 @@ onMounted(load)
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
           <el-form-item v-for="f in redpacketFields" :key="f.key" :label="f.label">
+            <el-input v-model="form[f.key]" class="field-input" />
+            <span class="field-suffix">{{ f.suffix }}</span>
+            <span class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+        </el-form>
+      </SectionCard>
+
+      <SectionCard
+        title="能量老虎机"
+        :icon="Dices"
+        description="TG 机器人老虎机的注额、赔付与头奖池（结果由 Telegram 原生老虎机决定）"
+      >
+        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+          <el-form-item label="总开关">
+            <el-switch v-model="slotsEnabled" />
+            <span class="field-hint">关闭后机器人老虎机入口与下注全部停用，默认开</span>
+          </el-form-item>
+          <el-form-item v-for="f in slotsFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" class="field-input" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
