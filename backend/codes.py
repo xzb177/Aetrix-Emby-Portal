@@ -465,7 +465,7 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         # M1：非订阅奖励类型在预览中说明
         if reward_type == 'points':
             preview["points_value"] = getattr(code, 'points_value', 0) or 0
-            preview["message"] = error or (f"积分卡码（{preview['points_value']} 积分）" if named_ok else "该卡码限指定账号使用")
+            preview["message"] = error or (f"能量卡码（{preview['points_value']} 能量）" if named_ok else "该卡码限指定账号使用")
         elif reward_type == 'discount':
             preview["discount_pct"] = getattr(code, 'discount_pct', 0) or 0
             preview["message"] = error or (f"折扣卡码（{discount_pct_text(preview['discount_pct'])}）" if named_ok else "该卡码限指定账号使用")
@@ -589,13 +589,13 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
     if reward_type == 'points':
         points = getattr(code, 'points_value', 0) or 0
         if points <= 0:
-            return {"success": False, "message": "该码的积分面额无效"}
+            return {"success": False, "message": "该码的能量面额无效"}
         from backend.api.economy import _add_points
         _add_points(db, user, points, "code_redeem", f"卡码核销 {code.code}")
         type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
         return {
             "success": True,
-            "message": f"{type_name}核销成功，获得 {points} 积分",
+            "message": f"{type_name}核销成功，获得 {points} 能量",
             "code_type": code.code_type,
             "reward_type": "points",
             "points": points,

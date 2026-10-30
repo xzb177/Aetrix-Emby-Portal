@@ -261,7 +261,7 @@ def _spend_points(
     """
     cost = int(cost)
     if cost <= 0:
-        raise ValueError("扣减积分必须为正数")
+        raise ValueError("扣减能量必须为正数")
     updated = (
         db.query(models.WebUser)
         .filter(
@@ -277,7 +277,7 @@ def _spend_points(
         balance = int(
             db.query(models.WebUser.points).filter(models.WebUser.id == user.id).scalar() or 0
         )
-        raise InsufficientPoints(f"积分不足，需要 {cost} 分，当前 {balance} 分")
+        raise InsufficientPoints(f"能量不足，需要 {cost} 能量，当前 {balance} 能量")
     balance = int(
         db.query(models.WebUser.points).filter(models.WebUser.id == user.id).scalar() or 0
     )
@@ -501,7 +501,7 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
     if reward:
         description = f"每日签到（连续 {streak} 天）"
     else:
-        description = f"每日签到（连续 {streak} 天，无积分奖励）"
+        description = f"每日签到（连续 {streak} 天，无能量奖励）"
     balance = _add_points(
         db, user, reward, "checkin",
         description, f"checkin:{today.strftime('%Y%m%d')}",
@@ -539,7 +539,7 @@ async def do_checkin(
     db: Session = Depends(get_db),
     _tg: models.WebUser = Depends(require_tg_bound)
 ):
-    """每日签到：基础积分 + 连签加成（封顶）；积分仅限公益服用户"""
+    """每日签到：基础能量 + 连签加成（封顶）；能量仅限公益服用户"""
     user_id = current_user.id
 
     allowed, _ = check_rate_limit(f"checkin:{user_id}", 5, 60)
@@ -549,14 +549,14 @@ async def do_checkin(
     award = await run_in_threadpool(_do_checkin_core, db, current_user)
 
     if award["points_awarded"] > 0:
-        title = f"📅 签到成功 +{award['points_awarded']} 积分"
-        content = (f"已连续签到 {award['streak']} 天，当前余额 {award['balance']} 积分。"
+        title = f"📅 签到成功 +{award['points_awarded']} 能量"
+        content = (f"已连续签到 {award['streak']} 天，当前余额 {award['balance']} 能量。"
                    f"\n明日再来看看，连签奖励更高！")
-        message = f"签到成功，+{award['points_awarded']} 积分（连续 {award['streak']} 天）"
+        message = f"签到成功，+{award['points_awarded']} 能量（连续 {award['streak']} 天）"
     else:
         title = "📅 签到成功"
-        content = (f"已连续签到 {award['streak']} 天。积分奖励仅限公益服用户。")
-        message = f"签到成功（连续 {award['streak']} 天，积分仅限公益服用户）"
+        content = (f"已连续签到 {award['streak']} 天。能量奖励仅限公益服用户。")
+        message = f"签到成功（连续 {award['streak']} 天，能量仅限公益服用户）"
     # r46：签到积分已落库，通知走 quiet 守卫——失败只记日志不抛 500，
     # 避免用户看到 500 重试时被"今天已经签到过啦"误导（已完成写成失败）。
     await notify_admin_event_quiet(
@@ -592,7 +592,7 @@ def get_vitality(
 
 
 class VitalityRechargeRequest(BaseModel):
-    points: int = Field(..., gt=0, description="要消耗的积分数")
+    points: int = Field(..., gt=0, description="要消耗的能量数")
 
 
 @router.post("/vitality/recharge")
@@ -602,7 +602,7 @@ async def recharge_vitality(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """用积分续活力值：1 点活力 = vitality_point_cost 积分（可配置）"""
+    """用能量续活力值：1 点活力 = vitality_point_cost 能量（可配置）"""
     if not getattr(current_user, "is_welfare", False):
         raise HTTPException(status_code=403, detail="活力值仅限公益服用户")
     allowed, _ = check_rate_limit(f"vitality_recharge:{current_user.id}", 5, 60)
@@ -613,7 +613,7 @@ async def recharge_vitality(
         raise HTTPException(status_code=403, detail="活力值功能未开启")
     cost = cfg["point_cost"]
     if payload.points % cost != 0:
-        raise HTTPException(status_code=400, detail=f"积分数必须是 {cost} 的整数倍")
+        raise HTTPException(status_code=400, detail=f"能量数必须是 {cost} 的整数倍")
     want = payload.points // cost
     st = _vitality.vitality_status(db, current_user)
     room = st["max"] - st["vitality"]
@@ -636,10 +636,10 @@ async def recharge_vitality(
         spend = gain * cost
         try:
             balance = _spend_points(db, current_user, spend, "vitality_recharge",
-                                    f"积分续活力 +{gain}", f"vitality:{gain}")
+                                    f"能量续活力 +{gain}", f"vitality:{gain}")
         except InsufficientPoints:
             db.rollback()
-            raise HTTPException(status_code=400, detail="积分不足")
+            raise HTTPException(status_code=400, detail="能量不足")
         new_v = _vitality._add_vitality(db, current_user.id, gain, "recharge")
         db.commit()
         return {"vitality_gained": gain, "points_spent": spend,
@@ -1018,7 +1018,7 @@ def _redeem_exchange_core(db: Session, user: models.WebUser, code_str: str) -> d
             f"兑换码 {code_str}", f"exchange:{code_str}",
         )
         result.update(reward_type="points", points=code.points_value, balance=balance,
-                      message=f"兑换成功，+{code.points_value} 积分")
+                      message=f"兑换成功，+{code.points_value} 能量")
     elif code.type == "subscription":
         plan = db.query(models.SubscriptionPlan).filter(
             models.SubscriptionPlan.id == code.plan_id
@@ -1066,7 +1066,7 @@ async def redeem_exchange_code(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """兑换码核销：points 型发积分；subscription 型发订阅；discount 型发一张订阅折扣权益
+    """兑换码核销：points 型发能量；subscription 型发订阅；discount 型发一张订阅折扣权益
 
     占位 / 发奖 / 审计整段是同步 SQLAlchemy（体内一个 await 都没有），下放线程池执行；
     通知要走 WebSocket，必须留在事件循环上 await。
@@ -1131,7 +1131,7 @@ async def payment_methods(db: Session = Depends(get_db)):
 
 @router.get("/payment/packages")
 def payment_packages(db: Session = Depends(get_db)):
-    """充值套餐（积分）"""
+    """充值套餐（能量）"""
     if not _get_bool_config(db, "recharge_enabled", True):
         return {"enabled": False, "packages": []}
     packages = db.query(models.RechargePackage).filter(
@@ -1205,7 +1205,7 @@ def coupon_config(db: Session = Depends(get_db)):
 def currency_info(db: Session = Depends(get_db)):
     """货币体系公开信息（P2/C4）：名称、充值比例、快捷金额——用户端自定义充值换算用"""
     return {
-        "name": "积分",
+        "name": "能量",
         "recharge_ratio": _get_float_config(db, "recharge_ratio", 1.2),
         "quick_amounts": _get_quick_amounts(db),
     }
@@ -1215,7 +1215,7 @@ class CouponQuoteRequest(BaseModel):
     code: str = Field(default="", description="用户填写的优惠码（可空；空时按「没填码自动用最优兑换码折扣权益」口径试算，与下单一致）")
     kind: str = Field(..., description="recharge / subscription")
     item_id: int = Field(..., description="充值套餐ID 或 套餐ID")
-    pay_with_points: bool = Field(default=False, description="积分支付试算；仅 kind=subscription 时有效，按积分口径（_points_subscription_price）试算，与积分下单一致")
+    pay_with_points: bool = Field(default=False, description="能量支付试算；仅 kind=subscription 时有效，按能量口径（_points_subscription_price）试算，与能量下单一致")
 
 
 @router.post("/payment/coupon/quote")
@@ -1239,7 +1239,7 @@ def coupon_quote(
         # r48-⑪：积分支付试算——与积分下单同一套口径（_points_subscription_price），
         # 预览与下单必须一致。金额单位是积分。
         if req.kind != "subscription":
-            raise HTTPException(status_code=400, detail="积分支付试算仅支持订阅")
+            raise HTTPException(status_code=400, detail="能量支付试算仅支持订阅")
         plan = db.query(models.SubscriptionPlan).options(
             joinedload(models.SubscriptionPlan.realm)
         ).filter(
@@ -1249,7 +1249,7 @@ def coupon_quote(
         if not plan:
             raise HTTPException(status_code=404, detail="套餐不存在")
         if plan.points_price is None:
-            raise HTTPException(status_code=400, detail="该套餐不支持积分购买")
+            raise HTTPException(status_code=400, detail="该套餐不支持能量购买")
         pricing = _points_subscription_price(
             db, current_user, plan, coupon_code=req.code)
         return {
@@ -1335,13 +1335,13 @@ def coupon_quote(
 
 
 class CreateOrderRequest(BaseModel):
-    kind: str = Field(..., description="recharge=充值积分 / subscription=购买订阅")
+    kind: str = Field(..., description="recharge=充值能量 / subscription=购买订阅")
     item_id: Optional[int] = Field(default=None, description="充值套餐ID 或 套餐ID；自定义金额充值时可为空")
     # P3 修复（审查）：payment_method 无白名单，任意字符串进网关。限定可选值。
     payment_method: str = Field(default="alipay", pattern="^(alipay|wxpay|qqpay)$")
     coupon_code: str = Field(default="", description="优惠码（可空）；下单时占额度，付款转已用，关单/退款自动还回")
     custom_amount: Optional[float] = Field(default=None, ge=1, le=100000, description="自定义充值金额（元）；仅 kind=recharge 时有效，与 item_id 二选一")
-    pay_with_points: bool = Field(default=False, description="积分支付；仅 kind=subscription 时有效")
+    pay_with_points: bool = Field(default=False, description="能量支付；仅 kind=subscription 时有效")
 
 
 def _yipay_sign(params: dict, key: str) -> str:
@@ -1411,8 +1411,8 @@ def create_payment_order(
                 ratio = 1.2
             points = int(Decimal(str(req.custom_amount)) * Decimal(str(ratio)))
             if points < 1:
-                raise HTTPException(status_code=400, detail="金额过小，无法兑换积分")
-            item_name = f"积分充值 - 自定义 {req.custom_amount:.2f} 元"
+                raise HTTPException(status_code=400, detail="金额过小，无法兑换能量")
+            item_name = f"能量充值 - 自定义 {req.custom_amount:.2f} 元"
             amount = Decimal(str(req.custom_amount))
             order = models.RechargeOrder(
                 order_id=order_id, user_id=current_user.id,
@@ -1425,7 +1425,7 @@ def create_payment_order(
             ).first()
             if not package:
                 raise HTTPException(status_code=404, detail="充值套餐不存在")
-            item_name = f"积分充值 - {package.name}"
+            item_name = f"能量充值 - {package.name}"
             amount = package.price
             order = models.RechargeOrder(
                 order_id=order_id, user_id=current_user.id,
@@ -1445,30 +1445,30 @@ def create_payment_order(
             raise HTTPException(status_code=404, detail="套餐不存在")
         if req.pay_with_points:
             if plan.points_price is None:
-                raise HTTPException(status_code=400, detail="该套餐不支持积分购买")
+                raise HTTPException(status_code=400, detail="该套餐不支持能量购买")
             # r48-⑪：积分路径与人民币路径同口径——先会员等级折扣得中间价，
             # 再叠加优惠券/兑换码折扣权益（见 _points_subscription_price）。
             pricing = _points_subscription_price(
                 db, current_user, plan, coupon_code=req.coupon_code)
             points_cost = pricing["paid_points"]
             if points_cost <= 0:
-                raise HTTPException(status_code=400, detail="套餐积分价配置错误")
+                raise HTTPException(status_code=400, detail="套餐能量价配置错误")
             balance = db.query(models.WebUser.points).filter(models.WebUser.id == current_user.id).scalar() or 0
             if balance < points_cost:
-                raise HTTPException(status_code=400, detail=f"积分不足（需要 {points_cost}，当前 {int(balance)}）")
+                raise HTTPException(status_code=400, detail=f"能量不足（需要 {points_cost}，当前 {int(balance)}）")
             # 原子条件扣减：上面的余额预检只用于给出友好提示，真正的够不够由 UPDATE 判定，
             # 防并发双下单把余额扣成负数（双花）
             try:
                 _spend_points(
                     db, current_user, points_cost, "subscription_buy",
-                    f"积分购买订阅 - {plan.name}（原价 {pricing['list_points']}，"
+                    f"能量购买订阅 - {plan.name}（原价 {pricing['list_points']}，"
                     f"会员折扣 -{pricing['member_discount_points']}，"
                     f"优惠 -{pricing['coupon_discount_points'] + pricing['exchange_discount_points']}，"
                     f"实付 {points_cost}）",
                     f"subscription_points:{order_id}")
             except InsufficientPoints:
                 db.rollback()
-                raise HTTPException(status_code=400, detail=f"积分不足（需要 {points_cost}）")
+                raise HTTPException(status_code=400, detail=f"能量不足（需要 {points_cost}）")
             sub = _grant_subscription(db, current_user, plan, plan.duration_days,
                                       realm_id=plan.realm_id)
             order = models.SubscriptionOrder(
@@ -1520,7 +1520,7 @@ def create_payment_order(
                 "coupon_discount_points": pricing["coupon_discount_points"],
                 "exchange_discount_pct": pricing["exchange_discount_pct"],
                 "exchange_discount_points": pricing["exchange_discount_points"],
-                "message": "积分支付成功，订阅已开通",
+                "message": "能量支付成功，订阅已开通",
             }
         item_name = f"订阅购买 - {plan.name}"
         amount = plan.price
@@ -1676,7 +1676,7 @@ def my_orders(
         ).order_by(models.RechargeOrder.created_at.desc()).limit(limit).all():
             orders.append({
                 "order_id": o.order_id, "kind": "recharge",
-                "item_name": f"积分充值（+{o.amount} 积分）",
+                "item_name": f"能量充值（+{o.amount} 能量）",
                 "amount": float(o.price), "status": o.status,
                 "list_price": float(o.list_price or 0),
                 "discount_amount": float(o.discount_amount or 0),
@@ -1884,7 +1884,7 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                     event_type=AdminEvent.FULFILL_PARTIAL,
                     user_id=user.id,
                     title="⚠️ 充值成功，会员经验发放失败",
-                    content=(f"订单 {recharge_order.order_id} 的积分已到账，"
+                    content=(f"订单 {recharge_order.order_id} 的能量已到账，"
                              f"但会员经验（约 {_xp} 点）累加失败。"
                              "请联系客服补发。"),
                     related_id=None,
@@ -1911,8 +1911,8 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
             pending.append(dict(
                 event_type="economy.recharge_success",
                 user_id=user.id,
-                title=f"💰 充值成功 +{recharge_order.amount} 积分",
-                content=f"订单 {recharge_order.order_id} 已到账，当前余额 {user.points} 积分。",
+                title=f"💰 充值成功 +{recharge_order.amount} 能量",
+                content=f"订单 {recharge_order.order_id} 已到账，当前余额 {user.points} 能量。",
             ))
         # 优惠券预订 → 已消费（额度仍占用）；关单/退款时才释放
         # （订单状态与 paid_at 已由 _claim_order 原子写入，见该函数的说明）
@@ -2070,7 +2070,7 @@ def _transfer_enabled(db: Session) -> bool:
 def transfer_points_core(db: Session, sender: models.WebUser, recipient_username: str, amount: int) -> dict:
     """积分转账核心逻辑：校验开关、收款人、金额限制、每日转出上限、手续费与余额，并完成转出方、手续费、收款方三方记账。"""
     if not _transfer_enabled(db):
-        raise ValueError("积分转账功能已关闭")
+        raise ValueError("能量转账功能已关闭")
 
     recipient_username = (recipient_username or "").strip()
     if not recipient_username:
@@ -2088,10 +2088,10 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
     fee_pct = _get_int_config(db, "points_transfer_fee_pct", 5)
 
     if amount < min_amount:
-        raise ValueError(f"单笔最少转账 {min_amount} 积分")
+        raise ValueError(f"单笔最少转账 {min_amount} 能量")
 
     if max_amount > 0 and amount > max_amount:
-        raise ValueError(f"单笔最多转账 {max_amount} 积分")
+        raise ValueError(f"单笔最多转账 {max_amount} 能量")
 
     recipient = (
         db.query(models.WebUser)
@@ -2118,15 +2118,15 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
             .scalar()
         ) or 0
         if used_today + amount > daily_cap:
-            raise ValueError(f"今日转账额度已用完（上限 {daily_cap} 积分）")
+            raise ValueError(f"今日转账额度已用完（上限 {daily_cap} 能量）")
 
     fee = math.ceil(amount * fee_pct / 100) if fee_pct > 0 else 0
     need = amount + fee
     balance = sender.points or 0
     if balance < need:
         if fee > 0:
-            raise ValueError(f"积分不足，需要 {need} 分（含手续费 {fee} 分），当前 {balance} 分")
-        raise ValueError(f"积分不足，需要 {need} 分，当前 {balance} 分")
+            raise ValueError(f"能量不足，需要 {need} 能量（含手续费 {fee} 能量），当前 {balance} 能量")
+        raise ValueError(f"能量不足，需要 {need} 能量，当前 {balance} 能量")
 
     ref_id = f"transfer:{sender.id}:{recipient.id}:{int(datetime.now().timestamp())}"
 
@@ -2135,19 +2135,19 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
     try:
         new_balance = _spend_points(
             db, sender, amount, "transfer_out",
-            f"转账给 {recipient.username}（{amount} 积分）", ref_id=ref_id,
+            f"转账给 {recipient.username}（{amount} 能量）", ref_id=ref_id,
         )
         if fee > 0:
             new_balance = _spend_points(
                 db, sender, fee, "transfer_fee",
-                f"转账手续费 {fee} 积分（{fee_pct}%）", ref_id=ref_id,
+                f"转账手续费 {fee} 能量（{fee_pct}%）", ref_id=ref_id,
             )
     except InsufficientPoints:
         db.rollback()
-        raise ValueError(f"积分不足，需要 {need} 分")
+        raise ValueError(f"能量不足，需要 {need} 能量")
     _add_points(
         db, recipient, amount, "transfer_in",
-        f"收到 {sender.username} 的转账（{amount} 积分）", ref_id=ref_id,
+        f"收到 {sender.username} 的转账（{amount} 能量）", ref_id=ref_id,
     )
     db.commit()
 

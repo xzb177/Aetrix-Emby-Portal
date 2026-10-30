@@ -206,7 +206,7 @@ def validate_round_payload(payload: dict[str, Any]) -> dict[str, Any]:
             raise LotteryGovernanceError(400, "奖品价值必须是整数")
         if ptype in ("days", "points") and value <= 0:
             raise LotteryGovernanceError(
-                400, f"{'积分' if ptype == 'points' else '天数'}奖品的价值必须大于 0"
+                400, f"{'能量' if ptype == 'points' else '天数'}奖品的价值必须大于 0"
             )
         if ptype == "whitelist" and value < 0:
             raise LotteryGovernanceError(400, "奖品价值不能为负数")

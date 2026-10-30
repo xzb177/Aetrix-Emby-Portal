@@ -263,7 +263,7 @@ def apply_rebate(db: Session, user: models.WebUser, amount: float, order_ref: st
     rebate = max(1, int(amount * config["rebate_percent"] / 100))
     _add_points(
         db, inviter, rebate, "rebate",
-        f"下级充值返利 {config['rebate_percent']}%（+{rebate} 积分）",
+        f"下级充值返利 {config['rebate_percent']}%（+{rebate} 能量）",
         f"rebate:{order_ref}",
     )
     logger.info("充值返利: inviter=%s invitee=%s order=%s rebate=%s",

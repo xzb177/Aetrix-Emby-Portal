@@ -182,7 +182,7 @@ def ensure_can_play(db: Session, user) -> None:
     v = int(getattr(user, "vitality", None) or 0)
     if v >= cfg["limit_threshold"]:
         return
-    raise HTTPException(status_code=403, detail=f"活力值不足（{v}/{cfg['limit_threshold']}），签到或用积分续活力后可继续观影")
+    raise HTTPException(status_code=403, detail=f"活力值不足（{v}/{cfg['limit_threshold']}），签到或用能量续活力后可继续观影")
 
 
 def _lock_user_row(db: Session, user_id: int) -> None:

@@ -247,7 +247,7 @@ def test_submit_payload_validation_messages(db):
         (_payload(prizes=[{"name": "x", "type": "gold", "value": 1, "quantity": 1}]),
          "奖品类型只能是 days/points/whitelist"),
         (_payload(prizes=[{"name": "x", "type": "points", "value": 0, "quantity": 1}]),
-         "积分奖品的价值必须大于 0"),
+         "能量奖品的价值必须大于 0"),
         (_payload(prizes=[{"name": "x", "type": "days", "value": 0, "quantity": 1}]),
          "天数奖品的价值必须大于 0"),
         (_payload(prizes=[{"name": "x", "type": "whitelist", "value": -1, "quantity": 1}]),
