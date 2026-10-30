@@ -367,6 +367,24 @@ def cross_lane_concurrency(db=None):
     return TRANSFER_CROSS_LANE_DEFAULT
 
 
+#: 跨 provider 单 aging 提权阈值（秒）SystemConfig 键；默认 1800：
+#: slow 组跨单等待达阈值后，在跨槽竞争中按 fast 组待遇参与挑选
+#: （组内公平键不变），防存量后台跨单被点播组永久压住饿死
+#: （2026-10-30 PR-B；生产案 1174 pending 饿约 12 小时）。
+#: 钳 [60, 86400]；配成极大即功能等同关。纯 SystemConfig 键，
+#: 不进 env.example（#1527 先例）。
+KEY_TRANSFER_CROSS_AGING_SEC = "transfer_cross_aging_sec"
+TRANSFER_CROSS_AGING_DEFAULT = 1800
+
+
+def cross_aging_sec(db=None):
+    """跨单 aging 提权阈值（秒）：SystemConfig > 默认 1800，钳 [60, 86400]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_CROSS_AGING_SEC)
+    if configured is not None:
+        return max(60, min(86400, configured))
+    return TRANSFER_CROSS_AGING_DEFAULT
+
+
 #: 115 秒传（initupload）开关 SystemConfig 键；默认开（2026-10-30
 #: 用户亲点整套：记哈希＋秒传协议）。关 = Drive→115 跨单完全回
 #: 现行口径：不试秒传、只走 simple_upload 全量（哈希沉淀照常，
@@ -439,6 +457,7 @@ def transfer_config_payload(db):
     return {
         "cross_provider_transfer_enabled": cross_provider_enabled(db),
         "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
+        "transfer_cross_aging_sec": cross_aging_sec(db),
         "transfer_fast_lane_concurrency": lane_concurrency(db),
         "transfer_per_owner_inflight": per_owner_inflight(db),
         "pan115_rapid_upload_enabled": pan115_rapid_upload_enabled(db),
@@ -451,6 +470,7 @@ def transfer_config_payload(db):
 
 def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_cross_lane_concurrency=None,
+                          transfer_cross_aging_sec=None,
                           transfer_fast_lane_concurrency=None,
                           transfer_per_owner_inflight=None,
                           pan115_rapid_upload_enabled=None,
@@ -475,6 +495,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if transfer_cross_lane_concurrency is not None:
         values[KEY_TRANSFER_CROSS_LANE_CONCURRENCY] = str(
             transfer_cross_lane_concurrency)
+    if transfer_cross_aging_sec is not None:
+        values[KEY_TRANSFER_CROSS_AGING_SEC] = str(
+            transfer_cross_aging_sec)
     if transfer_fast_lane_concurrency is not None:
         values[KEY_TRANSFER_FAST_LANE_CONCURRENCY] = str(
             transfer_fast_lane_concurrency)
@@ -5908,12 +5931,33 @@ def _running_cross_count(db, now=None):
     return sum(1 for row in rows if _is_cross_job(row))
 
 
+def _is_aged_cross(job, now, cross_aging_sec):
+    """跨单是否已超龄（aging 提权判定）：非 playback 的跨 provider
+    单等待（now - created_at）≥ 阈值。阈值 None = aging 关；
+    同 provider 单永不提权（非跨单排序零变化）。"""
+    if cross_aging_sec is None:
+        return False
+    if (getattr(job, "trigger", "") or "") == "playback":
+        return False
+    if not _is_cross_job(job):
+        return False
+    created = getattr(job, "created_at", None)
+    if created is None:
+        return False
+    return (now - created).total_seconds() >= cross_aging_sec
+
+
 def _pick_candidates(candidates, limit, running_counts, cap, now=None,
-                     cross_cap=None, cross_running=0):
+                     cross_cap=None, cross_running=0, cross_aging_sec=None):
     """公平挑单：点播组（trigger=playback）在前、后台组在后；
     每组内按用户轮流取
     （每轮每用户先取 1 单，再取第 2 单……），直至 limit 或取尽。
     暂停用户直接跳过；已在途达 cap 的用户直接跳过。
+    aging 提权（2026-10-30 PR-B）：slow 组跨 provider 单等待达
+    cross_aging_sec 阈值时按 fast 组待遇参与挑选（只改它参与哪
+    一组的跨槽竞争，组内公平键——owner 在途数、owner 最老等待、
+    owner 键——不变）；非跨单不提权、排序零变化。提权单在行对象
+    上打 ``_claim_aged`` 标记，供 claim_pick 日志输出 aged=1。
     owner 轮转顺序（2026-10-30 公平化，用户亲令「不要重复
     问题」）：不再按 owner 键字典序——生产案里 "1064" < "985"
     使在途 2 单的 1064 其第三单在补认领时抢走空出的跨道槽，
@@ -5930,8 +5974,14 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
     慢单不许占满整条道（2026-10-30 重开硬要求）。
     返回挑中的任务行（不改状态，认领在 claim_due_jobs 里做）。"""
     now = now or datetime.now()
-    fast = [c for c in candidates if (c.trigger or "") == "playback"]
-    slow = [c for c in candidates if (c.trigger or "") != "playback"]
+    fast = [c for c in candidates
+            if (c.trigger or "") == "playback"
+            or _is_aged_cross(c, now, cross_aging_sec)]
+    fast_ids = {id(c) for c in fast}
+    slow = [c for c in candidates if id(c) not in fast_ids]
+    for job in fast:
+        if _is_aged_cross(job, now, cross_aging_sec):
+            job._claim_aged = True
     picked = []
     used = dict(running_counts)
     picked_cross = 0
@@ -6000,7 +6050,8 @@ def _log_claim_pick(worker_id, picked, claimed_ids, running_counts, now):
             f"job={jid} owner={key[0]}:{key[1]} "
             f"trigger={job.trigger or ''} "
             f"cross={1 if _is_cross_job(job) else 0} "
-            f"owner_running={running_counts.get(key, 0)} wait_s={wait}")
+            f"owner_running={running_counts.get(key, 0)} wait_s={wait}"
+            + (" aged=1" if getattr(job, "_claim_aged", False) else ""))
     logger.info("转存认领 claim_pick worker=%s %s",
                 worker_id, " ".join(parts))
 
@@ -6037,7 +6088,8 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
     picked = _pick_candidates(
         due, limit, running_counts, cap, now=now,
         cross_cap=cross_lane_concurrency(db),
-        cross_running=_running_cross_count(db, now=now))
+        cross_running=_running_cross_count(db, now=now),
+        cross_aging_sec=cross_aging_sec(db))
     if not picked:
         return []
     lease_until = now + timedelta(seconds=worker_lease_sec())

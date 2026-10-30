@@ -271,15 +271,18 @@ ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
 }
 
 # 转存调度（2026-10-30）：跨 provider 总开关 + 跨单在途上限 +
-# 执行道并发 + 单用户在飞上限 + 115 秒传/分片上传开关 + 换绑豁免
-# 限频两键。读取唯一实现 transfer_variant 的 cross_provider_enabled
-# / cross_lane_concurrency / lane_concurrency / per_owner_inflight /
+# 跨单 aging 提权阈值 + 执行道并发 + 单用户在飞上限 + 115 秒传/
+# 分片上传开关 + 换绑豁免限频两键。读取唯一实现 transfer_variant
+# 的 cross_provider_enabled
+# / cross_lane_concurrency / cross_aging_sec / lane_concurrency /
+# per_owner_inflight /
 # pan115_rapid_upload_enabled / pan115_multipart_upload_enabled /
 # rebind_waiver_window_days / rebind_waiver_max_uses，
 # 范围与读取侧钳制同口径。
 TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "cross_provider_transfer_enabled": ("bool",),
     "transfer_cross_lane_concurrency": ("int", 1, 8),
+    "transfer_cross_aging_sec": ("int", 60, 86400),
     "transfer_fast_lane_concurrency": ("int", 1, 32),
     "transfer_per_owner_inflight": ("int", 1, 16),
     "pan115_rapid_upload_enabled": ("bool",),
