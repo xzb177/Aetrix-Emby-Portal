@@ -6036,6 +6036,13 @@ def run_transfer_job_once(db, job, drive_api):
     返回 {"job_id", "outcome", ...}，outcome in done/failed/retried。
     失败总原则：任何一步失败都不影响现行播放链（任务表只记结果）。
     """
+    # 兜底门控（A-013）：attempts 已达上限的非终态行不许再执行——
+    # 逃逸路径修好后本应不再产生此类行；但存量毒单、旁路认领仍可能
+    # 把它们送进来，直接终态化，不再占工人槽位。重绑复活会把
+    # attempts 清零（reset_mkdir_failed_jobs），不受本门控影响。
+    if (job.attempts or 0) >= MAX_ATTEMPTS:
+        return _fail_job(db, job, "retriable",
+                         "attempts 已达上限（执行入口兜底门控）")
     item = None
     if job.item_id is not None:
         item = (db.query(em.MediaItem)
@@ -6629,6 +6636,37 @@ def _heartbeat(job_id, session_factory, stop_event, worker_id):
                            exc_info=True)
 
 
+def _route_escape_error(db, job_id, attempts_before, exc):
+    """逃逸异常兜底（A-013）：run_transfer_job_once 外逃逸的异常
+    （工厂故障、分发头、提交点）必须落终态或带退避 pending，
+    绝不只 rollback 就回 failed 统计——否则行永为 running，
+    租约回收后无限重跑。
+    计数口径：run 内已计过 attempts 的逃逸不再重复计次
+    （fresh.attempts > attempts_before）；工厂故障等未计次的
+    逃逸补计一次。满 MAX_ATTEMPTS 走 worker_error 终态，
+    否则走 _schedule_retry（60/120 秒退避）。返回供统计的
+    result dict；调用方继续走 _execute_claimed_job 的共享
+    尾巴（清租约、metrics、死令牌暂停）。"""
+    fresh = db.query(em.TransferJob).filter(
+        em.TransferJob.id == job_id).first()
+    if fresh is None:
+        return {"job_id": job_id, "outcome": "failed",
+                "error_kind": "worker_error",
+                "error_detail": str(exc)[:500]}
+    if (fresh.attempts or 0) <= (attempts_before or 0):
+        fresh.attempts = (fresh.attempts or 0) + 1
+    fresh.lease_expires_at = None
+    fresh.claimed_by = None
+    if fresh.attempts >= MAX_ATTEMPTS:
+        _fail_job(db, fresh, "worker_error", str(exc))
+        return {"job_id": job_id, "outcome": "failed",
+                "error_kind": "worker_error",
+                "error_detail": str(exc)[:500]}
+    outcome = _schedule_retry(db, fresh, exc)
+    return {"job_id": job_id, "outcome": outcome,
+            "error_kind": "retriable", "error_detail": str(exc)[:500]}
+
+
 def _execute_claimed_job(job_id, session_factory, drive_api_factory):
     """执行一单已认领任务（独立会话）：跑完清租约；死令牌只暂停
     该用户队列；429 计数进 _metrics。返回 outcome 字符串。"""
@@ -6644,14 +6682,22 @@ def _execute_claimed_job(job_id, session_factory, drive_api_factory):
         if job is None:
             return "missing"
         try:
+            attempts_before = job.attempts or 0
             result = run_transfer_job_once(db, job, drive_api_factory())
-        except Exception:
+        except Exception as exc:
             logger.warning("转存任务执行异常 job=%s", job_id, exc_info=True)
             try:
                 db.rollback()
             except Exception:
                 pass
-            return "failed"
+            try:
+                result = _route_escape_error(db, job_id, attempts_before, exc)
+            except Exception:
+                # 兜底本身也失败（如 DB 已断）：已无可持久化手段，
+                # 维持旧行为返回 failed，行待租约回收后重跑。
+                logger.warning("转存工人：逃逸兜底失败 job=%s", job_id,
+                               exc_info=True)
+                return "failed"
         outcome = result.get("outcome", "")
         # 终态清租约（run_transfer_job_once 内部已提交终态；这里只清租约）。
         try:
