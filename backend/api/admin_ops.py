@@ -26,6 +26,7 @@ from backend import access_guard  # noqa: E402  - 与其余模块同一行导入
 from backend.api.invitation import _generate_invite_code
 from backend.api.admin_core import _audit, get_current_admin
 from backend.api.pagination import pagination_params
+from backend.usernames import find_users_by_username_ci
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -313,11 +314,13 @@ def generate_codes(
 
     target_username = (request.target_username or "").strip()
     if target_username:
-        exists = db.query(models.WebUser).filter(
-            func.lower(models.WebUser.username) == target_username.lower()
-        ).first()
-        if not exists:
+        # 指名 target 按大小写不敏感查：命中多个异壳账号时这张码给谁都说不清，
+        # 生成阶段就明确拒绝（旧行为 .first() 任选一个等于默认指给了某个人）。
+        target_matches = find_users_by_username_ci(db, target_username)
+        if not target_matches:
             raise HTTPException(status_code=400, detail=f"指名账号不存在：{target_username}")
+        if len(target_matches) > 1:
+            raise HTTPException(status_code=400, detail=f"指名账号不唯一：{target_username}")
 
     target_realm = realms.claim(db, request.realm_id)
     if not realms.get_realm(db, target_realm):

@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from backend import config_service, models, realms, subscriptions
+from backend.usernames import username_conflict
 from backend.database import get_db, SessionLocal
 
 from backend.emby_server import models as em
@@ -624,18 +625,10 @@ def _emby_username_taken(db: Session, user: models.WebUser, username: str) -> bo
     """接线用户名不能跟别人的接线用户名或门户用户名撞车。
 
     客户端登录同时认这两个字段（``AuthenticateByName`` 用 OR 查询）。
-    撞上别人的门户用户名时，``.first()`` 会不确定命中谁。
+    撞上别人的门户用户名时，``.first()`` 会不确定命中谁。大小写不敏感
+    口径与注册一致（``username_conflict``）：仅大小写不同也算撞车。
     """
-    row = (
-        db.query(models.WebUser.id)
-        .filter(models.WebUser.id != user.id)
-        .filter(or_(
-            models.WebUser.emby_username == username,
-            models.WebUser.username == username,
-        ))
-        .first()
-    )
-    return row is not None
+    return username_conflict(db, username, exclude_user_id=user.id) is not None
 
 
 @user_emby_router.post("/password")

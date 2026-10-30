@@ -65,6 +65,7 @@ def upsert_admin(db, username: str, password: str | None = None,
     from backend import models, register_channel
     from backend.emby_server.auth import ensure_emby_credentials
     from backend.security import hash_password
+    from backend.usernames import username_conflict
 
     applied: str | None = password
     if applied:
@@ -74,6 +75,11 @@ def upsert_admin(db, username: str, password: str | None = None,
     created = user is None
 
     if created:
+        # 新建才查：与已有账号仅大小写不同（或撞已有接线名）一律拒绝，
+        # 不许造出 Foo/foo 异壳账号（与门户注册同一口径）。
+        if username_conflict(db, username) is not None:
+            raise AdminAccountError(
+                "用户名已被占用：与已有账号仅大小写不同，或与已有接线用户名冲突")
         if not applied:
             applied = generate_password() if reset_password else None
         if not applied:

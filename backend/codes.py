@@ -20,6 +20,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.usernames import find_users_by_username_ci
 
 logger = logging.getLogger(__name__)
 
@@ -517,8 +518,12 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
     if code:
         error = reg_code_error(code)
         named_ok = True
+        named_ambiguous = False
         if code.target_username:
-            named_ok = bool(username) and code.target_username.strip().lower() == username.strip().lower()
+            # 指名 target 若大小写不敏感命中多个账号，这张码对谁都不许放行。
+            named_ambiguous = len(find_users_by_username_ci(db, code.target_username)) > 1
+            named_ok = (not named_ambiguous and bool(username)
+                        and code.target_username.strip().lower() == username.strip().lower())
         realm_id = code_realm_id(db, code)
         reward_type = getattr(code, 'reward_type', 'subscription') or 'subscription'
         preview = {
@@ -535,7 +540,8 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
             # 卡码是一个服一个的：用户有权在核销前就知道这开的是哪个服的会员
             "realm_id": realm_id,
             "realm_name": realm_label(db, realm_id),
-            "message": error or ("该卡码限指定账号使用" if not named_ok else "卡码有效"),
+            "message": error or ("该卡码的指名账号不唯一，请联系管理员处理" if named_ambiguous
+                                 else "该卡码限指定账号使用" if not named_ok else "卡码有效"),
         }
         # M1：非订阅奖励类型在预览中说明
         if reward_type == REWARD_WELFARE:
@@ -548,6 +554,9 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         elif reward_type == 'discount':
             preview["discount_pct"] = getattr(code, 'discount_pct', 0) or 0
             preview["message"] = error or (f"折扣卡码（{discount_pct_text(preview['discount_pct'])}）" if named_ok else "该卡码限指定账号使用")
+        if named_ambiguous and not error:
+            # 上面各奖励分支按 named_ok 选文案，会把歧义文案覆盖回「限指定账号」，这里统一盖回。
+            preview["message"] = "该卡码的指名账号不唯一，请联系管理员处理"
         # 明确无效时附机器码：端点层据此把业务文案优先于限流 429 返回
         _ec = reg_code_error_code(code) or (CODE_ERROR_NAMED_OTHER if not named_ok else None)
         if _ec:
@@ -641,6 +650,12 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
     if error:
         return {"success": False, "message": error,
                 "error_code": reg_code_error_code(code)}
+
+    if code.target_username and len(find_users_by_username_ci(db, code.target_username)) > 1:
+        # 指名账号大小写不敏感命中多个异壳账号：给谁都可能是错的，明确拒绝，
+        # 不许因为当前用户恰好是其中之一就放行（旧行为等于异壳号都能用）。
+        return {"success": False, "message": "该卡码的指名账号不唯一，请联系管理员处理",
+                "error_code": CODE_ERROR_NAMED_OTHER}
 
     if code.target_username and code.target_username.strip().lower() != (user.username or "").lower():
         return {"success": False, "message": "该卡码限指定账号使用",
@@ -790,6 +805,10 @@ def classify_invalid_code(db: Session, user: Optional[models.WebUser], raw: str)
     error_code = reg_code_error_code(code)
     if error_code:
         return {"error_code": error_code, "message": reg_code_error(code)}
+    if (code.target_username and user is not None
+            and len(find_users_by_username_ci(db, code.target_username)) > 1):
+        return {"error_code": CODE_ERROR_NAMED_OTHER,
+                "message": "该卡码的指名账号不唯一，请联系管理员处理"}
     if (code.target_username and user is not None
             and code.target_username.strip().lower() != (user.username or "").lower()):
         return {"error_code": CODE_ERROR_NAMED_OTHER, "message": "该卡码限指定账号使用"}
