@@ -241,6 +241,9 @@ def test_mounted_item_file_302_has_confirm_t(monkeypatch):
                         lambda db, user, iid: item)
     monkeypatch.setattr(mount_routes, "ensure_playback_allowed",
                         lambda db, user: None)
+    monkeypatch.setattr(
+        "backend.emby_server.playback_gate.ensure_binding_playback_allowed",
+        lambda db_, u_, r=None: None)
     monkeypatch.setattr(mount_routes, "_play_target",
                         lambda db, it: target)
     resp = mount_routes.mounted_item_file(

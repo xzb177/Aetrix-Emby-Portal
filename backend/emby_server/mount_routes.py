@@ -51,6 +51,11 @@ def mounted_item_file(
     item = _require_visible_item(db, user, item_id)
     # 与在线播放、下载同一门槛：付费墙对拉文件同样生效
     ensure_playback_allowed(db, user)
+    # 播放门禁（2026-10-26 用户亲定硬规矩）：Emby token 直接取文件是新播放，
+    # 必须过门禁；带有效 play_sign 的请求是在消费已下发的链接，不追溯。
+    # 与 stream_routes.item_file 逐字同口径（360° 审计 A-007：替换版曾静默丢门禁）。
+    from backend.emby_server import playback_gate as _gate
+    _gate.ensure_binding_playback_allowed(db, user, request)
     # 复用 api 的目标解析与错误映射，保证两条端点对同一份数据行为一致
     target = _play_target(db, item)
     if target.kind == "url":

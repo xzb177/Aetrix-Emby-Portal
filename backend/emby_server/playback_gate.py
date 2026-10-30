@@ -53,7 +53,21 @@ def _request_uses_issued_play_sign(request: Request, db: Session) -> bool:
     sign/exp/uid、路径带 item_id、防盗链总开关开着、且签名校验通过。
     任一条件不满足都视为“不是已下发链接的消费”，交给门禁判定。
     """
-    query = getattr(request, "query_params", None) or {}
+    # 合成请求可能没有 query_string：Starlette 的 query_params 属性
+    # 会因 scope 缺键直接抛 KeyError（getattr 拦不住）。先走正常
+    # 属性，拿不到时退回 scope 安全读，解析口径与 Starlette 一致
+    #（latin-1 解码、保留空值、重键取后值），门禁语义不变。
+    try:
+        query = request.query_params
+    except (KeyError, AttributeError):
+        from urllib.parse import parse_qsl
+
+        scope = getattr(request, "scope", None) or {}
+        raw = scope.get("query_string", b"") if isinstance(scope, dict) else b""
+        if isinstance(raw, bytes):
+            raw = raw.decode("latin-1")
+        query = dict(parse_qsl(raw, keep_blank_values=True))
+    query = query or {}
     path_params = getattr(request, "path_params", None) or {}
     sign = query.get("sign")
     exp_s = query.get("exp")
