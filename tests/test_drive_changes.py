@@ -1327,3 +1327,189 @@ def test_poll_once_writes_heartbeat_even_on_failure():
     finally:
         _hb_clear(db)
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# A-020: poll_once 通用异常不能中断整轮其余盘（2026-10-31 审计 R6）
+# ---------------------------------------------------------------------------
+
+def test_poll_once_list_changes_permission_error_does_not_kill_other_drives():
+    """A-020：driveA 的 list_changes 抛 PermissionError（401）
+    → 记 error + continue，driveB 仍被轮询（旧实现穿透外层 except，
+    整轮提前结束、driveB 从未被轮询）。"""
+    did_a, did_b = _did("A020A"), _did("A020B")
+    stats, calls = _run_poll_multi(
+        [did_a, did_b],
+        {did_a: PermissionError("401"),
+         did_b: ([], "new-TK-b")},
+        "brand-new-TK")
+    assert calls["list_changes"] == [did_a, did_b], \
+        "driveA 的通用异常不应中断 driveB"
+    assert stats["drives"] == 2, stats
+    assert stats["errors"] == 1, stats
+
+
+def test_poll_once_list_changes_drive_auth_error_does_not_kill_other_drives():
+    """A-020：driveA 的 list_changes 抛 DriveAuthError（个人盘 OAuth 死）
+    → 记 error + continue，driveB 仍能推进 page token（旧实现同上，
+    且 driveB 的 token 保存从未发生）。"""
+    did_a, did_b = _did("A020C"), _did("A020D")
+    saved = []
+
+    def spy_save(db, drive_id, token):
+        saved.append((drive_id, token))
+
+    with mock.patch.object(drive_changes, "_save_page_token",
+                           side_effect=spy_save):
+        stats, calls = _run_poll_multi(
+            [did_a, did_b],
+            {did_a: drive_changes.DriveAuthError("oauth boom"),
+             did_b: ([], "new-TK-b")},
+            "brand-new-TK")
+    assert calls["list_changes"] == [did_a, did_b], \
+        "driveA 的 DriveAuthError 不应中断 driveB"
+    assert stats["drives"] == 2, stats
+    assert stats["errors"] == 1, stats
+    assert saved == [(did_b, "new-TK-b")], \
+        "driveB 的 page token 必须照常推进"
+
+
+def test_poll_once_list_changes_drive_not_found_still_marks_dead():
+    """A-020 顺序锁：DriveNotFoundError 仍走 dead 标记分支，不能被
+    新增的通用 except 吞成普通 error（否则 dead 退避失效）。"""
+    did_a, did_b = _did("A020E"), _did("A020F")
+    marked = []
+    real_mark = drive_changes._mark_dead_drive
+
+    def spy_mark(drive_id):
+        marked.append(drive_id)
+        return real_mark(drive_id)
+
+    # 注意：_run_poll_multi 的 finally 会清掉 _dead_drives，故用 spy
+    # 锁定“打过 dead 标记”这一事实，而非事后查表。
+    with mock.patch.object(drive_changes, "_mark_dead_drive",
+                           side_effect=spy_mark):
+        stats, calls = _run_poll_multi(
+            [did_a, did_b],
+            {did_a: drive_changes.DriveNotFoundError(did_a),
+             did_b: ([], "new-TK-b")},
+            "brand-new-TK")
+    assert calls["list_changes"] == [did_a, did_b]
+    assert marked == [did_a], "dead 标记必须打出"
+    assert stats["errors"] == 1, stats
+
+
+# ---------------------------------------------------------------------------
+# A-021: list_changes 分页护栏（2026-10-31 审计 R6）
+# ---------------------------------------------------------------------------
+
+def _stuck_api_factory(cap=10):
+    """恒回同一 nextPageToken 的 _api_get 桩；超过 cap 页后回终页，
+    防止旧代码（无护栏）死循环——旧代码下测试因未抛错而红，不会挂住。"""
+    calls = {"n": 0}
+
+    def fake_api(url, token, params):
+        calls["n"] += 1
+        if calls["n"] > cap:
+            return {"changes": [], "newStartPageToken": None,
+                    "nextPageToken": None}
+        return {"changes": [{"fileId": "x%d" % calls["n"]}],
+                "newStartPageToken": "new",
+                "nextPageToken": "stuck-token"}
+
+    return fake_api, calls
+
+
+def test_list_changes_stuck_page_token_raises_guard_error():
+    """A-021：_api_get 恒回同一 nextPageToken → 第二页即判定卡住，
+    抛 DrivePageGuardError（旧代码无护栏，会一直翻页直到桩的 cap 页）。"""
+    fake_api, calls = _stuck_api_factory()
+    with mock.patch.object(drive_changes, "get_token_for_drive",
+                           return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get",
+                           side_effect=fake_api):
+        try:
+            drive_changes.list_changes("pt", "D1")
+        except drive_changes.DrivePageGuardError:
+            pass
+        else:
+            raise AssertionError("卡住的 nextPageToken 必须停表抛错")
+    assert calls["n"] == 2, calls
+
+
+def test_list_changes_page_limit_stops():
+    """A-021：页数上限先到先停（用补丁把上限压到 3 页验证，不改生产默认值）。"""
+    calls = {"n": 0}
+
+    def fake_api(url, token, params):
+        calls["n"] += 1
+        if calls["n"] > 10:
+            return {"changes": [], "newStartPageToken": None,
+                    "nextPageToken": None}
+        return {"changes": [{"fileId": "x"}],
+                "newStartPageToken": "new",
+                "nextPageToken": "tok-%d" % calls["n"]}
+
+    with mock.patch.object(drive_changes, "get_token_for_drive",
+                           return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get",
+                           side_effect=fake_api), \
+         mock.patch.object(drive_changes, "DRIVE_PAGE_GUARD_MAX_PAGES", 3):
+        try:
+            drive_changes.list_changes("pt", "D1")
+        except drive_changes.DrivePageGuardError:
+            pass
+        else:
+            raise AssertionError("页数达到上限必须停表抛错")
+    assert calls["n"] == 3, calls
+
+
+def test_list_changes_total_limit_stops():
+    """A-021：总量上限先到先停（上限压到 5 条，每页 3 条，第二页即超）。"""
+    calls = {"n": 0}
+
+    def fake_api(url, token, params):
+        calls["n"] += 1
+        if calls["n"] > 10:
+            return {"changes": [], "newStartPageToken": None,
+                    "nextPageToken": None}
+        return {"changes": [{"fileId": "a"}, {"fileId": "b"},
+                            {"fileId": "c"}],
+                "newStartPageToken": "new",
+                "nextPageToken": "tok-%d" % calls["n"]}
+
+    with mock.patch.object(drive_changes, "get_token_for_drive",
+                           return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get",
+                           side_effect=fake_api), \
+         mock.patch.object(drive_changes, "DRIVE_PAGE_GUARD_MAX_ITEMS", 5):
+        try:
+            drive_changes.list_changes("pt", "D1")
+        except drive_changes.DrivePageGuardError:
+            pass
+        else:
+            raise AssertionError("条数达到上限必须停表抛错")
+    assert calls["n"] == 2, calls
+
+
+def test_list_changes_final_page_at_limit_returns_normally():
+    """A-021 边界：恰好在上限页翻完（末页 nextPageToken 为空）不触发护栏，
+    正常返回全部 changes。"""
+    calls = {"n": 0}
+
+    def fake_api(url, token, params):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"changes": [{"fileId": "a"}],
+                    "newStartPageToken": "new", "nextPageToken": "tok-1"}
+        return {"changes": [{"fileId": "b"}],
+                "newStartPageToken": "new", "nextPageToken": None}
+
+    with mock.patch.object(drive_changes, "get_token_for_drive",
+                           return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get",
+                           side_effect=fake_api), \
+         mock.patch.object(drive_changes, "DRIVE_PAGE_GUARD_MAX_PAGES", 2):
+        changes, _ = drive_changes.list_changes("pt", "D1")
+    assert [c["fileId"] for c in changes] == ["a", "b"]
+    assert calls["n"] == 2, calls

@@ -266,6 +266,7 @@ class DriveMount(RemoteMount):
         items: list[dict] = []
         page_token: Optional[str] = None
         token, sa = self._pin_listing_cred()
+        pages = 0
         while True:
             try:
                 body, token = self._list_page(folder_id, page_token,
@@ -279,9 +280,17 @@ class DriveMount(RemoteMount):
             except Exception as exc:  # noqa: BLE001 — _api_get 已重试过，剩下的是终局失败
                 raise MountError(f"列目录失败（folder={folder_id}）: {exc}") from exc
             items.extend(body.get("files") or [])
+            request_page_token = page_token
             page_token = body.get("nextPageToken")
             if not page_token:
                 return items
+            pages += 1
+            reason = drive_changes._page_guard_reason(
+                pages, len(items), request_page_token, page_token)
+            if reason is not None:
+                raise MountError(
+                    "列目录分页护栏停表（folder=%s）: %s"
+                    % (folder_id, reason))
 
     def _fid_of(self, rel: str, exclude: FrozenSet[str] = frozenset()) -> str:
         """把挂载内相对路径逐级解析成 folder id（仿 115 的 _cid_of）。
