@@ -391,8 +391,51 @@ def pan115_multipart_upload_enabled(db=None):
     return _system_config_bool(db, KEY_PAN115_MULTIPART_UPLOAD_ENABLED, True)
 
 
+# ---------------------------------------------------------------------------
+# 换绑节流豁免限频（2026-10-30 用户亲定）
+#
+# 换绑放行（见 _user_throttle_state）是一种豁免：每用户在窗口内
+# 最多成功使用 N 次（默认 7 天 1 次，用户原话口径），用尽回落
+# 普通 24h 节流。两键走 SystemConfig（管理端可改、保存即生效），
+# 读取口径与跨 provider 两键同款 fail-safe：读不到/非法回默认。
+# 纯 SystemConfig 键，不进 env.example（#1527 先例）。
+# ---------------------------------------------------------------------------
+
+#: 豁免计数窗口（天）SystemConfig 键；默认 7，钳 [1, 365]。
+KEY_TRANSFER_REBIND_WAIVER_WINDOW_DAYS = "transfer_rebind_waiver_window_days"
+REBIND_WAIVER_WINDOW_DAYS_DEFAULT = 7
+
+#: 窗口内豁免可用次数 SystemConfig 键；默认 1，钳 [1, 20]。
+KEY_TRANSFER_REBIND_WAIVER_MAX_USES = "transfer_rebind_waiver_max_uses"
+REBIND_WAIVER_MAX_USES_DEFAULT = 1
+
+
+def rebind_waiver_window_days(db=None):
+    """换绑豁免计数窗口（天）：SystemConfig > 默认 7，钳 [1, 365]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_REBIND_WAIVER_WINDOW_DAYS)
+    if configured is not None:
+        return max(1, min(365, configured))
+    return REBIND_WAIVER_WINDOW_DAYS_DEFAULT
+
+
+def rebind_waiver_max_uses(db=None):
+    """窗口内换绑豁免可用次数：SystemConfig > 默认 1，钳 [1, 20]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_REBIND_WAIVER_MAX_USES)
+    if configured is not None:
+        return max(1, min(20, configured))
+    return REBIND_WAIVER_MAX_USES_DEFAULT
+
+
+#: 豁免用尽时给用户侧的明示文案（沿用门禁 detail 通道，不新造
+#: 提示体系）：与普通节流的“转存完成后即可播放”区分开——这单
+#: 根本没建出来，要等节流窗过。
+WAIVER_EXHAUSTED_DETAIL = (
+    "你近期的换绑放行次数已用完，本片需等 24 小时节流窗过后"
+    "才能转存到新盘")
+
+
 def transfer_config_payload(db):
-    """管理端转存卡片回包：转存六键当前生效值（默认值已折算）。"""
+    """管理端转存卡片回包：转存八键当前生效值（默认值已折算）。"""
     return {
         "cross_provider_transfer_enabled": cross_provider_enabled(db),
         "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
@@ -401,6 +444,8 @@ def transfer_config_payload(db):
         "pan115_rapid_upload_enabled": pan115_rapid_upload_enabled(db),
         "pan115_multipart_upload_enabled": (
             pan115_multipart_upload_enabled(db)),
+        "transfer_rebind_waiver_window_days": rebind_waiver_window_days(db),
+        "transfer_rebind_waiver_max_uses": rebind_waiver_max_uses(db),
     }
 
 
@@ -409,7 +454,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_fast_lane_concurrency=None,
                           transfer_per_owner_inflight=None,
                           pan115_rapid_upload_enabled=None,
-                          pan115_multipart_upload_enabled=None):
+                          pan115_multipart_upload_enabled=None,
+                          transfer_rebind_waiver_window_days=None,
+                          transfer_rebind_waiver_max_uses=None):
     """管理端转存配置写入：走 config_service 的 transfer 家族校验。
 
     None = 该键不改。非法值抛 ConfigValueError（ValueError 子类，
@@ -434,6 +481,12 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if transfer_per_owner_inflight is not None:
         values[KEY_TRANSFER_PER_OWNER_INFLIGHT] = str(
             transfer_per_owner_inflight)
+    if transfer_rebind_waiver_window_days is not None:
+        values[KEY_TRANSFER_REBIND_WAIVER_WINDOW_DAYS] = str(
+            transfer_rebind_waiver_window_days)
+    if transfer_rebind_waiver_max_uses is not None:
+        values[KEY_TRANSFER_REBIND_WAIVER_MAX_USES] = str(
+            transfer_rebind_waiver_max_uses)
     if values:
         from backend import config_service
         config_service.save_config(db, values, schema="transfer")
@@ -1259,7 +1312,9 @@ def create_user_job(db, item, user_id, provider, trigger="playback",
     """给该用户建一个用户盘转存任务（门禁与 Quota 信号共用）。
 
     - 总闸关 → master_off；无条目 id → no_item_id；
-    - 24h 内同归属桶已有任务 → throttled（不重复建）；
+    - 24h 内同归属桶已有任务 → throttled（不重复建）；历史任务
+      全部落在已换绑的旧方案时走换绑放行（豁免限频，见
+      _user_throttle_state）；
     - 115 且条目无源 fid → no_source_fid（不建任务：无 fid 无从
       copy，等扫描补 fid 后下次播放再建，不污染节流窗）；
     - Drive 且无源盘标识 → no_drive（不猜盘）。
@@ -1274,22 +1329,28 @@ def create_user_job(db, item, user_id, provider, trigger="playback",
     if item_id is None:
         raise TransferError("no_item_id", "条目无 id")
     owner_ref = str(user_id)
-    if not force and _recent_job_exists(db, item_id, "user", owner_ref):
-        raise TransferError("throttled", "24h 内该用户已有转存任务")
+    dest = (f"userdrive:{user_id}" if provider == "drive"
+            else f"pan115:user-{user_id}")
+    use_waiver, waiver_from = False, ""
+    if not force:
+        use_waiver, waiver_from = _raise_if_user_throttled(
+            db, item_id, user_id, dest)
     orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
     if provider == "pan115" and not orig_fid:
         raise TransferError("no_source_fid", "115 条目无源 fid，无法转存")
     source_drive_id = _source_drive_id(db, item, provider)
     if provider == "drive" and not source_drive_id:
         raise TransferError("no_drive", "Drive 条目取不到源盘标识")
-    dest = (f"userdrive:{user_id}" if provider == "drive"
-            else f"pan115:user-{user_id}")
     job = em.TransferJob(item_id=item_id, trigger=trigger,
                          drive_id=source_drive_id or None,
                          provider=provider, owner_scope="user",
                          owner_ref=owner_ref, dest_drive_id=dest,
                          status="pending")
     db.add(job)
+    db.flush()
+    if use_waiver:
+        _record_throttle_waiver(db, user_id, item_id, waiver_from,
+                                _dest_scheme(dest), job.id)
     db.commit()
     notify_transfer_wakeup(job.id)
     return job
@@ -1392,22 +1453,28 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     if item_id is None:
         raise TransferError("no_item_id", "条目无 id")
     owner_ref = str(user_id)
-    if not force and _recent_job_exists(db, item_id, "user", owner_ref):
-        raise TransferError("throttled", "24h 内该用户已有转存任务")
+    dest = (f"pan115:user-{user_id}" if source_provider == "drive"
+            else f"userdrive:{user_id}")
+    use_waiver, waiver_from = False, ""
+    if not force:
+        use_waiver, waiver_from = _raise_if_user_throttled(
+            db, item_id, user_id, dest)
     orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
     if source_provider == "pan115" and not orig_fid:
         raise TransferError("no_source_fid", "115 条目无源 fid，无法转存")
     source_drive_id = _source_drive_id(db, item, source_provider)
     if source_provider == "drive" and not source_drive_id:
         raise TransferError("no_drive", "Drive 条目取不到源盘标识")
-    dest = (f"pan115:user-{user_id}" if source_provider == "drive"
-            else f"userdrive:{user_id}")
     job = em.TransferJob(item_id=item_id, trigger=trigger,
                          drive_id=source_drive_id or None,
                          provider=source_provider, owner_scope="user",
                          owner_ref=owner_ref, dest_drive_id=dest,
                          status="pending")
     db.add(job)
+    db.flush()
+    if use_waiver:
+        _record_throttle_waiver(db, user_id, item_id, waiver_from,
+                                _dest_scheme(dest), job.id)
     db.commit()
     notify_transfer_wakeup(job.id)
     return job
@@ -2666,8 +2733,11 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                                                     trigger="playback")
             except TransferError as exc:
                 if exc.kind == "throttled":
+                    detail = (WAIVER_EXHAUSTED_DETAIL
+                              if getattr(exc, "waiver_exhausted", False)
+                              else preparing_detail)
                     return {"verdict": "preparing", "reason": "throttled",
-                            "detail": preparing_detail}
+                            "detail": detail}
                 return {"verdict": "failed", "reason": exc.kind,
                         "detail": str(exc)}
             return {"verdict": "preparing", "reason": "job_created",
@@ -2730,7 +2800,10 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                                       trigger="playback")
         except TransferError as exc:
             if exc.kind == "throttled":
-                return {"verdict": "preparing", "reason": "throttled"}
+                out = {"verdict": "preparing", "reason": "throttled"}
+                if getattr(exc, "waiver_exhausted", False):
+                    out["detail"] = WAIVER_EXHAUSTED_DETAIL
+                return out
             return {"verdict": "failed", "reason": exc.kind}
         return {"verdict": "preparing", "reason": "job_created",
                 "job_id": new_job.id}
@@ -2873,7 +2946,9 @@ def maybe_prefetch_transfer(db, item, user) -> dict:
             if ready is not None:
                 return {"triggered": False, "reason": "already_ready",
                         "target_item_id": target.id}
-            if _recent_job_exists(db, target.id, "user", str(user_id)):
+            _state, _from = _user_throttle_state(db, target.id, user_id,
+                                                 dest)
+            if _state in ("blocked", "waiver_exhausted"):
                 return {"triggered": False, "reason": "throttled",
                         "target_item_id": target.id}
             if _prefetch_today_count(db, user_id) >= prefetch_daily_max():
@@ -2899,7 +2974,11 @@ def maybe_prefetch_transfer(db, item, user) -> dict:
         if ready is not None:
             return {"triggered": False, "reason": "already_ready",
                     "target_item_id": target.id}
-        if _recent_job_exists(db, target.id, "user", str(user_id)):
+        _dest = (f"userdrive:{user_id}" if provider == "drive"
+                 else f"pan115:user-{user_id}")
+        _state, _from = _user_throttle_state(db, target.id, user_id,
+                                             _dest)
+        if _state in ("blocked", "waiver_exhausted"):
             return {"triggered": False, "reason": "throttled",
                     "target_item_id": target.id}
         if _prefetch_today_count(db, user_id) >= prefetch_daily_max():
@@ -3233,6 +3312,95 @@ def resolve_play_file_id(db, item, user):
     return row.variant_file_id, row
 
 
+def _dest_scheme(dest):
+    """落盘标识的方案前缀：``pan115:`` / ``userdrive:`` / ""（不可判）。
+
+    与变体行 variant_drive_id 的方案口径同源（models 注释）：
+    Drive 副本 userdrive:<uid>、115 副本 pan115:user-<uid>。
+    """
+    dest = (dest or "").strip()
+    if dest.startswith("pan115:"):
+        return "pan115:"
+    if dest.startswith("userdrive:"):
+        return "userdrive:"
+    return ""
+
+
+def _recent_user_jobs(db, item_id, owner_ref, window_sec=THROTTLE_SEC):
+    """该条目该用户桶内、节流窗内的全部任务行（不限落点）。"""
+    cutoff = datetime.now() - timedelta(seconds=window_sec)
+    return (db.query(em.TransferJob)
+            .filter(em.TransferJob.item_id == item_id,
+                    em.TransferJob.owner_scope == "user",
+                    em.TransferJob.owner_ref == owner_ref,
+                    em.TransferJob.created_at >= cutoff)
+            .all())
+
+
+def _waiver_use_count(db, user_id):
+    """该用户在豁免计数窗内已成功使用的换绑放行次数。"""
+    cutoff = datetime.now() - timedelta(
+        days=rebind_waiver_window_days(db))
+    return (db.query(em.TransferThrottleWaiver)
+            .filter(em.TransferThrottleWaiver.user_id == user_id,
+                    em.TransferThrottleWaiver.created_at >= cutoff)
+            .count())
+
+
+def _user_throttle_state(db, item_id, user_id, dest):
+    """用户桶 24h 节流判定（换绑放行版，2026-10-30 用户亲定）。
+
+    返回 (state, from_scheme)，本函数只读、不记账：
+
+    - "clear"：节流窗内无同片任务，正常建单；
+    - "blocked"：有落点与本次 dest 同方案的历史单（或落点不可判
+      的存量行，无法证明已换绑）——普通节流，与旧行为一致；
+    - "waiver"：历史单全部落在另一方案（= 落到已解绑/已被替换
+      的绑定面），且豁免额度未用尽——放行建单，from_scheme 为
+      被豁免的旧方案；
+    - "waiver_exhausted"：同 waiver 场景但豁免已用尽——回落节流。
+    """
+    recent = _recent_user_jobs(db, item_id, str(user_id))
+    if not recent:
+        return "clear", ""
+    scheme = _dest_scheme(dest)
+    from_schemes = set()
+    for job in recent:
+        job_scheme = _dest_scheme(getattr(job, "dest_drive_id", ""))
+        if not scheme or not job_scheme or job_scheme == scheme:
+            return "blocked", ""
+        from_schemes.add(job_scheme)
+    from_scheme = sorted(from_schemes)[0]
+    if _waiver_use_count(db, user_id) >= rebind_waiver_max_uses(db):
+        return "waiver_exhausted", from_scheme
+    return "waiver", from_scheme
+
+
+def _raise_if_user_throttled(db, item_id, user_id, dest):
+    """建单前节流关（create_user_job / create_cross_provider_job 共用）。
+
+    被节流抛 TransferError("throttled")；豁免用尽时异常带
+    waiver_exhausted=True，供门禁把用户侧文案与普通节流区分。
+    放行返回 (use_waiver, from_scheme)：use_waiver 为真时调用方
+    须在建单成功后同事务记账（_record_throttle_waiver）——判定
+    与消耗分离，后续校验失败（无 fid 等）不空耗豁免。
+    """
+    state, from_scheme = _user_throttle_state(db, item_id, user_id, dest)
+    if state in ("blocked", "waiver_exhausted"):
+        exc = TransferError("throttled", "24h 内该用户已有转存任务")
+        exc.waiver_exhausted = state == "waiver_exhausted"
+        raise exc
+    return state == "waiver", from_scheme
+
+
+def _record_throttle_waiver(db, user_id, item_id, from_scheme,
+                            to_scheme, job_id):
+    """落一行豁免使用记录（不 commit，随新任务行同事务提交）。"""
+    db.add(em.TransferThrottleWaiver(
+        user_id=user_id, item_id=item_id, from_scheme=from_scheme,
+        to_scheme=to_scheme, job_id=job_id))
+
+
 def _recent_job_exists(db, item_id, owner_scope="source", owner_ref=None,
                        window_sec=THROTTLE_SEC) -> bool:
     """24h 节流：同一条目同一归属桶内有任务行即节流。
@@ -3301,7 +3469,10 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
             ready_user = _newest_ready(db, item_id, "user", str(user_id))
             if ready_user is not None:
                 result = {"action": "skipped", "reason": "has_ready_variant"}
-            elif _recent_job_exists(db, item_id, "user", str(user_id)):
+            elif _user_throttle_state(
+                    db, item_id, user_id,
+                    f"userdrive:{user_id}")[0] in (
+                        "blocked", "waiver_exhausted"):
                 result = {"action": "throttled", "reason": "job_within_24h"}
             elif not quota_auto_enqueue_enabled():
                 logger.info(
@@ -3344,7 +3515,10 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
                     item_id, user_id)
             if ready_user is not None:
                 result = {"action": "skipped", "reason": "has_ready_variant"}
-            elif _recent_job_exists(db, item_id, "user", str(user_id)):
+            elif _user_throttle_state(
+                    db, item_id, user_id,
+                    f"pan115:user-{user_id}")[0] in (
+                        "blocked", "waiver_exhausted"):
                 result = {"action": "throttled", "reason": "job_within_24h"}
             elif not quota_auto_enqueue_enabled():
                 logger.info(

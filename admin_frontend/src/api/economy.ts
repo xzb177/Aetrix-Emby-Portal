@@ -426,6 +426,10 @@ export interface TransferConfig {
   transfer_per_owner_inflight: number
   /** 115 分片上传开关（默认开；关 = >5 GiB 且秒传未命中判 unsupported） */
   pan115_multipart_upload_enabled: boolean
+  /** 换绑节流豁免计数窗口天数（默认 7，范围 1~365） */
+  transfer_rebind_waiver_window_days: number
+  /** 窗口内换绑豁免可用次数（默认 1，范围 1~20） */
+  transfer_rebind_waiver_max_uses: number
 }
 
 export type TransferConfigPayload = TransferConfig

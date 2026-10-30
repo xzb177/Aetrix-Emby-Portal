@@ -518,6 +518,8 @@ class TransferConfigRequest(BaseModel):
     transfer_per_owner_inflight: int = 2
     pan115_rapid_upload_enabled: bool = True
     pan115_multipart_upload_enabled: bool = True
+    transfer_rebind_waiver_window_days: int = 7
+    transfer_rebind_waiver_max_uses: int = 1
 
 
 @admin_router.get("/transfer-config")
@@ -554,6 +556,10 @@ def transfer_update_config(
                 request.pan115_rapid_upload_enabled),
             pan115_multipart_upload_enabled=(
                 request.pan115_multipart_upload_enabled),
+            transfer_rebind_waiver_window_days=(
+                request.transfer_rebind_waiver_window_days),
+            transfer_rebind_waiver_max_uses=(
+                request.transfer_rebind_waiver_max_uses),
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -569,7 +575,11 @@ def transfer_update_config(
             "pan115_rapid_upload_enabled":
             request.pan115_rapid_upload_enabled,
             "pan115_multipart_upload_enabled":
-            request.pan115_multipart_upload_enabled})
+            request.pan115_multipart_upload_enabled,
+            "transfer_rebind_waiver_window_days":
+            request.transfer_rebind_waiver_window_days,
+            "transfer_rebind_waiver_max_uses":
+            request.transfer_rebind_waiver_max_uses})
     db.commit()
     return result
 

@@ -685,6 +685,8 @@ const transfer = reactive({
   transfer_fast_lane_concurrency: 8,
   transfer_per_owner_inflight: 2,
   pan115_multipart_upload_enabled: true,
+  transfer_rebind_waiver_window_days: 7,
+  transfer_rebind_waiver_max_uses: 1,
 })
 const transferOriginal = reactive({ ...transfer })
 const transferLoading = ref(false)
@@ -695,6 +697,8 @@ function applyTransfer(data: TransferConfig) {
   transfer.transfer_fast_lane_concurrency = Number(data.transfer_fast_lane_concurrency) || 8
   transfer.transfer_per_owner_inflight = Number(data.transfer_per_owner_inflight) || 2
   transfer.pan115_multipart_upload_enabled = data.pan115_multipart_upload_enabled !== false
+  transfer.transfer_rebind_waiver_window_days = Number(data.transfer_rebind_waiver_window_days) || 7
+  transfer.transfer_rebind_waiver_max_uses = Number(data.transfer_rebind_waiver_max_uses) || 1
   Object.assign(transferOriginal, transfer)
 }
 
@@ -714,7 +718,9 @@ transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_tra
   || transfer.transfer_cross_lane_concurrency !== transferOriginal.transfer_cross_lane_concurrency
   || transfer.transfer_fast_lane_concurrency !== transferOriginal.transfer_fast_lane_concurrency
   || transfer.transfer_per_owner_inflight !== transferOriginal.transfer_per_owner_inflight
-  || transfer.pan115_multipart_upload_enabled !== transferOriginal.pan115_multipart_upload_enabled,
+  || transfer.pan115_multipart_upload_enabled !== transferOriginal.pan115_multipart_upload_enabled
+  || transfer.transfer_rebind_waiver_window_days !== transferOriginal.transfer_rebind_waiver_window_days
+  || transfer.transfer_rebind_waiver_max_uses !== transferOriginal.transfer_rebind_waiver_max_uses,
 )
 
 /** 转存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -733,6 +739,16 @@ async function saveTransferCore(): Promise<boolean> {
   if (!Number.isInteger(transfer.transfer_per_owner_inflight)
     || transfer.transfer_per_owner_inflight < 1 || transfer.transfer_per_owner_inflight > 16) {
     ElMessage.error('单用户在飞上限需在 1~16 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_rebind_waiver_window_days)
+    || transfer.transfer_rebind_waiver_window_days < 1 || transfer.transfer_rebind_waiver_window_days > 365) {
+    ElMessage.error('换绑放行窗口需在 1~365 天之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_rebind_waiver_max_uses)
+    || transfer.transfer_rebind_waiver_max_uses < 1 || transfer.transfer_rebind_waiver_max_uses > 20) {
+    ElMessage.error('换绑放行次数需在 1~20 之间')
     return false
   }
   try {
@@ -1616,6 +1632,38 @@ watch(
                     />
                   </div>
                   <span class="field-hint">开：转存到 115 的文件超过 5 GiB 且秒传未命中时走分片上传；关：这类大文件直接判不支持。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="换绑放行窗口">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_rebind_waiver_window_days"
+                      :min="1"
+                      :max="365"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">天</span>
+                  </div>
+                  <span class="field-hint">用户换绑网盘后，旧盘的转存记录不再挡新盘建单，这份放行按这个窗口限频，默认 7 天</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="换绑放行次数">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_rebind_waiver_max_uses"
+                      :min="1"
+                      :max="20"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">次</span>
+                  </div>
+                  <span class="field-hint">窗口内每人最多用几次换绑放行（按人计、不按片计），用完回落普通 24 小时节流，默认 1 次</span>
                 </div>
               </el-form-item>
             </el-form>
