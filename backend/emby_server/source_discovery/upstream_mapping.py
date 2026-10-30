@@ -8,7 +8,8 @@
 - tmdb_id / imdb_id：与本地条目精确相等（索引命中）。
 - 标题：归一化（去多余空白、casefold）后与本地条目的 name 或
   original_title 精确相等；不做模糊、不做子串，避免张冠李戴。
-- 本地条目只算未下架行（``deleted_at IS NULL``），与商店 R0 同口径。
+- 本地条目只算可见活行（``deleted_at IS NULL`` 且 ``is_hidden=false``
+  且 ``merged_into_id IS NULL``），与本站浏览口径对齐。
 - 候选的清晰度 / 格式 / 大小 / 字幕信息只取本地条目已有字段，
   没有的填 None；``playable_now`` 恒为 False（须确认转存后才可播）。
 """
@@ -97,6 +98,8 @@ class UpstreamMappingAdapter:
                 .filter(
                     em.MediaItem.tmdb_id == tmdb_key,
                     em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.is_hidden == False,  # noqa: E712
+                    em.MediaItem.merged_into_id.is_(None),
                 )
                 .order_by(em.MediaItem.id)
                 .limit(MAX_ITEMS)
@@ -109,6 +112,8 @@ class UpstreamMappingAdapter:
                 .filter(
                     em.MediaItem.imdb_id == imdb_key,
                     em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.is_hidden == False,  # noqa: E712
+                    em.MediaItem.merged_into_id.is_(None),
                 )
                 .order_by(em.MediaItem.id)
                 .limit(MAX_ITEMS)
@@ -120,6 +125,8 @@ class UpstreamMappingAdapter:
                 db.query(em.MediaItem)
                 .filter(
                     em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.is_hidden == False,  # noqa: E712
+                    em.MediaItem.merged_into_id.is_(None),
                 )
                 .filter(
                     (func.lower(em.MediaItem.name) == title)

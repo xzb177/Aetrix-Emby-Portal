@@ -67,7 +67,8 @@ def resolve_candidate(
     source_id: int,
     upstream_item_id: str,
 ) -> tuple | None:
-    """复核候选三元组：映射在、来源行在且 enabled、本地条目未下架。
+    """复核候选三元组：映射在、来源行在且 enabled、本地条目未下架、
+    未隐藏、非合并副本（对不上的一律视为候选不存在）。
 
     任一对不上返回 None（调用方按“候选不存在”诚实回 404）。
     """
@@ -97,6 +98,8 @@ def resolve_candidate(
         .filter(
             em.MediaItem.id == local_item_id,
             em.MediaItem.deleted_at.is_(None),
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            em.MediaItem.merged_into_id.is_(None),
         )
         .first()
     )

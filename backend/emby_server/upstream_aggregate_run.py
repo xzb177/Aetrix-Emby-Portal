@@ -451,10 +451,12 @@ def _local_title_year_key(local) -> Optional[str]:
 
 
 def _alive_local_query(db: Session):
-    """本地活行查询基底：merged_into_id 显式过滤（deleted_at 由 ORM
-    全局钩子自动拼，见软删除纪律）。"""
+    """本地活行查询基底：merged_into_id 与 is_hidden 显式过滤
+    （deleted_at 由 ORM 全局钩子自动拼，见软删除纪律；与本站
+    浏览口径对齐）。"""
     return (db.query(em.MediaItem)
-            .filter(em.MediaItem.merged_into_id.is_(None)))
+            .filter(em.MediaItem.merged_into_id.is_(None))
+            .filter(em.MediaItem.is_hidden == False))  # noqa: E712
 
 
 def _type_matches(local, aggregate_item_type: str) -> bool:
