@@ -128,6 +128,7 @@ class _FakeUser115:
         self.callback_sha1 = callback_sha1
         self.rapid_calls = []
         self.simple_calls = []
+        self.multipart_calls = []
         self.sign_ranges = []
 
     def list_dir(self, cid="0", limit=200):
@@ -167,6 +168,13 @@ class _FakeUser115:
         self._place(filename, "upfid", "pcup", len(data), sha1)
         return {"fid": "upfid", "pickcode": "pcup", "sha1": sha1,
                 "raw": {"data": {"file_id": "upfid", "sha1": sha1}}}
+
+    def multipart_upload(self, fileobj, filename, filesize, file_sha1, pid,
+                         range_reader=None):
+        self.multipart_calls.append((filename, filesize, file_sha1, pid))
+        self._place(filename, "mpfid", "pcmp", filesize, file_sha1)
+        return {"outcome": "uploaded", "fid": "mpfid", "pickcode": "pcmp",
+                "sha1": file_sha1, "raw": {}}
 
 
 def _patch_cross(monkeypatch, fake115):
@@ -304,7 +312,7 @@ def test_cross_rapid_auth_error_marks_binding(db, monkeypatch):
     assert binding.status != "active"
 
 
-# ---------- ④ >5 GiB：命中可 done、未命中仍 unsupported ----------
+# ---------- ④ >5 GiB：命中可 done、未命中走分片 ----------
 
 def test_cross_big_rapid_hit_done(db, monkeypatch):
     _enable(monkeypatch)
@@ -321,7 +329,10 @@ def test_cross_big_rapid_hit_done(db, monkeypatch):
     assert row.variant_file_id == "rapidfid"
 
 
-def test_cross_big_rapid_miss_unsupported(db, monkeypatch):
+def test_cross_big_rapid_miss_goes_multipart(db, monkeypatch):
+    # 行为变更（2026-10-30 分片上传根治单）：>5 GiB 秒传未命中
+    # 不再判 unsupported，改走 multipart_upload；simple 仍不许碰
+    # 超限文件。分片路细账在 test_pan115_multipart_upload.py。
     _enable(monkeypatch)
     item = _item(db, size=_BIG_SIZE, content_hash=_PAYLOAD_SHA1,
                  content_hash_algo="sha1")
@@ -330,10 +341,12 @@ def test_cross_big_rapid_miss_unsupported(db, monkeypatch):
     fake = _FakeUser115(rapid="miss")
     _patch_cross(monkeypatch, fake)
     res = tv.run_transfer_job_once(db, job, _FakeSA(size=_BIG_SIZE))
-    assert res["outcome"] == "failed"
-    assert res["error_kind"] == "unsupported"
-    assert len(fake.rapid_calls) == 1  # 先试了秒传才判 unsupported
+    assert res["outcome"] == "done"
+    assert len(fake.rapid_calls) == 1  # 先试了秒传才轮到分片
+    assert len(fake.multipart_calls) == 1
     assert fake.simple_calls == []
+    row = db.query(em.TransferVariant).one()
+    assert row.variant_file_id == "mpfid"
 
 
 # ---------- 开关：关时不试秒传 ----------

@@ -517,6 +517,7 @@ class TransferConfigRequest(BaseModel):
     transfer_fast_lane_concurrency: int = 8
     transfer_per_owner_inflight: int = 2
     pan115_rapid_upload_enabled: bool = True
+    pan115_multipart_upload_enabled: bool = True
 
 
 @admin_router.get("/transfer-config")
@@ -524,7 +525,7 @@ def transfer_get_config(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """转存配置读取：跨 provider 总开关 + 三个并发上限 + 115 秒传开关（含默认值）。"""
+    """转存配置读取：跨 provider 总开关 + 三个并发上限 + 115 秒传/分片上传开关（含默认值）。"""
     from backend.emby_server import transfer_variant
 
     return transfer_variant.transfer_config_payload(db)
@@ -551,6 +552,8 @@ def transfer_update_config(
             transfer_per_owner_inflight=request.transfer_per_owner_inflight,
             pan115_rapid_upload_enabled=(
                 request.pan115_rapid_upload_enabled),
+            pan115_multipart_upload_enabled=(
+                request.pan115_multipart_upload_enabled),
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -564,7 +567,9 @@ def transfer_update_config(
             "transfer_per_owner_inflight":
             request.transfer_per_owner_inflight,
             "pan115_rapid_upload_enabled":
-            request.pan115_rapid_upload_enabled})
+            request.pan115_rapid_upload_enabled,
+            "pan115_multipart_upload_enabled":
+            request.pan115_multipart_upload_enabled})
     db.commit()
     return result
 
