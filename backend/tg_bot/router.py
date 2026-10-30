@@ -212,6 +212,7 @@ def dispatch(db, update: dict) -> None:
             "/bind": handlers.handle_bind,
             "/checkin": handlers.handle_checkin,
             "/points": handlers.handle_points,
+            "/chatpoints": handlers.handle_chatpoints,
             "/account": handlers.handle_account,
             "/me": handlers.handle_account,
             "/request": handlers.handle_request,

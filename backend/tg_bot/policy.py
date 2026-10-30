@@ -23,6 +23,7 @@ DEFAULTS: dict[str, str] = {
     # 各命令开关（/start /help 常开，不在表里）
     "bot_cmd_checkin": "true",
     "bot_cmd_points": "true",
+    "bot_cmd_chatpoints": "true",
     "bot_cmd_redeem": "true",
     "bot_cmd_bind": "true",
     "bot_cmd_account": "true",
@@ -45,6 +46,7 @@ DEFAULTS: dict[str, str] = {
 COMMAND_SWITCHES: dict[str, str] = {
     "/checkin": "bot_cmd_checkin",
     "/points": "bot_cmd_points",
+    "/chatpoints": "bot_cmd_chatpoints",
     "/redeem": "bot_cmd_redeem",
     "/bind": "bot_cmd_bind",
     "/account": "bot_cmd_account",

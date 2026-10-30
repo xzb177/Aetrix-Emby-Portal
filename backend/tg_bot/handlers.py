@@ -347,6 +347,39 @@ def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
     return text
 
 
+def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    from backend import points as points_mod
+
+    status = points_mod.get_chat_points_status(db, user.id)
+    earned = status["earned_today"]
+    cap = status["daily_cap"]
+    per_msg = status["per_msg"]
+    if per_msg == 0:
+        return (
+            "💬 <b>群发言积分</b>\n"
+            "\n"
+            "发言奖励当前已关闭，在群里发言暂不发放积分。\n"
+            f"🏆 累计发言积分：<b>{status['total_earned']}</b> 分"
+        )
+    filled = round(earned / cap * 10) if cap > 0 else 0
+    bar = "▓" * filled + "░" * (10 - filled)
+    text = (
+        "💬 <b>群发言积分</b>\n"
+        "\n"
+        f"今日已得：<b>{earned}</b> / {cap} 分\n"
+        f"<code>{bar}</code>\n"
+        f"🏆 累计发言积分：<b>{status['total_earned']}</b> 分\n"
+        "\n"
+        f"在公益群里发言每条 +{per_msg} 分，每天最多 {cap} 分。"
+    )
+    if earned >= cap:
+        text += "\n✅ 今日发言积分已达上限，明天再继续。"
+    return text
+
+
 def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
     from backend.api.economy import _redeem_exchange_core
     from fastapi import HTTPException
