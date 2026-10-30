@@ -9,6 +9,8 @@
    - Drive 条目（有 drive_file_id，即使 file_path 是 mount://）→ 仍优先 302。
 2. serve_mount_relay_async 本体（本地测试服务器，真 HTTP，不碰外网）：
    - Range 透传：上游 206 → 中继回 206 + Content-Range 透回。
+   - Accept-Ranges 兜底：上游不发时中继必须补 ``Accept-Ranges: bytes``
+     （2026-10-30 公网丢头事故的后端契约；丢头点在反代层，见 PR 说明）。
    - 凭据头转发：Cookie/UA 发给上游；X-Pickcode（内部头）不转发。
    - 上游 404 → 抛 404（不是 410），上游 5xx → 抛 502。
    - 重定向到内网 IP 被拒绝（SSRF 守卫保留）：抛 403。
@@ -70,6 +72,27 @@ class _RangeHandler(BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "http://127.0.0.1:9/gone")
             self.end_headers()
+            return
+        if mode == "no_accept":
+            # 上游不发 Accept-Ranges（模拟部分源站/公开链的实际行为）：
+            # 中继必须自行补上（serve_mount_relay_async 的 setdefault），
+            # 否则 206 到播放器手里缺头、iOS 系渐进播放兼容差。
+            range_h = self.headers.get("Range")
+            if range_h and range_h.startswith("bytes="):
+                spec = range_h[len("bytes="):].split("-")
+                try:
+                    start = int(spec[0]) if spec[0] else 0
+                except ValueError:
+                    start = 0
+                end = int(spec[1]) if len(spec) > 1 and spec[1] else len(BODY) - 1
+                end = min(end, len(BODY) - 1)
+                part = BODY[start:end + 1]
+                self._send_body(206, part, {
+                    "Content-Range": f"bytes {start}-{end}/{len(BODY)}",
+                    "Content-Type": "video/mp4",
+                })
+                return
+            self._send_body(200, BODY, {"Content-Type": "video/mp4"})
             return
         # ok：支持 Range
         range_h = self.headers.get("Range")
@@ -226,6 +249,37 @@ def test_relay_range_passthrough_206(upstream):
     # 上游确实收到了 Range 头
     _paths = [p for p, h in _RangeHandler.received]
     assert _paths and _RangeHandler.received[0][1].get("range") == "bytes=0-99"
+
+
+def test_relay_accept_ranges_set_when_upstream_omits_it_206(upstream):
+    """回归兜底（2026-10-30）：上游 206 不带 Accept-Ranges 时，中继响应
+    必须仍带 ``Accept-Ranges: bytes``。
+
+    生产事故：公网中继 206 丢 Accept-Ranges（逐跳定位丢在 VPS nginx 的
+    proxy_cache 继承，后端直连带头）。后端这一层是契约的源头——上游
+    （谷歌公开链/挂载源）发不发不可控，中继 setdefault 补齐不许删，
+    本用例钉住它。"""
+    _RangeHandler.mode = "no_accept"
+    req = _request(range_header="bytes=0-99")
+    status, headers, body = asyncio.run(_call_and_drain(
+        _streaming.serve_mount_relay_async(
+            upstream + "/movie.mkv", req, {"User-Agent": "t-ua"}, "video/mp4")))
+    assert status == 206
+    assert body == BODY[0:100]
+    assert headers.get("content-range") == f"bytes 0-99/{len(BODY)}"
+    assert headers.get("accept-ranges") == "bytes"
+
+
+def test_relay_accept_ranges_set_when_upstream_omits_it_200(upstream):
+    """整段 200 同口径：上游不发 Accept-Ranges，中继也必须补上。"""
+    _RangeHandler.mode = "no_accept"
+    req = _request()
+    status, headers, body = asyncio.run(_call_and_drain(
+        _streaming.serve_mount_relay_async(
+            upstream + "/movie.mkv", req, {"User-Agent": "t-ua"}, "video/mp4")))
+    assert status == 200
+    assert body == BODY
+    assert headers.get("accept-ranges") == "bytes"
 
 
 def test_relay_forwards_credentials_strips_pickcode(upstream):
