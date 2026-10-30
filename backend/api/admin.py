@@ -485,6 +485,9 @@ def reset_user_password(
     _require_can_manage_target(current_admin, user)
 
     user.password_hash = hash_password(request.new_password)
+    # A-001（360° 审计 R1）：与自助改密同口径 bump token_version——重置是处置
+    # 盗号的主路径，不失效旧会话的话被盗 refresh（30 天）仍可继续换新 access。
+    user.token_version = int(user.token_version or 0) + 1
     db.commit()
 
     # 同步 Emby 播放密码哈希。不自动生成接线用户名。

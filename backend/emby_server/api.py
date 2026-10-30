@@ -1600,6 +1600,7 @@ def authenticate_by_name(
     # 某个账号，所以按账号建档；出口 IP 这一层由网关中间件的 15 次/分钟规则兜底
     # （换用户名扫也会被它挡住）。
     from backend.ratelimit import check_rate_limit, client_ip
+    from backend.security import DUMMY_PASSWORD_HASH, verify_password
 
     ip = client_ip(request)
     account = username.lower() or "-"  # 空用户名（探活 / 畸形请求）落进公共桶
@@ -1641,7 +1642,14 @@ def authenticate_by_name(
         # 正常提示用户名或密码不正确（2026-09-26 线上实测）。
         return Response(status_code=401)
 
-    if not user or not user.is_active or not password:
+    if not user:
+        # A-003（360° 审计 R1）：用户不存在也走一次等价 bcrypt 校验，
+        # 抹平与存在用户之间的时序差，防止用户名被枚举。
+        if password:
+            verify_password(password, DUMMY_PASSWORD_HASH)
+        return _auth_fail()
+
+    if not user.is_active or not password:
         return _auth_fail()
 
     # 密码校验：支持哈希与明文；明文/旧格式在成功后透明升级为 bcrypt-sha256。

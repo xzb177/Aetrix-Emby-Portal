@@ -42,6 +42,7 @@ from backend.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    DUMMY_PASSWORD_HASH,
     hash_password,
     resolve_jwt_user_id,
     verify_password,
@@ -523,7 +524,14 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
         .filter(models.WebUser.username == req.username.strip())
         .first()
     )
-    if not user or not verify_password(req.password, user.password_hash):
+    if user is None:
+        # A-003（360° 审计 R1）：用户不存在也走一次等价 bcrypt 校验，
+        # 抹平与存在用户之间的时序差，防止用户名被枚举。
+        verify_password(req.password, DUMMY_PASSWORD_HASH)
+        password_ok = False
+    else:
+        password_ok = verify_password(req.password, user.password_hash)
+    if not password_ok:
         record_event(
             db, username=req.username.strip(), user_id=user.id if user else None,
             ip=log_ip(request), agent=user_agent(request), success=False,
@@ -720,12 +728,27 @@ def tg_login(request: Request, req: TgLoginRequest, db: Session = Depends(get_db
 
 @auth_router.post("/change-password")
 def change_password(
+    request: Request,
     req: ChangePasswordRequest,
     current_user: models.WebUser = Depends(get_current_user_jwt),
     db: Session = Depends(get_db),
 ):
-    """修改密码（验证旧密码，同步更新自建 Emby 播放密码）"""
+    """修改密码（验证旧密码，同步更新自建 Emby 播放密码）
+
+    A-004（360° 审计 R1）：旧密码校验按登录同口径限流（8 次/分钟，
+    桶按 IP+用户），失败落安全日志。此前无限流、无记录，持被盗
+    access 的人可不限速猜旧密码，猜中即改密完成持久接管。
+    """
+    allowed, retry_after = check_rate_limit(
+        f"change-password:{client_ip(request)}:{current_user.id}", 8, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
     if not verify_password(req.old_password, current_user.password_hash):
+        record_event(
+            db, username=current_user.username, user_id=current_user.id,
+            ip=log_ip(request), agent=user_agent(request), success=False,
+            reason="password_change_failed", detail="旧密码错误",
+        )
         raise HTTPException(status_code=400, detail="旧密码错误")
     if req.old_password == req.new_password:
         raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
