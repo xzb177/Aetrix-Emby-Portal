@@ -357,3 +357,162 @@ def test_refresh_now_stats_and_worker_gating(db, monkeypatch):
     stop.set()
     first.join(timeout=10)
     assert not first.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-30 冻结事故回归：生产 SessionLocal 是 autoflush=False
+# （backend/database.py 的 sessionmaker(autocommit=False, autoflush=False)），
+# build_staging 用 db.add() 攒的 staging 行不 flush 就查不到，switch 校验
+# 永远「缺全部目标库」→ 每轮回滚、live 冻结 4 天。上面的用例全用默认
+# sessionmaker（autoflush=True），测不出——本节全部用生产口径 session。
+# ---------------------------------------------------------------------------
+
+from sqlalchemy.orm import sessionmaker as _sessionmaker
+
+
+@pytest.fixture()
+def db_prod():
+    """与生产同口径的 session（autoflush=False），独立内存库。"""
+    engine = create_engine("sqlite://")
+    models.Base.metadata.create_all(engine)
+    em.Base.metadata.create_all(engine)
+    factory = _sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = factory()
+    store.invalidate()
+    yield session, factory
+    store.invalidate()
+    session.close()
+    engine.dispose()
+
+
+def test_rebuild_with_autoflush_disabled_session(db_prod):
+    """根因钉死：autoflush=False 下整库重建必须成功（修前必红：缺全部库）。"""
+    db, _factory = db_prod
+    lib_a = em.Library(guid="guid-pA", name="pA", is_enabled=True)
+    db.add(lib_a)
+    db.commit()
+    db.refresh(lib_a)
+    # item_count 默认 0 会走缓存列分支；写回 NULL 才走实时计数（与 _scene 同款）。
+    from sqlalchemy import text as _text
+
+    db.execute(_text("UPDATE emby_libraries SET item_count=NULL WHERE id=:id"),
+               {"id": lib_a.id})
+    db.commit()
+    db.expire_all()
+    db.add(em.MediaItem(guid="item-pA-1", library_id=lib_a.id,
+                        item_type="movie", name="片一",
+                        date_added=datetime(2026, 1, 2, 3, 4, 5)))
+    db.commit()
+    stats = lp.rebuild_projection(db)
+    db.commit()
+    assert stats == {"libraries": 1, "updated": 1, "deleted": 0}
+    live = db.query(em.LibraryListProjection).all()
+    assert [(r.library_id, r.child_count) for r in live] == [(lib_a.id, 1)]
+    staged = db.query(em.LibraryListProjectionStaging).all()
+    assert [(r.library_id, r.child_count) for r in staged] == [(lib_a.id, 1)]
+
+
+def test_switch_reads_unflushed_staging_rows_autoflush_disabled(db_prod):
+    """switch 直查 staging 前必须 flush：外部刚 add 未 flush 的行也要认。"""
+    db, _factory = db_prod
+    lib_a = em.Library(guid="guid-pB", name="pB", is_enabled=True)
+    db.add(lib_a)
+    db.commit()
+    db.refresh(lib_a)
+    # 不 flush、不 commit，直接调 switch（autoflush=False 下查询默认看不见）。
+    db.add(em.LibraryListProjectionStaging(
+        library_id=lib_a.id, child_count=5, cover_tag="1",
+        computed_at=datetime.now()))
+    switched = lp.switch_to_staging(db)
+    db.commit()
+    assert switched == {"switched": 1, "deleted": 0}
+    live = db.query(em.LibraryListProjection).all()
+    assert [(r.library_id, r.child_count) for r in live] == [(lib_a.id, 5)]
+
+
+def test_refresh_now_with_production_style_factory(db_prod):
+    """工人入口用生产口径工厂（每轮新 session、autoflush=False）必须成功。"""
+    _db, factory = db_prod
+    seed = factory()
+    seed.add(em.Library(guid="guid-pC", name="pC", is_enabled=True))
+    seed.commit()
+    seed.close()
+    stats = lp.refresh_now(factory)
+    assert stats is not None and stats["libraries"] == 1 and stats["updated"] == 1
+    check = factory()
+    try:
+        assert check.query(em.LibraryListProjection).count() == 1
+        assert check.query(em.LibraryListProjectionStaging).count() == 1
+    finally:
+        check.close()
+
+
+def test_refresh_now_failure_escalates_and_resets(db, monkeypatch, caplog):
+    """连续失败计数：前两次 WARNING，达阈值升 ERROR；成功后计数清零。"""
+    _user(db)
+    _library(db, "A", is_enabled=True)
+    monkeypatch.setattr(lp, "_consecutive_failures", 0)
+    monkeypatch.setattr(lp, "_last_failure_error", None)
+    monkeypatch.setattr(lp, "_last_failure_at", None)
+    real_rebuild = lp.rebuild_projection
+
+    def _boom(_db):
+        raise ValueError("列表投影 staging 覆盖不全，缺库：[1]")
+
+    monkeypatch.setattr(lp, "rebuild_projection", _boom)
+    with caplog.at_level(logging.WARNING, logger=lp.logger.name):
+        assert lp.refresh_now(lambda: db) is None
+        assert lp.refresh_now(lambda: db) is None
+        assert lp.refresh_now(lambda: db) is None
+    snap = lp.rebuild_failure_snapshot()
+    assert snap["consecutive_failures"] == 3
+    assert "覆盖不全" in (snap["last_error"] or "")
+    levels = [rec.levelno for rec in caplog.records
+              if "重建" in rec.message and "失败" in rec.message]
+    assert levels[0] == logging.WARNING and levels[1] == logging.WARNING
+    assert levels[2] == logging.ERROR
+
+    monkeypatch.setattr(lp, "rebuild_projection", real_rebuild)
+    assert lp.refresh_now(lambda: db) is not None
+    assert lp.rebuild_failure_snapshot()["consecutive_failures"] == 0
+
+
+def test_projection_health_states(db):
+    """新鲜度快照三态：无行=陈旧、新鲜行=不陈旧、过期行=陈旧。"""
+    _user(db)
+    lib_a = _library(db, "A", is_enabled=True)
+
+    health = lp.projection_health(db)
+    assert health["targets"] == 1 and health["rows"] == 0
+    assert health["stale"] is True and health["reason"] == "no_rows"
+
+    lp.rebuild_projection(db)
+    db.commit()
+    health = lp.projection_health(db)
+    assert health["rows"] == 1 and health["stale"] is False
+
+    stale_at = datetime.now() - timedelta(seconds=lp.MAX_STALE_SEC + 60)
+    db.query(em.LibraryListProjection).update({"computed_at": stale_at})
+    db.commit()
+    health = lp.projection_health(db)
+    assert health["stale"] is True and health["reason"] == "expired"
+    assert health["newest_computed_at"] == stale_at
+
+
+def test_health_report_flags_frozen_projection(db):
+    """health 聚合必须把冻结报成 warn issue（key=list_projection），恢复后消失。"""
+    from backend import health_report
+
+    _user(db)
+    _library(db, "A", is_enabled=True)
+    res = health_report.collect(db)
+    keys = {issue["key"] for issue in res["issues"]}
+    assert "list_projection" in keys
+    assert res["metrics"]["list_projection"]["stale"] is True
+
+    lp.rebuild_projection(db)
+    db.commit()
+    res = health_report.collect(db)
+    keys = {issue["key"] for issue in res["issues"]}
+    assert "list_projection" not in keys
+    assert res["metrics"]["list_projection"]["stale"] is False

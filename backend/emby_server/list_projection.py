@@ -31,6 +31,17 @@ api/ea 任一进程读到的都是同一份，不依赖进程内存）：
 - LIST_PROJECTION_REFRESH_SEC：重建周期，默认 120（10~3600）。
 - LIST_PROJECTION_MAX_STALE_SEC：行可接受的最老年龄，默认 900
   （60~86400）；超了整包回落现算。
+
+事故注记（2026-10-30，投影冻结 4 天）：生产 SessionLocal 是
+``autoflush=False``（backend/database.py），build_staging 用 db.add()
+攒的 staging 行在 switch_to_staging 查询前没有落库，切换校验永远
+「缺全部目标库」→ 每轮回滚、live 行冻结、staging 恒空；而既有测试用
+默认 session（autoflush=True）测不出。故本模块凡「写后同事务再查」
+的两处（build 写完、switch 查前）都必须显式 db.flush()，不许依赖
+autoflush。失败可见性：refresh_now 累计连续失败次数，达
+FAILURE_ALERT_THRESHOLD 后日志升 ERROR；且 health_report 经
+projection_health() 把 live 行过期/缺行报成 warn issue，冻结不再
+只能翻 worker 日志才知道。
 """
 
 from __future__ import annotations
@@ -58,6 +69,38 @@ _COUNT_TYPES = ("movie", "series")
 
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
+
+#: 连续重建失败达此次数后，refresh_now 的日志从 WARNING 升 ERROR；
+#: 跨进程的可见信号走 projection_health → health warn issue（见下）。
+FAILURE_ALERT_THRESHOLD = 3
+
+_consecutive_failures = 0
+_last_failure_error: str | None = None
+_last_failure_at: datetime | None = None
+
+
+def _note_rebuild_success() -> None:
+    global _consecutive_failures, _last_failure_error, _last_failure_at
+    _consecutive_failures = 0
+    _last_failure_error = None
+    _last_failure_at = None
+
+
+def _note_rebuild_failure(exc: Exception) -> int:
+    global _consecutive_failures, _last_failure_error, _last_failure_at
+    _consecutive_failures += 1
+    _last_failure_error = str(exc)[:300]
+    _last_failure_at = datetime.now()
+    return _consecutive_failures
+
+
+def rebuild_failure_snapshot() -> dict:
+    """当前连续失败态（运维/测试观察口；进程内计数，重启清零）。"""
+    return {
+        "consecutive_failures": _consecutive_failures,
+        "last_error": _last_failure_error,
+        "last_failed_at": _last_failure_at,
+    }
 
 
 def enabled() -> bool:
@@ -162,6 +205,9 @@ def build_staging(db) -> dict:
     rows = _compute_rows(db, target_libs)
     for values in rows:
         db.add(em.LibraryListProjectionStaging(**values))
+    # 必须显式 flush：生产 SessionLocal autoflush=False，pending 行不落库
+    # 则 switch_to_staging 的查询看不见本轮 staging（2026-10-30 冻结根因）。
+    db.flush()
     return {"libraries": len(target_libs), "staged": len(rows)}
 
 
@@ -177,6 +223,9 @@ def switch_to_staging(db) -> dict:
     不提交，调用方负责提交。返回 {switched, deleted}，其中 deleted
     = 本轮消失的目标外 live 行数（与旧 rebuild_projection 同口径）。
     """
+    # 先 flush 再查：调用方可能刚用 db.add() 写完 staging 行未提交，
+    # autoflush=False 的 session 不 flush 就查不到（同 build_staging 注记）。
+    db.flush()
     target_libs = _target_libraries(db)
     target_ids = {lib.id for lib in target_libs}
     staged = {row.library_id: row for row in db.query(em.LibraryListProjectionStaging).all()}
@@ -255,16 +304,69 @@ def load_projection(db, library_ids: list[int]) -> dict[int, em.LibraryListProje
     return by_id
 
 
+def projection_health(db) -> dict:
+    """投影新鲜度快照（health_report 消费；跨进程只读 DB 口径）。
+
+    判定：开关关或无目标库 → 不陈旧。有目标库但 live 无行，或最新
+    computed_at 超过 MAX_STALE_SEC（读侧同口径，超了读路径已在整包
+    回落现算）→ 陈旧。陈旧本身不代表数字错（回落保证正确），代表
+    重建工人已经连续多轮没成、列表在走慢路，必须有人看得见。
+    """
+    result = {
+        "targets": 0, "rows": 0, "newest_computed_at": None,
+        "age_sec": None, "stale": False, "reason": None,
+    }
+    if not enabled():
+        return result
+    target_ids = {lib.id for lib in _target_libraries(db)}
+    result["targets"] = len(target_ids)
+    if not target_ids:
+        return result
+    rows = (
+        db.query(em.LibraryListProjection)
+        .filter(em.LibraryListProjection.library_id.in_(sorted(target_ids)))
+        .all()
+    )
+    result["rows"] = len(rows)
+    newest = max((row.computed_at for row in rows if row.computed_at), default=None)
+    result["newest_computed_at"] = newest
+    if newest is None:
+        result["stale"] = True
+        result["reason"] = "no_rows"
+        return result
+    try:
+        age = (datetime.now() - newest).total_seconds()
+    except TypeError:
+        result["stale"] = True
+        result["reason"] = "bad_computed_at"
+        return result
+    result["age_sec"] = age
+    if age > MAX_STALE_SEC:
+        result["stale"] = True
+        result["reason"] = "expired"
+    return result
+
+
 def refresh_now(session_factory) -> dict | None:
-    """同步重建一次（测试与运维触发用）：独立 session，失败返回 None。"""
+    """同步重建一次（测试与运维触发用）：独立 session，失败返回 None。
+
+    失败累计连续次数：达 FAILURE_ALERT_THRESHOLD 后日志升 ERROR
+    （单次抖动仍只是 WARNING），不再静默冻死在警告堆里。
+    """
     db = None
     try:
         db = session_factory()
         stats = rebuild_projection(db)
         db.commit()
+        _note_rebuild_success()
         return stats
     except Exception as e:  # noqa: BLE001
-        logger.warning("列表投影同步重建失败（保留旧行）: %s", e)
+        count = _note_rebuild_failure(e)
+        if count >= FAILURE_ALERT_THRESHOLD:
+            logger.error(
+                "列表投影同步重建连续失败 %s 次（保留旧行）: %s", count, e)
+        else:
+            logger.warning("列表投影同步重建失败（保留旧行）: %s", e)
         if db is not None:
             try:
                 db.rollback()
