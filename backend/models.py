@@ -906,9 +906,13 @@ class RegistrationCode(Base):
     source = Column(String(20), default='admin')  # admin 管理员发放 / invite 邀请体系生成
     # ===== M1 统一码系统：并入兑换码的奖励类型 =====
     # reward_type: subscription 会员天数（默认，原卡码行为）/ points 积分 / discount 折扣权益
+    # / welfare 公益资格（2026-10-30 G1：卡码直发资格，见 codes.redeem_code）
     reward_type = Column(String(20), default='subscription')
     points_value = Column(Integer, default=0)  # points 型：兑换积分数
     discount_pct = Column(Integer, default=0)  # discount 型：实付百分比，85=八五折
+    # welfare 型：核销时是否打包首张查看行（EmbyViewUnlock，同天数、points_spent=0）。
+    # 老数据补列默认 1（打包），与生成表单默认开一致。
+    welfare_include_view = Column(Boolean, default=True)
 
 
 class UserDevice(Base):

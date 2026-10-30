@@ -382,6 +382,81 @@ def grant_days_for(code: models.RegistrationCode) -> int:
     return normalize_days(code.days)
 
 
+# ==================== 资格码（reward_type=welfare） ====================
+
+REWARD_WELFARE = "welfare"
+
+# 管理员资格码月配额：每位管理员每月可生成的资格码张数上限。
+# 语义（写清）：<=0 表示不限（与能量转账上限 points_transfer_max 的
+# 「0=不限」同惯例）；行缺失 / 空值 / 非法值回退默认值 30（宽松默认，
+# 防的是某个管理员账号被盗或失控时批量造码，不是卡正常发放）。
+# 只卡 reward_type=welfare 这一种码，其余三类不计入也不受限。
+WELFARE_CODE_QUOTA_KEY = "welfare_code_monthly_quota"
+WELFARE_CODE_QUOTA_DEFAULT = 30
+
+
+def welfare_code_monthly_quota(db: Session) -> int:
+    """读资格码月配额：直查 SystemConfig（无进程缓存，管理端保存即生效）"""
+    row = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == WELFARE_CODE_QUOTA_KEY).first()
+    if row is None or row.value is None or str(row.value).strip() == "":
+        return WELFARE_CODE_QUOTA_DEFAULT
+    try:
+        return int(str(row.value).strip())
+    except (TypeError, ValueError):
+        return WELFARE_CODE_QUOTA_DEFAULT
+
+
+def welfare_codes_created_this_month(db: Session, admin_id: int) -> int:
+    """某管理员本自然月已生成的资格码张数（配额计数口径）"""
+    month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return (
+        db.query(models.RegistrationCode)
+        .filter(
+            models.RegistrationCode.created_by == admin_id,
+            models.RegistrationCode.reward_type == REWARD_WELFARE,
+            models.RegistrationCode.created_at >= month_start,
+        )
+        .count()
+    )
+
+
+def _grant_bundled_view_unlock(db: Session, user: models.WebUser,
+                               realm_id: int, days: int) -> None:
+    """资格码打包查看行：给该用户在该服写/续一条 EmbyViewUnlock（不提交）。
+
+    口径与全站查看行写入一致：同一 (user_id, realm_id) 只保留一条——
+    已有未过期行在原到期上叠加天数，过期行从现在重算，无行新建；
+    ``points_spent=0`` 标记赠送（同注册赠送 ``_grant_register_gifts`` 口径）。
+    ``days<=0`` 按永久处理（expires_at=None），与资格侧 grant_welfare 的
+    「0=永不过期」对齐。提交由调用方与资格发放一起完成（同一事务）。
+    """
+    now = datetime.now()
+    row = (
+        db.query(models.EmbyViewUnlock)
+        .filter(models.EmbyViewUnlock.user_id == user.id,
+                models.EmbyViewUnlock.realm_id == realm_id)
+        .first()
+    )
+    if row is None:
+        db.add(models.EmbyViewUnlock(
+            user_id=user.id,
+            realm_id=realm_id,
+            unlocked_at=now,
+            expires_at=None if days <= 0 else now + timedelta(days=days),
+            points_spent=0,
+        ))
+        return
+    if row.expires_at is None:
+        return  # 已是永久查看行，不动
+    if days <= 0:
+        row.expires_at = None
+    elif row.expires_at > now:
+        row.expires_at = row.expires_at + timedelta(days=days)
+    else:
+        row.expires_at = now + timedelta(days=days)
+
+
 # 核销失败机器码（error_code）：随失败结果一起返回，供端点/前端区分
 # 「码本身明确无效」与限流、系统错误。用户侧文案仍走 message/detail 人话。
 CODE_ERROR_USED_UP = "CODE_USED_UP"        # 已被用尽 / 并发抢占失败（已被别人使用）
@@ -463,7 +538,11 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
             "message": error or ("该卡码限指定账号使用" if not named_ok else "卡码有效"),
         }
         # M1：非订阅奖励类型在预览中说明
-        if reward_type == 'points':
+        if reward_type == REWARD_WELFARE:
+            preview["welfare_include_view"] = bool(getattr(code, 'welfare_include_view', True))
+            bundle_text = "（含查看凭证）" if preview["welfare_include_view"] else ""
+            preview["message"] = error or (f"公益资格卡码（{preview['days_text']}）{bundle_text}" if named_ok else "该卡码限指定账号使用")
+        elif reward_type == 'points':
             preview["points_value"] = getattr(code, 'points_value', 0) or 0
             preview["message"] = error or (f"能量卡码（{preview['points_value']} 能量）" if named_ok else "该卡码限指定账号使用")
         elif reward_type == 'discount':
@@ -518,6 +597,8 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
 def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
     """核销卡码：注册码 / 续期码 / 白名单码
 
+    - 奖励类型（reward_type）：subscription 会员天数 / points 能量 /
+      discount 折扣权益 / welfare 公益资格（可打包同天数查看行）
     - 注册码：仅用于尚无生效会员的账号（已有会员请用续期码，与参考实现口径一致）
     - 续期码：在当前到期时间上叠加天数
     - 白名单码：置为长期有效
@@ -565,11 +646,19 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         return {"success": False, "message": "该卡码限指定账号使用",
                 "error_code": CODE_ERROR_NAMED_OTHER}
 
+    # M1 统一码系统：根据 reward_type 发放不同奖励（提前算好，
+    # 下面的会员门与后面的发奖分派共用同一个判定，不许各算各的）
+    reward_type = getattr(code, 'reward_type', 'subscription') or 'subscription'
+
     days = grant_days_for(code)
     # 这张卡码属于哪个服，就判定/开通哪个服的会员（甲服的会员不算乙服的）
     target = code_realm_id(db, code)
     target_name = realm_label(db, target)
-    if code.code_type == CODE_TYPE_REGISTER and has_active_membership(db, user, target):
+    # 「已有会员请用续期码」的门只管会员订阅口径：资格码发的是公益资格
+    # （与订阅两套口径），已持资格时由 grant_welfare 在原到期上叠加，
+    # 不许被会员门误拦；其余奖励类型行为与此前逐字一致。
+    if reward_type != REWARD_WELFARE and code.code_type == CODE_TYPE_REGISTER \
+            and has_active_membership(db, user, target):
         return {"success": False,
                 "message": f"你在「{target_name}」已有生效中的会员，请使用续期码（本卡码只能开通新会员）"}
 
@@ -584,8 +673,45 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
 
     # 占位与发奖在同一个事务里（本函数不提交，由调用方提交）；
     # 中间崩溃会一起回滚，不会出现「码烧了、会员没到账」
-    # M1 统一码系统：根据 reward_type 发放不同奖励
-    reward_type = getattr(code, 'reward_type', 'subscription') or 'subscription'
+    if reward_type == REWARD_WELFARE:
+        # 资格码：发公益资格（grant_welfare 全站单一发放入口）＋可选打包查看行。
+        # 天数口径换算：码面 -1（永久）→ grant_welfare 的 0（永不过期）。
+        welfare_days = 0 if days < 0 else days
+        include_view = bool(getattr(code, 'welfare_include_view', True))
+        if include_view:
+            # 先把查看行挂进当前事务（只 flush 不提交），再由 grant_welfare
+            # 内部的提交把「占位＋查看行＋资格＋发放日志」一次性提交：
+            # 四者同事务，中间崩溃一起回滚，不会出现码烧了、资格/查看行
+            # 只到一半。grant_welfare 是全站唯一会自己 commit 的发放口，
+            # 所以它必须是本分支最后一步，其后只许拼返回值。
+            _grant_bundled_view_unlock(db, user, target, welfare_days)
+            db.flush()
+        from backend.emby_server.portal import grant_welfare
+
+        try:
+            expires = grant_welfare(
+                db, user, channel="code_redeem", days=welfare_days,
+                granted_by=code.created_by)
+        except RuntimeError:
+            # grant_welfare 耗尽 CAS 重试时已回滚整个事务（占位一并撤销、
+            # 码未消耗），如实让用户重试，不许带着半开事务往下走
+            return {"success": False, "message": "发放繁忙，请稍后重试"}
+        type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
+        expires_text = "永不过期" if expires is None else expires.strftime('%Y-%m-%d %H:%M')
+        message = f"{type_name}核销成功，公益资格有效期至 {expires_text}"
+        if include_view:
+            message += "，查看凭证已一并开通"
+        return {
+            "success": True,
+            "message": message,
+            "code_type": code.code_type,
+            "reward_type": "welfare",
+            "days": days,
+            "welfare_expires_at": expires.isoformat() if expires else None,
+            "view_bundled": include_view,
+            "realm_id": target,
+            "realm_name": target_name,
+        }
     if reward_type == 'points':
         points = getattr(code, 'points_value', 0) or 0
         if points <= 0:

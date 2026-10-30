@@ -67,10 +67,12 @@ const genForm = ref({
   days: 30,
   max_uses: 1,
   expires_days: 30,
-  // M1：奖励类型
-  reward_type: 'subscription' as 'subscription' | 'points' | 'discount',
+  // M1：奖励类型（welfare=公益资格码，G1）
+  reward_type: 'subscription' as 'subscription' | 'points' | 'discount' | 'welfare',
   points_value: 50,
   discount_pct: 85,
+  /** G1：资格码核销时打包首张查看行，默认开 */
+  welfare_include_view: true,
   algorithm: 'base32-20',
   is_decoy: false,
   target_username: '',
@@ -80,6 +82,19 @@ const genForm = ref({
 })
 const generated = ref<{ code: string; days_text: string }[]>([])
 const resultVisible = ref(false)
+
+// G1：资格码默认短过期（7 天，防倒卖囤码）——切到资格码时把有效天数
+// 从通用默认 30 改成 7，管理员仍可在「高级」里改；切走时若没动过则还原
+watch(
+  () => genForm.value.reward_type,
+  (next, prev) => {
+    if (next === 'welfare' && genForm.value.expires_days === 30) {
+      genForm.value.expires_days = 7
+    } else if (prev === 'welfare' && next !== 'welfare' && genForm.value.expires_days === 7) {
+      genForm.value.expires_days = 30
+    }
+  },
+)
 
 const ALGORITHMS = [
   { value: 'base32-20', label: 'Base32 · 20 位（推荐，便于手抄）' },
@@ -215,6 +230,7 @@ async function generate() {
       reward_type: genForm.value.reward_type,
       points_value: genForm.value.points_value,
       discount_pct: genForm.value.discount_pct,
+      welfare_include_view: genForm.value.welfare_include_view,
       algorithm: genForm.value.algorithm,
       is_decoy: genForm.value.is_decoy,
       target_username: genForm.value.target_username || undefined,
@@ -391,6 +407,7 @@ function usedByNames(row: RegistrationCode): string {
             <el-radio-button value="subscription">会员天数</el-radio-button>
             <el-radio-button value="points">积分</el-radio-button>
             <el-radio-button value="discount">折扣券</el-radio-button>
+            <el-radio-button value="welfare">公益资格</el-radio-button>
           </el-radio-group>
           <div class="form-hint">这批码送出去，对方能拿到什么</div>
         </el-form-item>
@@ -402,6 +419,19 @@ function usedByNames(row: RegistrationCode): string {
             :disabled="genForm.code_type === 3"
           />
           <span class="form-hint inline-hint">本次授予：{{ dailyDefault }}</span>
+        </el-form-item>
+        <el-form-item v-if="genForm.reward_type === 'welfare'" label="资格天数">
+          <el-input-number
+            v-model="genForm.days"
+            :min="1"
+            :max="3650"
+            :disabled="genForm.code_type === 3"
+          />
+          <span class="form-hint inline-hint">核销后开通/续期多少天公益资格（白名单码为永久）</span>
+        </el-form-item>
+        <el-form-item v-if="genForm.reward_type === 'welfare'" label="打包查看凭证">
+          <el-switch v-model="genForm.welfare_include_view" />
+          <span class="form-hint inline-hint">开时核销同时送同天数查看凭证，新人拿到即可看片</span>
         </el-form-item>
         <el-form-item v-if="genForm.reward_type === 'points'" label="积分面额">
           <el-input-number v-model="genForm.points_value" :min="1" :max="1000000" />

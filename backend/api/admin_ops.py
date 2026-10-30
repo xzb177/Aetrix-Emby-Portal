@@ -109,6 +109,9 @@ def code_dto(db: Session, code: models.RegistrationCode, now: Optional[datetime]
         "is_decoy": codes.is_honeypot(code),
         "target_username": code.target_username or "",
         "source": code.source or "admin",
+        # M1 奖励类型 + G1 资格码打包查看标记：列表里要分得出这张码送什么
+        "reward_type": getattr(code, "reward_type", "subscription") or "subscription",
+        "welfare_include_view": bool(getattr(code, "welfare_include_view", True)),
         "max_uses": code.max_uses,
         "use_count": code.use_count or 0,
         "is_active": bool(code.is_active),
@@ -290,6 +293,8 @@ class CodeGenerateRequest(BaseModel):
     reward_type: str = Field(default="subscription")
     points_value: int = Field(default=0, ge=0)
     discount_pct: int = Field(default=0, ge=0, le=100)
+    # G1 资格码：核销时打包首张查看行（仅 reward_type=welfare 时生效），默认开
+    welfare_include_view: bool = True
 
 
 @admin_ops_router.post("/registration-codes/generate")
@@ -318,6 +323,19 @@ def generate_codes(
     if not realms.get_realm(db, target_realm):
         raise HTTPException(status_code=400, detail=f"服不存在: #{target_realm}")
 
+    # G1 资格码月配额：只卡 reward_type=welfare（其余三类不计入也不受限）。
+    # 超限在生成前整批拒绝，不许生成一半才发现超额（见 codes 的配额口径：
+    # <=0 不限，缺失/非法回退 30）。
+    if request.reward_type == codes.REWARD_WELFARE:
+        quota = codes.welfare_code_monthly_quota(db)
+        if quota > 0:
+            used_this_month = codes.welfare_codes_created_this_month(db, current_admin.id)
+            if used_this_month + request.count > quota:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"资格码月配额已用尽：本月已生成 {used_this_month} 张，"
+                            f"每月上限 {quota} 张（可在公益配置里调整，填 0 不限）"))
+
     expires_at = datetime.now() + timedelta(days=request.expires_days)
     created = []
     for index in range(1, request.count + 1):
@@ -335,7 +353,7 @@ def generate_codes(
             raise HTTPException(status_code=500, detail="卡码生成冲突，请重试")
 
         # M1：校验奖励类型
-        if request.reward_type not in ("subscription", "points", "discount"):
+        if request.reward_type not in ("subscription", "points", "discount", "welfare"):
             raise HTTPException(status_code=400, detail="reward_type 非法")
         # 交叉校验「奖励类型 × 面额」：坏卡一旦入库，用户核销时才会失败
         # （见 codes.redeem_code 里的 points<=0 / pct<=0 or pct>=100 判断），
@@ -360,6 +378,7 @@ def generate_codes(
             reward_type=request.reward_type,
             points_value=request.points_value,
             discount_pct=request.discount_pct,
+            welfare_include_view=bool(request.welfare_include_view),
         )
         db.add(code)
         created.append(code)
@@ -374,12 +393,17 @@ def generate_codes(
            created[0].id if created else None,
            {"count": request.count, "code_type": request.code_type, "days": days,
             "is_decoy": request.is_decoy, "target_username": target_username or None,
-            "realm_id": target_realm})
+            "realm_id": target_realm, "reward_type": request.reward_type,
+            "welfare_include_view": bool(request.welfare_include_view)})
     db.commit()
 
+    if request.reward_type == codes.REWARD_WELFARE:
+        gen_message = f"已生成 {len(created)} 个{type_name}（公益资格码）"
+    else:
+        gen_message = f"已生成 {len(created)} 个{type_name}（「{realm_name}」的会员）"
     return {
         "success": True,
-        "message": f"已生成 {len(created)} 个{type_name}（「{realm_name}」的会员）",
+        "message": gen_message,
         "realm_id": target_realm,
         "realm_name": realm_name,
         "codes": [

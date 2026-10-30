@@ -114,6 +114,8 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "points_chat_daily_cap": ("int", 0, _BIG),
     "points_redeem_7d": ("int", 0, _BIG),
     "points_redeem_30d": ("int", 0, _BIG),
+    # G1 资格码月配额：0 在读侧是「不限」，故下限 0 合法
+    "welfare_code_monthly_quota": ("int", 0, _BIG),
     "welfare_grace_days": ("int", 0, 3650),
     "welfare_streak_renew_min": ("int", 0, 3650),
     # 连签保资格（streak_renew）总开关＋续期天数：此前无开关、续期天数在
