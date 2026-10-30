@@ -9,6 +9,13 @@
 enrich_worker.get_progress、image_store.backfill_status、
 change_watcher.get_config，以及 ScanRun 流水）。
 
+另有转存任务队列（2026-10-30 补半截功能）：
+
+    GET  /api/admin/tasks/transfer-jobs
+    POST /api/admin/tasks/transfer-jobs/{id}/cancel
+
+取消只对排队中（pending）的转存任务开放，语义见文末专节注释。
+
 单个子系统采集失败不影响整体：每个任务独立 try/except，
 失败的任务 status=error 并在 summary 里写清原因，前端照常渲染其余卡片。
 
@@ -25,11 +32,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend.api.admin_core import get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import SessionLocal, get_db
 
 logger = logging.getLogger(__name__)
@@ -472,3 +479,114 @@ def tasks_overview(db: Session = Depends(get_db),
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
         "tasks": tasks,
     }
+
+
+# ---------------------------------------------------------------------------
+# 7. 转存任务队列（列表 + 取消排队中的任务）
+# ---------------------------------------------------------------------------
+# 取消语义（与 transfer_variant 工人认领口径对齐，见 TransferJob 模型注释）：
+# - 只许取消 status=pending 的任务（失败待重试的任务同为 pending，一并可取消）。
+# - running 已被工人认领（pending→running 原子 UPDATE + 租约），执行结束由
+#   工人回写终态；中途改状态会被覆盖、且副本可能已建一半，不开放取消。
+# - done / failed / cancelled 是终态，不许取消。
+# - 取消 = 置新终态 status=cancelled（不删行，留痕可审计）；走带条件的原子
+#   UPDATE（WHERE status='pending'），与工人认领天然互斥：谁先提交谁赢，
+#   输的一方 rowcount=0。输了回查现状回 409 明示当前状态，不让前端猜。
+# - 扫描排队不在本节：排队中的扫描请求已有现成取消入口
+#   （DELETE /api/emby/scan-queue/{id} → scan_queue_redis），不重复造；
+#   ScanRun 只是扫描流水记录，没有排队态可取消。
+
+_TRANSFER_ACTIVE = ("pending", "running")
+
+
+def _transfer_job_row(job, item_names: dict) -> dict:
+    return {
+        "id": job.id,
+        "item_id": job.item_id,
+        "item_name": item_names.get(job.item_id) or f"条目 {job.item_id}",
+        "trigger": job.trigger,
+        "provider": job.provider,
+        "owner_scope": job.owner_scope,
+        "owner_ref": job.owner_ref or "",
+        "status": job.status,
+        "attempts": job.attempts or 0,
+        "error_kind": job.error_kind or "",
+        "error_detail": (job.error_detail or "")[:200],
+        "claimed_by": job.claimed_by or "",
+        "lease_expires_at": _iso(job.lease_expires_at),
+        "next_retry_at": _iso(job.next_retry_at),
+        "created_at": _iso(job.created_at),
+        "updated_at": _iso(job.updated_at),
+        "cancellable": job.status == "pending",
+    }
+
+
+def list_transfer_jobs(db: Session, limit: int = 30) -> dict:
+    """转存队列：在飞（pending/running）在前，其余按 id 倒序补足 limit 条。"""
+    from backend.emby_server import models as em
+
+    limit = max(1, min(int(limit or 30), 100))
+    active = (db.query(em.TransferJob)
+              .filter(em.TransferJob.status.in_(_TRANSFER_ACTIVE))
+              .order_by(em.TransferJob.id.asc()).all())
+    rest = (db.query(em.TransferJob)
+            .filter(em.TransferJob.status.notin_(_TRANSFER_ACTIVE))
+            .order_by(em.TransferJob.id.desc())
+            .limit(max(0, limit - len(active))).all())
+    jobs = active + rest
+    counts = dict(db.query(em.TransferJob.status,
+                           func.count(em.TransferJob.id))
+                  .group_by(em.TransferJob.status).all())
+    item_names: dict = {}
+    item_ids = {j.item_id for j in jobs}
+    if item_ids:
+        item_names = dict(db.query(em.MediaItem.id, em.MediaItem.name)
+                          .filter(em.MediaItem.id.in_(item_ids)).all())
+    return {
+        "success": True,
+        "counts": {k: int(v) for k, v in counts.items()},
+        "jobs": [_transfer_job_row(j, item_names) for j in jobs],
+    }
+
+
+@tasks_router.get("/tasks/transfer-jobs")
+def transfer_jobs(limit: int = 30, db: Session = Depends(get_db),
+                  admin=Depends(get_current_admin)):
+    return list_transfer_jobs(db, limit=limit)
+
+
+@tasks_router.post("/tasks/transfer-jobs/{job_id}/cancel")
+def cancel_transfer_job(job_id: int, db: Session = Depends(get_db),
+                        admin=Depends(get_current_admin)):
+    """取消一条排队中的转存任务（带审计）。
+
+    原子条件更新与工人认领互斥；没抢到（已被认领/已终态）回 409 并明示
+    当前状态，任务不存在回 404。取消只置终态 cancelled，不删行。
+    """
+    from backend.emby_server import models as em
+
+    updated = (db.query(em.TransferJob)
+               .filter(em.TransferJob.id == job_id,
+                       em.TransferJob.status == "pending")
+               .update({"status": "cancelled",
+                        "error_kind": "cancelled",
+                        "error_detail": "管理员在任务总览手动取消",
+                        "next_retry_at": None,
+                        "lease_expires_at": None,
+                        "claimed_by": None,
+                        "updated_at": datetime.now()},
+                       synchronize_session=False))
+    if updated:
+        _audit(db, admin, "transfer_job.cancel",
+               target_type="transfer_job", target_id=job_id,
+               details={"job_id": job_id})
+        db.commit()
+        return {"success": True, "cancelled": True, "job_id": job_id,
+                "message": "已取消，这条转存不会再被工人执行"}
+    db.rollback()
+    job = db.query(em.TransferJob).filter(em.TransferJob.id == job_id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="转存任务不存在")
+    raise HTTPException(
+        status_code=409,
+        detail=f"任务当前状态是 {job.status}，只有排队中（pending）的任务可以取消")

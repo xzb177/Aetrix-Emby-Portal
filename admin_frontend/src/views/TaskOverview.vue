@@ -5,22 +5,29 @@
  * 只读展示为主；探测开关直接调已有的暂停/恢复接口（admin.ts 里现成的），
  * 不另起新接口。刮削开关（自动扫描/追新/夜间刮削）按重新布局批 5 只读展示，
  * 唯一写入口在媒体库页，本页不写。卡片数据来自 GET /api/admin/tasks/overview。
+ *
+ * 例外（2026-10-30 补半截功能）：页尾「转存任务队列」可取消排队中的转存
+ * 任务（POST /tasks/transfer-jobs/{id}/cancel，后端带审计）；扫描排队的
+ * 取消入口在媒体库页（现成），不在本页重复造。
  */
-import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  BellRing, ExternalLink, Image as ImageIcon,
+  ArrowLeftRight, BellRing, ExternalLink, Image as ImageIcon,
   Radar, RefreshCw, ScanSearch, Sparkles, TriangleAlert,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
 /** 重新布局批 3：采样哈希进度降为本页「进度」区（旧 /sample-hash-progress 跳到本页） */
 import SampleHashProgress from './SampleHashProgress.vue'
 import {
+  cancelTransferJob,
   fetchTasksOverview,
+  fetchTransferJobs,
   pauseProbe,
   resumeProbe,
   type TaskCard,
   type TaskCardStatus,
+  type TransferJobRow,
 } from '@/api/admin'
 
 const cards = ref<TaskCard[]>([])
@@ -104,7 +111,83 @@ async function onToggle(card: TaskCard, val: boolean) {
   }
 }
 
-onMounted(() => load())
+// ---------- 转存任务队列（可取消排队中的任务） ----------
+const jobs = ref<TransferJobRow[]>([])
+const jobCounts = ref<Record<string, number>>({})
+const jobsLoading = ref(false)
+const cancellingId = ref<number | null>(null)
+
+const jobsSummary = computed(() => {
+  const c = jobCounts.value
+  return `排队 ${c.pending ?? 0} · 转存中 ${c.running ?? 0} · 失败 ${c.failed ?? 0}`
+})
+
+function jobChip(status: string): { text: string; cls: string } {
+  switch (status) {
+    case 'pending': return { text: '排队中', cls: 'lib-chip--warn' }
+    case 'running': return { text: '转存中', cls: 'lib-chip--running' }
+    case 'done': return { text: '已完成', cls: 'lib-chip--ok' }
+    case 'failed': return { text: '失败', cls: 'lib-chip--bad' }
+    case 'cancelled': return { text: '已取消', cls: '' }
+    default: return { text: status, cls: '' }
+  }
+}
+
+function triggerText(trigger: string): string {
+  switch (trigger) {
+    case 'manual': return '手动'
+    case 'auto': return '自动'
+    case 'playback': return '首播'
+    default: return trigger
+  }
+}
+
+async function loadJobs() {
+  jobsLoading.value = true
+  try {
+    const res = await fetchTransferJobs()
+    jobs.value = Array.isArray(res.jobs) ? res.jobs : []
+    jobCounts.value = res.counts ?? {}
+  } catch {
+    // 队列读不到只清空本区，拦截器已提示，不拖垮任务卡片
+    jobs.value = []
+    jobCounts.value = {}
+  } finally {
+    jobsLoading.value = false
+  }
+}
+
+async function onCancelJob(job: TransferJobRow) {
+  try {
+    await ElMessageBox.confirm(
+      `取消《${job.item_name}》的转存任务？取消后工人不会再执行这一单，记录保留为「已取消」。`,
+      '取消转存任务',
+      { type: 'warning', confirmButtonText: '确认取消', cancelButtonText: '再想想' },
+    )
+  } catch {
+    return // 管理员反悔，什么都不做
+  }
+  cancellingId.value = job.id
+  try {
+    const res = await cancelTransferJob(job.id)
+    ElMessage.success(res.message || '已取消')
+  } catch {
+    // 拦截器已展示后端明示（如已被工人认领/已终态的 409 原因）；刷新看真实状态
+  } finally {
+    cancellingId.value = null
+    await loadJobs()
+  }
+}
+
+function refreshAll() {
+  load()
+  loadJobs()
+}
+
+onMounted(() => {
+  load()
+  loadJobs()
+})
 </script>
 
 <template>
@@ -116,7 +199,7 @@ onMounted(() => load())
     >
       <template #actions>
         <span class="checked-at">最近更新 {{ fetchedAt || '—' }}</span>
-        <el-button :loading="loading" type="primary" :icon="RefreshCw" @click="() => load()">
+        <el-button :loading="loading" type="primary" :icon="RefreshCw" @click="refreshAll">
           刷新
         </el-button>
       </template>
@@ -192,6 +275,63 @@ onMounted(() => load())
         </footer>
       </section>
     </div>
+
+    <!-- 转存任务队列：排队中的可取消（终态/执行中后端回 409 明示当前状态） -->
+    <section class="task-card jobs-card">
+      <header class="task-head">
+        <ArrowLeftRight :size="16" class="task-icon" />
+        <h3 class="task-title">转存任务队列</h3>
+        <span class="task-status">{{ jobsSummary }}</span>
+      </header>
+      <p class="task-summary">
+        只有排队中（含失败待重试）的任务能取消；正在转存的已被工人认领，点取消会被拒绝并告诉你当前状态。
+        取消只置「已取消」终态、不删记录。扫描排队的取消入口在媒体库页。
+      </p>
+      <el-table v-if="jobs.length" :data="jobs" size="small" class="jobs-table">
+        <el-table-column label="条目" min-width="170">
+          <template #default="{ row }">
+            <span>{{ row.item_name }}</span><span class="muted"> #{{ row.item_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="归属" width="110">
+          <template #default="{ row }">{{ row.owner_scope === 'user' ? `用户 ${row.owner_ref}` : '服主' }}</template>
+        </el-table-column>
+        <el-table-column label="触发" width="80">
+          <template #default="{ row }">{{ triggerText(row.trigger) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <span :class="['lib-chip', jobChip(row.status).cls]">{{ jobChip(row.status).text }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="尝试" width="64" prop="attempts" />
+        <el-table-column label="创建时间" width="168">
+          <template #default="{ row }"><span class="mono">{{ fmtTime(row.created_at) }}</span></template>
+        </el-table-column>
+        <el-table-column label="操作" width="96">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.cancellable"
+              size="small"
+              type="danger"
+              plain
+              :loading="cancellingId === row.id"
+              @click="onCancelJob(row)"
+            >
+              取消
+            </el-button>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <EmptyState
+        v-else-if="!jobsLoading"
+        compact
+        :icon="ArrowLeftRight"
+        title="暂无转存任务"
+        description="用户首播触发或手动发起的转存任务会显示在这里。"
+      />
+    </section>
 
     <!-- 重新布局批 3：采样哈希进度降为本页「进度」区（子页自带 PageHeader 作区标题） -->
     <SampleHashProgress />
@@ -382,6 +522,9 @@ onMounted(() => load())
   padding-top: 10px;
   margin-top: auto;
 }
+
+.jobs-card { margin-top: 16px; }
+.jobs-table { --el-table-bg-color: transparent; --el-table-tr-bg-color: transparent; --el-table-header-bg-color: transparent; }
 
 .muted { color: var(--au-text-3); font-size: 12px; }
 .mono { font-variant-numeric: tabular-nums; }

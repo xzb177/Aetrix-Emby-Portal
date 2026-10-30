@@ -1929,6 +1929,45 @@ export interface TasksOverview {
 /** 任务总览：一次拿回所有后台任务的状态、进度、开关 */
 export const fetchTasksOverview = () => get<TasksOverview>('/tasks/overview')
 
+/** 转存任务队列一行（GET /tasks/transfer-jobs） */
+export interface TransferJobRow {
+  id: number
+  item_id: number
+  item_name: string
+  /** manual 手动 / auto 额度信号 / playback 首播触发 */
+  trigger: string
+  provider: string
+  /** source 服主 / user 用户 */
+  owner_scope: string
+  owner_ref: string
+  /** pending / running / done / failed / cancelled */
+  status: string
+  attempts: number
+  error_kind: string
+  error_detail: string
+  claimed_by: string
+  lease_expires_at: string | null
+  next_retry_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  /** 只有 pending 为 true（与后端取消口径一致） */
+  cancellable: boolean
+}
+
+export interface TransferJobsResponse {
+  success: boolean
+  counts: Record<string, number>
+  jobs: TransferJobRow[]
+}
+
+export const fetchTransferJobs = (limit = 30) =>
+  get<TransferJobsResponse>(`/tasks/transfer-jobs?limit=${limit}`)
+
+/** 取消排队中的转存任务；已被认领/已终态时后端回 409 并在 detail 里明示当前状态 */
+export const cancelTransferJob = (id: number) =>
+  post<{ success: boolean; cancelled: boolean; job_id: number; message: string }>(
+    `/tasks/transfer-jobs/${id}/cancel`, {})
+
 /** 暂停后台探测（跨进程生效） */
 export const pauseProbe = () => post<{ success: boolean; paused: boolean }>(`${E}/scrape/probe/pause`)
 
