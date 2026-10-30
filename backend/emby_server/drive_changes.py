@@ -589,6 +589,118 @@ def set_api_qps(qps: float) -> None:
     _api_limiter.set_qps(qps)
 
 
+# ---------------------------------------------------------------------------
+# 全局 QPS 配置接线（2026-10-30）：限速器本体早就支持运行时调速
+# （set_api_qps），缺的只是配置喂它。本节是唯一接线：
+# - 配置键 drive_api_qps（SystemConfig，管理端「Drive API 限速」卡片，
+#   config_service 家族 drive_api 校验，范围与限速器自身钳制同口径）；
+# - 读取唯一实现 configured_api_qps：store 热读（进程内 60 秒 TTL、
+#   写时失效），无行/非法/异常一律回默认 8，绝不让限速器无界或归零；
+# - 生效唯一实现 refresh_api_qps：_api_get 入口处调用，内部节流
+#   （30 秒至多真读一次），新值与当前值不同才 set_api_qps。跨进程
+#   （api/ea/worker）各自独立复检，管理端保存后的最大生效延迟
+#   = 复检间隔 30 秒 + store 跨进程 TTL 60 秒 ≈ 90 秒；保存所在
+#   进程由 write_config 强刷立即生效。
+# ---------------------------------------------------------------------------
+
+#: Drive API 全局限速 SystemConfig 键（QPS，每秒请求数上限）
+KEY_DRIVE_API_QPS = "drive_api_qps"
+
+#: 默认 QPS：与单例构造值一致（Drive per-user 配额约 10 QPS，8 留余量）
+API_QPS_DEFAULT = 8.0
+
+#: QPS 钳制范围：与 ApiRateLimiter 自身钳制 [1, 20] 同口径
+API_QPS_MIN = 1.0
+API_QPS_MAX = 20.0
+
+#: refresh_api_qps 的最小复检间隔（秒）：_api_get 是热路径，靠它把
+#: 配置读取摊薄到至多 30 秒一次（store 侧另有 60 秒 TTL 兜底）
+_API_QPS_REFRESH_INTERVAL_SEC = 30.0
+
+_api_qps_refresh_lock = threading.Lock()
+#: 上次复检的 time.monotonic() 时刻；0 = 从未复检（首调必刷）
+_api_qps_last_refresh = 0.0
+
+
+def configured_api_qps(db=None) -> float:
+    """读取 SystemConfig 的 drive_api_qps 并钳 [1, 20]。
+
+    无行 / 非法值 / 读取异常一律回默认 8（fail-safe：配置层出任何
+    问题都不许把扫描与 Changes 轮询打停，更不许限速归零或无界）。
+    db 为 None 时自开短会话（_api_get 热路径口径）。
+    """
+    raw = ""
+    own = None
+    try:
+        from backend.integrations import store
+
+        if db is None:
+            from backend.database import SessionLocal
+
+            own = SessionLocal()
+            db = own
+        raw = store.get_value(db, KEY_DRIVE_API_QPS, "")
+    except Exception:
+        return API_QPS_DEFAULT
+    finally:
+        if own is not None:
+            own.close()
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return API_QPS_DEFAULT
+    if value != value:  # NaN
+        return API_QPS_DEFAULT
+    return max(API_QPS_MIN, min(API_QPS_MAX, value))
+
+
+def refresh_api_qps(db=None, *, force: bool = False) -> float:
+    """把配置值同步进全局限速器，返回当前生效 QPS。永不抛。
+
+    非 force 时节流：距上次复检不足 30 秒直接返回当前值（检查点
+    在读配置之前推进，读失败也不会被热路径反复重试）。force=True
+    立即复检（管理端保存后强刷、测试用）。
+    """
+    global _api_qps_last_refresh
+    now = time.monotonic()
+    if not force and now - _api_qps_last_refresh < _API_QPS_REFRESH_INTERVAL_SEC:
+        return _api_limiter._qps
+    with _api_qps_refresh_lock:
+        now = time.monotonic()
+        if not force and now - _api_qps_last_refresh < _API_QPS_REFRESH_INTERVAL_SEC:
+            return _api_limiter._qps
+        _api_qps_last_refresh = now
+    try:
+        target = configured_api_qps(db)
+    except Exception:
+        return _api_limiter._qps
+    if target != _api_limiter._qps:
+        set_api_qps(target)
+        logger.info("Drive API 全局限速已按配置更新: %s QPS", target)
+    return _api_limiter._qps
+
+
+def config_payload(db=None) -> dict:
+    """管理后台读取：当前配置值 + 默认值（前端卡片用）。"""
+    return {
+        "qps": configured_api_qps(db),
+        "defaults": {"qps": API_QPS_DEFAULT},
+    }
+
+
+def write_config(db, *, qps) -> dict:
+    """管理后台写入：config_service 家族校验 → 落库 → 本进程强刷。
+
+    非法值（超 [1, 20] 等）由 save_config 抛 ConfigValueError，
+    端点转 400。跨进程靠各进程 refresh 的有界复检跟上。
+    """
+    from backend import config_service
+
+    config_service.save_config(db, {KEY_DRIVE_API_QPS: qps}, schema="drive_api")
+    refresh_api_qps(db, force=True)
+    return config_payload(db)
+
+
 def _api_get(url: str, token: str, params: dict) -> dict:
     """Drive API GET（带风控安全重试）。
 
@@ -602,6 +714,7 @@ def _api_get(url: str, token: str, params: dict) -> dict:
     - 其他 4xx：直接抛，不重试
     - 每次请求前过全局速率限制器（令牌桶），并发叠加不超标
     """
+    refresh_api_qps()
     _retry_state.retry_count = 0
     last_exc: Exception | None = None
     for attempt in range(API_MAX_RETRIES + 1):

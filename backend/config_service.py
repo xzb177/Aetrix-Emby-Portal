@@ -44,6 +44,8 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "items_cache": config_schema.ITEMS_CACHE_CONFIG_SCHEMA,
     # 转存调度（2026-10-30）：跨 provider 开关 + 三个并发上限
     "transfer": config_schema.TRANSFER_CONFIG_SCHEMA,
+    # Drive API 全局限速（2026-10-30）：全局令牌桶 QPS
+    "drive_api": config_schema.DRIVE_API_CONFIG_SCHEMA,
     # 播放器登录黑名单（2026-10-30）：规则数组 JSON 校验
     "player_blacklist": config_schema.PLAYER_BLACKLIST_CONFIG_SCHEMA,
     "welfare": config_schema.WELFARE_CONFIG_SCHEMA,
