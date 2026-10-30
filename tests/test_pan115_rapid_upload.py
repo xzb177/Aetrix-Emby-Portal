@@ -170,7 +170,9 @@ class _FakeUser115:
                 "raw": {"data": {"file_id": "upfid", "sha1": sha1}}}
 
     def multipart_upload(self, fileobj, filename, filesize, file_sha1, pid,
-                         range_reader=None):
+                         range_reader=None, resume_session=None,
+                         on_progress=None):
+        # 续传参数桩侧忽略（执行器新版必传；旧桩忽略即兼容）。
         self.multipart_calls.append((filename, filesize, file_sha1, pid))
         self._place(filename, "mpfid", "pcmp", filesize, file_sha1)
         return {"outcome": "uploaded", "fid": "mpfid", "pickcode": "pcmp",
