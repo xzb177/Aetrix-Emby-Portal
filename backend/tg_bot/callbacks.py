@@ -60,8 +60,20 @@ def _handle_menu(db, callback_query: dict) -> None:
         text, markup = "系统繁忙，请稍后再试", handlers.back_markup()
 
     has_photo = bool(msg.get("photo"))
-    ok, err = sender.edit_panel(
-        db, chat_id, message_id, text, markup, has_photo=has_photo)
+    if action == "redpacket" and has_photo:
+        # 发红包发起面板用专属封面图：caption 编辑换不了图，走
+        # editMessageMedia 换图；失败（图不可用/API 拒绝）回退普通
+        # caption 编辑，面板照常打开（仍是品牌图）。
+        ok, err = sender.edit_message_media(
+            db, chat_id, message_id, text, markup,
+            photo_path=layout.REDPACKET_IMAGE)
+        if not ok:
+            logger.debug("tg redpacket media edit failed: err=%s", err)
+            ok, err = sender.edit_panel(
+                db, chat_id, message_id, text, markup, has_photo=True)
+    else:
+        ok, err = sender.edit_panel(
+            db, chat_id, message_id, text, markup, has_photo=has_photo)
     if not ok:
         logger.debug("tg menu edit failed: action=%s err=%s", action, err)
 
