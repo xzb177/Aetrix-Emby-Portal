@@ -27,3 +27,23 @@ def _reset_enrich_worker_caches():
     if isinstance(_w, dict):
         _w.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_transfer_stage_dir(tmp_path, monkeypatch):
+    """跨 provider 源字节暂存是 worker 本地盘状态：测试间必须隔离。
+
+    暂存目录默认挂在 tempfile.gettempdir() 下，同 pytest 进程内跨文件
+    共享会导致「前一文件暂存了同内容、后一文件断言源读取次数」类
+    顺序假失败（2026-10-31 第三单引入时实证：multipart 文件内前一
+    用例暂存了同 key、后一用例哈希遍零次碰源）。每测一个独立目录，
+    且清空进程内 stage 注册表。
+    """
+    monkeypatch.setenv("TRANSFER_STAGE_DIR", str(tmp_path / "transfer-stage"))
+    try:
+        from backend.emby_server import transfer_variant as tv
+        with tv._STAGE_REGISTRY_LOCK:
+            tv._STAGE_REGISTRY.clear()
+    except Exception:
+        pass
+    yield

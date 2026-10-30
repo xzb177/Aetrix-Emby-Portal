@@ -461,6 +461,24 @@ class Pan115AuthError(Pan115Error):
     """115 登录态失效（Cookie 过期 / 被踢）——调用方应提示重新配置 Cookie"""
 
 
+class _ResumeStale(Pan115Error):
+    """分片续传会话不可用（内部信号：调用方 abort 旧会话重走全新上传）"""
+
+
+def _multipart_result_from_complete(body):
+    """complete 回调 JSON → multipart_upload 的 uploaded 结果 dict。"""
+    if not isinstance(body, dict):
+        raise Pan115Error("115 分片上传回调形态异常")
+    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    fid = str(data.get("file_id") or data.get("fid")
+              or data.get("id") or "")
+    pickcode = str(data.get("pick_code") or data.get("pickcode")
+                   or data.get("pc") or "")
+    sha1 = str(data.get("sha1") or "")
+    return {"outcome": "uploaded", "fid": fid, "pickcode": pickcode,
+            "sha1": sha1, "raw": body}
+
+
 # ==================== Cookie 解析 ====================
 
 
@@ -1080,7 +1098,8 @@ class Pan115Client:
         return token
 
     def multipart_upload(self, fileobj, filename: str, filesize: int,
-                         file_sha1: str, pid: str, range_reader=None) -> dict:
+                         file_sha1: str, pid: str, range_reader=None,
+                         resume_session=None, on_progress=None) -> dict:
         """分片（多段）上传：initupload + OSS multipart（>5 GiB 全量路）。
 
         协议步骤见模块「分片上传」节。与 rapid_upload 共用
@@ -1091,12 +1110,33 @@ class Pan115Client:
         不整文件进内存）。返回 ``{"outcome": "uploaded", "fid",
         "pickcode", "sha1", "raw"}``，sha1 为 complete 回调值
         （115 对实际落盘字节算的整文件哈希，可空——调用方与源端
-        透传哈希交叉核对）。任一步失败：best-effort abort 后抛
-        Pan115Error / Pan115AuthError，绝不半成品冒充完成。
+        透传哈希交叉核对）。
+        目的端续传（2026-10-31 第三单）：调用方传 resume_session
+        （上次失败时 on_progress 持久化的 {bucket, object_key,
+        upload_id, callback, parts}）时，先凭 OSS ListParts 校验
+        服务端已成片与持久化一致才续传剩余片；不一致则 abort 旧会
+        话重走全新上传。on_progress 收到 {"event": "init"/"part"/
+        "failed", "session"/"number"/"etag"}，供调用方持久化会话。
+        失败语义：不传 on_progress 的旧调用方维持原口径——任一步
+        失败 best-effort abort 后抛；传了 on_progress 时失败不 abort
+        （会话留给重试续传，终态清理由调用方经 abort_multipart_
+        session 做），绝不半成品冒充完成。
         """
         filesize = int(filesize)
         if filesize <= 0:
             raise Pan115Error("分片上传文件大小非法")
+        if resume_session:
+            try:
+                return self._multipart_resume(
+                    fileobj, filesize, file_sha1, resume_session, on_progress)
+            except _ResumeStale:
+                # 旧会话不可用：best-effort abort 后重走全新上传
+                try:
+                    self.abort_multipart_session(resume_session)
+                except Exception:
+                    pass
+            except Pan115AuthError:
+                raise
         resp = self._upload_init(filename, filesize, file_sha1, pid,
                                  range_reader=range_reader)
         if resp.get("status") == 2:
@@ -1115,25 +1155,117 @@ class Pan115Client:
                 "（分片上传 complete 后无法落盘）")
         token = self.upload_token()
         upload_id = self._oss_multipart_init(token, bucket, object_key)
+        session = {"bucket": bucket, "object_key": object_key,
+                   "upload_id": upload_id, "callback": callback, "parts": []}
+
+        def _emit_part(number, etag):
+            session["parts"].append({"PartNumber": number, "ETag": etag})
+            if on_progress is not None:
+                on_progress({"event": "part", "number": number,
+                             "etag": etag})
+
+        if on_progress is not None:
+            on_progress({"event": "init",
+                         "session": dict(session, parts=list(session["parts"]))})
         try:
             parts = self._oss_upload_parts(
-                token, bucket, object_key, upload_id, fileobj, filesize)
+                token, bucket, object_key, upload_id, fileobj, filesize,
+                on_part=_emit_part)
             body = self._oss_multipart_complete(
                 token, bucket, object_key, upload_id, parts, callback,
                 str(file_sha1).strip().upper())
         except Exception:
-            self._oss_multipart_abort(token, bucket, object_key, upload_id)
+            if on_progress is None:
+                self._oss_multipart_abort(token, bucket, object_key, upload_id)
+            else:
+                on_progress({"event": "failed",
+                             "session": dict(session,
+                                             parts=list(session["parts"]))})
             raise
-        if not isinstance(body, dict):
-            raise Pan115Error("115 分片上传回调形态异常")
-        data = body.get("data") if isinstance(body.get("data"), dict) else body
-        fid = str(data.get("file_id") or data.get("fid")
-                  or data.get("id") or "")
-        pickcode = str(data.get("pick_code") or data.get("pickcode")
-                       or data.get("pc") or "")
-        sha1 = str(data.get("sha1") or "")
-        return {"outcome": "uploaded", "fid": fid, "pickcode": pickcode,
-                "sha1": sha1, "raw": body}
+        return _multipart_result_from_complete(body)
+
+    def _multipart_resume(self, fileobj, filesize, file_sha1,
+                          resume_session, on_progress):
+        """续传已持久化的分片会话：ListParts 校验一致才续剩余片。"""
+        bucket = str(resume_session.get("bucket") or "")
+        object_key = str(resume_session.get("object_key") or "")
+        upload_id = str(resume_session.get("upload_id") or "")
+        callback = resume_session.get("callback")
+        if not (bucket and object_key and upload_id
+                and isinstance(callback, dict) and callback.get("callback")):
+            raise _ResumeStale("续传会话缺关键字段")
+        try:
+            token = self.upload_token()
+        except Pan115AuthError:
+            raise
+        except Exception as exc:
+            raise _ResumeStale(f"续传取凭据失败：{exc}") from exc
+        try:
+            server_parts = self._oss_list_parts(token, bucket, object_key,
+                                                upload_id)
+        except Pan115AuthError:
+            raise
+        except Exception as exc:
+            raise _ResumeStale(f"ListParts 失败：{exc}") from exc
+        saved = []
+        for part in resume_session.get("parts") or []:
+            try:
+                # ETag 比较归一化（去引号大写）：PUT 回执原样带引号、
+                # ListParts 回执同样带引号，两边形态不必逐字相同。
+                saved.append({"PartNumber": int(part["PartNumber"]),
+                              "ETag": str(part["ETag"]).strip()
+                              .strip('"').upper()})
+            except Exception:
+                raise _ResumeStale("续传会话片清单形态非法")
+        saved.sort(key=lambda p: p["PartNumber"])
+        if ([(p["PartNumber"], p["ETag"]) for p in saved]
+                != [(p["PartNumber"], p["ETag"]) for p in server_parts]
+                or [p["PartNumber"] for p in saved]
+                != list(range(1, len(saved) + 1))):
+            raise _ResumeStale("服务端已成片与持久化会话不一致")
+        partsize = _determine_partsize(filesize)
+        start_offset = len(saved) * partsize
+        if start_offset >= filesize:
+            raise _ResumeStale("续传偏移越界")
+
+        def _emit_part(number, etag):
+            saved.append({"PartNumber": number, "ETag": etag})
+            if on_progress is not None:
+                on_progress({"event": "part", "number": number,
+                             "etag": etag})
+
+        try:
+            self._oss_upload_parts(
+                token, bucket, object_key, upload_id, fileobj, filesize,
+                start_number=len(saved) + 1, start_offset=start_offset,
+                on_part=_emit_part)
+        except Exception:
+            if on_progress is not None:
+                on_progress({"event": "failed",
+                             "session": {"bucket": bucket,
+                                         "object_key": object_key,
+                                         "upload_id": upload_id,
+                                         "callback": callback,
+                                         "parts": list(saved)}})
+            raise
+        body = self._oss_multipart_complete(
+            token, bucket, object_key, upload_id, list(saved), callback,
+            str(file_sha1).strip().upper())
+        return _multipart_result_from_complete(body)
+
+    def abort_multipart_session(self, session):
+        """best-effort 取消持久化分片会话（终态清理用，失败不抛）。"""
+        try:
+            session = session or {}
+            upload_id = str(session.get("upload_id") or "")
+            if not upload_id:
+                return
+            token = self.upload_token()
+            self._oss_multipart_abort(
+                token, session.get("bucket") or PAN115_OSS_DEFAULT_BUCKET,
+                session.get("object_key") or "", upload_id)
+        except Exception:
+            pass
 
     def _oss_multipart_init(self, token, bucket, object_key):
         query = {"sequential": "1", "uploads": "1"}
@@ -1148,21 +1280,25 @@ class Pan115Client:
         return upload_id
 
     def _oss_upload_parts(self, token, bucket, object_key, upload_id,
-                          fileobj, filesize):
-        """串行逐片 PUT：自 fileobj 头部顺序读满整文件。
+                          fileobj, filesize, start_number=1, start_offset=0,
+                          on_part=None):
+        """串行逐片 PUT：默认自 fileobj 头部顺序读满整文件。
 
         每片读满 partsize（尾片除外），读短即协议失败；每片校验
         ETag，失败按 _MULTIPART_PART_ATTEMPTS 有限重试（同片字节
         已在内存，重试不重读源）。返回 [{PartNumber, ETag}]。
+        续传时 start_number/start_offset 从已成片后继续（片号与偏
+        移一一对应：start_offset == (start_number - 1) * partsize）；
+        每片成功后调 on_part(number, etag)（供调用方持久化会话）。
         """
         partsize = _determine_partsize(filesize)
         try:
-            fileobj.seek(0)
+            fileobj.seek(start_offset)
         except Exception:  # noqa: BLE001 — 不可 seek 的流按当前位读
             pass
         parts = []
-        offset = 0
-        number = 1
+        offset = start_offset
+        number = start_number
         while offset < filesize:
             want = min(partsize, filesize - offset)
             chunk = _read_exact(fileobj, want)
@@ -1173,8 +1309,41 @@ class Pan115Client:
             etag = self._oss_upload_part_retry(
                 token, bucket, object_key, upload_id, number, chunk)
             parts.append({"PartNumber": number, "ETag": etag})
+            if on_part is not None:
+                on_part(number, etag)
             offset += want
             number += 1
+        return parts
+
+    def _oss_list_parts(self, token, bucket, object_key, upload_id):
+        """列出 OSS 分片会话已成片（续传校验用）。
+
+        返回 [{PartNumber, ETag}]（ETag 去引号大写，按片号升序）；
+        会话不存在/已完成时服务端报错，调用方按 _ResumeStale 处理。
+        """
+        query = {"uploadId": upload_id}
+        headers = _oss_auth_headers(token, "GET", bucket, object_key,
+                                    query)
+        _status, _h, content = _http_full(
+            "GET", _oss_object_url(bucket, object_key, query),
+            headers=headers)
+        try:
+            root = ET.fromstring(content)
+        except Exception as exc:
+            raise Pan115Error(
+                f"115 分片 ListParts 响应非 XML：{exc}") from exc
+        parts = []
+        for part in root.findall(".//Part"):
+            number = part.findtext("PartNumber")
+            etag = part.findtext("ETag")
+            if number is None or etag is None:
+                continue
+            try:
+                parts.append({"PartNumber": int(number),
+                              "ETag": etag.strip().strip('"').upper()})
+            except ValueError:
+                continue
+        parts.sort(key=lambda p: p["PartNumber"])
         return parts
 
     def _oss_upload_part_retry(self, token, bucket, object_key,

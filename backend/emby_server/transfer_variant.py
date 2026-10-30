@@ -110,7 +110,10 @@ copy、真实用户令牌、SA 暂存分享链均未实测，不许写成已实�
 
 import asyncio
 import hashlib
+import json
 import os
+import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -4474,6 +4477,294 @@ class _HashingReader:
         return self._digest.hexdigest()
 
 
+# ---- 跨 provider 源字节暂存（在途合并＋断点续传，2026-10-31 第三单）----
+# 生产案：过去 24h 跨盘到 pan115 共 71 单、92 次 attempts——源平均多读
+# 约三成、最狠一单 9 遍。根因是搬字节不落盘：每次尝试都从源盘重读
+# 全部字节，且同内容多人转存时各读各的。
+# 机制：同内容（源 provider＋源盘标识＋源 fid＋大小）第一次搬运时边
+# 读边写 worker 本地暂存文件（顺序前缀口径）；后续同内容单（不分
+# 用户——各用户仍向本人盘各传一份、变体行各归各人）直接读暂存、源盘
+# 零次读取，即「在途合并」落到字节层；失败重试时已暂存前缀直接复
+# 用，简单上传整单重发也不重读源，即源侧「断点续传」。
+# 安全边界：
+# - 暂存是 best-effort：目录不可写、余量不足、总量超帽、任何异常都
+#   静默退回现行直读源口径，绝不阻塞转存本身；
+# - 暂存键不含用户身份（源字节归共享原件/服主源），但变体登记与落
+#   盘仍按 job 归属各走各的——暂存绝不产生跨用户变体共用；
+# - 目的端 sha1 交叉核对（simple 回调为准、分片从严）仍在，暂存字
+#   节陈旧时由核对兜底，不会把错字节登记成副本；
+# - 清扫只看 mtime（TTL 外删）：进行中的暂存因持续写盘 mtime 新
+#   鲜、不会被误删；总量帽只在新建时把关（拒绝新建、不删已有），
+#   避免删掉正在被读的文件；
+# - 暂存文件只活在 worker 容器本地盘（默认 /tmp），容器重建即失，
+#   丢失只退回现行口径、不影响任何任务语义。
+def _stage_dir() -> str:
+    configured = (os.environ.get("TRANSFER_STAGE_DIR") or "").strip()
+    if configured:
+        return configured
+    return os.path.join(tempfile.gettempdir(), "aetrix-transfer-stage")
+
+
+def _stage_ttl_sec() -> int:
+    try:
+        return max(60, int(os.environ.get("TRANSFER_STAGE_TTL_SEC", "21600")))
+    except (TypeError, ValueError):
+        return 21600
+
+
+def _stage_max_total_bytes() -> int:
+    try:
+        return max(0, int(os.environ.get(
+            "TRANSFER_STAGE_MAX_TOTAL_BYTES", str(8 * 1024 ** 3))))
+    except (TypeError, ValueError):
+        return 8 * 1024 ** 3
+
+
+def _stage_key(provider, drive_id, fid, size) -> str:
+    raw = f"{provider}|{drive_id or ''}|{fid or ''}|{int(size)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+class _SourceStage:
+    """单个内容的源字节暂存：顺序前缀口径（只接受从头顺序写）。
+
+    读取器（_SegmentReader、分片逐片读）全是顺序读，因此「已暂存
+    前缀」足以刻画可用范围；非顺序读（如秒传 sign_check 的区间读）
+    不进暂存、不推进前缀。文件与 sidecar 成对存在：sidecar 记前
+    缀，进程重启后凭 sidecar 恢复；文件短于 sidecar 前缀（写盘中
+    崩溃）时前缀归零重建，绝不把半截字节当已暂存。
+    """
+
+    def __init__(self, directory, key, size):
+        self.dir = directory
+        self.key = key
+        self.size = int(size)
+        self.bin_path = os.path.join(directory, f"st-{key}.bin")
+        self.meta_path = os.path.join(directory, f"st-{key}.json")
+        self._lock = threading.Lock()
+        self._prefix = self._load_prefix()
+
+    def _load_prefix(self):
+        try:
+            if not os.path.exists(self.bin_path):
+                return 0
+            with open(self.meta_path, "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+            prefix = int(meta.get("prefix", 0))
+            actual = os.path.getsize(self.bin_path)
+            if actual < prefix:
+                return 0
+            if actual > prefix:
+                # 写盘后未来得及记 sidecar：多出字节未经确认，截断
+                with open(self.bin_path, "r+b") as fh:
+                    fh.truncate(prefix)
+            return prefix
+        except Exception:
+            return 0
+
+    def _sync_prefix_locked(self):
+        """文件是顺序追加写成的唯一事实来源：外部删除/截断时校准。"""
+        try:
+            if not os.path.exists(self.bin_path):
+                self._prefix = 0
+            else:
+                actual = os.path.getsize(self.bin_path)
+                if actual < self._prefix:
+                    self._prefix = actual
+        except OSError:
+            self._prefix = 0
+
+    @property
+    def staged_prefix(self):
+        with self._lock:
+            self._sync_prefix_locked()
+            return self._prefix
+
+    @property
+    def complete(self):
+        with self._lock:
+            self._sync_prefix_locked()
+            return self._prefix >= self.size
+
+    def has(self, start, end):
+        """闭区间 [start, end] 是否已全部暂存。"""
+        with self._lock:
+            self._sync_prefix_locked()
+            return 0 <= start <= end < self._prefix
+
+    def read(self, start, end):
+        """读已暂存区间（调用方先 has() 确认；文件丢失时报 ValueError）。"""
+        with self._lock:
+            self._sync_prefix_locked()
+            if not (0 <= start <= end < self._prefix):
+                raise ValueError(
+                    f"暂存未命中：[{start}, {end}] 前缀 {self._prefix}")
+            with open(self.bin_path, "rb") as fh:
+                fh.seek(start)
+                return fh.read(end - start + 1)
+
+    def tee(self, start, data):
+        """顺手暂存：只接受 start == 当前前缀的顺序写，其余忽略。"""
+        if not data:
+            return
+        with self._lock:
+            self._sync_prefix_locked()
+            if start != self._prefix:
+                return
+            try:
+                with open(self.bin_path, "ab") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                self._prefix += len(data)
+                self._write_meta_locked()
+            except Exception:
+                pass  # best-effort：写暂存失败不影响搬运本身
+
+    def _write_meta_locked(self):
+        tmp = self.meta_path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"key": self.key, "size": self.size,
+                           "prefix": self._prefix}, fh)
+            os.replace(tmp, self.meta_path)
+        except Exception:
+            pass
+
+
+_STAGE_REGISTRY = {}
+_STAGE_REGISTRY_LOCK = threading.Lock()
+
+
+def _sweep_stages(directory, ttl_sec):
+    """删 mtime 超 TTL 的暂存（.bin＋.json 成对删）。"""
+    try:
+        now = time.time()
+        for name in os.listdir(directory):
+            if not (name.startswith("st-") and name.endswith(".bin")):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                if now - os.path.getmtime(path) > ttl_sec:
+                    os.remove(path)
+                    meta = path[:-4] + ".json"
+                    if os.path.exists(meta):
+                        os.remove(meta)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _acquire_source_stage(provider, drive_id, fid, size):
+    """取/建内容暂存；任何异常或资源不足时回 None（调用方直读源）。"""
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        return None
+    if not fid or size <= 0:
+        return None
+    try:
+        directory = _stage_dir()
+        os.makedirs(directory, exist_ok=True)
+        _sweep_stages(directory, _stage_ttl_sec())
+        total = 0
+        for name in os.listdir(directory):
+            if name.startswith("st-") and name.endswith(".bin"):
+                try:
+                    total += os.path.getsize(os.path.join(directory, name))
+                except OSError:
+                    pass
+        if total + size > _stage_max_total_bytes():
+            return None
+        try:
+            free = shutil.disk_usage(directory).free
+        except OSError:
+            free = 0
+        if free < size + (1 * 1024 ** 3):
+            return None
+        key = _stage_key(provider, drive_id, fid, size)
+        with _STAGE_REGISTRY_LOCK:
+            stage = _STAGE_REGISTRY.get(key)
+            if (stage is None or stage.size != size
+                    or stage.dir != directory):
+                stage = _SourceStage(directory, key, size)
+                _STAGE_REGISTRY[key] = stage
+            return stage
+    except Exception:
+        return None
+
+
+def _staged_fetch(raw_fetch, stage):
+    """暂存包装：命中前缀直接读盘，未命中走源并顺手暂存。"""
+    if stage is None:
+        return raw_fetch
+
+    def _fetch(start, end):
+        if stage.has(start, end):
+            return stage.read(start, end)
+        data = raw_fetch(start, end)
+        stage.tee(start, data)
+        return data
+
+    return _fetch
+
+
+def _multipart_sidecar_path(job_id):
+    return os.path.join(_stage_dir(), f"mp-{int(job_id)}.json")
+
+
+def _load_multipart_session(job_id, content_key, size, dest_cid):
+    """读分片续传会话：content_key＋大小＋目标目录三项全对才认。"""
+    try:
+        with open(_multipart_sidecar_path(job_id), "r",
+                  encoding="utf-8") as fh:
+            data = json.load(fh)
+        if (data.get("content_key") != content_key
+                or int(data.get("size", 0)) != int(size)
+                or data.get("dest_cid") != dest_cid):
+            return None
+        session = data.get("session") or {}
+        if not all(session.get(k) for k in
+                   ("bucket", "object_key", "upload_id", "callback")):
+            return None
+        parts = []
+        for part in session.get("parts") or []:
+            try:
+                parts.append({"PartNumber": int(part["PartNumber"]),
+                              "ETag": str(part["ETag"])})
+            except Exception:
+                return None
+        session["parts"] = parts
+        return session
+    except Exception:
+        return None
+
+
+def _save_multipart_session(job_id, content_key, size, dest_cid, session):
+    try:
+        directory = _stage_dir()
+        os.makedirs(directory, exist_ok=True)
+        path = _multipart_sidecar_path(job_id)
+        tmp = path + ".tmp"
+        payload = {"content_key": content_key, "size": int(size),
+                   "dest_cid": dest_cid, "session": session}
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _drop_multipart_session(job_id):
+    try:
+        path = _multipart_sidecar_path(job_id)
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
 _HEX40_CHARS = frozenset("0123456789abcdef")
 
 
@@ -5656,8 +5947,16 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
             db, job, "unsupported",
             "Drive 源文件大小未知/为零，无法分段搬运（不猜大小）")
 
-    def _fetch(start, end):
+    # 源字节暂存（在途合并＋源侧断点续传）：字节搬运路（哈希遍、
+    # simple、分片）走暂存包装；秒传接力的 sign_check 区间读保持
+    # 直读源（稀疏读不进暂存、不依赖暂存）。
+    _stage = _acquire_source_stage("drive", source_drive, orig_fid, size)
+    _content_key = _stage_key("drive", source_drive, orig_fid, size)
+
+    def _raw_fetch(start, end):
         return drive_api.download_range(source_drive, orig_fid, start, end)
+
+    _fetch = _staged_fetch(_raw_fetch, _stage)
 
     def _open_client():
         client = _make_pan115_client(cookie)
@@ -5731,7 +6030,7 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                     "outcome": _schedule_retry(db, job, exc)}
         try:
             rapid = client.rapid_upload(name, size, stored_sha1, dest_cid,
-                                        range_reader=_fetch)
+                                        range_reader=_raw_fetch)
         except Pan115AuthError as exc:
             return _auth_fail(exc)
         except _CrossAuthError as exc:
@@ -5800,9 +6099,46 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         "文件超过 115 简单上传 5 GiB 上限且无可信整"
                         "文件 sha1（initupload 分片协议必填），"
                         "不静默回落")
-                result = client.multipart_upload(
-                    reader, name, size, stored_sha1, dest_cid,
-                    range_reader=_fetch)
+                mp_session = _load_multipart_session(
+                    job.id, _content_key, size, dest_cid)
+
+                # 会话状态放闭包里递进（不依赖 sidecar 回读：回读的
+                # 校验会把 callback 为空等中间态判掉，导致续传丢会话）。
+                _mp_state = {"session": mp_session}
+
+                def _mp_progress(ev):
+                    if ev.get("event") == "init":
+                        _mp_state["session"] = ev.get("session") or {}
+                        _save_multipart_session(
+                            job.id, _content_key, size, dest_cid,
+                            _mp_state["session"])
+                    elif ev.get("event") == "part":
+                        sess = _mp_state["session"] or {}
+                        parts = list(sess.get("parts") or [])
+                        parts.append({"PartNumber": ev["number"],
+                                      "ETag": ev["etag"]})
+                        sess["parts"] = parts
+                        _save_multipart_session(
+                            job.id, _content_key, size, dest_cid, sess)
+
+                try:
+                    result = client.multipart_upload(
+                        reader, name, size, stored_sha1, dest_cid,
+                        range_reader=_fetch, resume_session=mp_session,
+                        on_progress=_mp_progress)
+                except (Pan115AuthError, _CrossAuthError):
+                    raise
+                except Exception as exc:
+                    outcome = _schedule_retry(db, job, exc)
+                    if outcome == "failed" and mp_session:
+                        # 终态：清掉续传会话并 best-effort abort 旧会话
+                        try:
+                            client.abort_multipart_session(mp_session)
+                        except Exception:
+                            pass
+                        _drop_multipart_session(job.id)
+                    return {"job_id": job.id, "outcome": outcome}
+                _drop_multipart_session(job.id)
                 if (result or {}).get("outcome") == "hit":
                     # 秒传开关关时分片初始化可直接判存量命中：与
                     # 秒传命中同收尾（目录核对 + 登记），不算全量路。
@@ -5929,7 +6265,7 @@ def _run_cross_115_to_drive(db, job, item):
         return {"job_id": job.id,
                 "outcome": _schedule_retry(db, job, exc)}
 
-    def _fetch(start, end):
+    def _raw_fetch(start, end):
         headers = {"User-Agent": server_client.ua,
                    "Referer": "https://115.com/",
                    "Cookie": server_client.cookie,
@@ -5952,6 +6288,12 @@ def _run_cross_115_to_drive(db, job, item):
                 f"115 源下载短读：要 {end - start + 1} 字节，"
                 f"实得 {len(data)} 字节")
         return data
+
+    # 源字节暂存（与 Drive→115 同口径）：115 源 Range 读同样先走暂存，
+    # 失败重试与同内容多人转存都不再重读服主 115 源。
+    _fetch = _staged_fetch(
+        _raw_fetch,
+        _acquire_source_stage("pan115", "", item.drive_file_id or "", size))
 
     # 透传哈希包装（2026-10-30 扩围）：字节实际流经本进程，顺手
     # 算整文件 sha1 供下方沉淀——源列表没给 sha1 时也不再白搬。
