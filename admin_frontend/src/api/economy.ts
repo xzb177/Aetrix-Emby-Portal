@@ -460,6 +460,24 @@ export const fetchMountServingConfig = () =>
 export const updateMountServingConfig = (payload: MountServingConfigPayload) =>
   put<MountServingConfig>('/mount-serving-config', payload)
 
+// ==================== Drive API 限速（2026-10-30） ====================
+// 后端：backend/api/admin_economy.py（/api/admin/drive-api-config）
+// 配置读取唯一实现：backend/emby_server/drive_changes.py
+
+export interface DriveApiConfig {
+  /** Drive API 全局速率上限（QPS）：扫描列举与 Changes 增量共用，默认 8，范围 1~20 */
+  qps: number
+  defaults: { qps: number }
+}
+
+export type DriveApiConfigPayload = { qps: number }
+
+export const fetchDriveApiConfig = () =>
+  get<DriveApiConfig>('/drive-api-config')
+
+export const updateDriveApiConfig = (payload: DriveApiConfigPayload) =>
+  put<DriveApiConfig>('/drive-api-config', payload)
+
 // ==================== 到期续费提醒（v2.8.0） ====================
 // 后端：backend/api/reminders_admin.py + backend/reminders.py
 

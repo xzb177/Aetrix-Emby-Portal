@@ -25,7 +25,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 import {
   CalendarCheck, Coins, Globe, KeyRound, Layers, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, Lock, Zap,
-  DatabaseBackup, History, TriangleAlert, SlidersHorizontal, PlugZap, Rocket, HardDrive,
+  DatabaseBackup, History, TriangleAlert, SlidersHorizontal, PlugZap, Rocket, HardDrive, Gauge,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -43,6 +43,7 @@ import {
   fetchTransferConfig, updateTransferConfig, type TransferConfig,
   fetchMountServingConfig, updateMountServingConfig,
   type MountServingConfigPayload, type MountServingConfig,
+  fetchDriveApiConfig, updateDriveApiConfig, type DriveApiConfig,
 } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
@@ -563,7 +564,7 @@ async function load() {
 onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
-  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer(), loadMountServing()])
+  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer(), loadMountServing(), loadDriveApi()])
   // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -817,6 +818,44 @@ async function saveMountServingCore(): Promise<boolean> {
   }
 }
 
+/** ==================== Drive API 限速卡片（独立 endpoint，非通用分组） ==================== */
+const driveApi = reactive({ qps: 8 })
+const driveApiOriginal = reactive({ qps: 8 })
+const driveApiLoading = ref(false)
+
+function applyDriveApi(data: DriveApiConfig) {
+  driveApi.qps = Number(data.qps) || 8
+  Object.assign(driveApiOriginal, driveApi)
+}
+
+async function loadDriveApi() {
+  driveApiLoading.value = true
+  try {
+    applyDriveApi(await fetchDriveApiConfig())
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+  } finally {
+    driveApiLoading.value = false
+  }
+}
+
+const driveApiDirty = computed(() => driveApi.qps !== driveApiOriginal.qps)
+
+/** Drive API 限速保存核心：返回是否成功，失败时拦截器/校验已提示。 */
+async function saveDriveApiCore(): Promise<boolean> {
+  if (!Number.isFinite(driveApi.qps) || driveApi.qps < 1 || driveApi.qps > 20) {
+    ElMessage.error('Drive API 速率上限须在 1~20 之间')
+    return false
+  }
+  try {
+    applyDriveApi(await updateDriveApiConfig({ qps: driveApi.qps }))
+    return true
+  } catch {
+    // 拦截器已提示
+    return false
+  }
+}
+
 /** 运营参数页签顶部的分组跳转：分组多（注册 + 9 块 + 防盗链），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
   document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -844,6 +883,7 @@ async function reloadAll() {
   loadHotlink()
   loadItemsDedupCache()
   loadMountServing()
+  loadDriveApi()
   if (tab.value === 'danger') loadDanger()
 }
 
@@ -871,7 +911,8 @@ const hasAdvanced = (g: Group): boolean => g.fields.some((f) => f.advanced)
 const dirtyGroups = computed(() => GROUPS.filter((g) => isDirty(g)))
 const dirtyCount = computed(() =>
   dirtyGroups.value.length + (regDirty.value ? 1 : 0) + (hotlinkDirty.value ? 1 : 0)
-  + (itemsDedupCacheDirty.value ? 1 : 0) + (transferDirty.value ? 1 : 0) + (mountServingDirty.value ? 1 : 0),
+  + (itemsDedupCacheDirty.value ? 1 : 0) + (transferDirty.value ? 1 : 0) + (mountServingDirty.value ? 1 : 0)
+  + (driveApiDirty.value ? 1 : 0),
 )
 const anyDirty = computed(() => dirtyCount.value > 0)
 const savingAll = ref(false)
@@ -979,6 +1020,10 @@ async function saveAll() {
       if (await saveMountServingCore()) saved += 1
       else failed.push('挂载直读')
     }
+    if (driveApiDirty.value) {
+      if (await saveDriveApiCore()) saved += 1
+      else failed.push('Drive API 限速')
+    }
   } finally {
     savingAll.value = false
   }
@@ -1010,6 +1055,7 @@ async function discardAll() {
   loadItemsDedupCache()
   loadTransfer()
   loadMountServing()
+  loadDriveApi()
 }
 
 // ==================== 危险操作（Phase 5） ====================
@@ -1244,6 +1290,16 @@ watch(
               >
                 <HardDrive :size="13" />挂载直读
                 <span v-if="mountServingDirty" class="chip-dot" aria-label="有未保存的改动" />
+              </button>
+              <button
+                v-if="sec.id === 'playback'"
+                type="button"
+                class="group-chip"
+                :class="{ 'is-dirty': driveApiDirty }"
+                @click="scrollToGroup('drive-api')"
+              >
+                <Gauge :size="13" />Drive 限速
+                <span v-if="driveApiDirty" class="chip-dot" aria-label="有未保存的改动" />
               </button>
             </div>
           </nav>
@@ -1705,6 +1761,39 @@ watch(
                     <el-input v-model="mountServing.local_roots" placeholder="如 3=/mnt/gdrive-direct" />
                   </div>
                   <span class="field-hint">格式 id=/绝对路径，逗号分隔；须与白名单同时命中才生效，挂载文件缺失会明确报错、不静默换源</span>
+                </div>
+              </el-form-item>
+            </el-form>
+          </SectionCard>
+          <!-- Drive API 限速：独立卡片，归「播放与风控」段 -->
+          <SectionCard
+            v-if="sec.id === 'playback'"
+            id="group-drive-api"
+            title="Drive API 限速"
+            :icon="Gauge"
+            description="扫描列举与 Changes 增量轮询共用的 Drive API 全局请求速率上限。调高能加快扫描，也会更贴近谷歌配额；保存后本页所在进程立即生效，其余进程在一分多钟内陆续跟上。"
+            :tone="driveApiDirty ? 'accent' : 'default'"
+            class="group-card"
+          >
+            <template v-if="driveApiDirty" #actions>
+              <span class="au-badge au-badge-amber">未保存</span>
+            </template>
+
+            <el-form label-position="top" class="field-form field-grid">
+              <el-form-item label="全局速率上限">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="driveApi.qps"
+                      :min="1"
+                      :max="20"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">次/秒</span>
+                  </div>
+                  <span class="field-hint">全部 Drive API 请求合计不超过这个速率，默认 8。谷歌 per-user 配额约 10 次/秒，实际靠 SA 池轮换分摊到多个账号</span>
                 </div>
               </el-form-item>
             </el-form>

@@ -628,6 +628,44 @@ def mount_serving_update_config(
     return result
 
 
+# ---------- Drive API 全局限速（见 backend/emby_server/drive_changes.py） ----------
+
+class DriveApiConfigRequest(BaseModel):
+    qps: float = 8.0
+
+
+@admin_router.get("/drive-api-config")
+def drive_api_get_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Drive API 限速读取：全局令牌桶 QPS（含默认值）。"""
+    from backend.emby_server import drive_changes
+
+    return drive_changes.config_payload(db)
+
+
+@admin_router.put("/drive-api-config")
+def drive_api_update_config(
+    request: DriveApiConfigRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Drive API 限速写入：超 [1, 20] 时 400（中文信息），保存即生效
+    （本进程强刷；api/ea/worker 其余进程有界延迟内跟上，见
+    drive_changes.refresh_api_qps）。"""
+    from backend.emby_server import drive_changes
+
+    try:
+        result = drive_changes.write_config(db, qps=request.qps)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(db, current_admin, "drive_api_update_config", "system", None,
+           {"qps": request.qps})
+    db.commit()
+    return result
+
+
 # ---------- 经济统计 ----------
 
 def _checkin_day_key(day_val) -> str:

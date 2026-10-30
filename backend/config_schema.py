@@ -281,6 +281,14 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "transfer_rebind_waiver_max_uses": ("int", 1, 20),
 }
 
+# Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的
+# 全局令牌桶 QPS 上限。读取唯一实现 drive_changes.configured_api_qps
+# （热读 + 周期复检），范围与限速器自身钳制 [1, 20] 同口径；
+# 无行时读取侧回退默认 8。
+DRIVE_API_CONFIG_SCHEMA: dict[str, tuple] = {
+    "drive_api_qps": ("float", 1, 20),
+}
+
 
 def coerce_player_blacklist_rules(value: Any, *, strict: bool) -> list[dict]:
     """播放器黑名单规则结构归一：[{label, match[], exclude[]}]。
