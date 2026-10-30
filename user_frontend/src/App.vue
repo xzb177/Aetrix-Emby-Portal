@@ -52,7 +52,7 @@ const showChrome = computed(
 )
 
 /**
- * 桌面「探险世界」激活且在首页时，世界自带 HUD（品牌/积分/等级/头像），
+ * 桌面「探险世界」激活且在首页时，世界自带 HUD（品牌/能量/等级/头像），
  * 隐藏全局顶栏避免双层导航；其他页面顶栏照常。
  */
 const { worldActive: homeWorldActive } = useHomeViewMode()

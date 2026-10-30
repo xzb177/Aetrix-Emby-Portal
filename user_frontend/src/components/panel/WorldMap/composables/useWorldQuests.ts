@@ -55,7 +55,7 @@ export function useWorldQuests(params: {
         key: 'checkin',
         label: '每日签到',
         done: checkinDone.value,
-        rw: checkinDone.value ? '已完成' : typeof bp === 'number' && bp > 0 ? `+${bp} 积分` : '',
+        rw: checkinDone.value ? '已完成' : typeof bp === 'number' && bp > 0 ? `+${bp} 能量` : '',
       },
       {
         key: 'parcels',

@@ -4,7 +4,7 @@
  * 数据来源（真实接口，勿改名）：
  * - `embyApi.getAccountCard()`  GET /api/user/emby/server → `{ realms?: AccountRealmCard[] }`
  *   （realms 已由后端按 sort_order 排序，前端不再排序）
- * - `homeApi.summary()`        积分 / 签到 / 订阅 / 统计
+ * - `homeApi.summary()`        能量 / 签到 / 订阅 / 统计
  * - `vitalityApi.status()`     能量值（失败时静默降级为 null）
  *
  * 说明：进度条按 home/summary 订阅明细的 start_date → end_date 计算已用占比；无该服 active 订阅明细时为 null，组件按 null 隐藏进度条，前端不编造数据。
@@ -109,7 +109,7 @@ function buildShared(summary: HomeSummary | null, vitality: VitalityStatus | nul
   const vitalityLimit = vitality?.limit_threshold
 
   return {
-    // 积分余额：points.balance?.toLocaleString() ?? '—'
+    // 能量余额：points.balance?.toLocaleString() ?? '—'
     balance: Number.isFinite(balanceValue) ? (balanceValue as number).toLocaleString() : '—',
     // 能量：有 max 用 `${v}/${max}`，只有 vitality 用 String(v)，都没有用 '—'
     vitalityText:

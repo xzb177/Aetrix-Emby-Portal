@@ -196,7 +196,7 @@ function validate(): string {
     }
     if (!Number.isInteger(p.value)) return '奖品价值必须是整数'
     if ((p.type === 'days' || p.type === 'points') && p.value <= 0) {
-      return `${p.type === 'points' ? '积分' : '天数'}奖品的价值必须大于 0`
+      return `${p.type === 'points' ? '能量' : '天数'}奖品的价值必须大于 0`
     }
     if (p.type === 'whitelist' && p.value < 0) return '奖品价值不能为负数'
     if (!Number.isInteger(p.quantity) || p.quantity < 1) return '奖品数量至少为 1'

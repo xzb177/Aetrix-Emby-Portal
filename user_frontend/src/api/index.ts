@@ -341,13 +341,13 @@ export interface AccountRealmCard {
 /** Emby 账号/线路查看权限（没权限时地址类字段置空不下发） */
 export interface ViewPermission {
   granted: boolean
-  /** 当前服是否为公益服（公益服用积分解锁，付费服用订阅） */
+  /** 当前服是否为公益服（公益服用能量解锁，付费服用订阅） */
   realm_free: boolean
-  /** 解锁需要的积分 */
+  /** 解锁需要的能量 */
   unlock_points: number
   /** 解锁有效期天数（0=永久） */
   unlock_days: number
-  /** 用户当前积分余额 */
+  /** 用户当前能量余额 */
   points_balance: number
   /** 已解锁的到期时间（ISO，未解锁/永久为 null） */
   expires_at: string | null
@@ -509,7 +509,7 @@ export const embyApi = {
   // 账号卡（服务器地址 / Emby 用户名 / 播放器一键导入 scheme，scheme 不含密码）
   getAccountCard: () => api.get<never, AccountCard>('/api/user/emby/server'),
 
-  // 公益服：花积分解锁 Emby 账号/线路查看权限（幂等）
+  // 公益服：花能量解锁 Emby 账号/线路查看权限（幂等）
   unlockView: (realmId?: number) =>
     api.post<never, { success: boolean; already: boolean; expires_at: string | null; points_spent?: number; balance?: number }>(
       '/api/user/emby/unlock-view', { realm_id: realmId ?? null }),

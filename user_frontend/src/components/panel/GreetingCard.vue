@@ -1,6 +1,6 @@
 <!-- 桌面发现页左栏 · 个人问候卡（C档第2批）
-     问候两档字排 + 日期行 + 积分/活力/连签 chips，全部真实数据：
-     问候/日期/昵称走 /api/panel/today；积分与连签走签到状态接口；
+     问候两档字排 + 日期行 + 能量/活力/连签 chips，全部真实数据：
+     问候/日期/昵称走 /api/panel/today；能量与连签走签到状态接口；
      活力走活力值接口（403/失败则隐藏该 chip，不编数）。 -->
 <template>
   <section class="d3-card d3-hello" aria-label="个人问候">
@@ -8,7 +8,7 @@
     <span class="h2">{{ nickname }}</span>
     <div class="d3-date-line">{{ dateLine }}</div>
     <div class="d3-chips">
-      <span v-if="points !== null" class="d3-chip">积分 <b>{{ points.toLocaleString('zh-CN') }}</b></span>
+      <span v-if="points !== null" class="d3-chip">能量 <b>{{ points.toLocaleString('zh-CN') }}</b></span>
       <span v-if="vitality !== null" class="d3-chip">活力 <b>{{ vitality }}</b></span>
       <span v-if="streak !== null && streak > 0" class="d3-chip">已连签 <b>{{ streak }} 天</b></span>
     </div>
@@ -70,7 +70,7 @@ const vitality = ref<number | null>(null)
 
 onMounted(() => {
   if (!user.isLoggedIn) return
-  // 积分 + 连签：签到状态接口一次拿齐（与顶栏同口径）
+  // 能量 + 连签：签到状态接口一次拿齐（与顶栏同口径）
   checkinApi.status()
     .then((st) => {
       if (typeof st.points === 'number') points.value = st.points
