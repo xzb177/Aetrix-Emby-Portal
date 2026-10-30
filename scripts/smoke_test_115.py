@@ -171,8 +171,11 @@ check("媒体库绑定账号生效", cookie == "UID=bbb; CID=bbb" and "绑定账
 
 library.account_115_id = acc_off_id  # 绑到停用账号
 db.commit()
-cookie, source = t115.resolve_cookie(db, library=library)
-check("绑定账号停用时回退默认账号", cookie == "UID=aaa; CID=aaa", source)
+try:
+    t115.resolve_cookie(db, library=library)
+    check("绑定账号停用时响亮报错", False)
+except t115.Pan115Error as exc:
+    check("绑定账号停用时响亮报错", "已停用" in str(exc), str(exc))
 library.account_115_id = acc_b_id
 db.commit()
 
