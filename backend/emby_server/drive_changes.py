@@ -81,6 +81,36 @@ class PageTokenExpiredError(Exception):
     """
 
 
+#: 分页护栏（A-021，2026-10-31）：list_changes 与 _list_all 共用同一口径。
+#: Google 一旦回一个卡住的 nextPageToken（或超大变更集），无上限循环会
+#: 钉死守护线程/扫描线程、内存随页线性增长。两处上限先到先停；停表时
+#: 调用方不推进 page token（list_changes 侧抛错由 poll_once 记 error 后
+#: 继续其余盘；_list_all 侧抛 MountError），下轮重放。
+DRIVE_PAGE_GUARD_MAX_PAGES = 1000
+DRIVE_PAGE_GUARD_MAX_ITEMS = 20000
+
+
+class DrivePageGuardError(Exception):
+    """分页护栏停表：页数/条数达到上限，或 nextPageToken 卡住不再前进。"""
+
+
+def _page_guard_reason(pages, total, request_token, next_token):
+    """返回停表原因，否则返回 None。
+
+    只在还有下一页（next_token 非空）时调用：恰好在上限页翻完
+    （末页 next_token 为空）属于正常结束，不触发护栏。
+    request_token 是本页请求用的 pageToken，next_token 是本页返回的
+    nextPageToken；两者相等即服务端没有前进，下一页会原地重复。
+    """
+    if request_token is not None and next_token == request_token:
+        return "nextPageToken 卡住（与本页请求 token 相同）"
+    if pages >= DRIVE_PAGE_GUARD_MAX_PAGES:
+        return "页数达到上限 %d" % DRIVE_PAGE_GUARD_MAX_PAGES
+    if total >= DRIVE_PAGE_GUARD_MAX_ITEMS:
+        return "条数达到上限 %d" % DRIVE_PAGE_GUARD_MAX_ITEMS
+    return None
+
+
 def _is_dead_drive(drive_id: str) -> bool:
     """该盘是否在 404 退避期内。过期则清除标记并返回 False（允许再试一次）。"""
     with _dead_lock:
@@ -987,7 +1017,9 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
     next_token: str | None = page_token
     fields = ("changes(fileId,removed,file(id,name,parents,mimeType,trashed)),"
               "newStartPageToken,nextPageToken")
+    pages = 0
     while next_token:
+        request_page_token = next_token
         if _is_personal_drive_key(drive_id):
             params = {
                 "pageToken": next_token,
@@ -1011,6 +1043,18 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
         all_changes.extend(body.get("changes", []))
         new_start = body.get("newStartPageToken") or new_start
         next_token = body.get("nextPageToken")
+        pages += 1
+        if next_token is not None:
+            reason = _page_guard_reason(
+                pages, len(all_changes), request_page_token, next_token)
+            if reason is not None:
+                logger.error(
+                    "Drive Changes: list_changes 分页护栏停表 drive=%s: %s"
+                    "（已拉 %d 页 %d 条，page token 不推进，下轮重放）",
+                    drive_id, reason, pages, len(all_changes))
+                raise DrivePageGuardError(
+                    "list_changes 分页护栏停表 drive=%s: %s"
+                    % (drive_id, reason))
     return all_changes, new_start
 
 
@@ -1585,6 +1629,18 @@ def poll_once() -> dict:
                     logger.error(
                         "Drive Changes: drive %s 的 page token 已过期（410），"
                         "重新获取失败，下轮重试", drive_id)
+                continue
+            except Exception as exc:
+                # A-020：list_changes 通用异常（个人盘 DriveAuthError、
+                # 401 PermissionError、429/网络重试耗尽等）不能中断整轮：
+                # 记 error + continue，本轮其余盘继续；page token 不推进，
+                # 下轮重放。DriveNotFoundError / PageTokenExpiredError
+                # 已由前面的 except 先接住，顺序不可调换。
+                stats["errors"] += 1
+                logger.warning(
+                    "Drive Changes: drive %s 轮询失败（%s: %s），"
+                    "下轮重试；本轮其余盘继续",
+                    drive_id, type(exc).__name__, exc)
                 continue
             stats["changes"] += len(changes)
             # page token 只在这批 changes **已经映射并入队**之后才推进。
