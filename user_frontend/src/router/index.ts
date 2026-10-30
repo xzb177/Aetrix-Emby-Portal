@@ -38,6 +38,13 @@ const router = createRouter({
             component: () => import('@/views/panel/CollectorView.vue'),
             meta: { title: '收藏家', requiresAuth: true },
           },
+          // 我的收藏：收藏列表页（老 /favorites 地址复活承接；入口在账号设置，底栏不占位）
+          {
+            path: '/favorites',
+            name: 'favorites',
+            component: () => import('@/views/panel/FavoritesView.vue'),
+            meta: { title: '我的收藏', requiresAuth: true },
+          },
           // 合集：货架页 + 详情页（只读用户口；不在底栏占位，入口在发现页合集区段）
           {
             path: '/collections',
@@ -227,7 +234,7 @@ const router = createRouter({
     },
     // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删；
     // 2026-10-13 旧页面清理：/profile、/media/:id 两路由已删） ====================
-    // 老地址 /profile、/media/:id、/media、/library、/search、/favorites、/history
+    // 老地址 /profile、/media/:id、/media、/library、/search、/history
     // 的书签与外部链接：媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，
     // 全部落到兜底 404 页（页面里会给「回首页」的出口）。
     // 注意：/profile 的承接入口是 /game/account（账号设置设施）。
