@@ -509,6 +509,61 @@ def items_dedup_cache_update_config(
     return result
 
 
+# ---------- 转存（见 backend/emby_server/transfer_variant.py） ----------
+
+class TransferConfigRequest(BaseModel):
+    cross_provider_transfer_enabled: bool = True
+    transfer_cross_lane_concurrency: int = 2
+    transfer_fast_lane_concurrency: int = 8
+    transfer_per_owner_inflight: int = 2
+
+
+@admin_router.get("/transfer-config")
+def transfer_get_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """转存配置读取：跨 provider 总开关 + 三个并发上限（含默认值）。"""
+    from backend.emby_server import transfer_variant
+
+    return transfer_variant.transfer_config_payload(db)
+
+
+@admin_router.put("/transfer-config")
+def transfer_update_config(
+    request: TransferConfigRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """转存配置写入：范围非法时 400（中文信息），写完即失效热缓存。"""
+    from backend.emby_server import transfer_variant
+
+    try:
+        result = transfer_variant.write_transfer_config(
+            db,
+            cross_provider_transfer_enabled=(
+                request.cross_provider_transfer_enabled),
+            transfer_cross_lane_concurrency=(
+                request.transfer_cross_lane_concurrency),
+            transfer_fast_lane_concurrency=(
+                request.transfer_fast_lane_concurrency),
+            transfer_per_owner_inflight=request.transfer_per_owner_inflight,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(db, current_admin, "transfer_update_config", "system", None,
+           {"cross_provider_transfer_enabled":
+            request.cross_provider_transfer_enabled,
+            "transfer_cross_lane_concurrency":
+            request.transfer_cross_lane_concurrency,
+            "transfer_fast_lane_concurrency":
+            request.transfer_fast_lane_concurrency,
+            "transfer_per_owner_inflight":
+            request.transfer_per_owner_inflight})
+    db.commit()
+    return result
+
+
 # ---------- 经济统计 ----------
 
 def _checkin_day_key(day_val) -> str:

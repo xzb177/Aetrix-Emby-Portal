@@ -221,6 +221,17 @@ ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
     "items_dedup_cache_max_entries": ("int", 100, 20000),
 }
 
+# 转存调度（2026-10-30）：跨 provider 总开关 + 跨单在途上限 +
+# 执行道并发 + 单用户在飞上限。读取唯一实现 transfer_variant 的
+# cross_provider_enabled / cross_lane_concurrency / lane_concurrency
+# / per_owner_inflight，范围与读取侧钳制同口径。
+TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
+    "cross_provider_transfer_enabled": ("bool",),
+    "transfer_cross_lane_concurrency": ("int", 1, 8),
+    "transfer_fast_lane_concurrency": ("int", 1, 32),
+    "transfer_per_owner_inflight": ("int", 1, 16),
+}
+
 # （原 ECONOMY_INT_RANGES / economy_spec 已并入下面的 ECONOMY_CONFIG_SCHEMA，
 # 4-6 迁移后不再有任何调用方，此处删除。）
 

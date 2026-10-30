@@ -11,8 +11,8 @@
 - 重试未到期的单不占道、也不挡后面的 due 单；
 - 配置键：lane_concurrency / per_owner_inflight 的 SystemConfig
   覆盖与默认值；
-- 建单侧关停：create_cross_provider_job 直接抛
-  cross_provider_relay_disabled，不落行。
+- 跨 provider 建单（2026-10-30 重开）：总开关开时正常建单；
+  关时才抛 cross_provider_relay_disabled、不落行（#1487 口径）。
 
 全部离线：SQLite :memory: + 假执行器（monkeypatch 只打模块
 属性）；真实 Drive/115 不碰。
@@ -249,10 +249,25 @@ def test_retry_not_due_not_claimed_and_not_blocking(db):
     assert fresh.status == "pending"
 
 
-# ---------- 建单侧关停 ----------
+# ---------- 跨 provider 建单（2026-10-30 重开） ----------
 
-def test_create_cross_provider_job_refused(db):
-    """跨 provider 建单直接抛 cross_provider_relay_disabled，不落行。"""
+def test_create_cross_provider_job_creates_when_enabled(db, monkeypatch):
+    """总开关默认开：跨 provider 建单正常落行（115 源→用户 Drive 盘）。"""
+    monkeypatch.setenv("TRANSFER_VARIANT_ENABLED", "1")
+    item = SimpleNamespace(id=42, drive_file_id="fid1",
+                           file_path="115:/电影/a.mkv")
+    job = tv.create_cross_provider_job(db, item, 7, "pan115")
+    assert job.status == "pending"
+    assert job.provider == "pan115"
+    assert job.dest_drive_id == "userdrive:7"
+    assert tv._is_cross_job(job) is True
+    assert db.query(em.TransferJob).count() == 1
+
+
+def test_create_cross_provider_job_refused_when_switch_off(db):
+    """总开关关：建单抛 cross_provider_relay_disabled，不落行
+    （完整回退 2026-10-29 #1487 关停口径）。"""
+    _set_config(db, "cross_provider_transfer_enabled", "false")
     item = SimpleNamespace(id=42, drive_file_id="fid1", file_path="x")
     with pytest.raises(tv.TransferError) as excinfo:
         tv.create_cross_provider_job(db, item, 7, "drive")

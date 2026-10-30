@@ -71,6 +71,7 @@ SUPER_ONLY_PREFIXES = (
     "/api/admin/hotlink-config",  # 防盗链总开关 + 播放签名 TTL
     "/api/admin/login-logs/purge",  # 清空登录审计记录（删证据的操作只给超管）
     "/api/admin/items-dedup-cache-config",  # 列表去重缓存配置
+    "/api/admin/transfer-config",  # 转存总开关（含跨 provider）+ 并发上限：影响全站播放路径
 )
 
 # 仅超级管理员可读写（不分读写方法）的路径后缀：凭据材料类端点。

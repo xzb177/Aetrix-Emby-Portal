@@ -40,6 +40,7 @@ import {
   fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
   type HotlinkConfigGet, fetchItemsDedupCacheConfig, updateItemsDedupCacheConfig,
   type ItemsDedupCacheConfigPayload, type ItemsDedupCacheConfig,
+  fetchTransferConfig, updateTransferConfig, type TransferConfig,
 } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
@@ -560,7 +561,7 @@ async function load() {
 onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
-  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache()])
+  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer()])
   // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -674,6 +675,70 @@ async function saveItemsDedupCacheCore(): Promise<boolean> {
   }
 }
 
+/** ==================== 转存卡片（独立 endpoint，非通用分组） ==================== */
+/** 与列表去重缓存卡片同构：并发上限需要前后端双重范围校验，通用分组装不下。 */
+const transfer = reactive({
+  cross_provider_transfer_enabled: true,
+  transfer_cross_lane_concurrency: 2,
+  transfer_fast_lane_concurrency: 8,
+  transfer_per_owner_inflight: 2,
+})
+const transferOriginal = reactive({ ...transfer })
+const transferLoading = ref(false)
+
+function applyTransfer(data: TransferConfig) {
+  transfer.cross_provider_transfer_enabled = data.cross_provider_transfer_enabled !== false
+  transfer.transfer_cross_lane_concurrency = Number(data.transfer_cross_lane_concurrency) || 2
+  transfer.transfer_fast_lane_concurrency = Number(data.transfer_fast_lane_concurrency) || 8
+  transfer.transfer_per_owner_inflight = Number(data.transfer_per_owner_inflight) || 2
+  Object.assign(transferOriginal, transfer)
+}
+
+async function loadTransfer() {
+  transferLoading.value = true
+  try {
+    applyTransfer(await fetchTransferConfig())
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+  } finally {
+    transferLoading.value = false
+  }
+}
+
+const transferDirty = computed(() =>
+transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_transfer_enabled
+  || transfer.transfer_cross_lane_concurrency !== transferOriginal.transfer_cross_lane_concurrency
+  || transfer.transfer_fast_lane_concurrency !== transferOriginal.transfer_fast_lane_concurrency
+  || transfer.transfer_per_owner_inflight !== transferOriginal.transfer_per_owner_inflight,
+)
+
+/** 转存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
+async function saveTransferCore(): Promise<boolean> {
+  // 前端先行校验：与后端 config_schema 的 transfer 家族范围保持一致
+  if (!Number.isInteger(transfer.transfer_cross_lane_concurrency)
+    || transfer.transfer_cross_lane_concurrency < 1 || transfer.transfer_cross_lane_concurrency > 8) {
+    ElMessage.error('跨 provider 并发上限需在 1~8 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_fast_lane_concurrency)
+    || transfer.transfer_fast_lane_concurrency < 1 || transfer.transfer_fast_lane_concurrency > 32) {
+    ElMessage.error('转存道并发需在 1~32 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_per_owner_inflight)
+    || transfer.transfer_per_owner_inflight < 1 || transfer.transfer_per_owner_inflight > 16) {
+    ElMessage.error('单用户在飞上限需在 1~16 之间')
+    return false
+  }
+  try {
+    applyTransfer(await updateTransferConfig({ ...transfer }))
+    return true
+  } catch {
+    // 拦截器已提示
+    return false
+  }
+}
+
 /** 运营参数页签顶部的分组跳转：分组多（注册 + 9 块 + 防盗链），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
   document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -727,7 +792,7 @@ const hasAdvanced = (g: Group): boolean => g.fields.some((f) => f.advanced)
 const dirtyGroups = computed(() => GROUPS.filter((g) => isDirty(g)))
 const dirtyCount = computed(() =>
   dirtyGroups.value.length + (regDirty.value ? 1 : 0) + (hotlinkDirty.value ? 1 : 0)
-  + (itemsDedupCacheDirty.value ? 1 : 0),
+  + (itemsDedupCacheDirty.value ? 1 : 0) + (transferDirty.value ? 1 : 0),
 )
 const anyDirty = computed(() => dirtyCount.value > 0)
 const savingAll = ref(false)
@@ -827,6 +892,10 @@ async function saveAll() {
       if (await saveItemsDedupCacheCore()) saved += 1
       else failed.push('列表去重缓存')
     }
+    if (transferDirty.value) {
+      if (await saveTransferCore()) saved += 1
+      else failed.push('转存')
+    }
   } finally {
     savingAll.value = false
   }
@@ -856,6 +925,7 @@ async function discardAll() {
   load()
   loadHotlink()
   loadItemsDedupCache()
+  loadTransfer()
 }
 
 // ==================== 危险操作（Phase 5） ====================
@@ -1070,6 +1140,16 @@ watch(
               >
                 <Zap :size="13" />列表缓存
                 <span v-if="itemsDedupCacheDirty" class="chip-dot" aria-label="有未保存的改动" />
+              </button>
+              <button
+                v-if="sec.id === 'playback'"
+                type="button"
+                class="group-chip"
+                :class="{ 'is-dirty': transferDirty }"
+                @click="scrollToGroup('transfer')"
+              >
+                <RefreshCw :size="13" />转存
+                <span v-if="transferDirty" class="chip-dot" aria-label="有未保存的改动" />
               </button>
             </div>
           </nav>
@@ -1367,6 +1447,85 @@ watch(
                     <span class="field-suffix">条</span>
                   </div>
                   <span class="field-hint">内存有界：超限时淘汰最久未访问的条目，默认 2000</span>
+                </div>
+              </el-form-item>
+            </el-form>
+          </SectionCard>
+
+          <!-- 转存：独立卡片，归「播放与风控」段。跨 provider 总开关
+               关掉后错配点播明示播不了（不回落共享），只改写口超管。 -->
+          <SectionCard
+            v-if="sec.id === 'playback'"
+            id="group-transfer"
+            title="转存"
+            :icon="RefreshCw"
+            description="用户副本转存的调度：跨 provider 转存开关与并发上限。跨单（绑的盘与片源盘不一致）要经服务器分段搬字节，是分钟级慢单，单独限在途数，不许占满转存道。"
+            :tone="transferDirty ? 'accent' : 'default'"
+            class="group-card"
+          >
+            <template v-if="transferDirty" #actions>
+              <span class="au-badge au-badge-amber">未保存</span>
+            </template>
+
+            <el-form label-position="top" class="field-form field-grid">
+              <el-form-item label="跨 provider 转存">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.cross_provider_transfer_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：只绑 115 的用户播谷歌盘的片（反之亦然）会先转存到他绑的盘再播；关：错配点播明示播不了，同 provider 转存不受影响。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="跨 provider 在途上限">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_cross_lane_concurrency"
+                      :min="1"
+                      :max="8"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">条</span>
+                  </div>
+                  <span class="field-hint">同时搬字节的跨单最多几条，其余道宽留给同 provider 的点播转存，默认 2</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="转存道并发">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_fast_lane_concurrency"
+                      :min="1"
+                      :max="32"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">条</span>
+                  </div>
+                  <span class="field-hint">转存工人一轮最多同时在飞的任务总数，默认 8</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="单用户在飞上限">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_per_owner_inflight"
+                      :min="1"
+                      :max="16"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">条</span>
+                  </div>
+                  <span class="field-hint">同一用户同时在飞的转存任务上限，防一人灌单饿死别人，默认 2</span>
                 </div>
               </el-form-item>
             </el-form>

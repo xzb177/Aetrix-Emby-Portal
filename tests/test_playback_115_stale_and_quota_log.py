@@ -164,10 +164,11 @@ def test_gate_cross_stale_115_row_not_served(db, monkeypatch):
     _variant(db, item.id, drive_id="pan115:user-7", stale=1)
     gate = tv.ensure_user_copy_gate(db, item, _user())
     assert gate["verdict"] != "serve_115_copy"
-    # 2026-10-29 关停后：跨 provider 重建路已停，不再是 preparing
-    # 等新单，而是 failed 明示关停原因；stale 行不放行口径不变。
-    assert gate["verdict"] == "failed"
-    assert gate["reason"] == "cross_provider_relay_disabled"
+    # 落到任务逻辑：无在途任务 → 新建一单，呈准备中（重建路）。
+    # 2026-10-30 跨 provider 重开后与同 provider stale 口径一致；
+    # stale 行不放行口径不变。
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_created"
 
 
 def test_gate_cross_fresh_115_row_still_served(db, monkeypatch):
@@ -199,16 +200,20 @@ def test_rebuild_dead_115_same_provider_budget(db, monkeypatch):
 
 
 def test_rebuild_dead_115_cross_provider(db, monkeypatch):
-    # 2026-10-29 关停：Drive 源→用户 115 盘的重建是跨 provider
-    # 搬字节，已停用——rebuild 直接 failed 明示，不建新单；
-    # 同 provider 115 重建（上一用例）口径不变。
+    # 2026-10-30 重开：Drive 源→用户 115 盘的重建恢复建跨单
+    # （provider=源 drive、dest=pan115:user-<uid>），与同 provider
+    # 115 重建（上一用例）同一套预算口径。
     _enable(monkeypatch)
     _mount(db, 3, "drive", "drive:drive1")
     item = _item(db, file_path="mount://3/电影/a.mkv")
     out = tv.rebuild_dead_user115_copy(db, item, 7)
-    assert out["verdict"] == "failed"
-    assert out["reason"] == "cross_provider_relay_disabled"
-    assert db.query(em.TransferJob).count() == 0
+    assert out["verdict"] == "preparing"
+    assert out["reason"] == "job_rebuilt"
+    job = db.query(em.TransferJob).filter(
+        em.TransferJob.id == out["job_id"]).first()
+    assert job.provider == "drive" and job.status == "pending"
+    assert job.dest_drive_id == "pan115:user-7"
+    assert tv._is_cross_job(job) is True
 
 
 def test_rebuild_dead_115_unknown_provider(db, monkeypatch):
