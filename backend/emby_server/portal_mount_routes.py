@@ -441,13 +441,48 @@ def delete_mount(mount_id: int, staff: models.WebUser = Depends(require_staff),
     mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
     if not mount:
         raise HTTPException(status_code=404, detail="挂载不存在")
-    # 解除媒体库绑定，不留悬空引用（条目会在下一次扫描时清理）
+    # 解除媒体库绑定，不留悬空引用：必须同步清掉 paths 里的 mount:// 引用、
+    # mount_ids 列以及新表来源行。只清 mount_ids 会留下死源：扫描侧新表有行
+    # 即信任新表，死挂载记 failed 后扫描跳过清理，旧条目永久滞留；管理侧
+    # 保存时 _validate_library_sources 对死 mount:// 走 check_mount_subpath
+    # 抛错 400。死源显式移除后，下一次整库扫描的清理阶段才能正常跑
+    # （缺失宽限仍适用）。
+    # 注意不走 write_library_sources 全量重写：全量重写会删掉该库全部来源行
+    # 再重插，其他来源行的 id 会变（条目 source_id 锚点会悬空）；这里只删
+    # 被删挂载的行，其他行原样保留。
+    row_library_ids = {
+        row.library_id
+        for row in db.query(em.LibrarySource)
+        .filter(em.LibrarySource.mount_id == mount_id)
+        .all()
+    }
     unbound = 0
     for lib in db.query(em.Library).all():
         ids = mount_lib.parse_mount_ids(lib)
-        if mount_id in ids:
+        raw_paths = mount_lib.split_library_paths(getattr(lib, "paths", "") or "")
+        kept_paths = [
+            path
+            for path in raw_paths
+            if not (
+                mount_lib.parse_mount_path(path) is not None
+                and mount_lib.parse_mount_path(path)[0] == mount_id
+            )
+        ]
+        paths_changed = len(kept_paths) != len(raw_paths)
+        ids_changed = mount_id in ids
+        rows_changed = lib.id in row_library_ids
+        if not (paths_changed or ids_changed or rows_changed):
+            continue
+        if paths_changed:
+            lib.paths = ",".join(kept_paths)
+        if ids_changed:
             lib.mount_ids = ",".join(str(i) for i in ids if i != mount_id)
-            unbound += 1
+        if rows_changed:
+            db.query(em.LibrarySource).filter(
+                em.LibrarySource.library_id == lib.id,
+                em.LibrarySource.mount_id == mount_id,
+            ).delete(synchronize_session=False)
+        unbound += 1
     db.delete(mount)
     db.commit()
     return {"success": True, "unbound_libraries": unbound}
