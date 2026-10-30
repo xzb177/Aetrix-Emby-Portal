@@ -39,6 +39,13 @@ def _user(db):
     db.add(u)
     db.commit()
     db.refresh(u)
+    # 全量套件共用文件库：sqlite 会复用已删用户的 id，前序文件遗留的
+    # LoginLog 行可能正好挂在这个 id 上（CI 实测 total 13 == 1）。
+    # 建用户后先清掉挂在该 id 上的旧行，恢复「新用户无历史」前提；
+    # 断言一字不动，过滤逻辑仍由被测口径验。
+    db.query(models.LoginLog).filter(
+        models.LoginLog.user_id == u.id).delete()
+    db.commit()
     return u
 
 

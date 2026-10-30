@@ -1265,7 +1265,7 @@ watch(providersLoaded, (loaded) => {
   padding: 4px 7px; border-radius: 999px; margin-top: 1px;
   border: 1px solid var(--au-border, #e3e3e2); color: var(--ink2);
 }
-.lh-badge.ok { color: var(--au-accent, #016a71); border-color: var(--au-accent, #016a71); }
+.lh-badge.ok { color: var(--au-primary, #016a71); border-color: var(--au-primary, #016a71); }
 .lh-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .lh-line1 { font-size: 13px; color: var(--ink); }
 .lh-line2 { font-size: 12px; color: var(--ink2); }
