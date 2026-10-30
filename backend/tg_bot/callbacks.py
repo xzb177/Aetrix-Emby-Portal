@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from backend import models
-from . import layout, redpacket_common, sender
+from . import ephemeral, layout, redpacket_common, sender
 from .identity import resolve
 
 logger = logging.getLogger(__name__)
@@ -461,6 +461,27 @@ def handle_lottery_password(db, chat_id: int, tg_user: dict, text: str) -> bool:
     return True
 
 
+def _send_claim_feedback(db, chat_id, user, amount: int, remaining_count: int) -> None:
+    """抢红包成功后的群内反馈（旁路：失败只记日志，绝不影响领取结果）。
+
+    反馈消息按 bot_msg_autodelete_seconds（默认 30 秒）自毁；
+    红包消息本体永不在此调度自毁。
+    """
+    try:
+        claimer_name = html.escape(str(user.username or "朋友"))
+        text = redpacket_common.claim_feedback_text(claimer_name, amount, remaining_count)
+        ok, err, feedback_id = sender.send_message_ex(db, chat_id, text)
+        if not ok:
+            logger.warning("tg redpacket claim feedback send failed: chat=%s err=%s", chat_id, err)
+            return
+        if feedback_id:
+            delay = ephemeral.bot_msg_delay_seconds(db)
+            if delay > 0:
+                ephemeral.schedule_delete(chat_id, feedback_id, delay)
+    except Exception:
+        logger.warning("tg redpacket claim feedback failed: chat=%s", chat_id, exc_info=True)
+
+
 def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | None = None) -> None:
     """处理抢红包按钮点击（B3）。
 
@@ -540,6 +561,8 @@ def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | 
 
     amount = result["amount"]
     _answer(f"🧧 恭喜抢到 {amount} 积分！")
+    if chat.get("type") in ("group", "supergroup"):
+        _send_claim_feedback(db, chat_id, user, amount, packet.remaining_count)
     logger.info(
         "tg redpacket claimed: packet=%s user=%s amount=%s remaining=%s",
         packet_id,
