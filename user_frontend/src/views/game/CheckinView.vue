@@ -248,7 +248,7 @@ async function doCheckin() {
         sealTimer = 0
       }, 900)
     }
-    // 能量飞入（R43：付费用户无积分奖励，points_awarded=0 时不飞"+0⚡"，免得误导）
+    // 能量飞入（R43：付费用户无能量奖励，points_awarded=0 时不飞"+0⚡"，免得误导）
     if (r.points_awarded > 0) flyEnergy(`+${r.points_awarded}⚡`, checkinBtn.value)
     // 报到成功的反馈不许被体力刷新绑架：先定文案、只弹一次。
     // 体力条对付费用户不可见、刷新失败时 vitality 回 null，

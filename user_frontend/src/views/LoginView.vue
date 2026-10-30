@@ -233,7 +233,7 @@ onMounted(() => {
   if (route.query.invite) {
     mode.value = 'register'
     registerForm.inviteCode = firstQueryValue(route.query.invite)
-    toast.info(`已收到好友邀请码，注册成功后双方都可获得积分奖励`, 5000)
+    toast.info(`已收到好友邀请码，注册成功后双方都可获得能量奖励`, 5000)
   }
 
   // 海报拼贴背景：requestIdleCallback 延迟拉取（降级 setTimeout 800ms），

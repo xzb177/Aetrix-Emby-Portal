@@ -12,7 +12,7 @@
         <span class="worldname">探险世界</span>
         <div class="right">
           <span class="pill" v-if="streak > 0">连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
-          <button type="button" class="pill amber" v-if="pointsText" @click="goLedger">{{ pointsText }} 积分</button>
+          <button type="button" class="pill amber" v-if="pointsText" @click="goLedger">{{ pointsText }} 能量</button>
           <span class="pill" v-if="memberInfo"><span class="lv">Lv.{{ memberInfo.level }}</span> {{ memberInfo.level_name }}</span>
           <button v-if="variant !== 'game'" type="button" class="avatar" @click="goAccount" aria-label="我的账号">{{ avatarChar }}</button>
         </div>
@@ -195,7 +195,7 @@ const dateLine = computed(() => {
 /* ---------- 昼夜（composable，自带分钟时钟） ---------- */
 const { daypart } = useDaypart()
 
-/* ---------- 积分 / 会员 / 副标题 ---------- */
+/* ---------- 能量 / 会员 / 副标题 ---------- */
 const pointsText = computed<string | null>(() => {
   const c = quest.checkin.value?.points
   if (typeof c === 'number') return Math.trunc(c).toLocaleString('en-US')
@@ -1172,7 +1172,7 @@ onUnmounted(() => {
     justify-content: flex-start;
     gap: 6px;
   }
-  /* 一排胶囊统一 40px 高、垂直居中：此前只有积分按钮（button）被
+  /* 一排胶囊统一 40px 高、垂直居中：此前只有能量按钮（button）被
      min-height 撑到 44px，其余 span 胶囊约 30px，一排高低不齐像错位
      （2026-10-22 用户截图）。统一高度后整排对齐。 */
   .hud .pill {

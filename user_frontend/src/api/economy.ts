@@ -42,7 +42,7 @@ export interface CheckinStatus {
   streak_bonus: number
   streak_max_bonus: number
   points: number
-  /** R103-1：当前用户是否为公益服（是否会获得积分），后端 CheckinStatusResponse.points_enabled（2026-10-09 已上线） */
+  /** R103-1：当前用户是否为公益服（是否会获得能量），后端 CheckinStatusResponse.points_enabled（2026-10-09 已上线） */
   points_enabled: boolean
 }
 
@@ -228,7 +228,7 @@ export interface WelfareStatusResponse {
 }
 
 export const welfareApi = {
-  /** 积分兑换公益天数（仅支持 7 或 30；要求登录 + 绑 TG，未绑会被服务端拦） */
+  /** 能量兑换公益天数（仅支持 7 或 30；要求登录 + 绑 TG，未绑会被服务端拦） */
   redeem: (daysOption: 7 | 30) =>
     api.post<never, WelfareRedeemResponse>('/api/points/redeem', { days_option: daysOption }),
   /** 当前登录用户的公益资格状态（含到期日；失败时调用方容错，不阻断页面） */
@@ -236,7 +236,7 @@ export const welfareApi = {
     api.get<never, WelfareStatusResponse>('/api/points/welfare-status'),
 }
 
-// ==================== 积分 ====================
+// ==================== 能量 ====================
 
 export interface TransferConfig {
   enabled: boolean
@@ -255,10 +255,10 @@ export interface TransferResult {
 export const pointsApi = {
   log: (params?: { limit?: number; offset?: number; type_filter?: string }) =>
     api.get<never, PointsLogResponse>('/api/user/economy/points/log', { params }),
-  /** 积分转账开关与规则（关闭时用户端隐藏转账入口） */
+  /** 能量转账开关与规则（关闭时用户端隐藏转账入口） */
   transferConfig: () =>
     api.get<never, TransferConfig>('/api/user/economy/points/transfer-config'),
-  /** 积分转账：recipient 对方用户名，amount 正整数积分 */
+  /** 能量转账：recipient 对方用户名，amount 为转账数量（能量，正整数） */
   transfer: (recipient: string, amount: number) =>
     api.post<never, TransferResult>('/api/user/economy/points/transfer', { recipient, amount }),
 }

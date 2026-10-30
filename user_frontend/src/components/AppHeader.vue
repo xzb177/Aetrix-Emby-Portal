@@ -39,7 +39,7 @@ function facilityMenuIcon(key: string) {
   }
 }
 
-/** 积分余额（顶栏 pill 显示，登录后加载） */
+/** 能量余额（顶栏 pill 显示，登录后加载） */
 const pointsBalance = ref<number | null>(null)
 async function loadPoints() {
   if (!userStore.isLoggedIn) {
@@ -541,7 +541,7 @@ onBeforeUnmount(() => {
            外观按钮放在登录判断**之外**：未登录也能切主题。点一下直接在白日/黑暗
            之间切换，不要下拉菜单 -->
       <div class="user-section">
-        <!-- 积分徽章：登录后显示当前积分，点击进能量账本 -->
+        <!-- 能量徽章：登录后显示当前能量，点击进能量账本 -->
         <RouterLink
           v-if="userStore.isLoggedIn && pointsBalance !== null"
           to="/game/ledger"
