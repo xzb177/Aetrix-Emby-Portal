@@ -43,6 +43,8 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "items_cache": config_schema.ITEMS_CACHE_CONFIG_SCHEMA,
     # 转存调度（2026-10-30）：跨 provider 开关 + 三个并发上限
     "transfer": config_schema.TRANSFER_CONFIG_SCHEMA,
+    # 播放器登录黑名单（2026-10-30）：规则数组 JSON 校验
+    "player_blacklist": config_schema.PLAYER_BLACKLIST_CONFIG_SCHEMA,
     "welfare": config_schema.WELFARE_CONFIG_SCHEMA,
     # 4-6：economy 家族（设计报告说的 44 键，实查 49 键；校验语义与迁移前
     # economy_spec 的历史行为逐字一致，str/secret 用 ("raw",) 原样存库；

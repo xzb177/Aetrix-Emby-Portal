@@ -138,6 +138,14 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
     签发前先做设备登记与设备数上限校验；超限时抛 ``DeviceLimitExceeded``
     （由 AuthenticateByName 转成可读响应），避免在函数内部直接返回 HTTP 错误。
     """
+    # 播放器登录黑名单（2026-10-30 用户亲定）：命中即拒绝签发，抛
+    # PlayerLoginBlacklisted 由 AuthenticateByName 转成 403 可读响应并落
+    # 登录日志。放在签发入口一处实现——所有 Emby 客户端登录都必经此处，
+    # 且在设备登记之前，黑名单播放器不会在设备表里留下记录。
+    from backend.emby_server.player_blacklist import enforce_player_login_blacklist
+
+    enforce_player_login_blacklist(db, request)
+
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
     # P3 修复（审查）：客户端 DeviceId 头未经截断直接写入 EmbyApiToken.device_id
     #（String(100)），超长 → DB 报错 → 登录 500。截断到 100。
