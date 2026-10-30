@@ -38,6 +38,8 @@ DEFAULTS: dict[str, str] = {
     "bot_cmd_transfers": "true",
     "bot_cmd_whyplay": "true",
     "bot_cmd_wants": "true",
+    # 管理员群号对账开关（借鉴第 3 项，仅私聊 + is_staff 可用）
+    "bot_cmd_reconcile": "true",
     # 红包功能开关（/redpacket 发红包 + 抢红包按钮）
     "bot_redpacket_enabled": "true",
 }
@@ -62,6 +64,7 @@ COMMAND_SWITCHES: dict[str, str] = {
     "/transfers": "bot_cmd_transfers",
     "/whyplay": "bot_cmd_whyplay",
     "/wants": "bot_cmd_wants",
+    "/reconcile": "bot_cmd_reconcile",
 }
 
 _DEFAULT_RATE_LIMIT_SECONDS = 3.0
