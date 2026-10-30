@@ -6501,6 +6501,31 @@ async def video_stream(
                         error_kind=(f"upstream_{_relay_resp.status_code}"
                                     if _relay_resp.status_code >= 400 else None),
                         resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+                    if (_relay_resp.status_code == 404 and _on_user_copy
+                            and _is_user_drive_copy_variant(_play_variant)):
+                        # 中继取用户 Drive 副本回 404：与直链同一对账
+                        # 口径，不把上游 404 原样回给播放器。自愈成功
+                        # 也不在本请求内重打中继，回 409 让下一次点播
+                        # 走通（对账语义见 reconcile_dead_drive_copy）。
+                        _reconciled = await run_db(
+                            _tv.reconcile_dead_drive_copy,
+                            db, item, user, _play_variant)
+                        _rec_action = (_reconciled or {}).get("action")
+                        if _rec_action == "healed":
+                            raise HTTPException(
+                                status_code=409,
+                                detail="Drive 副本权限已恢复，正在生效中，请稍后重试")
+                        if _rec_action == "throttled":
+                            raise HTTPException(
+                                status_code=409,
+                                detail="Drive 副本已失效，重新转存已达 24 小时上限，请稍后重试")
+                        if _rec_action == "rebuilding":
+                            raise HTTPException(
+                                status_code=409,
+                                detail="Drive 副本已失效，正在重新转存到你的绑定盘，转存完成后可播")
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Drive 副本已失效且暂时无法重建，请稍后重试或重新绑定网盘后重试")
                     return _observe_traffic(_relay_resp)
     _fast302 = False
     _evt_t0 = time.perf_counter()
@@ -6508,26 +6533,74 @@ async def video_stream(
         # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，
         # 正缓存不能再把死链 302 出去。拖动 / 下一段起始字节不同，不进这里。
         _force = drive_exists_rapid_retry(request, user, _play_fid)
-        try:
-            _fast302 = await _ensure_drive_file_playable(
-                db, item, _play_fid, force_recheck=_force)
-        except HTTPException as exc:
-            # files.get 429 被收成 503（detail 含「返回 429」）。总闸开
-            # 且无用户副本时不再包一层换线文案，直接要求先转存再播。
-            if _pace.is_known_drive_quota_http(exc):
-                _forced = await run_db(
-                    _pace.transfer_required_http, db,
-                    personal_copy=_personal_copy)
-                if _forced is not None:
-                    raise _forced
-            # 阶段 6：换线后直链仍失败，原因要带上切换上下文，不许
-            # 把一次切换失败读成普通的直链失败。
-            if _switch_attempted:
-                raise HTTPException(
-                    status_code=exc.status_code,
-                    detail="变体切换后仍失败（drive_relay→drive_direct）："
-                           f"{exc.detail}") from exc
-            raise
+        # 用户 Drive 副本死链对账最多重试一次：对账判 healed（公开
+        # 权限已重授）后重走一遍存在性校验放行，不多不少，绝不循环。
+        _gone_retried = False
+        while True:
+            try:
+                _fast302 = await _ensure_drive_file_playable(
+                    db, item, _play_fid,
+                    force_recheck=_force or _gone_retried)
+                break
+            except HTTPException as exc:
+                # 用户 Drive 副本被实证不可用（存在性校验 404）：副本
+                # 可能真被删了，也可能只是解绑旧绑定时 anyone-reader
+                # 被收回（本体仍在用户当前绑定账号里，2026-10-30
+                # item 688899 实锤）。先对账再定性：能自愈就重试
+                # 放行；不能自愈记 strike 并预算内重建，回 409
+                # 准备中——绝不把 Drive 的 404 原样甩给用户
+                # （115 死链同款口径）。
+                if (_on_user_copy
+                        and _is_user_drive_copy_variant(_play_variant)
+                        and exc.status_code == 404):
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="direct_302",
+                        variant=play_variants.DRIVE_DIRECT,
+                        result="error", error_kind="drive_copy_dead",
+                        resolve_ms=int(
+                            (time.perf_counter() - _evt_t0) * 1000))
+                    if _gone_retried:
+                        # 自愈后复检仍 404：多半是谷歌权限生效延迟，
+                        # 不再重试、也不当死链重建，明示稍后重试。
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Drive 副本权限已恢复，正在生效中，请稍后重试") from exc
+                    _gone_retried = True
+                    _reconciled = await run_db(
+                        _tv.reconcile_dead_drive_copy,
+                        db, item, user, _play_variant)
+                    _rec_action = (_reconciled or {}).get("action")
+                    if _rec_action == "healed":
+                        continue
+                    if _rec_action == "throttled":
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Drive 副本已失效，重新转存已达 24 小时上限，请稍后重试") from exc
+                    if _rec_action == "rebuilding":
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Drive 副本已失效，正在重新转存到你的绑定盘，转存完成后可播") from exc
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Drive 副本已失效且暂时无法重建，请稍后重试或重新绑定网盘后重试") from exc
+                # files.get 429 被收成 503（detail 含「返回 429」）。
+                # 总闸开且无用户副本时不再包一层换线文案，直接要求
+                # 先转存再播。
+                if _pace.is_known_drive_quota_http(exc):
+                    _forced = await run_db(
+                        _pace.transfer_required_http, db,
+                        personal_copy=_personal_copy)
+                    if _forced is not None:
+                        raise _forced
+                # 阶段 6：换线后直链仍失败，原因要带上切换上下文，
+                # 不许把一次切换失败读成普通的直链失败。
+                if _switch_attempted:
+                    raise HTTPException(
+                        status_code=exc.status_code,
+                        detail="变体切换后仍失败（drive_relay→drive_direct）："
+                               f"{exc.detail}") from exc
+                raise
     if _switch_attempted and not _fast302:
         # 阶段 6：换线已发生、直链又没 materialize（挂载不可定位，
         # _ensure 回 None）——不许悄悄落到后面的通用分支，明确失败。

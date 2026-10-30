@@ -2319,6 +2319,80 @@ def rebuild_dead_user115_copy(db, item, user_id):
             "job_id": new_job.id}
 
 
+def rebuild_dead_drive_copy(db, item, user_id):
+    """用户 Drive 副本已确认不可用后的重建（serve 路径专用）。
+
+    与 rebuild_dead_user115_copy 同款预算口径：24h 同桶 < 2 行才
+    force 重建一单（_gate_retrigger_budget_ok），预算耗尽不建新单、
+    不刷任务洪水。provider==drive 走同 provider 任务；115 源→用户
+    Drive 盘走跨 provider 任务（dest=userdrive:<uid>）；只建用户盘
+    任务，不碰共享原件。返回 dict 与 _rebuild_done_job 同款形状。
+    """
+    item_id = getattr(item, "id", None)
+    provider = _item_provider(db, item)
+    if item_id is None or provider is None:
+        return {"verdict": "failed", "reason": "unknown_provider"}
+    cross = provider != "drive"
+    dest = f"userdrive:{user_id}" if cross else None
+    if not _gate_retrigger_budget_ok(db, item_id, user_id, dest=dest):
+        return {"verdict": "preparing", "reason": "throttled"}
+    try:
+        if cross:
+            new_job = create_cross_provider_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+        else:
+            new_job = create_user_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+    except TransferError as exc:
+        if exc.kind == "throttled":
+            return {"verdict": "preparing", "reason": "throttled"}
+        return {"verdict": "failed", "reason": exc.kind}
+    return {"verdict": "preparing", "reason": "job_rebuilt",
+            "job_id": new_job.id}
+
+
+def reconcile_dead_drive_copy(db, item, user, variant):
+    """serve 路径实证用户 Drive 副本不可用（404）后的对账入口。
+
+    生产实锤（2026-10-30，item 688899 / user 1）：副本文件本体仍活在
+    用户当前绑定的谷歌账号里，只是解绑旧绑定时 anyone-reader 被
+    收回（share_revoked_at 落戳）、变体行仍 ready，非属主令牌一律
+    回 404。这类行不该重建：先自愈——绕过已公开缓存、用当前绑定
+    令牌重授 anyone-reader；授成（文件活着且已公开）返回 healed，
+    调用方重走存在性校验即可放行。自愈失败（文件真被删 / 换了
+    账号看不见 / 无可用绑定）才按既有口径记 strike
+    （mark_variant_stale_once）并预算内重建
+    （rebuild_dead_drive_copy），返回 rebuilding / throttled /
+    failed。本函数永不抛异常进播放热路径。
+    """
+    user_id = getattr(user, "id", None)
+    fid = (getattr(variant, "variant_file_id", "") or "").strip()
+    if fid and user_id is not None:
+        try:
+            copy_public_cache_drop(user_id, fid)
+            if ensure_user_copy_public(db, user_id, fid):
+                return {"action": "healed"}
+        except Exception:  # noqa: BLE001
+            logger.warning("用户副本死链自愈异常 item=%s user=%s",
+                           getattr(item, "id", None), user_id,
+                           exc_info=True)
+    try:
+        mark_variant_stale_once(db, getattr(variant, "id", None))
+    except Exception:  # noqa: BLE001
+        logger.warning("用户副本死链记 strike 异常", exc_info=True)
+    try:
+        out = rebuild_dead_drive_copy(db, item, user_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("用户副本死链重建异常 item=%s user=%s",
+                       getattr(item, "id", None), user_id, exc_info=True)
+        return {"action": "failed"}
+    if (out or {}).get("reason") == "throttled":
+        return {"action": "throttled"}
+    if (out or {}).get("verdict") == "preparing":
+        return {"action": "rebuilding", "job_id": out.get("job_id")}
+    return {"action": "failed"}
+
+
 def mark_variant_stale_once(db, variant_id):
     """给变体行记一次 stale strike（115 死链检出时调用）。
 
@@ -2398,11 +2472,12 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
             scheme = "pan115:" if other == "pan115" else "userdrive:"
             ready = _newest_ready_for_scheme(db, item_id, "user",
                                              str(user_id), scheme)
-            if (ready is not None and other == "pan115"
+            if (ready is not None and other in ("pan115", "drive")
                     and getattr(ready, "stale_count", 0) >= 1):
-                # 115 行已吃过一次 stale strike：DB 状态虽仍 ready，但
-                # 文件很可能已死（2026-10-29 115 死链实证），不再直接
-                # 放行 serve_115_copy；落到下面任务逻辑走重建/准备中。
+                # 副本行已吃过一次 stale strike：DB 状态虽仍 ready，
+                # 但文件很可能已死（2026-10-29 115 死链实证；Drive
+                # 副本 2026-10-30 同款），不再直接放行；落到下面
+                # 任务逻辑走重建/准备中。
                 ready = None
             if ready is not None:
                 if other == "pan115":
@@ -2477,9 +2552,9 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
         if item_id is None:
             return {"verdict": "failed", "reason": "no_item_id"}
         ready = _newest_ready(db, item_id, "user", str(user_id))
-        if (ready is not None and provider == "pan115"
+        if (ready is not None and provider in ("pan115", "drive")
                 and getattr(ready, "stale_count", 0) >= 1):
-            # 同上：stale 115 行不直接放行，走下面任务逻辑重建。
+            # 同上：吃过 strike 的副本行不直接放行，走下面任务逻辑重建。
             ready = None
         if ready is not None:
             if provider == "pan115":
