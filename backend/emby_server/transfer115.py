@@ -481,12 +481,15 @@ def resolve_cookie(
     优先级：显式账号 > 显式 Cookie > 媒体库绑定账号 > 默认账号 > 服务器级环境变量。
     每次解析前都会刷新一次，因此**配置档更新后无需重启**。
 
-    媒体库绑定账号被删除或停用时，回退到默认账号并给出可读来源，避免调用方直接卡死。
+    媒体库绑定账号被删除时，回退到默认账号并给出可读来源；被停用时响亮报错，
+    不静默回落到默认账号。
     """
     if account_id is not None:
         account = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
         if not account:
             raise Pan115Error(f"115 账号配置档 #{account_id} 不存在")
+        if not account.is_enabled:
+            raise Pan115Error(f"115 账号配置档「{account.name}」已停用")
         return normalize_cookie(account.cookie), f"账号配置档「{account.name}」"
 
     if explicit_cookie and explicit_cookie.strip():
@@ -497,6 +500,8 @@ def resolve_cookie(
         account = db.query(em.Pan115Account).filter(em.Pan115Account.id == bound_id).first()
         if account and account.is_enabled:
             return normalize_cookie(account.cookie), f"媒体库绑定账号「{account.name}」"
+        if account:
+            raise Pan115Error(f"媒体库绑定的 115 账号「{account.name}」已停用")
         logger.warning(
             "媒体库 #%s 绑定的 115 账号 #%s 不可用，回退到默认账号",
             getattr(library, "id", None), bound_id,
