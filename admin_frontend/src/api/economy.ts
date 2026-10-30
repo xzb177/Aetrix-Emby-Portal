@@ -430,6 +430,12 @@ export interface TransferConfig {
   pan115_rapid_upload_enabled: boolean
   /** 115 分片上传开关（默认开；关 = >5 GiB 且秒传未命中判 unsupported） */
   pan115_multipart_upload_enabled: boolean
+  /** 115 云下载（形态 B）开关（默认关；开 = 秒传未命中时先让用户本人 115 拉我方签名取流地址，失败回落搬字节） */
+  transfer_cross_cloudpull_enabled: boolean
+  /** 云下载转存专用签名有效期（秒）（默认 43200，范围 1800~86400；与播放签名口径分开） */
+  transfer_cross_cloudpull_ttl_sec: number
+  /** 云下载任务轮询超时（秒）（默认 3600，范围 60~21600；到点未完成回落搬字节） */
+  transfer_cross_cloudpull_timeout_sec: number
   /** 换绑节流豁免计数窗口天数（默认 7，范围 1~365） */
   transfer_rebind_waiver_window_days: number
   /** 窗口内换绑豁免可用次数（默认 1，范围 1~20） */

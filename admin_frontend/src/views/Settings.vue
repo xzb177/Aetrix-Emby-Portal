@@ -690,6 +690,9 @@ const transfer = reactive({
   pan115_multipart_upload_enabled: true,
   transfer_rebind_waiver_window_days: 7,
   transfer_rebind_waiver_max_uses: 1,
+  transfer_cross_cloudpull_enabled: false,
+  transfer_cross_cloudpull_ttl_sec: 43200,
+  transfer_cross_cloudpull_timeout_sec: 3600,
 })
 const transferOriginal = reactive({ ...transfer })
 const transferLoading = ref(false)
@@ -704,6 +707,9 @@ function applyTransfer(data: TransferConfig) {
   transfer.pan115_multipart_upload_enabled = data.pan115_multipart_upload_enabled !== false
   transfer.transfer_rebind_waiver_window_days = Number(data.transfer_rebind_waiver_window_days) || 7
   transfer.transfer_rebind_waiver_max_uses = Number(data.transfer_rebind_waiver_max_uses) || 1
+  transfer.transfer_cross_cloudpull_enabled = data.transfer_cross_cloudpull_enabled === true
+  transfer.transfer_cross_cloudpull_ttl_sec = Number(data.transfer_cross_cloudpull_ttl_sec) || 43200
+  transfer.transfer_cross_cloudpull_timeout_sec = Number(data.transfer_cross_cloudpull_timeout_sec) || 3600
   Object.assign(transferOriginal, transfer)
 }
 
@@ -727,7 +733,10 @@ transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_tra
   || transfer.pan115_rapid_upload_enabled !== transferOriginal.pan115_rapid_upload_enabled
   || transfer.pan115_multipart_upload_enabled !== transferOriginal.pan115_multipart_upload_enabled
   || transfer.transfer_rebind_waiver_window_days !== transferOriginal.transfer_rebind_waiver_window_days
-  || transfer.transfer_rebind_waiver_max_uses !== transferOriginal.transfer_rebind_waiver_max_uses,
+  || transfer.transfer_rebind_waiver_max_uses !== transferOriginal.transfer_rebind_waiver_max_uses
+  || transfer.transfer_cross_cloudpull_enabled !== transferOriginal.transfer_cross_cloudpull_enabled
+  || transfer.transfer_cross_cloudpull_ttl_sec !== transferOriginal.transfer_cross_cloudpull_ttl_sec
+  || transfer.transfer_cross_cloudpull_timeout_sec !== transferOriginal.transfer_cross_cloudpull_timeout_sec,
 )
 
 /** 转存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -761,6 +770,16 @@ async function saveTransferCore(): Promise<boolean> {
   if (!Number.isInteger(transfer.transfer_rebind_waiver_max_uses)
     || transfer.transfer_rebind_waiver_max_uses < 1 || transfer.transfer_rebind_waiver_max_uses > 20) {
     ElMessage.error('换绑放行次数需在 1~20 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_cross_cloudpull_ttl_sec)
+    || transfer.transfer_cross_cloudpull_ttl_sec < 1800 || transfer.transfer_cross_cloudpull_ttl_sec > 86400) {
+    ElMessage.error('云下载签名有效期需在 1800~86400 秒之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_cross_cloudpull_timeout_sec)
+    || transfer.transfer_cross_cloudpull_timeout_sec < 60 || transfer.transfer_cross_cloudpull_timeout_sec > 21600) {
+    ElMessage.error('云下载轮询超时需在 60~21600 秒之间')
     return false
   }
   try {
@@ -1727,6 +1746,50 @@ watch(
                     />
                   </div>
                   <span class="field-hint">开：转存到 115 的文件超过 5 GiB 且秒传未命中时走分片上传；关：这类大文件直接判不支持。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="115 云下载（形态 B）">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.transfer_cross_cloudpull_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：秒传未命中时，先让点播用户本人的 115 自己拉本站现铸的签名取流地址（字节不过服务器搬运），失败自动回落搬字节；关：完全不走这条路。默认关</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="云下载签名有效期">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_cross_cloudpull_ttl_sec"
+                      :min="1800"
+                      :max="86400"
+                      :step="60"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">秒</span>
+                  </div>
+                  <span class="field-hint">给 115 抓取用的转存专用签名有效期，要覆盖 115 排队调度与大文件慢拉，与播放签名口径分开，默认 43200（12 小时）</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="云下载轮询超时">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_cross_cloudpull_timeout_sec"
+                      :min="60"
+                      :max="21600"
+                      :step="60"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">秒</span>
+                  </div>
+                  <span class="field-hint">等 115 云下载任务完成的最长秒数，到点未完成就回落搬字节老路，不无限等，默认 3600</span>
                 </div>
               </el-form-item>
               <el-form-item label="换绑放行窗口">

@@ -410,6 +410,72 @@ def pan115_multipart_upload_enabled(db=None):
 
 
 # ---------------------------------------------------------------------------
+# 形态 B 云下载配置（2026-10-30 用户亲批立项：让 115 自己拉）
+#
+# 跨 provider Drive→115 的第三条执行路：秒传接力未命中时，给点播
+# 用户本人的 115 喂一条我方现铸的签名取流地址，115 抓取器自己
+# 从我方把字节拉进用户盘——字节不过服务器搬运路（可行性报告
+# pan115-cloudpull-feasibility-20261030.md：形态 B 实测 11 秒
+# 完成、落盘逐字节一致）。三键走 SystemConfig（管理端可改、保存
+# 即生效），读取口径同款 fail-safe。纯 SystemConfig 键，不进
+# env.example（#1527 先例）。
+# ---------------------------------------------------------------------------
+
+#: 形态 B 总开关 SystemConfig 键；默认关（用户 2026-10-30 亲批
+#: 「新开关默认关」）：GB 级/302 跟随/冷态直抓未实测，先灰度。
+#: 关 = lane 完全不触发，跨单行为与现行一字不变。
+KEY_TRANSFER_CROSS_CLOUDPULL_ENABLED = "transfer_cross_cloudpull_enabled"
+
+#: 转存专用签名 TTL（秒）SystemConfig 键；默认 43200（12 小时）：
+#: 地址在 lane 执行时现铸、无需覆盖排队时间，但要覆盖 115 侧
+#: 调度延迟＋GB 级慢拉（悲观 2 MB/s 拉 50 GiB 约 7.3 小时）＋
+#: 115 自带重试（上限 3 次）；播放侧 verify 只查过期、无上限钳，
+#: 故与播放按时长口径（上限默认 21600）分开、互不影响。
+#: 钳 [1800, 86400]。
+KEY_TRANSFER_CROSS_CLOUDPULL_TTL_SEC = "transfer_cross_cloudpull_ttl_sec"
+CLOUDPULL_TTL_DEFAULT = 43200
+
+#: 云下载任务轮询超时（秒）SystemConfig 键；默认 3600：到点未
+#: 完成判 lane 失败回落搬字节，不许无限等占住执行道。
+#: 钳 [60, 21600]。
+KEY_TRANSFER_CROSS_CLOUDPULL_TIMEOUT_SEC = (
+    "transfer_cross_cloudpull_timeout_sec")
+CLOUDPULL_TIMEOUT_DEFAULT = 3600
+
+#: 云下载任务轮询间隔（秒）：探针实测节奏 10 秒；115 任务状态
+#: 本就分钟级粒度，不做配置键、不许配成高频打 115。
+CLOUDPULL_POLL_SEC = 10
+
+#: 轮询时钟/睡眠的模块级别名：生产绑 time.monotonic/time.sleep，
+#: 测试可 patch 成假时钟（不许在函数内直调 time.sleep 绕开）。
+_CLOUDPULL_NOW = time.monotonic
+_CLOUDPULL_SLEEP = time.sleep
+
+
+def cross_cloudpull_enabled(db=None):
+    """形态 B 云下载开关：SystemConfig 热读，默认关，读失败回默认关。"""
+    return _system_config_bool(
+        db, KEY_TRANSFER_CROSS_CLOUDPULL_ENABLED, False)
+
+
+def cross_cloudpull_ttl_sec(db=None):
+    """转存专用签名 TTL（秒）：SystemConfig > 默认 43200，钳 [1800, 86400]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_CROSS_CLOUDPULL_TTL_SEC)
+    if configured is not None:
+        return max(1800, min(86400, configured))
+    return CLOUDPULL_TTL_DEFAULT
+
+
+def cross_cloudpull_timeout_sec(db=None):
+    """云下载轮询超时（秒）：SystemConfig > 默认 3600，钳 [60, 21600]。"""
+    configured = _system_config_int(
+        db, KEY_TRANSFER_CROSS_CLOUDPULL_TIMEOUT_SEC)
+    if configured is not None:
+        return max(60, min(21600, configured))
+    return CLOUDPULL_TIMEOUT_DEFAULT
+
+
+# ---------------------------------------------------------------------------
 # 换绑节流豁免限频（2026-10-30 用户亲定）
 #
 # 换绑放行（见 _user_throttle_state）是一种豁免：每用户在窗口内
@@ -453,7 +519,7 @@ WAIVER_EXHAUSTED_DETAIL = (
 
 
 def transfer_config_payload(db):
-    """管理端转存卡片回包：转存八键当前生效值（默认值已折算）。"""
+    """管理端转存卡片回包：转存各键当前生效值（默认值已折算）。"""
     return {
         "cross_provider_transfer_enabled": cross_provider_enabled(db),
         "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
@@ -465,6 +531,10 @@ def transfer_config_payload(db):
             pan115_multipart_upload_enabled(db)),
         "transfer_rebind_waiver_window_days": rebind_waiver_window_days(db),
         "transfer_rebind_waiver_max_uses": rebind_waiver_max_uses(db),
+        "transfer_cross_cloudpull_enabled": cross_cloudpull_enabled(db),
+        "transfer_cross_cloudpull_ttl_sec": cross_cloudpull_ttl_sec(db),
+        "transfer_cross_cloudpull_timeout_sec": (
+            cross_cloudpull_timeout_sec(db)),
     }
 
 
@@ -476,7 +546,10 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           pan115_rapid_upload_enabled=None,
                           pan115_multipart_upload_enabled=None,
                           transfer_rebind_waiver_window_days=None,
-                          transfer_rebind_waiver_max_uses=None):
+                          transfer_rebind_waiver_max_uses=None,
+                          transfer_cross_cloudpull_enabled=None,
+                          transfer_cross_cloudpull_ttl_sec=None,
+                          transfer_cross_cloudpull_timeout_sec=None):
     """管理端转存配置写入：走 config_service 的 transfer 家族校验。
 
     None = 该键不改。非法值抛 ConfigValueError（ValueError 子类，
@@ -510,6 +583,15 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if transfer_rebind_waiver_max_uses is not None:
         values[KEY_TRANSFER_REBIND_WAIVER_MAX_USES] = str(
             transfer_rebind_waiver_max_uses)
+    if transfer_cross_cloudpull_enabled is not None:
+        values[KEY_TRANSFER_CROSS_CLOUDPULL_ENABLED] = (
+            "true" if transfer_cross_cloudpull_enabled else "false")
+    if transfer_cross_cloudpull_ttl_sec is not None:
+        values[KEY_TRANSFER_CROSS_CLOUDPULL_TTL_SEC] = str(
+            transfer_cross_cloudpull_ttl_sec)
+    if transfer_cross_cloudpull_timeout_sec is not None:
+        values[KEY_TRANSFER_CROSS_CLOUDPULL_TIMEOUT_SEC] = str(
+            transfer_cross_cloudpull_timeout_sec)
     if values:
         from backend import config_service
         config_service.save_config(db, values, schema="transfer")
@@ -5293,6 +5375,212 @@ def _resolve_115_source(db, item):
     raise _CrossRemoteError(f"115 源路径形态未知：{path[:60]}")
 
 
+def _cloudpull_fallback(db, job, step, detail):
+    """形态 B 任一步失败的统一收尾：打 outcome 结构化日志 + 把
+    独立 error_kind 落到 job 行（瞬时标记——随后搬字节老路的
+    结果会覆盖/清除），返回 None 表示回落。绝不在这里判 job
+    failed：回落是换执行路、不是换播放源、更不是放弃这单；
+    老路也失败才走既有失败语义（调用方原样续行）。"""
+    logger.info("transfer_cloudpull outcome=fallback job=%s step=%s "
+                "error_kind=cloudpull_failed detail=%s",
+                getattr(job, "id", None), step, detail)
+    try:
+        job.error_kind = "cloudpull_failed"
+        job.error_detail = f"cloudpull {step}: {detail}"[:500]
+        db.commit()
+    except Exception:  # noqa: BLE001 — 标记落库失败不许挡住回落本身
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return None
+
+
+def _cloudpull_del_quietly(client, info_hash):
+    """删 115 侧云下载任务记录（best-effort）：记录里存有提交的
+    签名取流地址，成功与任务终态失败两处都删；删失败只记日志
+    ——签名本身有 TTL 兜底，不许因删不掉把已成的转存判失败。"""
+    if not info_hash:
+        return
+    try:
+        client.cloudpull_del_task(info_hash)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("transfer_cloudpull task_del failed hash=%s "
+                       "err=%s", info_hash, exc)
+
+
+def _try_cloudpull_lane(db, job, item, client, dest_cid, size,
+                        user_id, name):
+    """形态 B 云下载 lane（开关开时，秒传接力预检之后、搬字节
+    之前）：让点播用户本人的 115 自己拉我方现铸的签名取流地址，
+    字节不过服务器搬运路。成功返回 done 结果 dict；任一步失败
+    返回 None（已打 fallback 日志＋落 cloudpull_failed 标记），
+    调用方原样走搬字节老路。Pan115AuthError 不吞：Cookie 死是
+    绑定问题、不是 lane 失败，上抛给调用方走既有 _auth_fail。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError
+    from backend.emby_server.public_url import client_base_url
+
+    # ① 现铸转存专用签名取流地址：走唯一构造点，TTL 用转存
+    # 专用配置，api_key 传空——任务记录会存这条 URL，绝不把
+    # 任何用户令牌写进去。worker 无请求上下文，基址取公开基址
+    # 配置（client_base_url(None)＝EMBY_PUBLIC_URL）；取不到
+    # 就现铸不出来 → 回落。
+    base = ""
+    try:
+        base = client_base_url(None) or ""
+    except Exception:  # noqa: BLE001
+        base = ""
+    if not base:
+        return _cloudpull_fallback(
+            db, job, "mint", "公开基址未配置，现铸不出取流地址")
+    try:
+        from backend.emby_server.api import _signed_local_stream_url
+        url, _exp, _sig = _signed_local_stream_url(
+            item, base, user_id, db, api_key="", with_sign=True,
+            ttl_seconds=cross_cloudpull_ttl_sec(db))
+    except Exception as exc:  # noqa: BLE001
+        return _cloudpull_fallback(
+            db, job, "mint", f"现铸签名地址失败：{exc}")
+    if not url:
+        return _cloudpull_fallback(db, job, "mint", "现铸签名地址为空")
+
+    # ② 建单前快照：目标目录已有 fid 集（认领靠差集排除存量，
+    # 绝不认错旧文件）＋云下载任务基线 info_hash 集（轮询认领
+    # 靠它排除建单前就存在的任务）。
+    try:
+        before_fids = {
+            str(e.get("fid") or "")
+            for e in client.list_dir(dest_cid)
+            if not e.get("is_dir") and e.get("fid")
+        }
+        baseline_hashes = {
+            t.get("info_hash") or ""
+            for t in client.cloudpull_tasks()
+        }
+    except Pan115AuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return _cloudpull_fallback(db, job, "snapshot", str(exc))
+
+    # ③ 建单到本人盘的既有转存目标目录。
+    try:
+        client.cloudpull_add_task(url, dest_cid)
+    except Pan115AuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return _cloudpull_fallback(db, job, "add_task", str(exc))
+
+    # ④ 有界轮询：任务列表是账号级的，只认「info_hash 不在
+    # 基线集＋url 等于所铸地址」的那一条。列表瞬时错误容忍到
+    # deadline；终态失败/超时都回落（失败任务也删记录）。
+    deadline = _CLOUDPULL_NOW() + cross_cloudpull_timeout_sec(db)
+    task = None
+    while True:
+        try:
+            tasks = client.cloudpull_tasks()
+        except Pan115AuthError:
+            raise
+        except Exception:  # noqa: BLE001
+            tasks = None
+        if tasks is not None:
+            for entry in tasks:
+                if (entry.get("info_hash") or "") in baseline_hashes:
+                    continue
+                if entry.get("url") == url:
+                    task = entry
+                    break
+            if task is not None:
+                if (task.get("status") or 0) < 0:
+                    _cloudpull_del_quietly(
+                        client, task.get("info_hash"))
+                    return _cloudpull_fallback(
+                        db, job, "task_failed",
+                        "115 云下载任务终态失败 "
+                        f"status={task.get('status')}")
+                if (task.get("status") == 2
+                        or (task.get("percentDone") or 0) >= 100):
+                    break
+        if _CLOUDPULL_NOW() >= deadline:
+            if task is not None:
+                _cloudpull_del_quietly(client, task.get("info_hash"))
+            return _cloudpull_fallback(
+                db, job, "timeout",
+                f"{cross_cloudpull_timeout_sec(db)} 秒内任务未完成")
+        _CLOUDPULL_SLEEP(CLOUDPULL_POLL_SEC)
+    info_hash = (task or {}).get("info_hash") or ""
+
+    # ⑤ 认领：落盘名取自 URL 路径尾段（如 stream.m2ts）、不是
+    # 片名，只按「不在快照内＋大小相等＋后缀相同」认，绝不按
+    # 名匹配；多条候选时任务回执 file_id 指中的优先；仍定不
+    # 了一律回落，不猜。
+    from urllib.parse import urlsplit
+    tail = urlsplit(url).path.rsplit("/", 1)[-1]
+    suffix = ""
+    if "." in tail:
+        suffix = "." + tail.rsplit(".", 1)[-1].lower()
+    if not suffix:
+        _cloudpull_del_quietly(client, info_hash)
+        return _cloudpull_fallback(
+            db, job, "claim",
+            f"取流地址尾段无后缀（{tail}），无法安全认领")
+    try:
+        entries = client.list_dir(dest_cid)
+    except Pan115AuthError:
+        _cloudpull_del_quietly(client, info_hash)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _cloudpull_del_quietly(client, info_hash)
+        return _cloudpull_fallback(db, job, "claim", str(exc))
+    candidates = [
+        e for e in entries
+        if not e.get("is_dir")
+        and str(e.get("fid") or "")
+        and str(e.get("fid") or "") not in before_fids
+        and _to_int(e.get("size")) == size
+        and str(e.get("name") or "").lower().endswith(suffix)
+    ]
+    if len(candidates) > 1:
+        task_fid = str((task or {}).get("file_id") or "")
+        narrowed = [e for e in candidates
+                    if str(e.get("fid") or "") == task_fid]
+        if len(narrowed) == 1:
+            candidates = narrowed
+    if len(candidates) != 1:
+        _cloudpull_del_quietly(client, info_hash)
+        return _cloudpull_fallback(
+            db, job, "claim",
+            f"目标目录按大小＋后缀认领到 {len(candidates)} 个新文件，不猜")
+    entry = candidates[0]
+    new_fid = str(entry.get("fid") or "")
+    pickcode = str(entry.get("pickcode") or "")
+
+    # ⑥ 改名回副本名（best-effort：落盘名只是难看、不影响可播
+    # 性，失败只记日志；变体认的是 fid 不是名）。
+    if name and str(entry.get("name") or "") != name:
+        try:
+            client.rename_file(new_fid, name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("transfer_cloudpull rename failed job=%s "
+                           "fid=%s err=%s", job.id, new_fid, exc)
+
+    # ⑦ 目录项 sha1 沉淀（与搬字节路同口径，给接力留弹药；
+    # _persist_item_sha1 自行校验格式，非 sha1 静默跳过）。
+    entry_sha1 = str(entry.get("sha1") or "").strip().lower()
+    if entry_sha1:
+        _persist_item_sha1(db, item, entry_sha1,
+                           origin="drive_to_115_cloudpull")
+
+    # ⑧ 登记点播用户本人变体 ready；⑨ 立即删任务记录。
+    row = _register_ready_variant(db, job, item, new_fid,
+                                  f"pan115:user-{user_id}",
+                                  pickcode=pickcode or None, size=size)
+    _cloudpull_del_quietly(client, info_hash)
+    logger.info("transfer_cloudpull outcome=hit job=%s item=%s "
+                "fid=%s size=%s", job.id, item.id, new_fid, size)
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
 def _run_cross_drive_to_115(db, job, item, drive_api):
     """跨 provider Drive→115：先试秒传，未命中/无哈希再全量搬字节。
 
@@ -5321,6 +5609,12 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     不重试。秒传尝试结果（hit/miss/error）均有结构化日志；
     接力漏斗另有 transfer_relay outcome=hit|miss|error|skip
     结构化日志（预检段落点与口径见函数内「秒传接力预检段」）。
+    形态 B 云下载（开关 transfer_cross_cloudpull_enabled，默认
+    关）：接力未命中且开关开时先走 _try_cloudpull_lane（115 自
+    己拉现铸签名取流地址，字节不过服务器），成功即 done、失败
+    明确回落本函数的搬字节老路（error_kind=cloudpull_failed 只
+    作瞬时标记 + transfer_cloudpull outcome 日志），绝不因
+    cloudpull 失败直接判 job failed。
     """
     from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
     from backend.emby_server import user_bindings as ub
@@ -5460,6 +5754,27 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         outcome, item.id, job.id, uid)
             if outcome == "hit":
                 rapid_fid = (rapid or {}).get("fid") or ""
+    if rapid_fid is None and cross_cloudpull_enabled(db):
+        # 形态 B 云下载 lane（2026-10-30 立项，默认关）：接力未
+        # 命中后、搬字节之前，让用户本人的 115 自己拉现铸的签名
+        # 取流地址。成功直接 done；任一步失败回落下方搬字节老路
+        # （含 >5 GiB 的 unsupported 判定，一行不改）；Cookie 死
+        # 走既有 _auth_fail，不回落。
+        if client is None:
+            try:
+                client, dest_cid = _open_client()
+            except Pan115AuthError as exc:
+                return _auth_fail(exc)
+            except Exception as exc:
+                return {"job_id": job.id,
+                        "outcome": _schedule_retry(db, job, exc)}
+        try:
+            cloud_result = _try_cloudpull_lane(
+                db, job, item, client, dest_cid, size, user_id, name)
+        except Pan115AuthError as exc:
+            return _auth_fail(exc)
+        if cloud_result is not None:
+            return cloud_result
     if rapid_fid is None:
         if size > _115_SIMPLE_UPLOAD_LIMIT \
                 and not pan115_multipart_upload_enabled(db):
