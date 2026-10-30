@@ -237,6 +237,14 @@ def dispatch(db, update: dict) -> None:
             )
             return
 
+        # 内联搜片（@bot 片名）：没有 chat 上下文，结果走 answerInlineQuery
+        if "inline_query" in update:
+            from backend.tg_bot import inline_search
+
+            inline_search.handle_inline_query(
+                db, update["inline_query"] or {}, cfg)
+            return
+
         msg = update.get("message") or {}
         text = (msg.get("text") or "").strip()
         if not text:

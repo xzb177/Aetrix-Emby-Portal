@@ -129,7 +129,7 @@ def _poll_once(token: str, offset: int, timeout: int = 30) -> list:
     import httpx
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
-    params = {"offset": offset, "timeout": timeout, "allowed_updates": ["message", "callback_query"]}
+    params = {"offset": offset, "timeout": timeout, "allowed_updates": ["message", "callback_query", "inline_query"]}
     with httpx.Client(timeout=timeout + 10) as client:
         resp = client.get(url, params=params)
     if resp.status_code != 200:

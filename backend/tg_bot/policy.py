@@ -40,6 +40,8 @@ DEFAULTS: dict[str, str] = {
     "bot_cmd_wants": "true",
     # 红包功能开关（/redpacket 发红包 + 抢红包按钮）
     "bot_redpacket_enabled": "true",
+    # 内联搜片开关（@bot 片名，InlineQuery；默认开）
+    "bot_inline_search_enabled": "true",
 }
 
 # 命令 → 开关配置键（不在表中的命令视为常开）
@@ -128,6 +130,12 @@ def is_command_enabled(cfg: dict[str, str], cmd: str) -> bool:
     if key is None:
         return True
     return _is_true(cfg.get(key, "true"))
+
+
+def is_inline_search_enabled(cfg: dict[str, str]) -> bool:
+    """内联搜片开关是否开启（@bot 片名）。"""
+    return _is_true(cfg.get("bot_inline_search_enabled",
+                            DEFAULTS["bot_inline_search_enabled"]))
 
 
 def is_redpacket_enabled(cfg: dict[str, str]) -> bool:

@@ -430,3 +430,32 @@ def get_chat_member(db, chat_id: int, user_id: int) -> tuple[bool | None, str]:
         return None, "api_error"
     status = str((data.get("result") or {}).get("status", ""))
     return (status in _MEMBER_STATUSES), status
+
+
+def answer_inline_query(
+    db,
+    inline_query_id: str,
+    results: list,
+    *,
+    cache_time: int = 30,
+    is_personal: bool = True,
+    switch_pm_text: str | None = None,
+    switch_pm_parameter: str | None = None,
+) -> tuple[bool, str | None]:
+    """回答内联查询（answerInlineQuery）：@bot 片名的候选卡片走这里。
+
+    is_personal 默认 True：结果按人不同（绑定状态 / 可见库范围），
+    Telegram 不得把一个人的结果缓存给另一个人。
+    switch_pm_text/parameter：给「先去私聊办手续」类引导用（如未绑定
+    时引导去绑定），点了跳私聊并带上 /start 参数。
+    """
+    payload: dict = {
+        "inline_query_id": inline_query_id,
+        "results": results,
+        "cache_time": cache_time,
+        "is_personal": is_personal,
+    }
+    if switch_pm_text:
+        payload["switch_pm_text"] = switch_pm_text
+        payload["switch_pm_parameter"] = switch_pm_parameter or "start"
+    return _call(db, "answerInlineQuery", payload)
