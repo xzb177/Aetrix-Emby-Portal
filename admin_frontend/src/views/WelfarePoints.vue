@@ -57,6 +57,12 @@ const slotsEnabled = computed({
   set: (v: boolean) => { form.value['slots_enabled'] = v ? 'true' : 'false' },
 })
 
+// 老虎机群里可玩开关：word 风格 true/false（同总开关口径），默认开
+const slotsGroupEnabled = computed({
+  get: () => (form.value['slots_group_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['slots_group_enabled'] = v ? 'true' : 'false' },
+})
+
 const slotsFields = [
   { key: 'slots_bet_tiers', label: '注额档位', hint: '逗号分隔的能量数，默认 5,10,20', suffix: '能量' },
   { key: 'slots_pay_777', label: '777 倍数', hint: '777 三连赔付倍数，默认 20（另加抱走头奖池）', suffix: '倍' },
@@ -238,6 +244,10 @@ onMounted(load)
           <el-form-item label="总开关">
             <el-switch v-model="slotsEnabled" />
             <span class="field-hint">关闭后机器人老虎机入口与下注全部停用，默认开</span>
+          </el-form-item>
+          <el-form-item label="群里可玩">
+            <el-switch v-model="slotsGroupEnabled" />
+            <span class="field-hint">名单群内的老虎机面板与注额按钮在群里直接可用：点按钮的人用自己的能量下注、中奖归他，公开结果按机器人消息自毁时间自动删除；关闭后群里只提示去私聊，私聊玩法不受影响。默认开</span>
           </el-form-item>
           <el-form-item v-for="f in slotsFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" class="field-input" />
