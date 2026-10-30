@@ -100,6 +100,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+# A-003（360° 审计 R1）：登录时序侧信道防护。用户不存在时若直接短路返回，
+# 与存在用户时约 190ms 的 bcrypt 校验形成可测时序差，可被用来枚举用户名。
+# 三处登录入口（门户 / 管理员 / Emby AuthenticateByName）在用户不存在时
+# 改对本常量执行一次 verify_password，使两条路径时序不可区分。
+# 本常量由 hash_password() 对随机口令预生成，参数（bcrypt cost=12）与真实
+# 密码哈希完全一致；不对应任何真实账号，校验结果一律丢弃。
+DUMMY_PASSWORD_HASH = "$bcrypt-sha256$$2b$12$kPWrCX3Ll6lji7djM4hXTuTu9xf8sZgPxlieEjRIBnhsyN4Sfj9YO"
+
+
 def needs_password_rehash(hashed_password: str) -> bool:
     """是否仍是旧 bcrypt/明文格式，需要在成功认证后升级"""
     return bool(hashed_password) and not hashed_password.startswith(_BCRYPT_SHA256_PREFIX)

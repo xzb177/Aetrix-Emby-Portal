@@ -30,6 +30,7 @@ from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import (
     create_access_token,
     create_refresh_token,
+    DUMMY_PASSWORD_HASH,
     hash_password,
     verify_password,
 )
@@ -72,7 +73,14 @@ def admin_login(
         models.WebUser.username == request.username.strip()
     ).first()
 
-    if not user or not verify_password(request.password, user.password_hash):
+    if user is None:
+        # A-003（360° 审计 R1）：用户不存在也走一次等价 bcrypt 校验，
+        # 抹平与存在用户之间的时序差，防止管理员用户名被枚举。
+        verify_password(request.password, DUMMY_PASSWORD_HASH)
+        password_ok = False
+    else:
+        password_ok = verify_password(request.password, user.password_hash)
+    if not password_ok:
         record_event(
             db, username=request.username.strip(), user_id=user.id if user else None,
             ip=log_ip(http_request), agent=user_agent(http_request), success=False,
@@ -159,6 +167,7 @@ class AdminChangePasswordRequest(BaseModel):
 
 @admin_router.post("/auth/change-password")
 def admin_change_password(
+    http_request: Request,
     request: AdminChangePasswordRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -169,7 +178,18 @@ def admin_change_password(
     否则被盗的管理员账号即使改密，攻击者手里的 access/refresh token 仍继续有效，
     "改密"这个安全动作在管理员面就是空转。
     """
+    # A-004（360° 审计 R1）：旧密码校验按登录同口径限流（8 次/分钟，
+    # 桶按 IP+管理员），失败落安全日志（此前无限流、仅成功写审计）。
+    allowed, retry_after = check_rate_limit(
+        f"admin_change_password:{client_ip(http_request)}:{current_admin.id}", 8, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
     if not verify_password(request.old_password, current_admin.password_hash):
+        record_event(
+            db, username=current_admin.username, user_id=current_admin.id,
+            ip=log_ip(http_request), agent=user_agent(http_request), success=False,
+            reason="admin_password_change_failed", detail="原密码错误",
+        )
         raise HTTPException(status_code=400, detail="原密码错误")
 
     current_admin.password_hash = hash_password(request.new_password)

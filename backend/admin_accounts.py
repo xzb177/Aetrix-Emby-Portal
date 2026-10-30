@@ -99,6 +99,9 @@ def upsert_admin(db, username: str, password: str | None = None,
         user.admin_role = "super"
         if applied:
             user.password_hash = hash_password(applied)
+            # A-001（360° 审计 R1）：既有账号被重置密码时与改密同口径 bump
+            # token_version，使此前签发的全部会话立即失效（新建账号无旧会话）。
+            user.token_version = int(user.token_version or 0) + 1
 
     db.commit()
     db.refresh(user)
