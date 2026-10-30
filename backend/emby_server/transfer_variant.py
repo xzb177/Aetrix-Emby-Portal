@@ -5611,6 +5611,15 @@ def _execute_claimed_job(job_id, session_factory, drive_api_factory):
 ROUND_MAX_PROCESSED_MIN = 100
 ROUND_MAX_PROCESSED_PER_WORKER = 25
 
+#: 池分支补认领轮询间隔（秒）：wait 必须带超时醒来查空位补认领，
+#: 不能只等完成事件——单条慢单在飞、池里明明有空位时，轮中到达
+#: 的点播单会被堵到慢单跑完才被认领（2026-10-30 生产实锤：
+#: job 1056 慢单跑 5m40s，期间建的 1057/1058 干等到它完成才被
+#: 同批补认领，点播用户被堵约 4.5 分钟；守护主循环单线程阻塞在
+#: 整轮内，建单唤醒在轮内无人消费）。超时醒来只多跑一次认领
+#: 查询（无新单即回 wait），认领/租约/上限语义一概不变。
+ROUND_TOP_UP_POLL_SEC = 1.0
+
 
 def process_claimed_round(session_factory, drive_api_factory, now=None,
                           limit=None):
@@ -5676,7 +5685,8 @@ def process_claimed_round(session_factory, drive_api_factory, now=None,
                 futures[fut] = job_id
             while futures:
                 done_futs, _pending = wait(
-                    list(futures), return_when=FIRST_COMPLETED)
+                    list(futures), return_when=FIRST_COMPLETED,
+                    timeout=(ROUND_TOP_UP_POLL_SEC if sliding else None))
                 for fut in done_futs:
                     outcomes.append(fut.result())
                     del futures[fut]
