@@ -306,7 +306,7 @@ def test_lookup_is_readonly(db):
 def test_command_registered(db, sent):
     _staff(db)
     assert policy.COMMAND_SWITCHES.get("/whois") == "bot_cmd_whois"
-    assert ("whois", "账号反查（管理员）") in poller.BOT_COMMANDS
+    assert ("whois", "[私聊] 账号反查（管理员）") in poller.BOT_COMMANDS
     router.dispatch(db, _private_update("/whois nothinghere"))
     assert len(sent) == 1
     assert "未知命令" not in sent[0]

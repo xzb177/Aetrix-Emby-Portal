@@ -44,10 +44,12 @@ ADMIN_ONLY_COMMANDS: frozenset[str] = frozenset({
 # 排除项（13)：private_only 8 (request/myrequests/login/renew/govlog/
 # report/propose/launch) + P1 私人查询 4 (bindings/transfers/whyplay/
 # wants) + redeem（群内拒执行：删原消息并提示私聊）。
+# slots：/slots 命令群里出公共面板（不带个人数据，绑定点注时才判），
+# 与 menu:slots 面板入口同口径，属群内可执行。
 GROUP_COMMANDS: frozenset[str] = frozenset({
     "start", "help", "bind", "checkin", "points", "chatpoints",
     "account", "me", "rank", "level", "requestboard", "rules",
-    "redpacket", "lottery",
+    "redpacket", "lottery", "slots",
 })
 
 
