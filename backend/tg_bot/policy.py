@@ -46,6 +46,14 @@ DEFAULTS: dict[str, str] = {
     "bot_redpacket_enabled": "true",
     # 内联搜片开关（@bot 片名，InlineQuery；默认开）
     "bot_inline_search_enabled": "true",
+    # 频道马甲治理（2026-10-30 借鉴 embyboss 第 1 项）：群里以外部频道
+    # 身份发言的消息默认删除＋回说明；匿名管理员（sender_chat=本群）
+    # 不在此列。白名单存频道 chat id（逗号分隔），命中的频道放行。
+    "bot_channel_guard_enabled": "true",
+    "bot_channel_whitelist": "",
+    # 退群处置：cancel_welfare=已绑定用户退群/被踢时只取消公益资格
+    # （不动账号/能量/查看凭证）；none=不处置。非法值回落默认。
+    "bot_leave_action": "cancel_welfare",
 }
 
 # 命令 → 开关配置键（不在表中的命令视为常开）
@@ -175,3 +183,57 @@ def rate_limit_seconds(cfg: dict[str, str]) -> float:
 def group_rate_limit(cfg: dict[str, str]) -> int:
     """每群每分钟最多处理消息数（可配置，默认 20）。"""
     return _to_int(cfg.get("bot_group_rate_limit"), _DEFAULT_GROUP_RATE_LIMIT)
+
+
+# 退群处置的合法取值
+LEAVE_ACTIONS = ("cancel_welfare", "none")
+
+
+def is_channel_guard_enabled(cfg: dict[str, str]) -> bool:
+    """频道马甲治理总开关是否开启（默认开）。"""
+    return _is_true(cfg.get("bot_channel_guard_enabled",
+                            DEFAULTS["bot_channel_guard_enabled"]))
+
+
+def channel_whitelist(cfg: dict[str, str]) -> set[int]:
+    """频道白名单：逗号分隔的频道 chat id 集合（与群 id 同解析口径）。"""
+    return parse_group_ids(cfg.get("bot_channel_whitelist", ""))
+
+
+def is_channel_whitelisted(cfg: dict[str, str], sender_chat_id) -> bool:
+    """某频道是否在白名单内放行以频道身份发言。"""
+    if sender_chat_id is None:
+        return False
+    try:
+        return int(sender_chat_id) in channel_whitelist(cfg)
+    except (TypeError, ValueError):
+        return False
+
+
+def leave_action(cfg: dict[str, str]) -> str:
+    """退群处置动作：cancel_welfare / none；非法值回落默认 cancel_welfare。"""
+    value = str(cfg.get("bot_leave_action") or "").strip().lower()
+    return value if value in LEAVE_ACTIONS else DEFAULTS["bot_leave_action"]
+
+
+def mask_sender_chat(msg: dict, chat_id: int | None) -> dict | None:
+    """频道马甲判别：命中马甲返回 sender_chat，否则返回 None。
+
+    - 无 sender_chat：普通用户消息，不是马甲；
+    - sender_chat.id == chat_id：匿名管理员形态（群本身在发言），
+      属 #1516 的匿名说明口径，绝不按马甲处理；
+    - sender_chat.type 不是 channel（以群/私聊身份发言）：不按马甲处理；
+    - is_automatic_forward：关联频道帖子自动转发进讨论群，是 Telegram
+      的系统行为（群主自己的频道），删了会打断正常讨论，不处理。
+    """
+    sender_chat = msg.get("sender_chat") or {}
+    sc_id = sender_chat.get("id")
+    if sc_id is None:
+        return None
+    if chat_id is not None and sc_id == chat_id:
+        return None
+    if sender_chat.get("type") != "channel":
+        return None
+    if msg.get("is_automatic_forward"):
+        return None
+    return sender_chat

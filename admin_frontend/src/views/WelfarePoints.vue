@@ -84,7 +84,20 @@ const botFields = [
   { key: 'bot_group_ids', label: '启用群 ID', hint: '逗号分隔的 TG 群 id，空=所有群都启用 Bot', suffix: '' },
   { key: 'bot_rate_limit_seconds', label: '命令限流', hint: '每用户每命令最小间隔，默认 3', suffix: '秒' },
   { key: 'bot_group_rate_limit', label: '群限流', hint: '每群每分钟最多处理消息数，超限静默丢弃，默认 20', suffix: '条/分' },
+  { key: 'bot_channel_whitelist', label: '频道白名单', hint: '逗号分隔的频道 id，名单内频道可在群里以频道身份发言，空=都不放行', suffix: '' },
 ]
+
+// 频道马甲治理总开关：word 风格 true/false（读侧 tg_bot.policy 只认 'true'）
+const channelGuardEnabled = computed({
+  get: () => (form.value['bot_channel_guard_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['bot_channel_guard_enabled'] = v ? 'true' : 'false' },
+})
+
+// 退群处置：开=cancel_welfare（只取消公益资格），关=none（不处置）
+const leaveCancelEnabled = computed({
+  get: () => (form.value['bot_leave_action'] ?? 'cancel_welfare') === 'cancel_welfare',
+  set: (v: boolean) => { form.value['bot_leave_action'] = v ? 'cancel_welfare' : 'none' },
+})
 
 const welfareFields = [
   { key: 'welfare_grace_days', label: '到期保留天数', hint: '到期后可登录但不可播放，默认 7', suffix: '天' },
@@ -271,6 +284,14 @@ onMounted(load)
             <el-input v-model="form[f.key]" class="field-input" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+          <el-form-item label="频道马甲治理">
+            <el-switch v-model="channelGuardEnabled" />
+            <span class="field-hint">开启后群里以外部频道身份发言的消息会被删除并回说明；匿名管理员不受影响，默认开</span>
+          </el-form-item>
+          <el-form-item label="退群取消资格">
+            <el-switch v-model="leaveCancelEnabled" />
+            <span class="field-hint">开启后已绑定用户退群／被踢自动只取消公益资格（账号、能量、查看凭证不动）；关闭则退群不做处理，默认开</span>
           </el-form-item>
         </el-form>
       </SectionCard>
