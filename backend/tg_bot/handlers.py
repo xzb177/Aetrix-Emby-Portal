@@ -391,6 +391,46 @@ def handle_admin(db, tg_user: dict, chat_id: int, args: str) -> str:
     )
 
 
+def handle_rankpush(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """管理员手动推送观影榜海报到交流群（/rankpush [week]），供验收。
+
+    身份门照 /admin 口径：TG 绑定的站账号且 is_staff；未绑定或非管理员
+    一律回同一张拒绝卡、不推送、不生成海报。默认推今日榜，args=week 推周榜。
+    实际推送走 tg_bot.rankpush.push_rank_board（与定时推送同一条路，
+    含总开关/空榜/未配群判定与发分幂等）。
+    """
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None or not bool(getattr(user, "is_staff", False)):
+        return layout.card(
+            layout.title("观影榜推送"),
+            [layout.row("🔒", "访问状态", "仅管理员可用")],
+        )
+    from backend.tg_bot import rankpush
+
+    period = "week" if str(args or "").strip().lower() == "week" else "day"
+    label = "本周观影榜" if period == "week" else "今日观影榜"
+    res = rankpush.push_rank_board(db, period)
+    reason = res.get("reason")
+    if res.get("pushed"):
+        rows = [
+            layout.row("✅", "推送", f"{label}已推送到交流群"),
+            layout.row("👥", "上榜", f"{len(res.get('rows') or [])} 人"),
+        ]
+        if res.get("rewards"):
+            total = sum(g["amount"] for g in res["rewards"])
+            rows.append(layout.row("🎁", "榜单奖励", f"已发放 {total} 能量"))
+        return layout.card(layout.title("观影榜推送", user.username), rows)
+    hint = {
+        "disabled": "海报推送已关闭（bot_rankpush_enabled），先在管理后台打开",
+        "empty": f"{label}暂时没人观影，榜是空的，没有推送",
+        "no_group": "还没配置交流群（bot_group_ids），无法推送",
+    }.get(reason or "", "推送失败，请看服务日志")
+    return layout.card(
+        layout.title("观影榜推送", user.username),
+        [layout.row("⚠️", "未推送", hint)],
+    )
+
+
 def admin_markup() -> dict:
     return {"inline_keyboard": [
         [

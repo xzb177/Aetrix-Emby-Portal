@@ -288,6 +288,10 @@ WELFARE_CONFIG_KEYS = {
     "bot_group_ids": "",
     "bot_rate_limit_seconds": "3",
     "bot_group_rate_limit": "20",
+    # 观影榜海报日推：总开关默认开 / 发分开关默认关 / 名次发分表（逗号分隔）
+    "bot_rankpush_enabled": "true",
+    "bot_rankpush_reward_enabled": "false",
+    "bot_rankpush_reward_table": "10,8,6,5,4,3,2,1,1,1",
     "redpacket_fee_pct": "5",
     "redpacket_send_limit_7d": "20",
     "redpacket_recv_limit_7d": "10",
