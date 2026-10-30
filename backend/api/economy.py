@@ -98,6 +98,19 @@ def _get_bool_config(db: Session, key: str, default: bool) -> bool:
     return _get_config(db, key, "true" if default else "false").strip().lower() == "true"
 
 
+def _get_bool_realm_config(db: Session, base: str, realm_id, default: bool) -> bool:
+    """按服读 bool 开关（两服共存 P1-5 的统一读法）。
+
+    base 必须先登记进 ``realms.REALM_CONFIG_BASES``，否则 ``realm_key``
+    恒返回原键名、按服值永远读不到。默认服（legacy）仍读原键名，
+    老部署与外部脚本不受影响；``realm_id`` 为 None 时按当前服判。
+    读数走 realm_config 的 store 通道（TTL 缓存＋写时失效），与
+    servers 等既有按服配置同一套口径。
+    """
+    raw = realms.realm_config(db, base, realm_id, "true" if default else "false")
+    return str(raw).strip().lower() == "true"
+
+
 # ==================== 签到 ====================
 
 def _today_start() -> datetime:
@@ -1120,7 +1133,9 @@ async def payment_methods(db: Session = Depends(get_db)):
     # 公益服转换：购买开关关了，方法列表也必须全灭——否则前端仍显示
     # “可用”，用户点单才 503（P0 支付网关空的老坑）。购买口本身的
     # 关闭逻辑不动，只改列表展示；开关开时保持现有行为。
-    purchase_enabled = _get_bool_config(db, "subscription_purchase_enabled", True)
+    # P1-5：购买开关按服——支付方式呈现在当前服口径下判
+    purchase_enabled = _get_bool_realm_config(
+        db, "subscription_purchase_enabled", realms.active_realm_id(db), True)
     methods = [
         PaymentMethod(id="alipay", name="支付宝", enabled=purchase_enabled),
         PaymentMethod(id="wxpay", name="微信支付", enabled=purchase_enabled),
@@ -1162,11 +1177,15 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
     同时下发该服的**接入方式**：公益服（``is_free``）不需要卖会员，用户端的钱包页
     据此把「开通会员」换成「公益服 · 免费开放」的说明，不再推付费引导。
     """
-    if not _get_bool_config(db, "subscription_purchase_enabled", True):
-        return {"enabled": False, "plans": []}
     from backend import entitlements as _entitlements
 
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    # P1-5：购买开关按服判——看哪个服就用哪个服的开关；看全部服
+    # （realm_id=0）时按当前服口径（单服部署与改前行为一致）。
+    if not _get_bool_realm_config(
+            db, "subscription_purchase_enabled",
+            scope_id if scope_id is not None else realms.active_realm_id(db), True):
+        return {"enabled": False, "plans": []}
     query = realms.scope(db.query(models.SubscriptionPlan),
                          models.SubscriptionPlan.realm_id, scope_id)
     plans = query.filter(
@@ -1434,8 +1453,6 @@ def create_payment_order(
                 price=amount, payment_method=req.payment_method, status="pending",
             )
     elif req.kind == "subscription":
-        if not _get_bool_config(db, "subscription_purchase_enabled", True):
-            raise HTTPException(status_code=403, detail="订阅购买未开启")
         plan = db.query(models.SubscriptionPlan).options(
             joinedload(models.SubscriptionPlan.realm)
         ).filter(
@@ -1444,6 +1461,10 @@ def create_payment_order(
         ).first()
         if not plan:
             raise HTTPException(status_code=404, detail="套餐不存在")
+        # P1-5：购买开关按服判（套餐属于哪个服就用哪个服的开关；
+        # 默认服仍读原键名，与改前行为一致）。
+        if not _get_bool_realm_config(db, "subscription_purchase_enabled", plan.realm_id, True):
+            raise HTTPException(status_code=403, detail="订阅购买未开启")
         if req.pay_with_points:
             if plan.points_price is None:
                 raise HTTPException(status_code=400, detail="该套餐不支持能量购买")
@@ -1454,6 +1475,28 @@ def create_payment_order(
             points_cost = pricing["paid_points"]
             if points_cost <= 0:
                 raise HTTPException(status_code=400, detail="套餐能量价配置错误")
+            # P1-5：该服的能量购买通道总开关（按服，默认开）。只拦能量
+            # 下单口；在线支付走下面的网关路径，不受影响。
+            if not _get_bool_realm_config(db, "subscription_points_purchase_enabled", plan.realm_id, True):
+                raise HTTPException(status_code=403, detail="该服未开启能量购买订阅，请使用在线支付或联系管理员")
+            # P1-4：来源限定（按服开关，默认开，与兑换公益资格同口径，
+            # 分类实现复用 points.self_earned_balance，全仓只许这一套）。
+            # 判定按折后实付 points_cost，不按原价。先锁用户行再判定，
+            # 判定与随后的扣款同一事务：_spend_points 的原子余额扣只防
+            # 余额双花，防不住两笔并发购买各自拿同一份自挣额过判
+            # （归属双花，与 redeem_welfare 的锁口径一致）。
+            lock_user_row(db, current_user.id)
+            if _get_bool_realm_config(db, "subscription_buy_self_earned_only", plan.realm_id, True):
+                from backend import points as _points_mod
+
+                earned = _points_mod.self_earned_balance(db, current_user)
+                if earned < points_cost:
+                    db.rollback()
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(f"自挣能量不足：能量购买订阅只能使用自己挣的能量"
+                                f"（签到、发言等），当前自挣能量 {earned}，需要 {points_cost}；"
+                                f"转入、赠送、中奖的能量不能用于购买订阅"))
             balance = db.query(models.WebUser.points).filter(models.WebUser.id == current_user.id).scalar() or 0
             if balance < points_cost:
                 raise HTTPException(status_code=400, detail=f"能量不足（需要 {points_cost}，当前 {int(balance)}）")

@@ -189,6 +189,8 @@ const GROUPS: Group[] = [
     fields: [
       { key: 'recharge_enabled', label: '启用充值', type: 'bool', hint: '关闭后用户端充值入口隐藏，已有余额不受影响' },
       { key: 'subscription_purchase_enabled', label: '启用订阅购买', type: 'bool', hint: '关闭后用户买不了新订阅，已有的订阅继续有效' },
+      { key: 'subscription_points_purchase_enabled', label: '启用能量购买订阅', type: 'bool', hint: '关闭后用户不能用能量买订阅（在线支付不受影响），自动续订也会停扣' },
+      { key: 'subscription_buy_self_earned_only', label: '能量买订阅只认自挣能量', type: 'bool', hint: '开启时只能用签到、发言等自己挣的能量买订阅和自动续订，转入、赠送、中奖的能量不够格（与兑换公益资格同口径）' },
       { key: 'payment_gateway_url', label: '网关地址', type: 'str', hint: '例如 https://pay.example.com/' },
       { key: 'payment_partner_id', label: '商户 ID', type: 'str', hint: '易支付后台「商户信息」里的商户号' },
       { key: 'payment_partner_key', label: '商户密钥', type: 'secret', hint: '已配置时显示为 ******，留空不修改' },
