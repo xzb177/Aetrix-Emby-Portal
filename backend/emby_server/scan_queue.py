@@ -845,11 +845,25 @@ def _pump_locked() -> int:
         task = _pick_locked()
         if task is None:
             return dispatched
-        _dispatch_locked(task)
-        dispatched += 1
+        if _dispatch_locked(task):
+            dispatched += 1
 
 
-def _dispatch_locked(task: ScanTask) -> None:
+def _dispatch_locked(task: ScanTask) -> bool:
+    """派发一个任务（调用方必须已持有 _COND 的锁）。
+
+    返回 True = 扫描线程已启动；False = 线程启动失败，任务已记 failed。
+
+    A-050：start 失败时绝不能让任务卡在 RUNNING——_run_task 永不执行，
+    _release_locked 永不调用，挂载与并行槽位会被永久占住。失败时不自动
+    重入队：_pump_locked 的 while 循环会立即再挑中它、马上又失败一次，
+    死循环。记 failed 进历史、面板可见，用户重扫即新任务。Redis raw 不
+    ACK：仍留在 processing 里，worker 重启后可捞回重扫（at-least-once，
+    丢任务比多扫一次严重）。
+    """
+    task.owner_thread = threading.Thread(
+        target=_run_task, args=(task,), name=f"scan-lib{task.library_id}", daemon=True,
+    )
     _QUEUE.remove(task)
     task.state = STATE_RUNNING
     task.started_at = datetime.now()
@@ -862,23 +876,49 @@ def _dispatch_locked(task: ScanTask) -> None:
     logger.info("扫描开始：库「%s」(id=%s) 排队 %.1fs；占用挂载 %s；同时 %s 个在跑",
                 task.name or "?", task.library_id, (task.queued_ms or 0) / 1000,
                 _mounts_text(task.mount_ids), len(_RUNNING))
-    task.owner_thread = threading.Thread(
-        target=_run_task, args=(task,), name=f"scan-lib{task.library_id}", daemon=True,
-    )
-    task.owner_thread.start()
+    try:
+        task.owner_thread.start()
+    except Exception as exc:  # noqa: BLE001 — 线程耗尽等资源性失败必须回滚，不能卡 RUNNING
+        logger.error("扫描线程启动失败：库「%s」(id=%s)：%s；任务记 failed，挂载已释放",
+                     task.name or "?", task.library_id, exc)
+        if _RUNNING.get(task.library_id) is task:
+            _RUNNING.pop(task.library_id, None)
+        for mount_id in task.mount_ids or ():
+            if _MOUNT_OWNER.get(int(mount_id)) == task.library_id:
+                _MOUNT_OWNER.pop(int(mount_id), None)
+        task.owner_thread = None
+        task.state = STATE_FAILED
+        task.result = STATE_FAILED
+        task.error = f"扫描线程启动失败：{exc}"[:500]
+        task.finished_at = datetime.now()
+        if task.started_at is not None:
+            task.duration_ms = int((task.finished_at - task.started_at).total_seconds() * 1000)
+        _push_history_locked(task)
+        _COND.notify_all()
+        return False
+    return True
 
 
 def _scheduler_loop() -> None:
+    """扫描调度循环：单轮异常不退出（probe _dispatcher_loop 同款口径）。
+
+    A-050：此前派发异常会直接杀死调度线程（_SCHEDULER 仍指向死线程），
+    队列从此只剩入队时的同步派发可依赖。调度器死掉等于整个队列停摆，
+    必须活着。
+    """
     global _SCHEDULER
     while True:
-        with _COND:
-            if _pump_locked() == 0:
-                if not _QUEUE:
-                    _SCHEDULER = None
-                    _COND.notify_all()
-                    return
-                # 队伍里有活但都被挂载挡住（或并发已满）：等释放 / 等新任务
-                _COND.wait(timeout=0.25)
+        try:
+            with _COND:
+                if _pump_locked() == 0:
+                    if not _QUEUE:
+                        _SCHEDULER = None
+                        _COND.notify_all()
+                        return
+                    # 队伍里有活但都被挂载挡住（或并发已满）：等释放 / 等新任务
+                    _COND.wait(timeout=0.25)
+        except Exception:  # noqa: BLE001 — 调度器死掉会让整个队列停摆，必须活着
+            logger.exception("扫描调度器单轮异常（调度器继续运行）")
 
 
 def _release_locked(task: ScanTask) -> None:
