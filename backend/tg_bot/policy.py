@@ -40,6 +40,8 @@ DEFAULTS: dict[str, str] = {
     "bot_cmd_wants": "true",
     # 管理员群号对账开关（借鉴第 3 项，仅私聊 + is_staff 可用）
     "bot_cmd_reconcile": "true",
+    # 管理员审计反查开关（借鉴第 2 项，仅私聊 + is_staff 可用）
+    "bot_cmd_whois": "true",
     # 红包功能开关（/redpacket 发红包 + 抢红包按钮）
     "bot_redpacket_enabled": "true",
     # 内联搜片开关（@bot 片名，InlineQuery；默认开）
@@ -67,6 +69,7 @@ COMMAND_SWITCHES: dict[str, str] = {
     "/whyplay": "bot_cmd_whyplay",
     "/wants": "bot_cmd_wants",
     "/reconcile": "bot_cmd_reconcile",
+    "/whois": "bot_cmd_whois",
 }
 
 _DEFAULT_RATE_LIMIT_SECONDS = 3.0

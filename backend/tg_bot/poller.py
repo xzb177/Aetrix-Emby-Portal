@@ -56,6 +56,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("wants", "查想看"),
     ("reconcile", "群号一致性对账（管理员）"),
     ("rankpush", "推送观影榜（管理员）"),
+    ("whois", "账号反查（管理员）"),
 ]
 
 
