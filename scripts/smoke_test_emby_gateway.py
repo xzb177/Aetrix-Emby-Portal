@@ -138,7 +138,7 @@ client = TestClient(app)
 r = client.post(
     "/emby/Users/AuthenticateByName",
     json={"Username": "alice", "Pw": "alice-play-pw"},
-    headers={"X-Emby-Authorization": 'MediaBrowser Client="Infuse", Device="Test", DeviceId="gw1", Version="7.0"'},
+    headers={"X-Emby-Authorization": 'MediaBrowser Client="SmokeClient", Device="Test", DeviceId="gw1", Version="7.0"'},
 )
 assert r.status_code == 200, r.text
 auth = r.json()
@@ -376,7 +376,7 @@ db2.close()
 r = client.post(
     "/emby/Users/AuthenticateByName",
     json={"Username": "bob", "Pw": "bob-play-pw"},
-    headers={"X-Emby-Authorization": 'MediaBrowser Client="Infuse", Device="Test", DeviceId="gw2", Version="7.0"'},
+    headers={"X-Emby-Authorization": 'MediaBrowser Client="SmokeClient", Device="Test", DeviceId="gw2", Version="7.0"'},
 )
 assert r.status_code == 200, r.text
 bob_token = r.json()["AccessToken"]

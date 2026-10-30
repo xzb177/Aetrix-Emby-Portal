@@ -118,14 +118,14 @@ print("OK /emby/system/info/public")
 # 认证（正确密码）
 r = client.post("/emby/Users/AuthenticateByName",
                 json={"Username": "alice", "Pw": "alice-play-pw"},
-                headers={"X-Emby-Authorization": 'MediaBrowser Client="Infuse", Device="Test", DeviceId="dev1", Version="7.0"'})
+                headers={"X-Emby-Authorization": 'MediaBrowser Client="SmokeClient", Device="Test", DeviceId="dev1", Version="7.0"'})
 assert r.status_code == 200, r.text
 auth = r.json()
 
 # 认证（错误密码必须拒绝）
 r = client.post("/emby/Users/AuthenticateByName",
                 json={"Username": "alice", "Pw": "nope"},
-                headers={"X-Emby-Authorization": 'MediaBrowser Client="Infuse", Device="Test", DeviceId="dev1b", Version="7.0"'})
+                headers={"X-Emby-Authorization": 'MediaBrowser Client="SmokeClient", Device="Test", DeviceId="dev1b", Version="7.0"'})
 assert r.status_code == 401, f"错误密码应拒绝, got {r.status_code}"
 print("OK wrong password rejected")
 token = auth["AccessToken"]
