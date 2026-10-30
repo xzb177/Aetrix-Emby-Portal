@@ -54,6 +54,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("transfers", "查转存进度"),
     ("whyplay", "为什么播不了"),
     ("wants", "查想看"),
+    ("reconcile", "群号一致性对账（管理员）"),
 ]
 
 

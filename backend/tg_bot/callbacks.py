@@ -28,6 +28,9 @@ def handle_callback(db, callback_query: dict, redpacket_enabled: bool | None = N
     if data.startswith("lottery_join:"):
         _handle_lottery_join(db, callback_query)
         return
+    if data.startswith("reconcile:"):
+        _handle_reconcile_callback(db, callback_query)
+        return
 
 
 def _handle_menu(db, callback_query: dict) -> None:
@@ -582,3 +585,54 @@ def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | 
         _update_message(redpacket_common.finished_text(packet, sender_name, "empty"), {"inline_keyboard": []})
     else:
         _update_message(redpacket_common.packet_text(packet, sender_name), redpacket_common.claim_markup(packet_id))
+
+
+def _handle_reconcile_callback(db, callback_query: dict) -> None:
+    """对账处置二次确认（reconcile:ask / reconcile:do / reconcile:abort）。
+
+    每一步都重新验门：仅私聊点击 + 已绑定 + is_staff（现行口径），
+    任一不满足只回拒绝卡、绝不动数据。ask 只渲染确认卡（零写入）；
+    do 才执行取消资格（reconcile.execute_cancel_welfare，内部对
+    每个目标再逐一复核在群状态）；abort 只回放弃卡。
+    """
+    from . import handlers, reconcile
+
+    data = callback_query.get("data") or ""
+    step = data.split(":", 1)[1] if ":" in data else ""
+    if step not in ("ask", "do", "abort"):
+        return
+    cq_id = callback_query.get("id")
+    from_user = callback_query.get("from") or {}
+    tg_id = from_user.get("id")
+    msg = callback_query.get("message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = msg.get("message_id")
+    if not chat_id or not message_id or not tg_id:
+        return
+    sender.answer_callback_query(db, cq_id)
+    if chat_id != int(tg_id):
+        return  # 只认私聊里的点击：对账与处置都是私聊管理员动作
+    user = resolve(db, int(tg_id))
+    if user is None or not bool(getattr(user, "is_staff", False)):
+        text = layout.card(
+            layout.title("群号一致性对账"),
+            [layout.row("🔒", "访问状态", "仅管理员可用")],
+        )
+        sender.edit_panel(db, chat_id, message_id, text,
+                          handlers.back_markup(),
+                          has_photo=bool(msg.get("photo")))
+        return
+    if step == "ask":
+        text, markup = reconcile.render_confirm(db, int(tg_id))
+    elif step == "abort":
+        text, markup = reconcile.render_abort()
+    else:
+        result = reconcile.cached_result(int(tg_id))
+        if result is None:
+            result = reconcile.run_reconcile(db)
+            reconcile.cache_result(int(tg_id), result)
+        done, skipped = reconcile.execute_cancel_welfare(db, user, result)
+        text, markup = reconcile.render_receipt(done, skipped)
+    sender.edit_panel(db, chat_id, message_id, text, markup,
+                      has_photo=bool(msg.get("photo")))
