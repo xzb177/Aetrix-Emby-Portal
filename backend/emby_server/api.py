@@ -1595,9 +1595,24 @@ def authenticate_by_name(
     # 设备数上限：超限时拒绝签发（管理员不受限），并落安全日志
     from backend.authlog import record_event
     from backend.devices import DeviceLimitExceeded
+    from backend.emby_server.player_blacklist import PlayerLoginBlacklisted
 
     try:
         token_value, token_row = issue_token(db, user, request)
+    except PlayerLoginBlacklisted as exc:
+        # 播放器登录黑名单命中：403 + 明确提示，并落一条拒绝记录
+        # （username/client/UA 齐全，供管理端登录日志按 reason 筛查）。
+        record_event(
+            db, username=user.username, user_id=user.id, ip=ip,
+            agent=request.headers.get("user-agent"), success=False,
+            reason="player_blacklisted",
+            detail=f"{exc.client or 'Emby Client'} / {exc.label}",
+        )
+        return Response(
+            content=json.dumps({"error": "PlayerBlacklisted", "message": exc.message},
+                               ensure_ascii=False),
+            status_code=403, media_type="application/json; charset=utf-8",
+        )
     except DeviceLimitExceeded as exc:
         record_event(
             db, username=user.username, user_id=user.id, ip=ip,

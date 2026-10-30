@@ -21,6 +21,7 @@ REASONS = {
     "emby_login": "客户端登录",
     "emby_login_failed": "客户端登录失败",
     "device_limit": "设备数超限",
+    "player_blacklisted": "播放器黑名单拦截",
     "decoy_code": "诱饵码触发",
     "captcha_failed": "人机验证失败",
     "password_change": "修改密码",

@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from typing import Any, Optional
 
 _BOOL_TRUE = ("1", "true", "yes", "on")
@@ -60,6 +62,10 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
         if s in allowed:
             return s
         raise ConfigValueError(f"{key} 必须是 {allowed} 之一")
+    if kind == "json_rules":
+        # 结构化 JSON 规则（如播放器黑名单）：入参可为 JSON 文本或已解析的
+        # list，归一化为 canonical JSON 文本落库；结构非法直接拒绝。
+        return normalize_player_blacklist_rules(value)
     lo, hi = spec[1], spec[2]
     if kind == "int":
         if isinstance(value, bool):
@@ -230,6 +236,64 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "transfer_cross_lane_concurrency": ("int", 1, 8),
     "transfer_fast_lane_concurrency": ("int", 1, 32),
     "transfer_per_owner_inflight": ("int", 1, 16),
+}
+
+
+def coerce_player_blacklist_rules(value: Any, *, strict: bool) -> list[dict]:
+    """播放器黑名单规则结构归一：[{label, match[], exclude[]}]。
+
+    模式串去首尾空白并转小写（匹配侧大小写不敏感，存小写即所见即所得）。
+    strict=True（保存校验）：任一结构问题抛 ConfigValueError；
+    strict=False（运行时读已存值）：跳过坏规则/坏项，尽量不因一条坏配置
+    把匹配整体打挂。
+    """
+    if not isinstance(value, list):
+        if strict:
+            raise ConfigValueError("player_login_blacklist 必须是规则数组")
+        return []
+    rules: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            if strict:
+                raise ConfigValueError("player_login_blacklist 每条规则必须是对象")
+            continue
+
+        def _patterns(field: str) -> list[str]:
+            raw = item.get(field)
+            if raw is None:
+                return []
+            if not isinstance(raw, list) or any(not isinstance(p, str) for p in raw):
+                if strict:
+                    raise ConfigValueError(
+                        f"player_login_blacklist 规则的 {field} 必须是字符串数组")
+                return []
+            return [p.strip().lower() for p in raw if p.strip()]
+
+        label = item.get("label")
+        rules.append({
+            "label": str(label) if label is not None else "",
+            "match": _patterns("match"),
+            "exclude": _patterns("exclude"),
+        })
+    return rules
+
+
+def normalize_player_blacklist_rules(value: Any) -> str:
+    """保存侧校验入口：JSON 文本或已解析 list → canonical JSON 文本。"""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise ConfigValueError("player_login_blacklist 必须是合法的 JSON 数组")
+    rules = coerce_player_blacklist_rules(value, strict=True)
+    return json.dumps(rules, ensure_ascii=False)
+
+
+# 播放器登录黑名单（2026-10-30）：规则数组整体走 json_rules 校验，
+# 结构为 [{label, match[], exclude[]}]（backend/emby_server/player_blacklist.py）。
+# 空串/None = 删行回代码级默认名单；空数组 [] 存行 = 管理员主动清空（功能停用）。
+PLAYER_BLACKLIST_CONFIG_SCHEMA: dict[str, tuple] = {
+    "player_login_blacklist": ("json_rules",),
 }
 
 # （原 ECONOMY_INT_RANGES / economy_spec 已并入下面的 ECONOMY_CONFIG_SCHEMA，

@@ -133,7 +133,7 @@ def emby_login(username: str, device_id: str, password: str = "pass12345"):
         "/emby/Users/AuthenticateByName",
         json={"Username": username, "Pw": password},
         headers={"X-Emby-Authorization":
-                 f'MediaBrowser Client="Infuse", Device="{device_id}", '
+                 f'MediaBrowser Client="SmokeClient", Device="{device_id}", '
                  f'DeviceId="{device_id}", Version="7.0"'},
     )
 
@@ -299,7 +299,7 @@ device_row = db.query(models.UserDevice).filter(
     models.UserDevice.user_id == a_id, models.UserDevice.device_id == dev_a1
 ).first()
 db.close()
-check("设备成功登记（含客户端与 IP 字段）", device_row is not None and device_row.client == "Infuse",
+check("设备成功登记（含客户端与 IP 字段）", device_row is not None and device_row.client == "SmokeClient",
       str(device_row.client if device_row else None))
 
 r = client.put("/api/admin/economy/settings",
