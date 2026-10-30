@@ -1556,6 +1556,37 @@ class TransferJob(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class TransferThrottleWaiver(Base):
+    """换绑转存节流豁免使用记录（2026-10-30 用户亲定）。
+
+    一行 = 一次成功使用的换绑放行：用户某片 24h 内的历史转存单
+    全部落在已解绑/已被替换的旧绑定面（dest 方案与本次落点不
+    同），换绑后为新盘重建该片转存单被放行时落一行。计数按
+    用户 + 时间窗（SystemConfig transfer_rebind_waiver_window_days，
+    默认 7 天）数行，达上限（transfer_rebind_waiver_max_uses，
+    默认 1）后回落普通 24h 节流。只记成功放行（与新任务行同
+    事务落库）；判定本身、被节流、建单后续校验失败都不写行，
+    供日后对账与防绕过核查。新表由 create_all 建出。
+    """
+
+    __tablename__ = "emby_transfer_throttle_waivers"
+
+    __table_args__ = (
+        Index("ix_transfer_throttle_waiver_user", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    item_id = Column(Integer, nullable=False)
+    #: 放行时被豁免的历史单落点方案（userdrive: / pan115:）。
+    from_scheme = Column(String(20), nullable=False, default="")
+    #: 本次新单的落点方案。
+    to_scheme = Column(String(20), nullable=False, default="")
+    #: 本次放行建出的任务行 id（对账用）。
+    job_id = Column(Integer)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class SeriesFollow(Base):
     """全自动追剧订阅（opt-in，2026-10-27 首批第二单）。
 
