@@ -20,6 +20,29 @@
             <ChevronRight :size="15" class="acct-row-arrow" />
           </button>
         </div>
+        <!-- 登录记录：本人登录/安全事件（只读口 /api/user/auth/login-history，只查自己） -->
+        <div class="lh-block">
+          <div class="lh-head">
+            <span class="lh-title">登录记录</span>
+            <span class="lh-note">发现不是自己登的，先改密码再清设备</span>
+          </div>
+          <div v-if="lhError" class="v4-err">登录记录加载失败，请稍后重试<br><button class="v4-retry" @click="loadLoginHistory(true)">重试</button></div>
+          <div v-else-if="lhLoading && lhItems.length === 0" class="v4-skeleton" style="height:96px"></div>
+          <div v-else-if="lhItems.length === 0" class="lh-empty">还没有登录记录</div>
+          <ul v-else class="lh-list">
+            <li v-for="(it, i) in lhItems" :key="i" class="lh-row">
+              <span class="lh-badge" :class="it.success ? 'ok' : 'bad'">{{ it.success ? '成功' : '失败' }}</span>
+              <span class="lh-main">
+                <span class="lh-line1">{{ it.reason_label }} · {{ fmtTime(it.created_at) }}</span>
+                <span class="lh-line2">{{ it.ip || '未知 IP' }}<span v-if="it.region"> · {{ it.region }}</span></span>
+                <span class="lh-ua" :title="it.user_agent || ''">{{ it.user_agent || '未知设备' }}</span>
+              </span>
+            </li>
+          </ul>
+          <div v-if="!lhError && lhItems.length < lhTotal" class="lh-more">
+            <button type="button" class="v4-retry" :disabled="lhLoading" @click="loadLoginHistory(false)">{{ lhLoading ? '正在加载…' : '加载更多' }}</button>
+          </div>
+        </div>
       </section>
 
       <!-- 我的会员：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
@@ -419,7 +442,7 @@ import { Lock, ChevronRight, RefreshCw } from 'lucide-vue-next'
 import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
-import { authApi, subscriptionApi, embyApi, isExpiringSoon, type MySubscription, type AccountCard } from '@/api'
+import { authApi, subscriptionApi, embyApi, isExpiringSoon, type MySubscription, type AccountCard, type LoginHistoryItem } from '@/api'
 import { deviceApi, storageBindingApi, seriesFollowApi, welfareApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type SeriesFollow } from '@/api/economy'
 import { tgApi } from '@/api/tg'
 import { useUserStore } from '@/stores/user'
@@ -678,6 +701,38 @@ const deviceLoading = ref(false)
 const deviceError = ref('')
 const removingDevice = ref('')
 const pendingRemove = ref('')
+
+// ---- 登录记录（只读，只查本人；与改密同处安全设置区） ----
+const lhItems = ref<LoginHistoryItem[]>([])
+const lhTotal = ref(0)
+const lhLoading = ref(false)
+const lhError = ref(false)
+const LH_PAGE = 20
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return '时间未知'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('zh-CN', { hour12: false })
+}
+
+async function loadLoginHistory(reset: boolean) {
+  if (lhLoading.value) return
+  lhLoading.value = true
+  lhError.value = false
+  try {
+    const data = await authApi.getLoginHistory({
+      limit: LH_PAGE,
+      offset: reset ? 0 : lhItems.value.length,
+    })
+    lhTotal.value = data.total
+    lhItems.value = reset ? data.items : [...lhItems.value, ...data.items]
+  } catch {
+    lhError.value = true
+  } finally {
+    lhLoading.value = false
+  }
+}
 
 async function loadDevices() {
   deviceLoading.value = true
@@ -1128,6 +1183,7 @@ async function cancelFollow(seriesItemId: number) {
 }
 
 onMounted(() => {
+  void loadLoginHistory(true)
   loadFollows()
   loadSubs()
   if (userStore.isFreeRealm) void loadRenewal()
@@ -1192,6 +1248,32 @@ watch(providersLoaded, (loaded) => {
 }
 .acct-row-text { flex: 1; font-weight: 500; }
 .acct-row-arrow { color: var(--ink2); flex-shrink: 0; }
+
+/* ---- 登录记录 ---- */
+.lh-block { margin-top: 14px; }
+.lh-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.lh-title { font-size: 14px; font-weight: 600; color: var(--ink); }
+.lh-note { font-size: 12px; color: var(--ink2); }
+.lh-empty { font-size: 13px; color: var(--ink2); padding: 10px 2px; }
+.lh-list { list-style: none; margin: 0; padding: 0; }
+.lh-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 9px 2px; border-top: 1px solid var(--paper2);
+}
+.lh-badge {
+  flex-shrink: 0; font-size: 11px; line-height: 1;
+  padding: 4px 7px; border-radius: 999px; margin-top: 1px;
+  border: 1px solid var(--au-border, #e3e3e2); color: var(--ink2);
+}
+.lh-badge.ok { color: var(--au-accent, #016a71); border-color: var(--au-accent, #016a71); }
+.lh-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lh-line1 { font-size: 13px; color: var(--ink); }
+.lh-line2 { font-size: 12px; color: var(--ink2); }
+.lh-ua {
+  font-size: 11px; color: var(--ink2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.lh-more { margin-top: 10px; text-align: center; }
 
 /* ---- 我的设备 ---- */
 .dev-head {

@@ -234,6 +234,22 @@ export interface CaptchaInfo {
   actions: { login: boolean; register: boolean }
 }
 
+/** 本人登录记录条目（后端字段白名单：时间/IP/地区/设备/成败/类别） */
+export interface LoginHistoryItem {
+  created_at: string | null
+  ip: string | null
+  region: string
+  user_agent: string | null
+  success: boolean
+  reason: string | null
+  reason_label: string
+}
+
+export interface LoginHistoryResponse {
+  total: number
+  items: LoginHistoryItem[]
+}
+
 export const authApi = {
   login: (data: { username: string; password: string; captcha_token?: string }) =>
     api.post<never, AuthResponse>('/api/user/auth/login', data),
@@ -251,6 +267,10 @@ export const authApi = {
 
   changePassword: (data: { old_password: string; new_password: string }) =>
     api.post('/api/user/auth/change-password', data),
+
+  /** 本人登录记录（只读，只查自己，分页倒序） */
+  getLoginHistory: (params?: { limit?: number; offset?: number }) =>
+    api.get<never, LoginHistoryResponse>('/api/user/auth/login-history', { params }),
 
   /** 挂件配置：站点密钥是公开信息，私钥由后端保管（永不下发） */
   captcha: () => api.get<never, CaptchaInfo>('/api/user/auth/captcha'),
