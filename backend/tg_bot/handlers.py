@@ -243,39 +243,91 @@ def _group_menu_markup() -> dict:
     return {"inline_keyboard": rows}
 
 
-def user_panel_markup() -> dict:
-    """用户面板按钮：批准样稿前三行＋既有查询/娱乐入口，末行回主界面。"""
-    rows: list[list[dict]] = [
-        [
-            {"text": "✅ 签到", "callback_data": "menu:checkin"},
+# 用户面板分组（2026-10-30 用户亲批「按钮分一下，不要全铺开」）：
+# 一级只放签到直达＋五个分组入口＋整行主界面；原功能按钮按组收进二级
+# 分组面板。各功能按钮的 callback 与既有门禁一律不变，只新增分组翻页
+# callback（menu:group_*，不查身份、不设门禁）与返回（复用 menu:user）。
+USER_PANEL_GROUPS: dict[str, dict] = {
+    "media": {
+        "label": "🎬 求片",
+        "buttons": [
             {"text": "🎬 求片", "callback_data": "menu:request"},
-        ],
-        [
             {"text": "📋 我的求片", "callback_data": "menu:myrequests"},
+            {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
+        ],
+    },
+    "drive": {
+        "label": "📦 网盘转存",
+        "buttons": [
+            {"text": "🔗 绑定网盘", "callback_data": "menu:bindings"},
             {"text": "📦 我的转存", "callback_data": "menu:transfers"},
         ],
-        [
-            {"text": "🔗 绑定网盘", "callback_data": "menu:bindings"},
-            {"text": "🎟️ 续期", "callback_data": "menu:login"},
-        ],
-        [
+    },
+    "account": {
+        "label": "🎟️ 账号权益",
+        "buttons": [
             {"text": "✨ 能量", "callback_data": "menu:points"},
             {"text": "🏆 能量榜", "callback_data": "menu:rank"},
+            {"text": "🎟️ 续期", "callback_data": "menu:login"},
+            {"text": "🔗 绑定账号", "callback_data": "menu:bind"},
         ],
-        [
+    },
+    "welfare": {
+        "label": "🎁 福利活动",
+        "buttons": [
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
             {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
         ],
-        [
+    },
+    "help": {
+        "label": "❓ 帮助中心",
+        "buttons": [
             {"text": "❓ 为什么播不了", "callback_data": "menu:whyplay"},
-            {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
+            {"text": "❓ 帮助", "callback_data": "menu:help"},
+        ],
+    },
+}
+
+
+def _two_col(buttons: list[dict]) -> list[list[dict]]:
+    """按钮按两列网格排布，落单的最后一个独占一行。"""
+    return [list(buttons[i:i + 2]) for i in range(0, len(buttons), 2)]
+
+
+def user_panel_markup() -> dict:
+    """用户面板一级按钮：签到直达＋五个分组入口两列排，末行回主界面。"""
+    rows: list[list[dict]] = [
+        [
+            {"text": "✅ 签到", "callback_data": "menu:checkin"},
+            {"text": USER_PANEL_GROUPS["media"]["label"],
+             "callback_data": "menu:group_media"},
         ],
         [
-            {"text": "🔗 绑定账号", "callback_data": "menu:bind"},
-            {"text": "❓ 帮助", "callback_data": "menu:help"},
+            {"text": USER_PANEL_GROUPS["drive"]["label"],
+             "callback_data": "menu:group_drive"},
+            {"text": USER_PANEL_GROUPS["account"]["label"],
+             "callback_data": "menu:group_account"},
+        ],
+        [
+            {"text": USER_PANEL_GROUPS["welfare"]["label"],
+             "callback_data": "menu:group_welfare"},
+            {"text": USER_PANEL_GROUPS["help"]["label"],
+             "callback_data": "menu:group_help"},
         ],
         layout.home_row(),
     ]
+    return {"inline_keyboard": rows}
+
+
+def user_panel_group_text(group_key: str) -> str:
+    """二级分组面板正文：只有标题行，不重复用户面板的信息行。"""
+    return layout.card(layout.title(USER_PANEL_GROUPS[group_key]["label"]))
+
+
+def user_panel_group_markup(group_key: str) -> dict:
+    """二级分组面板按钮：该组功能按钮（两列）＋整行返回用户面板。"""
+    rows = _two_col(USER_PANEL_GROUPS[group_key]["buttons"])
+    rows.append([{"text": "↩ 返回用户面板", "callback_data": "menu:user"}])
     return {"inline_keyboard": rows}
 
 

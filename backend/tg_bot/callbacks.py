@@ -89,6 +89,14 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
 
             text = features.user_panel(db, user, display_name=tg_user.get("first_name"))
             markup = handlers.user_panel_markup()
+    elif action.startswith("group_"):
+        # 用户面板二级分组：只是翻页，不查身份、不设门禁；
+        # 组内功能按钮各自的私聊/绑定守卫在它们自己的渲染路径上。
+        group_key = action[len("group_"):]
+        if group_key not in handlers.USER_PANEL_GROUPS:
+            raise _UnknownMenuAction(action)
+        text = handlers.user_panel_group_text(group_key)
+        markup = handlers.user_panel_group_markup(group_key)
     elif action == "server":
         text = handlers.handle_server(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
