@@ -131,7 +131,14 @@ def _poll_once(token: str, offset: int, timeout: int = 30) -> list:
     import httpx
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
-    params = {"offset": offset, "timeout": timeout, "allowed_updates": ["message", "callback_query", "inline_query"]}
+    # allowed_updates 必须显式列全：chat_member/my_chat_member 不列就永远
+    # 收不到。chat_member 是退群处置的事件源——注意 Telegram 只在 bot 为
+    # 群管理员时才稳定推送他人的成员变动，非管理员场景可能收不到
+    # （2026-10-30 接入时真机未验）；my_chat_member（bot 自身入群/被踢）
+    # 一并订阅，router 显式忽略不处理。inline_query 为内联搜片所用。
+    params = {offset: offset, timeout: timeout,
+              "allowed_updates": ["message", "callback_query", "inline_query",
+                                  "chat_member", "my_chat_member"]}
     with httpx.Client(timeout=timeout + 10) as client:
         resp = client.get(url, params=params)
     if resp.status_code != 200:

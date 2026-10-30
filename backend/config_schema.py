@@ -139,6 +139,13 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "recharge_quick_amounts": ("int_list", 1, 1000000),
     "bot_rate_limit_seconds": ("int", 0, 3600),
     "bot_group_rate_limit": ("int", 0, 100000),
+    # 频道马甲治理开关：word 风格 ("bool",) 存 "true"/"false"
+    # （读侧 tg_bot.policy._is_true 只认 "true"，同 welfare_streak_renew 口径）；
+    # 白名单是逗号分隔的频道 id 列表，原文直存（同 bot_group_ids）；
+    # 退群动作是封闭枚举，非法值在端点层 400，不许落库后靠读侧猜。
+    "bot_channel_guard_enabled": ("bool",),
+    "bot_channel_whitelist": ("str",),
+    "bot_leave_action": ("enum", ("cancel_welfare", "none")),
     "redpacket_fee_pct": ("int", 0, 100),
     "redpacket_send_limit_7d": ("int", 0, 100000),
     "redpacket_recv_limit_7d": ("int", 0, 100000),

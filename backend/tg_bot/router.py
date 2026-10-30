@@ -8,6 +8,10 @@ B4 策略（全部可配置，见 backend/tg_bot/policy.py）：
   bot_group_rate_limit 条；超限静默丢弃（用户级限流仍提示一句话）
 - 消息自毁（二期接线，见 ephemeral.py）：群聊里机器人回复默认 30 秒
   自毁（红包本体豁免）、用户命令消息默认 3 秒自毁；私聊不自毁。
+- 频道马甲治理：群里以外部频道身份（sender_chat）发言的消息默认删除
+  ＋回说明（匿名管理员形态不处理，判别见 policy.mask_sender_chat）。
+- 退群处置：chat_member 更新里已绑定用户退群/被踢时，按
+  bot_leave_action（默认 cancel_welfare）只取消其公益资格。
 """
 from __future__ import annotations
 
@@ -201,6 +205,119 @@ def _is_anonymous_admin(msg: dict) -> bool:
     return (msg.get("from") or {}).get("id") == GROUP_ANONYMOUS_BOT_ID
 
 
+# 频道马甲治理的群内说明（走 _send_reply 自毁口径，群里 30 秒自毁）
+CHANNEL_MASK_TEXT = (
+    "🎭 本群不允许以频道身份发言，这条消息已删除。\n"
+    "请用你本人账号发言；频道确需在本群发言，请联系管理员加白名单。"
+)
+
+# 退群取消公益资格后私聊通知本人的文案
+LEAVE_WELFARE_TEXT = (
+    "👋 你已退出 Aetrix 交流群，按群规设置，你的公益资格已随之取消。\n"
+    "重新进群后联系管理员即可恢复；你的账号、能量与查看凭证都不受影响。"
+)
+
+
+def _intercept_channel_mask(db, cfg, msg) -> bool:
+    """频道马甲治理：外部频道身份在群里发言 → 删消息＋回说明。
+
+    返回 True 表示已拦截（调用方直接结束分发）。判别在
+    policy.mask_sender_chat：匿名管理员（sender_chat=本群）、关联频道
+    自动转发、白名单频道、总开关关闭时都放行，落回既有分发（身份命令
+    仍走 #1516 匿名说明口径，本函数不碰）。删除失败（bot 非群管理员
+    等）只记日志，说明照发但受群级限流约束，防频道刷屏变说明刷屏。
+    """
+    from backend.tg_bot import sender
+
+    chat = msg.get("chat") or {}
+    if not _is_group_chat(chat):
+        return False
+    chat_id = chat.get("id")
+    if not chat_id or not policy.is_group_allowed(cfg, chat_id):
+        return False
+    sender_chat = policy.mask_sender_chat(msg, chat_id)
+    if sender_chat is None:
+        return False
+    if not policy.is_channel_guard_enabled(cfg):
+        return False
+    if policy.is_channel_whitelisted(cfg, sender_chat.get("id")):
+        return False
+    try:
+        sender.delete_message(db, chat_id, msg.get("message_id"))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("删除频道马甲消息失败（忽略）: %s", exc)
+    logger.info("channel mask message intercepted: chat=%s sender_chat=%s",
+                chat_id, sender_chat.get("id"))
+    if _group_allow(chat_id, policy.group_rate_limit(cfg)):
+        _send_reply(db, chat_id, CHANNEL_MASK_TEXT, autodelete=True)
+    return True
+
+
+def _apply_leave_cancel_welfare(db, tg_id: int, chat_id) -> None:
+    """退群取消公益资格：与 welfare_expiry 的 auto_expire 同一口径——
+    is_welfare=False + WelfareGrantLog(channel="group_leave", days=0)
+    留痕；查看凭证、能量一律不动。原本就无资格的只记日志、不通知
+    （避免 poller 重放或重复事件误报）；状态真正变化才私聊通知本人。
+    """
+    from backend import models
+    from backend.tg_bot import sender
+    from backend.tg_bot.identity import resolve
+
+    user = resolve(db, int(tg_id))
+    if user is None:
+        return
+    if not user.is_welfare:
+        logger.info("group leave: user=%s 无公益资格，跳过 chat=%s",
+                    user.id, chat_id)
+        return
+    user.is_welfare = False
+    db.add(models.WelfareGrantLog(
+        user_id=user.id, channel="group_leave", days=0, granted_by=None))
+    db.commit()
+    logger.info("group leave welfare cancelled: user=%s tg=%s chat=%s",
+                user.id, tg_id, chat_id)
+    try:
+        sender.send_message(db, int(tg_id), LEAVE_WELFARE_TEXT)
+    except Exception:  # noqa: BLE001
+        logger.debug("退群取消资格通知发送失败（忽略）", exc_info=True)
+
+
+def _handle_chat_member(db, cfg, cm: dict) -> None:
+    """chat_member 更新：已绑定用户退群/被踢 → 按 bot_leave_action 处置。
+
+    只处理名单内群、状态真正变为 left/kicked 的变动（old 已是
+    left/kicked 的重复推送/重放直接跳过）。处置失败只记日志：
+    成员事件不许把分发打崩、更不许给群里发"系统繁忙"。
+    注意：Telegram 只在 bot 为群管理员时才稳定推送他人的成员变动，
+    非管理员场景可能根本收不到这类 update（真机未验）。
+    """
+    try:
+        chat = cm.get("chat") or {}
+        if not _is_group_chat(chat):
+            return
+        chat_id = chat.get("id")
+        if not chat_id or not policy.is_group_allowed(cfg, chat_id):
+            return
+        new_cm = cm.get("new_chat_member") or {}
+        if new_cm.get("status") not in ("left", "kicked"):
+            return
+        old_status = (cm.get("old_chat_member") or {}).get("status")
+        if old_status in ("left", "kicked"):
+            return
+        tg_user = new_cm.get("user") or {}
+        tg_id = tg_user.get("id")
+        if not tg_id or tg_user.get("is_bot"):
+            return
+        if policy.leave_action(cfg) != "cancel_welfare":
+            logger.info("group leave not actioned (bot_leave_action=%s): "
+                        "chat=%s tg=%s", policy.leave_action(cfg),
+                        chat_id, tg_id)
+            return
+        _apply_leave_cancel_welfare(db, int(tg_id), chat_id)
+    except Exception:
+        logger.exception("chat_member handling failed")
+
+
 def dispatch(db, update: dict) -> None:
     """分发单个 update 到对应的处理器。
 
@@ -226,6 +343,15 @@ def dispatch(db, update: dict) -> None:
         if not policy.is_enabled(cfg):
             return
 
+        # chat_member 更新不带 message：退群处置单独处理
+        if "chat_member" in update:
+            _handle_chat_member(db, cfg, update.get("chat_member") or {})
+            return
+
+        # bot 自身的成员变动：poller 已订阅（口径见 poller），不处理
+        if "my_chat_member" in update:
+            return
+
         # callback_query 走 B3（群白名单同样适用：在非名单群点的抢红包按钮静默忽略）
         if "callback_query" in update:
             cq = update["callback_query"]
@@ -247,6 +373,9 @@ def dispatch(db, update: dict) -> None:
             return
 
         msg = update.get("message") or {}
+        # 频道马甲治理：频道身份的媒体消息没有 text 也要拦，故在判空前拦截
+        if _intercept_channel_mask(db, cfg, msg):
+            return
         text = (msg.get("text") or "").strip()
         if not text:
             return
