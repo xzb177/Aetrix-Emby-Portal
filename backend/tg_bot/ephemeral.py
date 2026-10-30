@@ -13,15 +13,26 @@
   bot_msg_autodelete_seconds 默认 30、bot_cmd_autodelete_seconds 默认 3，
   0 表示关闭（不调度）；配置写坏（非数字/负数）时回落默认值，
   不让脏配置把自毁变成即时删除或永不删除。
+- 定时器按 (chat_id, message_id) 登记在册（_timers），支持取消与
+  重挂：群面板滑动自毁（PR-2）靠 rearm_delete 在每次成功互动后
+  把面板消息的自毁顺延为「最后互动＋bot_msg 延时」。登记条目在
+  定时器到期、被取消或被同键新定时器顶替时一律摘除，不留死条目。
+  对同一消息重复 schedule_delete 视为顶替（先取消旧的再起新的），
+  既有调用点都是一消息只调度一次，行为不变。
 """
 from __future__ import annotations
 
 import logging
+import threading
 from threading import Timer
 
 from backend.integrations import store
 
 logger = logging.getLogger(__name__)
+
+# (chat_id, message_id) → Timer 登记表（进程内，锁保护）
+_registry_lock = threading.Lock()
+_timers: dict[tuple[int, int], Timer] = {}
 
 BOT_MSG_CONFIG_KEY = "bot_msg_autodelete_seconds"
 BOT_CMD_CONFIG_KEY = "bot_cmd_autodelete_seconds"
@@ -74,16 +85,65 @@ def _delete_now(chat_id: int, message_id: int) -> None:
             pass
 
 
+def _fire_delete(chat_id: int, message_id: int) -> None:
+    """定时器到期执行体：先摘登记再删消息，登记表不留死条目。"""
+    with _registry_lock:
+        _timers.pop((chat_id, message_id), None)
+    _delete_now(chat_id, message_id)
+
+
 def schedule_delete(chat_id: int, message_id: int, delay_seconds: int) -> bool:
     """登记一条消息在 delay_seconds 秒后自毁。
 
     :return: True 表示已起定时器；延时 <=0（关闭）或标识缺失时返回
         False 且不起定时器。红包消息本体不许经此调度（调用方纪律，
         测试有断言兜底）。
+    同一 (chat_id, message_id) 已有未到期定时器时，新调度顶替旧的
+    （旧的先取消）：同键永远只留一个活定时器。
     """
     if not chat_id or not message_id or delay_seconds <= 0:
         return False
-    timer = Timer(delay_seconds, _delete_now, args=(chat_id, message_id))
+    timer = Timer(delay_seconds, _fire_delete, args=(chat_id, message_id))
     timer.daemon = True
     timer.start()
+    key = (chat_id, message_id)
+    with _registry_lock:
+        old = _timers.pop(key, None)
+        _timers[key] = timer
+    if old is not None and old is not timer:
+        old.cancel()
     return True
+
+
+def cancel_delete(chat_id: int, message_id: int) -> bool:
+    """取消一条消息已登记的自毁定时器。
+
+    :return: True 表示确有定时器被取消；没有登记（已到期/从未调度/
+        标识缺失）时返回 False，不抛错。
+    """
+    if not chat_id or not message_id:
+        return False
+    with _registry_lock:
+        timer = _timers.pop((chat_id, message_id), None)
+    if timer is None:
+        return False
+    timer.cancel()
+    return True
+
+
+def rearm_delete(db, chat_id: int, message_id: int) -> bool:
+    """面板滑动自毁：把一条消息的自毁重挂为「现在＋bot_msg 延时」。
+
+    供群面板在每次成功互动后调用（callbacks 面板编辑成功路径）：
+    先取消既有定时器，再按当前 bot_msg_autodelete_seconds 重新调度；
+    配置为 0（关闭）时只取消不重挂，该消息转为常驻（与发送口
+    「延时 0 不调度、0=关则常驻」同语义）。标识缺失静默返回 False；
+    消息是否还存在由调用方在互动成功后才调用来保证，本函数不查存活。
+    """
+    if not chat_id or not message_id:
+        return False
+    cancel_delete(chat_id, message_id)
+    delay = bot_msg_delay_seconds(db)
+    if delay <= 0:
+        return False
+    return schedule_delete(chat_id, message_id, delay)

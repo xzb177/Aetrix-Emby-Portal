@@ -92,6 +92,25 @@ def _handle_menu(db, callback_query: dict) -> None:
         sender.send_panel(
             db, chat_id, text, markup,
             prefer_photo=has_photo, photo_path=fallback_photo)
+    elif not is_private:
+        # 群面板滑动自毁（PR-2）：编辑成功落地＝一次互动，把自毁
+        # 重挂为「最后互动＋bot_msg 延时」，正点着不会准点消失。
+        # 编辑失败走上面的删旧发新回落，旧消息已删、无可重挂，不进这里。
+        _rearm_group_panel_autodelete(db, chat_id, message_id)
+
+
+def _rearm_group_panel_autodelete(db, chat_id: int, message_id: int) -> None:
+    """群面板互动续命接线：按当前配置重挂该面板消息的自毁定时器。
+
+    只由 _handle_menu 在群聊且面板编辑成功后调用；私聊不自毁。
+    旁路纪律：重挂失败只记 debug 日志，绝不影响面板本身。
+    """
+    try:
+        ephemeral.rearm_delete(db, chat_id, message_id)
+    except Exception:
+        logger.debug(
+            "tg panel autodelete rearm failed: chat=%s message=%s",
+            chat_id, message_id, exc_info=True)
 
 
 def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
