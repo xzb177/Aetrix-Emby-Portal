@@ -294,3 +294,35 @@ def test_expired_photo_body_finishes_via_caption(db, wires):
     assert len(wires["cap_edits"]) == 1
     assert "已过期" in wires["cap_edits"][0][2]
     assert wires["cap_edits"][0][3] == {"inline_keyboard": []}
+
+
+# ---------- 本体标签四字统一（用户 2026-10-30 亲点，补 #1535 存疑项 1） ----------
+
+import re
+
+# 本体标签旧名（layout.row 标签位）——统一四字后不得再出现在标签位
+_OLD_BODY_LABELS = {"红包", "总额", "剩余", "有效期", "状态", "退款"}
+_CJK4 = re.compile(r"^[一-鿿]{4}$")
+
+
+def _body_row_labels(text):
+    """抽取卡片信息行的标签（兼容 #1535 标签加粗前后的两种渲染形态）。"""
+    labels = []
+    for m in re.finditer(r"^· \S+ (.+?) \| ", text, re.M):
+        labels.append(m.group(1).replace("<b>", "").replace("</b>", ""))
+    return labels
+
+
+def test_packet_body_labels_unified_four_chars(db):
+    packet, name = _sample_packet(db)
+    packet_labels = _body_row_labels(redpacket_common.packet_text(packet, name))
+    assert packet_labels == ["红包主人", "红包总额", "剩余份数", "有效期限"]
+    empty_labels = _body_row_labels(
+        redpacket_common.finished_text(packet, name, "empty"))
+    assert empty_labels == ["红包主人", "红包总额", "红包状态"]
+    expired_labels = _body_row_labels(
+        redpacket_common.finished_text(packet, name, "expired"))
+    assert expired_labels == ["红包主人", "红包总额", "红包状态", "过期退款"]
+    for label in packet_labels + empty_labels + expired_labels:
+        assert _CJK4.match(label), label
+        assert label not in _OLD_BODY_LABELS
