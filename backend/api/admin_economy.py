@@ -419,7 +419,6 @@ def economy_update_settings(
 # ---------- 防盗链（播放签名 + 来路检查，见 backend/emby_server/play_sign.py） ----------
 
 class HotlinkConfigRequest(BaseModel):
-    enabled: bool = True
     play_sign_ttl: int = 900
     # 配置瘦身第 3c 批：Referer 白名单（逗号分隔域名）；None=老前端没传=不改
     allowed_referers: Optional[str] = None
@@ -453,14 +452,17 @@ def hotlink_update_config(
             play_sign.write_allowed_referers(db, request.allowed_referers)
         result = play_sign.write_config(
             db,
-            enabled=request.enabled,
             play_sign_ttl=request.play_sign_ttl,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    # A-008：审计只记真实写过的键。enabled 已改走 env、不再经本端点写，
+    # allowed_referers 没传=没改，两者都不许进审计，避免「记为已改、实际未改」。
+    _audit_details = {"play_sign_ttl": request.play_sign_ttl}
+    if request.allowed_referers is not None:
+        _audit_details["allowed_referers"] = request.allowed_referers
     _audit(db, current_admin, "hotlink_update_config", "system", None,
-           {"enabled": request.enabled, "play_sign_ttl": request.play_sign_ttl,
-            "allowed_referers": request.allowed_referers})
+           _audit_details)
     db.commit()
     return result
 
