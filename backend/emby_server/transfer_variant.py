@@ -623,6 +623,65 @@ def _usercopy_quota_probe_ttl() -> int:
     return ttl if ttl > 0 else 300
 
 
+
+_PROBE_CLIENT = None
+_PROBE_CLIENT_LOCK = threading.Lock()
+
+
+def _shared_probe_client():
+    """额度探测两腿共享的同步 httpx 客户端（2026-10-30 提速）。
+
+    旧口径两腿各走 ``httpx.stream`` 顶层调用：每腿新建客户端、
+    新建连接，TLS 每发重付（VPS 到谷歌实测单次握手约
+    0.11–0.16s；稳态 PlaybackInfo 808ms 几乎全是这一发新鲜
+    probe）。共享只动连接层：判定逻辑、两腿形态、缓存口径
+    （#1495 裁决零缓存）一字不变；httpx.Client 本身线程安全，
+    stream 上下文退出只关响应、连接归还池中。timeout 与
+    follow_redirects 与旧顶层调用逐项一致（3.0s / True）。
+    """
+    global _PROBE_CLIENT
+    client = _PROBE_CLIENT
+    if client is None or client.is_closed:
+        with _PROBE_CLIENT_LOCK:
+            client = _PROBE_CLIENT
+            if client is None or client.is_closed:
+                client = httpx.Client(
+                    timeout=3.0, follow_redirects=True,
+                    limits=httpx.Limits(max_connections=8,
+                                        max_keepalive_connections=4))
+                _PROBE_CLIENT = client
+    return client
+
+
+
+def _probe_read_head(resp, limit):
+    """读响应前段字节（上限 limit），读满即停——绝不整段下载。
+
+    唯一的例外：响应带 Content-Length 且已读字节已覆盖它（额度页
+    等小体积响应才走得到），多探一口确认 EOF，连接才能归还共享
+    池复用；大文件永远走不到这一口（已读 << 总长），提前关响应
+    的旧行为一字不差。
+    """
+    head = b""
+    it = iter(resp.iter_bytes())
+    for chunk in it:
+        head += chunk
+        if len(head) >= limit:
+            total = resp.headers.get("content-length")
+            if total is not None:
+                try:
+                    done = int(total) <= len(head)
+                except (TypeError, ValueError):
+                    done = False
+                if done:
+                    try:
+                        next(it)
+                    except StopIteration:
+                        pass
+            break
+    return head
+
+
 def _usercopy_probe_http(url):
     """额度探测第一腿 HTTP 入口（测试打桩用）：开放式 Range 形态。
 
@@ -632,22 +691,13 @@ def _usercopy_probe_http(url):
     206 视频、整段 GET / HEAD 却回 200 额度页，播放器吃额度页判死
     而本腿放行。故只作第一腿：判 ok 前必须再过整拉形态第二腿
     （``_usercopy_probe_http_get``）。只读响应头 + 前段字节后立刻
-    关连接，不下整段。不带任何凭据。
+    关响应，不下整段。不带任何凭据。
     """
-    with httpx.stream("GET", url, headers={"Range": "bytes=0-"},
-                      timeout=3.0, follow_redirects=True) as resp:
-        head = b""
+    with _shared_probe_client().stream(
+            "GET", url, headers={"Range": "bytes=0-"}) as resp:
         ctype = resp.headers.get("content-type", "")
-        if ctype.lower().startswith("text/html"):
-            for chunk in resp.iter_bytes():
-                head += chunk
-                if len(head) >= 4096:
-                    break
-        else:
-            for chunk in resp.iter_bytes():
-                head += chunk
-                if len(head) >= 512:
-                    break
+        limit = 4096 if ctype.lower().startswith("text/html") else 512
+        head = _probe_read_head(resp, limit)
         return resp.status_code, ctype, head
 
 
@@ -683,18 +733,13 @@ def _usercopy_probe_http_get(url):
     """额度探测第二腿 HTTP 入口（测试打桩用）：整拉形态。
 
     与播放器起播同形态：plain GET、不带 Range。只读响应头 + 前段
-    字节（HTML 读 4096、其余 512）后立刻关连接，严禁整文件下载。
+    字节（HTML 读 4096、其余 512）后立刻关响应，严禁整文件下载。
     返回 (status, content_type, head_bytes)。不带任何凭据。
     """
-    with httpx.stream("GET", url, timeout=3.0,
-                      follow_redirects=True) as resp:
-        head = b""
+    with _shared_probe_client().stream("GET", url) as resp:
         ctype = resp.headers.get("content-type", "")
         limit = 4096 if ctype.lower().startswith("text/html") else 512
-        for chunk in resp.iter_bytes():
-            head += chunk
-            if len(head) >= limit:
-                break
+        head = _probe_read_head(resp, limit)
         return resp.status_code, ctype, head
 
 

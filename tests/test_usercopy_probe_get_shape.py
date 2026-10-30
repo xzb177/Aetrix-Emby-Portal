@@ -261,7 +261,8 @@ def test_probe_http_get_no_range_header_reads_head_only(monkeypatch):
         seen["headers"] = headers
         return _FakeResp(206, "video/mp4", _chunks())
 
-    monkeypatch.setattr(tv.httpx, "stream", fake_stream)
+    monkeypatch.setattr(tv, "_shared_probe_client",
+                        lambda: SimpleNamespace(stream=fake_stream))
     status, ctype, head = tv._usercopy_probe_http_get("https://x/u")
     assert status == 206
     assert seen["method"] == "GET"
@@ -279,7 +280,8 @@ def test_probe_http_get_html_reads_up_to_4096(monkeypatch):
     def fake_stream(method, url, headers=None, **kw):
         return _FakeResp(200, "text/html; charset=utf-8", _chunks())
 
-    monkeypatch.setattr(tv.httpx, "stream", fake_stream)
+    monkeypatch.setattr(tv, "_shared_probe_client",
+                        lambda: SimpleNamespace(stream=fake_stream))
     status, ctype, head = tv._usercopy_probe_http_get("https://x/u")
     assert status == 200
     assert len(head) == 4096
