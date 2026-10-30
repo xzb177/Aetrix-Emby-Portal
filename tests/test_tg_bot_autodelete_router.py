@@ -84,7 +84,7 @@ def _msg(tg_id, chat_id, text, chat_type="supergroup", message_id=4242,
 @pytest.fixture()
 def wires(monkeypatch):
     """劫持发送层与自毁调度，记录 (plain, ex, scheduled, deleted)。"""
-    rec = {"plain": [], "ex": [], "scheduled": [], "deleted": []}
+    rec = {"plain": [], "ex": [], "scheduled": [], "deleted": [], "photo": []}
 
     def fake_plain(db_, chat_id, text, reply_markup=None, **kw):
         rec["plain"].append((chat_id, text, reply_markup))
@@ -102,6 +102,11 @@ def wires(monkeypatch):
         rec["deleted"].append((chat_id, message_id))
         return (True, None)
 
+    def fake_photo(db_, chat_id, caption, reply_markup=None, photo_path=None, **kw):
+        rec["photo"].append((chat_id, caption, reply_markup, photo_path))
+        return (True, None)
+
+    monkeypatch.setattr(sender, "send_photo", fake_photo)
     monkeypatch.setattr(sender, "send_message", fake_plain)
     monkeypatch.setattr(sender, "send_message_ex", fake_ex)
     monkeypatch.setattr(sender, "delete_message", fake_delete)
@@ -148,11 +153,12 @@ def test_group_redpacket_success_body_exempt(db, wires):
     _make_user(db, "g4", 710004, points=1000)
     router.dispatch(db, _msg(710004, GROUP_CHAT, "/redpacket 100 10",
                              message_id=4245))
-    # 红包确实发出（落库）且正文经普通发送（不走 ex、不挂自毁）
+    # 红包确实发出（落库）且本体走封面照片消息（不走 ex、不挂自毁）
     packet = db.query(models.RedPacket).first()
     assert packet is not None
     assert wires["ex"] == []
-    assert any("总额 100 能量" in t for (_c, t, _m) in wires["plain"])
+    assert wires["plain"] == []
+    assert any("总额 100 能量" in cap for (_c, cap, _m, _p) in wires["photo"])
     # 唯一被挂的只有用户命令消息的 3 秒自毁
     assert wires["scheduled"] == [(GROUP_CHAT, 4245, 3)]
 
