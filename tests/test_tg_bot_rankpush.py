@@ -35,7 +35,7 @@ from backend import models
 from backend.emby_server import models as em
 from backend.emby_server.portal import leaderboard_window
 from backend.integrations import store
-from backend.tg_bot import handlers, queries, rankpush, sender
+from backend.tg_bot import ephemeral, handlers, poller, queries, rankpush, router, sender
 
 TICKS = 10_000_000
 SH = ZoneInfo("Asia/Shanghai")
@@ -402,3 +402,100 @@ def test_tick_weekly_fires_sunday_2100(db, monkeypatch):
     # 同一周不再重复推周榜
     actions2 = rankpush.run_scheduled_tick(db, now_sh=at + timedelta(minutes=5))
     assert "week:pushed" not in actions2
+
+
+# ---------------- /rankpush 路由接线（补 #1528 点名的两行） ----------------
+#
+# #1528 只实现了 handlers.handle_rankpush 并直测，router dispatch 表与
+# poller BOT_COMMANDS 故意未接（避与并行单抢 router/poller 区段），命令
+# 经 router 不可达、菜单里也没有。本节锁接线：注册口径与 main 现行管理
+# 员命令 /govlog、/reconcile 完全一致——dispatch 表一条 + _IDENTITY_COMMANDS
+# 一条 + private_only 一条 + BOT_COMMANDS 一行。
+
+
+@pytest.fixture()
+def sent(monkeypatch):
+    out = []
+    monkeypatch.setattr(
+        sender, "send_message",
+        lambda db_, chat_id, text, reply_markup=None, **kw: out.append(text) or (True, None),
+    )
+    monkeypatch.setattr(
+        sender, "send_message_ex",
+        lambda db_, chat_id, text, reply_markup=None, **kw: out.append(text) or (True, None, 9001),
+    )
+    monkeypatch.setattr(ephemeral, "schedule_delete", lambda *a, **kw: True)
+    router._user_cmd_limits.clear()
+    router._group_windows.clear()
+    return out
+
+
+def _msg_update(tg_id, chat_id, text, chat_type="private", **msg_kw):
+    msg = {
+        "message_id": 10,
+        "text": text,
+        "from": {"id": tg_id, "first_name": "T"},
+        "chat": {"id": chat_id, "type": chat_type},
+    }
+    msg.update(msg_kw)
+    return {"update_id": 1, "message": msg}
+
+
+def test_rankpush_registered_in_bot_commands():
+    cmds = dict(poller.BOT_COMMANDS)
+    assert cmds.get("rankpush") == "推送观影榜（管理员）"
+
+
+def test_rankpush_dispatch_reaches_handler(db, sent, monkeypatch):
+    _set_group(db)
+    _make_user(db, "boss", tg_id=555100, staff=True)
+    calls = []
+
+    def fake_handler(db_, tg_user, chat_id, args):
+        calls.append((tg_user.get("id"), chat_id, args))
+        return "RANKPUSH-OK"
+
+    monkeypatch.setattr(handlers, "handle_rankpush", fake_handler)
+    router.dispatch(db, _msg_update(555100, 555100, "/rankpush week"))
+    assert calls == [(555100, 555100, "week")]
+    assert any("RANKPUSH-OK" in t for t in sent)
+
+
+def test_rankpush_group_blocked_private_only(db, sent, monkeypatch):
+    _set_group(db)
+    _make_user(db, "boss", tg_id=555100, staff=True)
+    calls = []
+    monkeypatch.setattr(
+        handlers, "handle_rankpush",
+        lambda *a, **kw: calls.append(a) or "X",
+    )
+    router.dispatch(db, _msg_update(555100, GROUP_ID, "/rankpush", "group"))
+    assert calls == []
+    assert any("请私聊" in t for t in sent)
+
+
+def test_rankpush_anon_admin_gets_anon_text(db, sent, monkeypatch):
+    _set_group(db)
+    calls = []
+    monkeypatch.setattr(
+        handlers, "handle_rankpush",
+        lambda *a, **kw: calls.append(a) or "X",
+    )
+    upd = _msg_update(
+        router.GROUP_ANONYMOUS_BOT_ID, GROUP_ID, "/rankpush", "group",
+        sender_chat={"id": GROUP_ID, "type": "channel"},
+    )
+    router.dispatch(db, upd)
+    assert calls == []
+    assert any("匿名管理员" in t for t in sent)
+
+
+def test_rankpush_non_admin_rejected_via_router(db, sent, monkeypatch):
+    _set_group(db)
+    item = _make_item(db)
+    plain = _make_user(db, "plain", tg_id=555101)
+    _watch(db, plain, item, _today_start_utc() + timedelta(hours=1), 3600)
+    photos = _stub_send_ok(monkeypatch)
+    router.dispatch(db, _msg_update(555101, 555101, "/rankpush"))
+    assert any("仅管理员" in t for t in sent)
+    assert photos == []
