@@ -432,6 +432,27 @@ export const fetchTransferConfig = () => get<TransferConfig>('/transfer-config')
 
 export const updateTransferConfig = (payload: TransferConfigPayload) =>
   put<TransferConfig>('/transfer-config', payload)
+// ==================== 挂载直读出流（2026-10-30） ====================
+// 后端：backend/api/admin_economy.py（/api/admin/mount-serving-config）
+// 配置读取唯一实现：backend/emby_server/mount_serving.py
+
+export interface MountServingConfigPayload {
+  enabled: boolean
+  /** 白名单：storage_mounts id 列表，空 = 不介入任何 mount */
+  mount_ids: number[]
+  /** 本地根映射串：id=/绝对路径，逗号分隔 */
+  local_roots: string
+}
+
+export interface MountServingConfig extends MountServingConfigPayload {
+  defaults: { enabled: boolean; mount_ids: number[]; local_roots: string }
+}
+
+export const fetchMountServingConfig = () =>
+  get<MountServingConfig>('/mount-serving-config')
+
+export const updateMountServingConfig = (payload: MountServingConfigPayload) =>
+  put<MountServingConfig>('/mount-serving-config', payload)
 
 // ==================== 到期续费提醒（v2.8.0） ====================
 // 后端：backend/api/reminders_admin.py + backend/reminders.py

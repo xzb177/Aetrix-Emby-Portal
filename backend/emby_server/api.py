@@ -6704,6 +6704,24 @@ async def video_stream(
     if _requested_variant == play_variants.LOCAL_FILE and target.kind == "url":
         raise HTTPException(
             status_code=409, detail="播放变体当前不可用：local_file")
+    # 挂载直读出流（2026-10-30 立项，设计见 mount_serving.py）：主线
+    # 原件命中白名单 mount 时以本地挂载文件出流（绕公开链 Quota 与
+    # 中继交付不稳定）。判定与路径解析在 mount_serving；engages 后
+    # 文件缺失在那里响亮失败，这里不做任何静默回落。显式变体请求
+    # 不走本分支（变体不变量在上，这里只接 variant=None 的主线）。
+    if _requested_variant is None and target.kind == "url":
+        from backend.emby_server import mount_serving
+
+        try:
+            _ms_path = await run_db(mount_serving.resolve_local_file, db, item)
+        except mount_serving.MountServingUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if _ms_path is not None:
+            _pt.mark("mount_serving")
+            _pt.done()
+            return serve_file(
+                _ms_path, request, media_type,
+                cache_control=cdn.cache_control_for(str(request.url.path)))
     if target.kind == "url":
         # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
         # 直接 302 到谷歌 usercontent 直链。判定逻辑见 playback_strategy。
