@@ -684,6 +684,7 @@ const transfer = reactive({
   transfer_cross_lane_concurrency: 2,
   transfer_fast_lane_concurrency: 8,
   transfer_per_owner_inflight: 2,
+  pan115_multipart_upload_enabled: true,
 })
 const transferOriginal = reactive({ ...transfer })
 const transferLoading = ref(false)
@@ -693,6 +694,7 @@ function applyTransfer(data: TransferConfig) {
   transfer.transfer_cross_lane_concurrency = Number(data.transfer_cross_lane_concurrency) || 2
   transfer.transfer_fast_lane_concurrency = Number(data.transfer_fast_lane_concurrency) || 8
   transfer.transfer_per_owner_inflight = Number(data.transfer_per_owner_inflight) || 2
+  transfer.pan115_multipart_upload_enabled = data.pan115_multipart_upload_enabled !== false
   Object.assign(transferOriginal, transfer)
 }
 
@@ -711,7 +713,8 @@ const transferDirty = computed(() =>
 transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_transfer_enabled
   || transfer.transfer_cross_lane_concurrency !== transferOriginal.transfer_cross_lane_concurrency
   || transfer.transfer_fast_lane_concurrency !== transferOriginal.transfer_fast_lane_concurrency
-  || transfer.transfer_per_owner_inflight !== transferOriginal.transfer_per_owner_inflight,
+  || transfer.transfer_per_owner_inflight !== transferOriginal.transfer_per_owner_inflight
+  || transfer.pan115_multipart_upload_enabled !== transferOriginal.pan115_multipart_upload_enabled,
 )
 
 /** 转存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -1601,6 +1604,18 @@ watch(
                     <span class="field-suffix">条</span>
                   </div>
                   <span class="field-hint">同一用户同时在飞的转存任务上限，防一人灌单饿死别人，默认 2</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="115 分片上传">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.pan115_multipart_upload_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：转存到 115 的文件超过 5 GiB 且秒传未命中时走分片上传；关：这类大文件直接判不支持。默认开</span>
                 </div>
               </el-form-item>
             </el-form>
