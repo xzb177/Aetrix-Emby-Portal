@@ -65,10 +65,12 @@ def _handle_menu(db, callback_query: dict) -> None:
         text, markup = "系统繁忙，请稍后再试", handlers.back_markup()
 
     has_photo = bool(msg.get("photo"))
+    fallback_photo = None
     if action == "redpacket" and has_photo:
         # 发红包发起面板用专属封面图：caption 编辑换不了图，走
         # editMessageMedia 换图；失败（图不可用/API 拒绝）回退普通
         # caption 编辑，面板照常打开（仍是品牌图）。
+        fallback_photo = layout.REDPACKET_IMAGE
         ok, err = sender.edit_message_media(
             db, chat_id, message_id, text, markup,
             photo_path=layout.REDPACKET_IMAGE)
@@ -81,6 +83,15 @@ def _handle_menu(db, callback_query: dict) -> None:
             db, chat_id, message_id, text, markup, has_photo=has_photo)
     if not ok:
         logger.debug("tg menu edit failed: action=%s err=%s", action, err)
+        # 导航回落：原地编辑被 TG 拒绝（消息不可编辑/内容未变/消息
+        # 过旧等）时，删掉旧消息、新发目标面板，保证导航一定落到
+        # 用户点的页面。旧行为只记日志就结束，用户被困在原面板上
+        # 反复点、面板纹丝不动（2026-10-30 老虎机主界面实证）。
+        # 回落发的是目标面板，绝不许重发当前面板。
+        sender.delete_message(db, chat_id, message_id)
+        sender.send_panel(
+            db, chat_id, text, markup,
+            prefer_photo=has_photo, photo_path=fallback_photo)
 
 
 def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
@@ -801,10 +812,11 @@ def _handle_slots_bet(db, callback_query: dict) -> None:
             summary = f"+{total} 能量" if total > 0 else "未中奖"
             _answer(f"本局已结算（{summary}）")
         else:
+            # 私聊重放只回 toast，绝不再发结果卡：结果卡在首轮处理时
+            # 已经发过，重投递整批时再发一份，用户看到的就是「点主
+            # 界面又来一张一模一样的老虎机卡」的死循环假象
+            # （2026-10-30 真机实证：一局 spin、两张同卡）。
             _answer("本局已结算")
-            sender.send_panel(
-                db, chat_id, handlers.slots_result_text(db, spin),
-                handlers.slots_markup(db))
         return
 
     ok, err, dice_value, dice_mid = sender.send_dice(db, chat_id, "🎰")
