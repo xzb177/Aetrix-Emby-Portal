@@ -302,3 +302,67 @@ def diagnose_whyplay(db, user, title: str) -> str:
         layout.row("📦", "转存状态", "这部片还没有转存到你的盘里"),
         layout.row("▶️", "下一步", "去详情页点一次播放，系统会先转存再播，转完才可点"),
     ])
+
+
+# ---------------- 观影时长榜聚合（海报日推数据源，只读） ----------------
+
+def watch_duration_rank(db, period: str, limit: int = 10) -> list[dict]:
+    """观影时长榜 Top N：[{user_id, username, seconds}]，秒数降序。
+
+    数据源与口径（与账号面板「已观影 X 小时」同源同口径，不新造统计）：
+    - 表：emby_playback_sessions（Emby 播放会话行），秒数走
+      backend.panel_achievements.playback_seconds——position 口径
+      （min(position_ticks, duration_ticks)），暂停时 position 不前进、
+      不计入；片长取条目 duration_ticks（会话行须能 join 到条目，
+      条目已删的会话不计）。
+    - 窗口：复用 emby_server.portal.leaderboard_window——day＝
+      Asia/Shanghai 自然日、week＝ISO 周（周一起）；会话按 start_time
+      （UTC 入库帧）落窗，昨晚开播跨进今天的会话算昨天、不进今日榜。
+    - 上榜过滤与站内时长榜一致：show_on_leaderboard 为 False 的用户
+      不上榜（NULL 视为允许）；总秒数 <= 0 不上榜。
+    - 排序：秒数降序，同秒按 user_id 升序，保证同分名次稳定。
+    - 用户名展示口径与 bot /rank、站内时长榜一致（WebUser.username 原样）。
+    """
+    from backend.emby_server.portal import leaderboard_window
+    from backend.models import WebUser
+    from backend.panel_achievements import playback_seconds
+
+    _start_sh, start_utc = leaderboard_window(period)
+    rows = (
+        db.query(
+            em.PlaybackSession.user_id,
+            em.PlaybackSession.position_ticks,
+            em.MediaItem.duration_ticks,
+        )
+        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
+        .filter(
+            em.PlaybackSession.start_time >= start_utc,
+            em.PlaybackSession.user_id.isnot(None),
+        )
+        .all()
+    )
+    totals: dict[int, int] = {}
+    for row in rows:
+        secs = playback_seconds(row)
+        if secs > 0:
+            totals[int(row.user_id)] = totals.get(int(row.user_id), 0) + int(secs)
+    if not totals:
+        return []
+    users = (
+        db.query(WebUser.id, WebUser.username, WebUser.show_on_leaderboard)
+        .filter(WebUser.id.in_(list(totals)))
+        .all()
+    )
+    names = {
+        int(uid): (username or "")
+        for uid, username, shown in users
+        if shown is not False
+    }
+    ranked = sorted(
+        ((uid, secs) for uid, secs in totals.items() if uid in names),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    return [
+        {"user_id": uid, "username": names[uid], "seconds": int(secs)}
+        for uid, secs in ranked[: max(1, int(limit or 10))]
+    ]

@@ -164,6 +164,10 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 存字符串）。注册为 ("str",) 与今天逐字一致：原文直存，None/空串→删行
     # （读侧 _get_str_config 缺行/空行都回默认 ""，等价）。
     "bot_group_ids": ("str",),
+    # 观影榜海报日推（tg_bot.rankpush 读侧宽容解析）：开关 word 风格存 true/false
+    "bot_rankpush_enabled": ("bool",),
+    "bot_rankpush_reward_enabled": ("bool",),
+    "bot_rankpush_reward_table": ("int_list", 0, _BIG),
 
     "lottery_group_ids": ("str",),
 }
