@@ -325,8 +325,41 @@ def resurrect(db, item_ids: list) -> int:
         {"deleted_at": None}, synchronize_session=False) or 0)
 
 
+def delete_item_child_rows(db, item_ids) -> None:
+    """删除指向 emby_items 的全部 FK 子表行（批量语句，不逐条加载）。
+
+    A-048/A-049：管理端删条目、删库、软删回收三条路径此前各有一份过期清单，
+    漏掉的表在 PG（FK 默认 NO ACTION）上直接让条目 DELETE 撞外键 500，
+    或让回收整批回滚。此后三处共用本清单；新增指向 emby_items 的 FK 子表
+    时只改这里。PanelUnseal 已有 ON DELETE CASCADE，不用管；无 FK 的孤儿行
+    （Transfer*、ArtworkOverride 等）不在此列，另行评估。
+    SeriesFollow 用 series_item_id 列，其余 8 张用 item_id 列。
+    """
+    from backend.emby_server import models as em
+
+    ids = [int(i) for i in item_ids if i]
+    if not ids:
+        return
+    for model, column in (
+        (em.MediaStream, em.MediaStream.item_id),
+        (em.UserMediaData, em.UserMediaData.item_id),
+        (em.ItemFacet, em.ItemFacet.item_id),
+        (em.EmbyPerson, em.EmbyPerson.item_id),
+        (em.PlaybackSession, em.PlaybackSession.item_id),
+        (em.IntroMarker, em.IntroMarker.item_id),
+        (em.IntroSegment, em.IntroSegment.item_id),
+        (em.EmbyMediaSetMember, em.EmbyMediaSetMember.item_id),
+        (em.SeriesFollow, em.SeriesFollow.series_item_id),
+    ):
+        db.query(model).filter(column.in_(ids)).delete(synchronize_session=False)
+
+
 def purge_expired(db, purge_days: int = None, library_id: int = None) -> int:
-    """物理删除隐藏够久的条目，返回条数（``purge_days=0`` 表示不回收）"""
+    """物理删除隐藏够久的条目，返回条数（``purge_days=0`` 表示不回收）。
+
+    A-049：整批失败时不整批回滚了事，逐行回落——单行失败只跳过该行并记日志，
+    其余行照常回收，下轮不再取同一批毒单。
+    """
     from backend.emby_server.models import MediaItem
     from backend.emby_server.scanner import _purge_items
 
@@ -361,7 +394,28 @@ def purge_expired(db, purge_days: int = None, library_id: int = None) -> int:
             logger.error("回收孤儿守卫失败，跳过本行 id=%s: %s", _id, exc)
     if not purgeable:
         return 0
-    _purge_items(db, purgeable)
+    try:
+        _purge_items(db, purgeable)
+    except Exception as exc:  # noqa: BLE001 — 一单毒行不许卡住整批：逐行回落
+        db.rollback()
+        logger.warning("软删除回收整批失败，逐行回落 library_id=%s: %s",
+                       library_id, exc)
+        purged = []
+        remaining = set(purgeable)
+        for _id in purgeable:
+            try:
+                # 回滚丢掉了本轮改指的 flush，逐行重试前先重做改指守卫。
+                with include_deleted():
+                    row = db.query(MediaItem).filter(MediaItem.id == _id).first()
+                if row is not None:
+                    rehome_merged_children(db, row, skip_ids=remaining)
+                _purge_items(db, [_id])
+                db.commit()
+                purged.append(_id)
+            except Exception as row_exc:  # noqa: BLE001
+                db.rollback()
+                logger.error("软删除回收单行失败，跳过 id=%s: %s", _id, row_exc)
+        purgeable = purged
     # 列表去重缓存：物理删除改变条目集合 → bump 版本号（提交后可见）。
     # 唯一调用方（扫描清理）恒传 library_id；None 时退化为全库 bump。
     try:
