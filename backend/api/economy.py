@@ -40,6 +40,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from backend import coupons, models, realms, vitality as _vitality
+from backend.usernames import find_users_by_username_ci
 from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.database import get_db
 from backend.api.user import get_current_user
@@ -2093,11 +2094,12 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
     if max_amount > 0 and amount > max_amount:
         raise ValueError(f"单笔最多转账 {max_amount} 能量")
 
-    recipient = (
-        db.query(models.WebUser)
-        .filter(func.lower(models.WebUser.username) == recipient_username.lower())
-        .first()
-    )
+    # 收款人按大小写不敏感查：命中多个异壳账号时不许 .first() 任选，
+    # 明确拒绝，避免能量落到错误账号；恰好一个时行为不变。
+    recipients = find_users_by_username_ci(db, recipient_username)
+    if len(recipients) > 1:
+        raise ValueError("对方用户名不唯一，请联系管理员处理")
+    recipient = recipients[0] if recipients else None
     if not recipient or not recipient.is_active:
         raise ValueError("对方用户不存在")
 
