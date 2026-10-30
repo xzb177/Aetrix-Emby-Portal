@@ -167,6 +167,14 @@ def _env_int(name, default):
 # cross_provider_transfer_enabled 关时完整回退 #1487 关停口径。
 # file-only 搬字节后路仍关停（等 drive.readonly 验证恢复），不在
 # 本次重开范围。
+# 2026-10-30 再更新（用户亲令「不要重复问题」）：认领公平化——
+# _pick_candidates 的 owner 轮转序由字典序改为（在途数升序、
+# 名下最老候选等待最久、owner 键兜底），堵住「一人多单在补
+# 认领时反复抢走空槽、后来者无限等」（当日 1064/985 生产案）。
+# 跨 provider 搬运不支持断点续传（Drive→115 是单次
+# simple_upload 整文件请求；115→Drive 的 resumable 会话 URI
+# 不落库），让行只在 job 之间（滑动窗口补认领点）生效，不做
+# 中途挂起——挂起等于整单重搬，比等更浪费带宽。
 TRANSFER_WORKER_CONCURRENCY = _env_int("TRANSFER_WORKER_CONCURRENCY", 4)
 TRANSFER_WORKER_PER_USER_MAX = _env_int("TRANSFER_WORKER_PER_USER_MAX", 2)
 TRANSFER_WORKER_LEASE_SEC = _env_int("TRANSFER_WORKER_LEASE_SEC", 300)
@@ -5621,6 +5629,17 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
     每组内按用户轮流取
     （每轮每用户先取 1 单，再取第 2 单……），直至 limit 或取尽。
     暂停用户直接跳过；已在途达 cap 的用户直接跳过。
+    owner 轮转顺序（2026-10-30 公平化，用户亲令「不要重复
+    问题」）：不再按 owner 键字典序——生产案里 "1064" < "985"
+    使在途 2 单的 1064 其第三单在补认领时抢走空出的跨道槽，
+    0 在途的 985 无限等。改为每一轮按下述键动态排序：
+    ①该 owner 当前在途数（running＋本轮已挑）升序——在途少的
+    永远排前面，已达 cap 的 owner 叠加既有跳过规矩，其 pending
+    绝不越过未达上限 owner 的 pending；②该 owner 名下最老
+    候选的 created_at 升序——等得最久的 owner 先（库里没有
+    「上次认领时间」列，不新造，用名下最老 pending 的等待
+    时长作「最久未被服务」的代理键）；③owner 键字典序兜底，
+    保证同键下结果确定。同 owner 组内仍按 id 序（FIFO 不变）。
     跨 provider 搬字节单另有全局在途上限（cross_cap，None=不限）：
     在途（含本轮已挑）达上限后跨单跳过、同 provider 单照常挑——
     慢单不许占满整条道（2026-10-30 重开硬要求）。
@@ -5636,10 +5655,19 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
         by_owner = {}
         for job in lane:
             by_owner.setdefault(_owner_key(job), []).append(job)
+        # 每 owner 名下最老候选的 created_at（等待键），候选集在本
+        # 次挑单内固定，先算好；created_at 缺失按最早处理。
+        oldest_at = {
+            key: min((job.created_at or datetime.min) for job in group)
+            for key, group in by_owner.items()}
+
+        def _owner_order(key, _used=used, _oldest=oldest_at):
+            return (_used.get(key, 0), _oldest[key], key)
+
         round_no = 0
         while len(picked) < limit:
             progressed = False
-            for key in sorted(by_owner):
+            for key in sorted(by_owner, key=_owner_order):
                 if len(picked) >= limit:
                     break
                 group = by_owner[key]
@@ -5664,6 +5692,32 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
         if len(picked) >= limit:
             break
     return picked
+
+
+def _log_claim_pick(worker_id, picked, claimed_ids, running_counts, now):
+    """认领决策结构化日志（2026-10-30 公平化）：只在实际认领到
+    单时打一条，逐单列排序键摘要（owner 在认领前的在途数、该单
+    已等待秒数），排障时能一眼看出为什么这单先跑；无认领不打，
+    日志量只随认领次数走，不随轮询走。"""
+    if not claimed_ids:
+        return
+    by_id = {job.id: job for job in picked}
+    parts = []
+    for jid in claimed_ids:
+        job = by_id.get(jid)
+        if job is None:
+            parts.append(f"job={jid}")
+            continue
+        key = _owner_key(job)
+        created = getattr(job, "created_at", None)
+        wait = int((now - created).total_seconds()) if created else -1
+        parts.append(
+            f"job={jid} owner={key[0]}:{key[1]} "
+            f"trigger={job.trigger or ''} "
+            f"cross={1 if _is_cross_job(job) else 0} "
+            f"owner_running={running_counts.get(key, 0)} wait_s={wait}")
+    logger.info("转存认领 claim_pick worker=%s %s",
+                worker_id, " ".join(parts))
 
 
 def claim_due_jobs(db, now=None, limit=None, worker_id=None):
@@ -5727,6 +5781,8 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
                 job.claimed_by = worker_id
                 claimed.append(job.id)
             db.commit()
+            _log_claim_pick(worker_id, picked, claimed,
+                            running_counts, now)
             return claimed
         except Exception:
             logger.warning("转存工人：PG 认领 FOR UPDATE 失败，退回原子 UPDATE",
@@ -5745,6 +5801,7 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
         if result.rowcount == 1:
             claimed.append(job.id)
     db.commit()
+    _log_claim_pick(worker_id, picked, claimed, running_counts, now)
     return claimed
 
 
