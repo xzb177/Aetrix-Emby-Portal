@@ -314,6 +314,26 @@ def _get_token() -> str | None:
     return None
 
 
+def sa_email_for_token(token: str) -> str | None:
+    """按令牌值反查内层 SA 缓存里的 client_email；查不到返回 None，永不抛。
+
+    中继 failover 排除已试 SA 用（A-009）：_sa_access_token 每次换取都把
+    (token, expiry) 写进本模块 _token_cache（key=client_email），故同进程
+    内经本模块取到的令牌必能反查。注意与 drive_auth.sa_email_for_token
+    查的不是同一缓存——外层缓存只含 drive_auth 自身换取路径的令牌，
+    中继令牌不在其中，用它反查会恒 miss。
+    """
+    if not token:
+        return None
+    try:
+        for email, cached in _token_cache.items():
+            if cached and cached[0] == token:
+                return email
+    except Exception:
+        return None
+    return None
+
+
 class DriveAuthError(Exception):
     """Drive 凭据失败（个人盘 OAuth 缺配置/刷新失败等）。
 

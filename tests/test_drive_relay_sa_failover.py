@@ -12,6 +12,7 @@
 monkeypatch 只打模块属性（与 test_drive_relay.py 同款）。
 """
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ from backend.emby_server import drive_auth
 from backend.emby_server import drive_changes as _dc
 from backend.emby_server import playback_strategy as _strategy
 from backend.emby_server import streaming
+from backend.emby_server import transfer_variant as _tv
 
 
 def _run(coro):
@@ -30,14 +32,16 @@ def _run(coro):
 class _RelayRig:
     """mount/token/冷却三处替身，记录每次调用。"""
 
-    def __init__(self, monkeypatch, outcomes):
+    def __init__(self, monkeypatch, outcomes, tokens=None,
+                 email_map=None):
         # outcomes: 每次 mount 调用的结果序列，"RESP" 或 HTTP 状态码
         self.outcomes = list(outcomes)
         self.mount_auth = []
         self.token_forces = []
         self.invalidated = []
         self.noted = []
-        self._tokens = ["TOK1", "TOK2", "TOK3", "TOK4", "TOK5"]
+        self._tokens = list(tokens) if tokens else [
+            "TOK1", "TOK2", "TOK3", "TOK4", "TOK5"]
 
         async def fake_mount(url, request, headers=None, media_type=None,
                              pt=None, sniff_quota_page=False):
@@ -45,6 +49,8 @@ class _RelayRig:
             outcome = self.outcomes.pop(0)
             if outcome == "RESP":
                 return "RESP"
+            if outcome == "QUOTA":
+                raise _tv.QuotaPageError("quota page")
             raise HTTPException(status_code=outcome, detail="up")
 
         def fake_token(drive_id, force_refresh=False):
@@ -69,6 +75,10 @@ class _RelayRig:
         monkeypatch.setattr(
             drive_auth, "sa_email_for_token",
             lambda token: f"sa-for-{token}@example.test")
+        email_map = email_map or {}
+        monkeypatch.setattr(
+            _dc, "sa_email_for_token",
+            lambda token: email_map.get(token), raising=False)
 
     def relay(self, **kwargs):
         return _run(streaming.serve_drive_relay_async(
@@ -207,3 +217,67 @@ def test_failover_attempts_read_failure_defaults_three(monkeypatch):
 
     monkeypatch.setattr(_strategy.store, "get_value", boom)
     assert _strategy.drive_relay_sa_failover_max_attempts(object()) == 3
+
+
+# ---------- A-009：额度页冷却＋排除已试 SA ----------
+
+def test_quota_page_cools_down_and_retries(monkeypatch):
+    rig = _RelayRig(monkeypatch, ["QUOTA", "RESP"])
+    assert rig.relay() == "RESP"
+    assert rig.mount_auth == ["Bearer TOK1", "Bearer TOK2"]
+    assert rig.invalidated == ["TOK1"]
+    assert rig.noted == []
+
+
+def test_quota_page_last_attempt_does_not_cool_down(monkeypatch):
+    rig = _RelayRig(monkeypatch, ["QUOTA"])
+    with pytest.raises(_tv.QuotaPageError):
+        rig.relay(max_attempts=1)
+    assert rig.mount_auth == ["Bearer TOK1"]
+    assert rig.invalidated == []
+
+
+def test_failover_redraws_when_rotation_repeats_same_sa(monkeypatch):
+    rig = _RelayRig(
+        monkeypatch, [403, "RESP"],
+        tokens=["TOK1", "TOK1", "TOK2"],
+        email_map={"TOK1": "sa1@example.test",
+                   "TOK2": "sa2@example.test"})
+    assert rig.relay() == "RESP"
+    assert rig.mount_auth == ["Bearer TOK1", "Bearer TOK2"]
+    assert rig.invalidated == ["TOK1"]
+    assert len(rig.token_forces) == 3  # 初取＋重抽各一次
+
+
+def test_failover_redraw_bound_falls_back(monkeypatch):
+    rig = _RelayRig(
+        monkeypatch, [403, 403, 403],
+        tokens=["TOK1"] * 10,
+        email_map={"TOK1": "sa1@example.test"})
+    with pytest.raises(HTTPException) as ei:
+        rig.relay(max_attempts=3)
+    assert ei.value.status_code == 403
+    assert rig.mount_auth == ["Bearer TOK1"] * 3
+    assert rig.invalidated == ["TOK1", "TOK1"]
+    # 初取 1＋第 2/3 次各初取 1＋重抽 3：耗尽后接受旧令牌，不直接 503
+    assert len(rig.token_forces) == 9
+
+
+def test_dc_sa_email_for_token_reverse_lookup(monkeypatch):
+    monkeypatch.setitem(
+        _dc._token_cache, "sa1@example.test",
+        ("TOK1", time.time() + 3600))
+    assert _dc.sa_email_for_token("TOK1") == "sa1@example.test"
+    assert _dc.sa_email_for_token("NOPE") is None
+
+
+def test_invalidate_clears_both_token_caches(monkeypatch):
+    monkeypatch.setitem(
+        drive_auth._token_cache, "sa1@example.test",
+        ("OLD", time.time() + 3600))
+    monkeypatch.setitem(
+        _dc._token_cache, "sa1@example.test",
+        ("OLD", time.time() + 3600))
+    assert drive_auth.invalidate_drive_bearer_token("OLD") is True
+    assert "sa1@example.test" not in drive_auth._token_cache
+    assert "sa1@example.test" not in _dc._token_cache

@@ -715,6 +715,11 @@ _RELAY_SA_FAILOVER_STATUSES = frozenset({401, 403, 429})
 #: 与 playback_strategy 的 SystemConfig 缺省同为 3，见该模块键注释）。
 _RELAY_SA_FAILOVER_DEFAULT_ATTEMPTS = 3
 
+#: failover 循环内排除已试 SA 的重抽上限（A-009）：轮换随机步长可能抽回
+#: 同一个 SA；抽中已试 SA 时再抽一次，最多该次数，耗尽则接受最后一次
+#: 抽到的令牌（退回旧语义，避免小池场景下直接 503）。
+_RELAY_SA_EXCLUDE_REDRAWS = 3
+
 
 def _note_relay_sa_cooldown(url: str, token: str, status: int) -> None:
     """把本次取流失败的 SA 凭据按值失效（冷却记账，只记账、绝不抛错）。
@@ -789,7 +794,9 @@ async def serve_drive_relay_async(
       透传、5xx 在下层已转 502）。
     - 整段请求撞上 Quota 额度页（上游回 200 HTML 额度页）→ 默认与
       403 同口径：轮换凭据重试（与状态码 failover 共用尝试预算）；
-      预算耗尽才原样抛 QuotaPageError。``rotate_on_quota=False``
+      预算耗尽才原样抛 QuotaPageError。额度页分支同样先按值失效该 SA
+      凭据再重试（A-009）；轮换抽中已试 SA 时有界重抽（上限 3 次），
+      耗尽则接受最后一次抽到的令牌。``rotate_on_quota=False``
       （绑定用户正在啃共享原件）时第一次额度页就抛，不换下一个 SA。
       调用方记信号；绑定用户不改播共享原件。BYOS 用户令牌腿不
       嗅探、不重试，原样不动。
@@ -809,6 +816,8 @@ async def serve_drive_relay_async(
         drive_usercontent_download_url,
     )
     from backend.emby_server.drive_changes import get_token_for_drive
+    from backend.emby_server.drive_changes import (
+        sa_email_for_token as _dc_sa_email_for_token)
     from backend.emby_server import transfer_variant as _tv
 
     url = drive_api_media_url(drive_usercontent_download_url(file_id))
@@ -820,11 +829,29 @@ async def serve_drive_relay_async(
             media_type=media_type, pt=pt)
     total = (_RELAY_SA_FAILOVER_DEFAULT_ATTEMPTS if max_attempts is None
              else max(1, int(max_attempts)))
+    tried_sa_emails: set[str] = set()
+
+    def _remember_tried(tok):
+        email = _dc_sa_email_for_token(tok)
+        if email:
+            tried_sa_emails.add(email)
     for attempt in range(total):
         last = attempt == total - 1
         try:
             token = await asyncio.to_thread(
                 get_token_for_drive, drive_id, attempt > 0)
+            # A-009：轮换随机步长可能抽回已试 SA——抽中已试则再抽
+            # （有界），避免 3 次预算打在同一个 SA 上；邮箱反查不到
+            # （个人盘 OAuth 腿等）时不排除、保持旧语义。
+            for _ in range(_RELAY_SA_EXCLUDE_REDRAWS):
+                email = _dc_sa_email_for_token(token)
+                if not email or email not in tried_sa_emails:
+                    break
+                nxt = await asyncio.to_thread(
+                    get_token_for_drive, drive_id, True)
+                if not nxt:
+                    break
+                token = nxt
         except Exception as exc:  # noqa: BLE001 - 个人盘 OAuth 失败等
             logger.warning("Drive 中继取凭据失败 drive=%s: %s", drive_id, exc)
             raise HTTPException(
@@ -839,6 +866,11 @@ async def serve_drive_relay_async(
         except _tv.QuotaPageError:
             if last or not rotate_on_quota:
                 raise
+            # A-009：额度页分支此前只记日志、不失效——同 SA 重抽会命中
+            # 令牌缓存、必然复现同一张额度页；先按值失效再重试（额度页
+            # 本身没有状态码，429 走 invalidate 路径）。
+            _note_relay_sa_cooldown(url, token, 429)
+            _remember_tried(token)
             logger.warning(
                 "drive_relay_sa_failover sa=%s failover_attempt=%d/%d "
                 "status=quota_page file_id=%s",
@@ -847,6 +879,7 @@ async def serve_drive_relay_async(
             if exc.status_code not in _RELAY_SA_FAILOVER_STATUSES or last:
                 raise
             _note_relay_sa_cooldown(url, token, exc.status_code)
+            _remember_tried(token)
             logger.warning(
                 "drive_relay_sa_failover sa=%s failover_attempt=%d/%d "
                 "status=%d file_id=%s",
