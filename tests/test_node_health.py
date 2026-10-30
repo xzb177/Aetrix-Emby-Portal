@@ -162,15 +162,22 @@ def test_health_loop_skips_nodes_without_url():
 def test_start_health_daemon_idempotent_under_concurrency():
     """r30 B1：8 线程并发调用 start_health_daemon 只新增一个 node-health 线程。
 
-    （同文件既有 test_daemon_idempotent 会先起一个同名线程，故用增量断言。）"""
+    （同文件既有 test_daemon_idempotent 会先起一个同名线程，故用增量断言。）
+    计数口径说明：start_health_daemon 等到循环入口就绪事件才返回，故
+    返回后新线程必已在 threading.enumerate() 中可见，立即断言无观测竞态。
+    worker 异常单独断言，避免 barrier 破裂被误读成计数问题。"""
     import threading
     nh = _load()
     before = sum(1 for t in threading.enumerate() if t.name == "node-health")
     barrier = threading.Barrier(8)
+    errors = []
 
     def _call():
-        barrier.wait(timeout=10)
-        nh.start_health_daemon(lambda: None)
+        try:
+            barrier.wait(timeout=10)
+            nh.start_health_daemon(lambda: None)
+        except Exception as e:  # noqa: BLE001 - 透传给断言
+            errors.append(e)
 
     workers = [threading.Thread(target=_call) for _ in range(8)]
     for w in workers:
@@ -178,5 +185,41 @@ def test_start_health_daemon_idempotent_under_concurrency():
     for w in workers:
         w.join(timeout=30)
     assert not any(w.is_alive() for w in workers)
+    assert not errors, f"并发调用不应抛错，实际: {errors}"
     after = sum(1 for t in threading.enumerate() if t.name == "node-health")
     assert after == before + 1
+
+
+def test_start_health_daemon_waits_for_loop_entry():
+    """根治回归：start_health_daemon 必须等到循环线程入口才返回。
+
+    伪造一个 start() 后不跑 target 的 Thread：旧实现会立刻返回（红），
+    新实现会等到就绪超时才返回（绿）。超时由模块常量控制，测试中改小。"""
+    import threading
+    import time
+    nh = _load()
+    nh._DAEMON_START_TIMEOUT = 0.2
+
+    class _NeverRunsThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+    started = []
+    orig_thread = threading.Thread
+
+    class _RecordingThread(_NeverRunsThread):
+        def start(self):
+            started.append(True)
+
+    with mock.patch.object(threading, 'Thread', _RecordingThread):
+        t0 = time.monotonic()
+        nh.start_health_daemon(lambda: None)
+        elapsed = time.monotonic() - t0
+    try:
+        assert started, "应尝试启动线程"
+        assert elapsed >= 0.15, f"应等到就绪超时才返回，实际仅 {elapsed:.3f}s"
+    finally:
+        threading.Thread = orig_thread
