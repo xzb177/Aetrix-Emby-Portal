@@ -311,6 +311,9 @@ WELFARE_CONFIG_KEYS = {
     # 头奖池抽水 5%＋种子 100（池余额存 slots_pool 表，不在此处）；
     # 每日下注封顶 200 / 每日赢分封顶 1000（基础赔付计，池奖不计）
     "slots_enabled": "true",
+    # 群里可玩（2026-10-30 用户亲令）：名单群的老虎机入口与注额按钮
+    # 在群内直接可用、扣点击者本人；关掉则群里回落「请私聊」提示。
+    "slots_group_enabled": "true",
     "slots_bet_tiers": "5,10,20",
     "slots_pay_777": "20",
     "slots_pay_bar": "10",

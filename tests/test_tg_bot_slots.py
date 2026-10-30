@@ -371,7 +371,10 @@ def test_slots_panel_private(db, monkeypatch):
 
 
 def test_slots_panel_group_chat_blocked(db, monkeypatch):
+    # 群开关关闭时，群里点入口仍只回私聊提示（群里可玩为默认开，
+    # 见 test_tg_bot_slots_group.py 的公共面板用例）
     _user(db)
+    _set_config(db, "slots_group_enabled", "false")
     state = _patch_bot(monkeypatch)
     callbacks.handle_callback(db, _cq("menu:slots", chat={"id": -100999}))
     assert len(state["panels"]) == 1
@@ -402,13 +405,22 @@ def test_bet_flow_end_to_end_and_idempotent(db, monkeypatch):
     assert len(_logs(db, user.id, "slots_bet")) == 1
 
 
-def test_bet_flow_group_chat_rejected(db, monkeypatch):
+def test_bet_flow_group_chat_plays(db, monkeypatch):
+    """群里可玩（2026-10-30 用户亲令推翻仅私聊口径）：群里点注额按钮
+    照常开摇，扣点击者本人；细账（多人各扣各的/自毁/门禁）在
+    test_tg_bot_slots_group.py 里逐项锁。"""
     user = _user(db, points=100)
-    state = _patch_bot(monkeypatch)
+    state = _patch_bot(monkeypatch, dice_value=64)
+    monkeypatch.setattr(
+        sender, "send_message_ex",
+        lambda db_, chat_id, text, markup=None, **kw: (True, None, 6001))
+    monkeypatch.setattr(
+        "backend.tg_bot.ephemeral.schedule_delete",
+        lambda chat_id, message_id, delay: True)
     callbacks.handle_callback(db, _cq("slots_bet:10", chat={"id": -100999}))
-    assert state["dice_calls"] == 0
-    assert _balance(db, user.id) == 100
-    assert any("私聊" in (t or "") for t, _a in state["answers"])
+    assert state["dice_calls"] == 1
+    assert _balance(db, user.id) == 100 - 10 + 200 + 100
+    assert len(_logs(db, user.id, "slots_bet")) == 1
 
 
 def test_bet_flow_insufficient_toast(db, monkeypatch):

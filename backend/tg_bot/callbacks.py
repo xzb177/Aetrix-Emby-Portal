@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from backend import models
-from . import ephemeral, layout, redpacket_common, sender
+from . import ephemeral, layout, policy, redpacket_common, sender
 from .identity import resolve
 
 logger = logging.getLogger(__name__)
@@ -204,12 +204,21 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         )
         markup = handlers.back_markup()
     elif action == "slots":
-        # 老虎机仅私聊可玩（群里点入口只回私聊提示，与私聊限定功能同口径）
         if not is_private:
-            text = layout.card(
-                layout.title("老虎机"),
-                [layout.row("🔒", "使用方式", "老虎机请私聊机器人使用")])
-            markup = handlers.back_markup()
+            # 群里可玩（2026-10-30 用户亲令推翻仅私聊口径）：渲染公共
+            # 面板，注额按钮谁点谁下注；总开关或群开关关闭时回落私聊
+            # 提示卡（与私聊限定功能同口径）。
+            from backend import slots as slots_svc
+
+            if slots_svc.is_enabled(db) and slots_svc.group_enabled(db):
+                text, markup = handlers.handle_slots_group(db, tg_user, chat_id, "")
+                if markup is None:
+                    markup = handlers.back_markup()
+            else:
+                text = layout.card(
+                    layout.title("老虎机"),
+                    [layout.row("🔒", "使用方式", "老虎机请私聊机器人使用")])
+                markup = handlers.back_markup()
         else:
             slots_user = resolve(db, int(tg_id))
             if slots_user is None:
@@ -676,13 +685,45 @@ def _handle_reconcile_callback(db, callback_query: dict) -> None:
     sender.edit_panel(db, chat_id, message_id, text, markup,
                       has_photo=bool(msg.get("photo")))
 
-def _handle_slots_bet(db, callback_query: dict) -> None:
-    """处理老虎机下注按钮（slots_bet:{tier}，仅私聊）。
+def _send_slots_group_result(db, chat_id, player_name: str, spin, dice_message_id) -> None:
+    """群老虎机结算后的公开播报（旁路：失败只记日志，绝不影响结算结果）。
 
-    流程：begin_spin（幂等扣注）→ sender.send_dice（TG 原生老虎机，
-    结果只认返回的 dice.value）→ settle_spin（按值结算）。骰子发送
-    失败走 fail_spin 全额退注；同一 callback 重放时 begin 返回既有局：
-    已结算的直接重发结果卡，绝不重摇、不重复扣款/赔付。
+    结果消息与本局骰子消息都按 bot_msg_autodelete_seconds（默认 30 秒）
+    自毁，与抢红包群反馈同口径；公共面板不编辑。player_name 在此转义。
+    """
+    from . import handlers
+
+    try:
+        delay = ephemeral.bot_msg_delay_seconds(db)
+        if dice_message_id and delay > 0:
+            ephemeral.schedule_delete(chat_id, dice_message_id, delay)
+        text = handlers.slots_group_result_text(
+            db, spin, html.escape(str(player_name)))
+        ok, err, result_id = sender.send_message_ex(db, chat_id, text)
+        if not ok:
+            logger.warning(
+                "tg slots group result send failed: chat=%s err=%s", chat_id, err)
+            return
+        if result_id and delay > 0:
+            ephemeral.schedule_delete(chat_id, result_id, delay)
+    except Exception:
+        logger.warning("tg slots group result failed: chat=%s", chat_id, exc_info=True)
+
+
+def _handle_slots_bet(db, callback_query: dict) -> None:
+    """处理老虎机下注按钮（slots_bet:{tier}）。
+
+    私聊：begin_spin（幂等扣注）→ sender.send_dice（TG 原生老虎机，
+    结果只认返回的 dice.value）→ settle_spin，结果走 send_panel
+    结果卡（原流程不变）。
+    群聊（名单群；非名单群的 callback 在 router 已静默忽略）：公共
+    面板谁点谁下注——扣点击者本人的能量、赢归点击者、封顶按点击者
+    计，spin_key 仍是该次 callback id。骰子发到群里，结算后另发一条
+    公开结果消息（点注人/注额/结果/赢额/头奖池），结果消息与骰子
+    消息都按机器人消息自毁口径调度删除，绝不编辑公共面板，多人
+    同点互不打架。骰子发送失败走 fail_spin 全额退注；同一 callback
+    重放时 begin 返回既有局：私聊重发结果卡、群里只回 toast 摘要，
+    绝不重摇、不重复扣款/赔付、不刷第二条公开消息。
     """
     from backend import slots as slots_svc
     from . import handlers
@@ -699,9 +740,28 @@ def _handle_slots_bet(db, callback_query: dict) -> None:
     def _answer(text: str, show_alert: bool = False) -> None:
         sender.answer_callback_query(db, cb_id, text=text, show_alert=show_alert)
 
-    if chat_id != tg_id:
-        _answer("🎰 老虎机请私聊机器人使用", show_alert=True)
-        return
+    in_group = int(chat_id) != int(tg_id)
+    origin = "group" if in_group else "private"
+
+    if in_group:
+        from backend.tg_bot import router as bot_router
+
+        # 匿名管理员点按钮：callback 的 from 是 GroupAnonymousBot 固定
+        # id（同 router 消息路径 _is_anonymous_admin 的 from 判据），
+        # 认不出本人是谁——不扣钱、不发骰子，回匿名说明。
+        if int(tg_id) == bot_router.GROUP_ANONYMOUS_BOT_ID:
+            _answer(bot_router.ANON_ADMIN_TEXT, show_alert=True)
+            return
+        if not slots_svc.group_enabled(db):
+            _answer("🎰 群里老虎机已关闭，可以私聊我玩", show_alert=True)
+            return
+        # 限流：复用 router 的用户级命令限流口径，按点击者计（防连点刷注）
+        cfg = policy.read_bot_config(db)
+        if not bot_router._user_cmd_allow(
+                int(tg_id), "slots_bet", policy.rate_limit_seconds(cfg)):
+            _answer("操作太快了，稍后再试", show_alert=True)
+            return
+
     try:
         tier = int(data.split(":", 1)[1])
     except (IndexError, ValueError):
@@ -710,12 +770,15 @@ def _handle_slots_bet(db, callback_query: dict) -> None:
 
     user = resolve(db, int(tg_id))
     if user is None:
-        _answer("请先绑定账号后再玩老虎机", show_alert=True)
+        if in_group:
+            _answer("请先私聊机器人绑定账号后再玩老虎机", show_alert=True)
+        else:
+            _answer("请先绑定账号后再玩老虎机", show_alert=True)
         return
 
     spin_key = f"tgcq:{cb_id}"
     try:
-        begin = slots_svc.begin_spin(db, user, tier, spin_key)
+        begin = slots_svc.begin_spin(db, user, tier, spin_key, origin=origin)
     except Exception:
         logger.exception("slots begin failed: user=%s tier=%s", user.id, tier)
         db.rollback()
@@ -730,20 +793,25 @@ def _handle_slots_bet(db, callback_query: dict) -> None:
 
     spin = begin["spin"]
     if begin.get("duplicate"):
-        if spin.status == "settled":
+        if spin.status != "settled":
+            _answer("上一局结算中，请稍候", show_alert=True)
+            return
+        if in_group:
+            total = int(spin.base_payout or 0) + int(spin.pool_payout or 0)
+            summary = f"+{total} 能量" if total > 0 else "未中奖"
+            _answer(f"本局已结算（{summary}）")
+        else:
             _answer("本局已结算")
             sender.send_panel(
                 db, chat_id, handlers.slots_result_text(db, spin),
                 handlers.slots_markup(db))
-        else:
-            _answer("上一局结算中，请稍候", show_alert=True)
         return
 
-    ok, err, dice_value, _dice_mid = sender.send_dice(db, chat_id, "🎰")
+    ok, err, dice_value, dice_mid = sender.send_dice(db, chat_id, "🎰")
     if not ok or dice_value is None:
         logger.warning("slots sendDice failed: spin=%s err=%s", spin.id, err)
         try:
-            slots_svc.fail_spin(db, spin, "dice_failed")
+            slots_svc.fail_spin(db, spin, "dice_failed", origin=origin)
         except Exception:
             logger.exception("slots fail_spin failed: spin=%s", spin.id)
             db.rollback()
@@ -751,7 +819,7 @@ def _handle_slots_bet(db, callback_query: dict) -> None:
         return
 
     try:
-        result = slots_svc.settle_spin(db, spin, dice_value)
+        result = slots_svc.settle_spin(db, spin, dice_value, origin=origin)
     except Exception:
         logger.exception("slots settle failed: spin=%s", spin.id)
         db.rollback()
@@ -765,6 +833,11 @@ def _handle_slots_bet(db, callback_query: dict) -> None:
         _answer(f"🎉 中奖 +{total} 能量")
     else:
         _answer("未中奖，再接再厉")
-    sender.send_panel(
-        db, chat_id, handlers.slots_result_text(db, spin),
-        handlers.slots_markup(db))
+    if in_group:
+        player_name = str(
+            from_user.get("first_name") or from_user.get("username") or tg_id)
+        _send_slots_group_result(db, chat_id, player_name, spin, dice_mid)
+    else:
+        sender.send_panel(
+            db, chat_id, handlers.slots_result_text(db, spin),
+            handlers.slots_markup(db))

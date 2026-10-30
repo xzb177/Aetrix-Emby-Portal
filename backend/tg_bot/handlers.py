@@ -741,7 +741,7 @@ def slots_markup(db) -> dict:
 
 
 def handle_slots(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
-    """老虎机面板（仅私聊可玩，门禁在 callbacks._render_menu 先行拦截）。"""
+    """老虎机私聊面板（展示本人能量；群面板见 handle_slots_group）。"""
     from backend import slots as slots_svc
 
     user = resolve(db, int(tg_user.get("id") or 0))
@@ -765,6 +765,69 @@ def handle_slots(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
         ],
     )
     return (text, slots_markup(db))
+
+
+def handle_slots_group(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
+    """老虎机群面板（公共面板）：只展示头奖池/注额/赔付与注额按钮。
+
+    面板是群里公共消息，不展示任何个人数据：点注额按钮的人用自己
+    的账号下注（扣点击者、赢归点击者，见 callbacks._handle_slots_bet），
+    未绑定与资格校验都在下注时按点击者逐个判，面板本身人人可看。
+    """
+    from backend import slots as slots_svc
+
+    if not slots_svc.is_enabled(db):
+        return "🎰 老虎机暂未开启"
+    pays = slots_svc.pay_table(db)
+    tiers = " / ".join(str(t) for t in slots_svc.bet_tiers(db))
+    text = layout.card(
+        layout.title("老虎机"),
+        [
+            layout.row("🏆", "头奖池", f"<b>{slots_svc.pool_balance(db)} 能量</b>"),
+            layout.row("🎯", "注额", f"{tiers} 能量三档，点下方按钮开摇"),
+            layout.row("👤", "下注", "扣点按钮的人自己的能量，中奖也归他"),
+        ],
+        [
+            f"赔付：777 ×{pays['seven']} · BAR 三连 ×{pays['bar']} · "
+            f"葡萄/柠檬三连 ×{pays['fruit']} · 双 7 返注",
+            "结果由 Telegram 原生老虎机决定，公平随机",
+        ],
+    )
+    return (text, slots_markup(db))
+
+
+def slots_group_result_text(db, spin, player_name: str) -> str:
+    """老虎机群公开结果：点注人 / 结果 / 注额 / 奖金 / 头奖池。
+
+    与私聊结果卡的区别：群里结果另发新消息播报（不编辑公共面板），
+    带点注人、不带个人余额（公共场合不晒个人账）。player_name 由
+    调用方转义后传入。
+    """
+    from backend import slots as slots_svc
+
+    if spin.reels:
+        reels = tuple(spin.reels.split(","))
+    elif spin.dice_value:
+        reels = slots_svc.decode_dice(int(spin.dice_value))
+    else:
+        reels = ()
+    base = int(spin.base_payout or 0)
+    pool = int(spin.pool_payout or 0)
+    rows = [
+        layout.row("👤", "点注人", f"<b>{player_name}</b>"),
+        layout.row("🎰", "结果", f"<b>{slots_svc.reels_text(reels)}</b>"),
+        layout.row("🎯", "注额", f"{int(spin.bet or 0)} 能量"),
+    ]
+    if pool > 0:
+        rows.append(layout.row(
+            "🏆", "头奖", f"<b>+{base + pool} 能量</b>（基础 {base}＋头奖池 {pool}）"))
+    elif base > 0:
+        rows.append(layout.row("🎉", "奖金", f"<b>+{base} 能量</b>"))
+    else:
+        rows.append(layout.row("💨", "奖金", "未中奖，下次好运"))
+    rows.append(layout.row("🏆", "头奖池", f"{slots_svc.pool_balance(db)} 能量"))
+    title = "老虎机 · 777 头奖！" if pool > 0 else "老虎机"
+    return layout.card(layout.title(title), rows)
 
 
 def slots_result_text(db, spin) -> str:

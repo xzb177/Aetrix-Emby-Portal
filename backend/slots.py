@@ -21,8 +21,15 @@ slots_win / slots_jackpot / slots_refund，ref_id = "slots:<spin_key>"。
 - 公益服口径：当前服必须是 free realm（能量只在公益服流通）；
 - 抽奖黑名单（lottery.is_blacklisted，同一张名单）；
 - 新号限制（lottery.min_account_age_days，与抽奖共用配置）。
-不镜像抽奖的「身份门」（getChatMember 群成员校验）：老虎机仅私聊可玩、
-没有群上下文；也不镜像「每日参加次数」：老虎机自有每日下注额封顶。
+不镜像抽奖的「身份门」（getChatMember 群成员校验）：群里下注的点击
+本身就发生在名单群内，不再另查成员状态；也不镜像「每日参加次数」：
+老虎机自有每日下注额封顶。
+
+私聊与群聊共用本服务（2026-10-30 用户亲令群里可玩，推翻初版仅私聊
+口径）：群注由 callbacks 按点击者逐个调用——扣点击者本人的能量、
+赢归点击者、封顶按点击者计；群开关 slots_group_enabled 只决定群
+入口开不开，不进资格判定。台账描述带来源标记：群注在描述末尾加
+「（群聊）」，私聊保持原文逐字不变（type 不变）。
 
 护栏：每日下注总额封顶（默认 200）、每日赢分封顶（默认 1000，只计
 基础赔付，777 的头奖池部分不计）；一人同时只许一局在飞——下注到结算
@@ -76,11 +83,21 @@ def reason_message(reason: str, **kw) -> str:
         return text
 
 
+def _origin_suffix(origin: str) -> str:
+    """台账描述的来源标记：群注加「（群聊）」，私聊为空（原文不变）。"""
+    return "（群聊）" if origin == "group" else ""
+
+
 # ==================== 配置（SystemConfig，默认值 = 亲批定版） ====================
 
 def is_enabled(db: Session) -> bool:
     """总开关 slots_enabled，默认开。"""
     return economy._get_bool_config(db, "slots_enabled", True)
+
+
+def group_enabled(db: Session) -> bool:
+    """群里可玩开关 slots_group_enabled，默认开（用户亲令群里能玩）。"""
+    return economy._get_bool_config(db, "slots_group_enabled", True)
 
 
 def bet_tiers(db: Session) -> list[int]:
@@ -249,7 +266,8 @@ def _get_spin(db: Session, spin_key: str) -> models.SlotsSpin | None:
         models.SlotsSpin.spin_key == spin_key).first()
 
 
-def _fail_spin_locked(db: Session, spin: models.SlotsSpin, reason: str) -> None:
+def _fail_spin_locked(db: Session, spin: models.SlotsSpin, reason: str,
+                      origin: str = "private") -> None:
     """判失败并退注（调用方已持用户行锁、负责 commit）。重复调用不重复退。"""
     if spin.status != "pending":
         return
@@ -258,7 +276,7 @@ def _fail_spin_locked(db: Session, spin: models.SlotsSpin, reason: str) -> None:
     if user is not None and spin.bet > 0:
         economy._add_points(
             db, user, int(spin.bet), "slots_refund",
-            f"老虎机下注退回 {int(spin.bet)} 能量",
+            f"老虎机下注退回 {int(spin.bet)} 能量{_origin_suffix(origin)}",
             ref_id=f"slots:{spin.spin_key}")
     if spin.rake_hundredths:
         _pool_add_hundredths(db, -int(spin.rake_hundredths))
@@ -268,7 +286,8 @@ def _fail_spin_locked(db: Session, spin: models.SlotsSpin, reason: str) -> None:
     logger.info("slots spin failed+refunded: key=%s reason=%s", spin.spin_key, reason)
 
 
-def begin_spin(db: Session, user: models.WebUser, bet: int, spin_key: str) -> dict:
+def begin_spin(db: Session, user: models.WebUser, bet: int, spin_key: str,
+               origin: str = "private") -> dict:
     """开局：校验 → 锁用户行 → 幂等/残局/封顶 → 建 spin → 原子扣注 → 池抽水 → commit。
 
     返回 {"ok": True, "spin": spin, "duplicate": bool} 或
@@ -325,7 +344,7 @@ def begin_spin(db: Session, user: models.WebUser, bet: int, spin_key: str) -> di
         try:
             economy._spend_points(
                 db, user, bet, "slots_bet",
-                f"老虎机下注 {bet} 能量",
+                f"老虎机下注 {bet} 能量{_origin_suffix(origin)}",
                 ref_id=f"slots:{spin_key}")
         except economy.InsufficientPoints:
             db.rollback()
@@ -344,7 +363,8 @@ def begin_spin(db: Session, user: models.WebUser, bet: int, spin_key: str) -> di
         raise
 
 
-def settle_spin(db: Session, spin: models.SlotsSpin, dice_value: int) -> dict:
+def settle_spin(db: Session, spin: models.SlotsSpin, dice_value: int,
+                origin: str = "private") -> dict:
     """结算：按 dice.value 解码赔付（基础赔付受每日赢分封顶，池奖不计）。
 
     已 settled 的 spin 重复结算只返回既有结果、不重复发奖。
@@ -390,12 +410,12 @@ def settle_spin(db: Session, spin: models.SlotsSpin, dice_value: int) -> dict:
         if base > 0:
             economy._add_points(
                 db, user, int(base), "slots_win",
-                f"老虎机中奖 +{int(base)} 能量",
+                f"老虎机中奖 +{int(base)} 能量{_origin_suffix(origin)}",
                 ref_id=f"slots:{spin.spin_key}")
         if pool_payout > 0:
             economy._add_points(
                 db, user, int(pool_payout), "slots_jackpot",
-                f"老虎机头奖池 +{int(pool_payout)} 能量",
+                f"老虎机头奖池 +{int(pool_payout)} 能量{_origin_suffix(origin)}",
                 ref_id=f"slots:{spin.spin_key}")
     db.commit()
     db.refresh(spin)
@@ -414,7 +434,8 @@ def _settle_result(spin: models.SlotsSpin, *, duplicate: bool) -> dict:
     }
 
 
-def fail_spin(db: Session, spin: models.SlotsSpin, reason: str = "dice_failed") -> dict:
+def fail_spin(db: Session, spin: models.SlotsSpin, reason: str = "dice_failed",
+              origin: str = "private") -> dict:
     """发送骰子失败等场景：判失败并全额退注（幂等）。"""
     if spin.status != "pending":
         return {"ok": True, "spin": spin, "duplicate": True}
@@ -423,7 +444,7 @@ def fail_spin(db: Session, spin: models.SlotsSpin, reason: str = "dice_failed") 
     if spin.status != "pending":
         db.rollback()
         return {"ok": True, "spin": spin, "duplicate": True}
-    _fail_spin_locked(db, spin, reason)
+    _fail_spin_locked(db, spin, reason, origin=origin)
     db.commit()
     db.refresh(spin)
     return {"ok": True, "spin": spin, "duplicate": False}

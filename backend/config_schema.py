@@ -165,6 +165,7 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # economy._get_bool_config 只认 "true"）；注额档位逗号列表走 int_list
     # 校验；赔付倍数/种子/封顶为非负整数；抽水百分比 0-100。
     "slots_enabled": ("bool",),
+    "slots_group_enabled": ("bool",),
     "slots_bet_tiers": ("int_list", 1, 100000),
     "slots_pay_777": ("int", 0, _BIG),
     "slots_pay_bar": ("int", 0, _BIG),
