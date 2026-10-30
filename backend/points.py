@@ -91,6 +91,45 @@ def award_chat_points(db: Session, user_id: int) -> int:
     return award
 
 
+def get_chat_points_status(db: Session, user_id: int) -> dict:
+    """发言积分只读状态（供 TG /chatpoints 等自助查询）。
+
+    口径与 award_chat_points 完全一致：今日已得 = PointsLog 中 type="chat"
+    且 amount>0、created_at >= 今日起点（上海自然日，UTC 入库帧）的合计；
+    上限/每条取 points_chat_daily_cap / points_chat_per_msg，负数回落默认
+    （与发分侧同口径，避免查询显示与实际发分对不上）。只读，不落库。
+    """
+    cap = _get_int(db, "points_chat_daily_cap", 20)
+    if cap < 0:
+        logger.warning("points_chat_daily_cap 配置为负数 %s，已回落默认值 20", cap)
+        cap = 20
+    per_msg = _get_int(db, "points_chat_per_msg", 1)
+    if per_msg < 0:
+        logger.warning("points_chat_per_msg 配置为负数 %s，已回落默认值 1", per_msg)
+        per_msg = 1
+
+    today = economy._today_start_utc_naive()
+    earned_today = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user_id,
+        models.PointsLog.type == "chat",
+        models.PointsLog.amount > 0,
+        models.PointsLog.created_at >= today,
+    ).scalar() or 0
+
+    total_earned = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user_id,
+        models.PointsLog.type == "chat",
+        models.PointsLog.amount > 0,
+    ).scalar() or 0
+
+    return {
+        "earned_today": int(earned_today),
+        "daily_cap": int(cap),
+        "per_msg": int(per_msg),
+        "total_earned": int(total_earned),
+    }
+
+
 def get_points_summary(db: Session, user: models.WebUser) -> dict:
     """积分概览：余额 / 今日获得 / 累计获得"""
     balance = int(user.points or 0)
