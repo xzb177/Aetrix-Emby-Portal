@@ -1967,6 +1967,20 @@ export const fetchTransferJobs = (limit = 30) =>
 export const cancelTransferJob = (id: number) =>
   post<{ success: boolean; cancelled: boolean; job_id: number; message: string }>(
     `/tasks/transfer-jobs/${id}/cancel`, {})
+/** TG Bot 状态（管理端系统健康页卡片）：poller 心跳 / 最后报错 / 已绑定用户数 */
+export interface TgBotStatus {
+  poller_active: boolean
+  /** 最近一次心跳（ISO 字符串），没跑过为空串 */
+  last_heartbeat: string
+  /** 心跳距今秒数；无心跳/不可解析为 null */
+  heartbeat_age_seconds: number | null
+  /** 最后一次轮询报错，没报过为空串 */
+  last_error: string
+  /** 已绑定 Telegram 的站内用户数 */
+  bound_users: number
+}
+
+export const fetchTgBotStatus = () => get<TgBotStatus>('/tg-bot/status')
 
 /** 暂停后台探测（跨进程生效） */
 export const pauseProbe = () => post<{ success: boolean; paused: boolean }>(`${E}/scrape/probe/pause`)

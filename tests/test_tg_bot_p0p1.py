@@ -403,3 +403,25 @@ def test_menu_callbacks_render_new_pages(db, monkeypatch):
               "message": {"message_id": 55, "chat": {"id": 900001}}}
         callbacks.handle_callback(db, cq)
         assert edits and needle in edits[0]
+
+
+def test_admin_status_counts_and_age(db):
+    # 无心跳、无绑定用户：计数 0、心跳年龄 None
+    status = tg_bot_admin.bot_status(db)
+    assert status["bound_users"] == 0
+    assert status["heartbeat_age_seconds"] is None
+    _user(db)
+    _user(db, username="p1user2", tg_id=900002)
+    unbound = models.WebUser(username="p1user3")
+    if hasattr(unbound, "password_hash") and getattr(unbound, "password_hash") is None:
+        unbound.password_hash = ""
+    db.add(unbound)
+    db.add(models.SystemConfig(
+        key=poller.HEARTBEAT_KEY,
+        value=(datetime.now() - timedelta(seconds=90)).isoformat()))
+    db.commit()
+    status = tg_bot_admin.bot_status(db)
+    # 未绑定 TG 的用户不计数；心跳年龄与写入时间对得上
+    assert status["bound_users"] == 2
+    assert status["heartbeat_age_seconds"] is not None
+    assert 80 <= status["heartbeat_age_seconds"] <= 120
