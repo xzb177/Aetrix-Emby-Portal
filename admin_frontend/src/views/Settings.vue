@@ -683,6 +683,7 @@ async function saveItemsDedupCacheCore(): Promise<boolean> {
 const transfer = reactive({
   cross_provider_transfer_enabled: true,
   transfer_cross_lane_concurrency: 2,
+  transfer_cross_aging_sec: 1800,
   transfer_fast_lane_concurrency: 8,
   transfer_per_owner_inflight: 2,
   pan115_rapid_upload_enabled: true,
@@ -696,6 +697,7 @@ const transferLoading = ref(false)
 function applyTransfer(data: TransferConfig) {
   transfer.cross_provider_transfer_enabled = data.cross_provider_transfer_enabled !== false
   transfer.transfer_cross_lane_concurrency = Number(data.transfer_cross_lane_concurrency) || 2
+  transfer.transfer_cross_aging_sec = Number(data.transfer_cross_aging_sec) || 1800
   transfer.transfer_fast_lane_concurrency = Number(data.transfer_fast_lane_concurrency) || 8
   transfer.transfer_per_owner_inflight = Number(data.transfer_per_owner_inflight) || 2
   transfer.pan115_rapid_upload_enabled = data.pan115_rapid_upload_enabled !== false
@@ -719,6 +721,7 @@ async function loadTransfer() {
 const transferDirty = computed(() =>
 transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_transfer_enabled
   || transfer.transfer_cross_lane_concurrency !== transferOriginal.transfer_cross_lane_concurrency
+  || transfer.transfer_cross_aging_sec !== transferOriginal.transfer_cross_aging_sec
   || transfer.transfer_fast_lane_concurrency !== transferOriginal.transfer_fast_lane_concurrency
   || transfer.transfer_per_owner_inflight !== transferOriginal.transfer_per_owner_inflight
   || transfer.pan115_rapid_upload_enabled !== transferOriginal.pan115_rapid_upload_enabled
@@ -733,6 +736,11 @@ async function saveTransferCore(): Promise<boolean> {
   if (!Number.isInteger(transfer.transfer_cross_lane_concurrency)
     || transfer.transfer_cross_lane_concurrency < 1 || transfer.transfer_cross_lane_concurrency > 8) {
     ElMessage.error('跨 provider 并发上限需在 1~8 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_cross_aging_sec)
+    || transfer.transfer_cross_aging_sec < 60 || transfer.transfer_cross_aging_sec > 86400) {
+    ElMessage.error('跨单排队提权阈值需在 60~86400 秒之间')
     return false
   }
   if (!Number.isInteger(transfer.transfer_fast_lane_concurrency)
@@ -1647,6 +1655,22 @@ watch(
                     <span class="field-suffix">条</span>
                   </div>
                   <span class="field-hint">同时搬字节的跨单最多几条，其余道宽留给同 provider 的点播转存，默认 2</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="跨单排队提权阈值">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_cross_aging_sec"
+                      :min="60"
+                      :max="86400"
+                      :step="60"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">秒</span>
+                  </div>
+                  <span class="field-hint">跨盘搬运单排队超过这个时间还没被领走，就自动按点播单的优先级参与挑选，防无限期饿死，默认 1800 秒（30 分钟）</span>
                 </div>
               </el-form-item>
               <el-form-item label="转存道并发">

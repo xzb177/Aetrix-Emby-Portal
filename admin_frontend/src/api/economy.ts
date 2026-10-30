@@ -420,6 +420,8 @@ export interface TransferConfig {
   cross_provider_transfer_enabled: boolean
   /** 跨 provider 搬字节在途并发上限（默认 2，范围 1~8） */
   transfer_cross_lane_concurrency: number
+  /** 跨单 aging 提权阈值（秒）：慢组跨单排队超过该秒数后按点播组待遇参与挑选，防无限期饿死（默认 1800，范围 60~86400） */
+  transfer_cross_aging_sec: number
   /** 转存执行道并发（默认 8，范围 1~32） */
   transfer_fast_lane_concurrency: number
   /** 单用户道内在飞上限（默认 2，范围 1~16） */
