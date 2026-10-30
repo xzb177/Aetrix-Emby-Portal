@@ -549,7 +549,17 @@ def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | 
         if not chat_id or not message_id:
             logger.warning("tg redpacket message update skipped: chat_id=%s message_id=%s", chat_id, message_id)
             return
-        ok, err = sender.edit_message_text(db, chat_id, message_id, text, reply_markup)
+        # 本体形态分发（按回调消息形态判定，不落库记形态）：新本体是
+        # 封面照片消息（message 带 photo）→ editMessageCaption；存量
+        # 纯文本本体 → editMessageText 原路不变。照片路失败时回落
+        # 文本编辑兜底，剩余/抢完/过期等状态更新绝不因形态问题丢失。
+        if message.get("photo"):
+            ok, err = sender.edit_message_caption(db, chat_id, message_id, text, reply_markup)
+            if not ok:
+                logger.warning("tg redpacket caption update failed, falling back to text edit: chat_id=%s message_id=%s err=%s", chat_id, message_id, err)
+                ok, err = sender.edit_message_text(db, chat_id, message_id, text, reply_markup)
+        else:
+            ok, err = sender.edit_message_text(db, chat_id, message_id, text, reply_markup)
         if not ok:
             logger.warning("tg redpacket message update failed: chat_id=%s message_id=%s err=%s", chat_id, message_id, err)
 

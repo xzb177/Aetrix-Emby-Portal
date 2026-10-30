@@ -206,7 +206,7 @@ def dispatch(db, update: dict) -> None:
     P0：处理器抛异常时不再只记日志——尽力给用户回一句看得见的失败提示
     （2026-10-21 教训：失败只记日志、用户端看着像成功）。
     """
-    from backend.tg_bot import handlers, sender
+    from backend.tg_bot import handlers, redpacket_common, sender
 
     # 先取 chat_id：异常发生在任何一步时失败提示都有地方发
     if "callback_query" in update:
@@ -422,8 +422,10 @@ def dispatch(db, update: dict) -> None:
             # 红包本体豁免（按分发路径判定，不看文本）：handle_redpacket
             # 仅在发送成功时返回 (packet_text, claim_markup) 元组，这条
             # 带抢按钮的消息按用户口径永不自毁；参数错误/失败等 str
-            # 回复走下面分支照常自毁。
-            sender.send_message(db, chat_id, text, reply_markup=markup)
+            # 回复走下面分支照常自毁。本体形态走封面照片消息
+            # （send_packet_message 内部发不出时回落纯文本）。
+            redpacket_common.send_packet_message(
+                db, chat_id, text, reply_markup=markup)
         else:
             _send_reply(db, chat_id, text, reply_markup=markup,
                         autodelete=in_group)

@@ -1,8 +1,12 @@
 """TG 红包共享逻辑（B3）：总开关、callback_data 编解码、按钮与消息文案。"""
 from __future__ import annotations
 
+import logging
+
 from backend.integrations import store
-from backend.tg_bot import layout
+from backend.tg_bot import layout, sender
+
+logger = logging.getLogger(__name__)
 
 # callback_data 前缀，按钮回调形如 "redpacket_claim:<packet_id>"
 CALLBACK_PREFIX = "redpacket_claim:"
@@ -88,3 +92,26 @@ def finished_text(packet, sender_name: str, reason: str) -> str:
             *status_rows,
         ],
     )
+
+
+def send_packet_message(db, chat_id: int, text: str,
+                        reply_markup: dict | None = None) -> tuple[bool, str | None]:
+    """发送红包消息本体：封面照片消息优先，失败一律回落纯文本。
+
+    本体形态（用户 2026-10-30 群内真机截图实证后定）：封面图
+    （layout.REDPACKET_IMAGE）+ caption=现行 packet_text 文案 + 现行
+    抢按钮。caption 现长约 200 字、远低于 1024 上限（测试有锁）。
+    红包创建绝不因封面失败而失败：封面资产缺失、caption 超限或
+    sendPhoto 失败时回落 send_message 纯文本（与改造前形态一致）。
+    本体永不自毁的豁免在 router 分发路径上判定，本函数不涉自毁调度。
+    """
+    if layout.REDPACKET_IMAGE.is_file() and layout.caption_fits(text):
+        ok, err = sender.send_photo(
+            db, chat_id, text, reply_markup,
+            photo_path=layout.REDPACKET_IMAGE)
+        if ok:
+            return True, None
+        logger.warning(
+            "tg redpacket cover photo send failed, falling back to text: "
+            "chat=%s err=%s", chat_id, err)
+    return sender.send_message(db, chat_id, text, reply_markup)
