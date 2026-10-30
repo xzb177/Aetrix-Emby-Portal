@@ -220,6 +220,16 @@ HOTLINK_CONFIG_SCHEMA: dict[str, tuple] = {
     "play_allowed_referers": ("raw",),
 }
 
+# 挂载直读出流（2026-10-30 立项）：总开关默认开、白名单与根映射默认空
+# （空＝行为与现行完全一致）；ids/roots 的内容校验在
+# mount_serving.write_config（schema 层只管类型），开关 word 风格
+# ("bool",) 存 "true"/"false"（同 welfare 口径）。
+MOUNT_SERVING_CONFIG_SCHEMA: dict[str, tuple] = {
+    "mount_serving_enabled": ("bool",),
+    "mount_serving_mount_ids": ("raw",),
+    "mount_serving_local_roots": ("raw",),
+}
+
 # 列表去重缓存（2026-10-18）：Emby 列表接口 dropped 集合的服务端缓存。
 # enabled 默认开（纯性能优化、零行为变化）；ttl=0 或关 = 旧路径。
 ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {

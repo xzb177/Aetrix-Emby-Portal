@@ -564,6 +564,50 @@ def transfer_update_config(
     return result
 
 
+# ---------- 挂载直读出流（见 backend/emby_server/mount_serving.py） ----------
+
+class MountServingConfigRequest(BaseModel):
+    enabled: bool = True
+    mount_ids: list = []
+    local_roots: str = ""
+
+
+@admin_router.get("/mount-serving-config")
+def mount_serving_get_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """挂载直读配置读取：总开关 + 白名单 + 本地根映射（含默认值）。"""
+    from backend.emby_server import mount_serving
+
+    return mount_serving.config_payload(db)
+
+
+@admin_router.put("/mount-serving-config")
+def mount_serving_update_config(
+    request: MountServingConfigRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """挂载直读配置写入：白名单/根映射非法时 400（中文信息），保存即生效。"""
+    from backend.emby_server import mount_serving
+
+    try:
+        result = mount_serving.write_config(
+            db,
+            enabled=request.enabled,
+            mount_ids=request.mount_ids,
+            local_roots=request.local_roots,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(db, current_admin, "mount_serving_update_config", "system", None,
+           {"enabled": request.enabled, "mount_ids": request.mount_ids,
+            "local_roots": request.local_roots})
+    db.commit()
+    return result
+
+
 # ---------- 经济统计 ----------
 
 def _checkin_day_key(day_val) -> str:

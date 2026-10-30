@@ -25,7 +25,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 import {
   CalendarCheck, Coins, Globe, KeyRound, Layers, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, Lock, Zap,
-  DatabaseBackup, History, TriangleAlert, SlidersHorizontal, PlugZap, Rocket,
+  DatabaseBackup, History, TriangleAlert, SlidersHorizontal, PlugZap, Rocket, HardDrive,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -41,6 +41,8 @@ import {
   type HotlinkConfigGet, fetchItemsDedupCacheConfig, updateItemsDedupCacheConfig,
   type ItemsDedupCacheConfigPayload, type ItemsDedupCacheConfig,
   fetchTransferConfig, updateTransferConfig, type TransferConfig,
+  fetchMountServingConfig, updateMountServingConfig,
+  type MountServingConfigPayload, type MountServingConfig,
 } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
@@ -561,7 +563,7 @@ async function load() {
 onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
-  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer()])
+  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer(), loadMountServing()])
   // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -739,6 +741,63 @@ async function saveTransferCore(): Promise<boolean> {
   }
 }
 
+/** ==================== 挂载直读出流卡片（独立 endpoint，非通用分组） ==================== */
+/** 与列表缓存卡片同构：白名单/根映射的内容校验在后端 write_config，
+ * 前端只做形态校验（id 为正整数、根为绝对路径）。 */
+const mountServing = reactive({ enabled: true, mount_ids: '', local_roots: '' })
+const mountServingOriginal = reactive({ enabled: true, mount_ids: '', local_roots: '' })
+const mountServingLoading = ref(false)
+
+function applyMountServing(data: MountServingConfig) {
+  mountServing.enabled = data.enabled !== false
+  mountServing.mount_ids = Array.isArray(data.mount_ids) ? data.mount_ids.join(',') : ''
+  mountServing.local_roots = String(data.local_roots || '')
+  Object.assign(mountServingOriginal, mountServing)
+}
+
+async function loadMountServing() {
+  mountServingLoading.value = true
+  try {
+    applyMountServing(await fetchMountServingConfig())
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+  } finally {
+    mountServingLoading.value = false
+  }
+}
+
+const mountServingDirty = computed(() =>
+  mountServing.enabled !== mountServingOriginal.enabled
+  || mountServing.mount_ids !== mountServingOriginal.mount_ids
+  || mountServing.local_roots !== mountServingOriginal.local_roots,
+)
+
+/** 挂载直读保存核心：返回是否成功，失败时拦截器/校验已提示。 */
+async function saveMountServingCore(): Promise<boolean> {
+  const ids = mountServing.mount_ids.split(',').map((t) => t.trim()).filter(Boolean)
+  if (ids.some((t) => !/^\d+$/.test(t) || Number(t) <= 0)) {
+    ElMessage.error('白名单必须是逗号分隔的正整数挂载 id')
+    return false
+  }
+  const roots = mountServing.local_roots.split(',').map((t) => t.trim()).filter(Boolean)
+  if (roots.some((t) => !/^\d+=\//.test(t))) {
+    ElMessage.error('本地根映射格式须为 id=/绝对路径，逗号分隔')
+    return false
+  }
+  const payload: MountServingConfigPayload = {
+    enabled: mountServing.enabled,
+    mount_ids: ids.map(Number),
+    local_roots: mountServing.local_roots,
+  }
+  try {
+    applyMountServing(await updateMountServingConfig(payload))
+    return true
+  } catch {
+    // 拦截器已提示
+    return false
+  }
+}
+
 /** 运营参数页签顶部的分组跳转：分组多（注册 + 9 块 + 防盗链），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
   document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -765,6 +824,7 @@ async function reloadAll() {
   load()
   loadHotlink()
   loadItemsDedupCache()
+  loadMountServing()
   if (tab.value === 'danger') loadDanger()
 }
 
@@ -792,7 +852,7 @@ const hasAdvanced = (g: Group): boolean => g.fields.some((f) => f.advanced)
 const dirtyGroups = computed(() => GROUPS.filter((g) => isDirty(g)))
 const dirtyCount = computed(() =>
   dirtyGroups.value.length + (regDirty.value ? 1 : 0) + (hotlinkDirty.value ? 1 : 0)
-  + (itemsDedupCacheDirty.value ? 1 : 0) + (transferDirty.value ? 1 : 0),
+  + (itemsDedupCacheDirty.value ? 1 : 0) + (transferDirty.value ? 1 : 0) + (mountServingDirty.value ? 1 : 0),
 )
 const anyDirty = computed(() => dirtyCount.value > 0)
 const savingAll = ref(false)
@@ -896,6 +956,10 @@ async function saveAll() {
       if (await saveTransferCore()) saved += 1
       else failed.push('转存')
     }
+    if (mountServingDirty.value) {
+      if (await saveMountServingCore()) saved += 1
+      else failed.push('挂载直读')
+    }
   } finally {
     savingAll.value = false
   }
@@ -909,7 +973,7 @@ async function saveAll() {
 /**
  * 放弃：把运营参数页签里所有未保存的改动丢掉，回到服务端当前值。
  * load() 会同时重置经济分组与注册策略，loadHotlink() 重置防盗链，
- * loadItemsDedupCache() 重置列表去重缓存。
+ * loadItemsDedupCache() 重置列表去重缓存，loadTransfer() 重置转存，loadMountServing() 重置挂载直读。
  */
 async function discardAll() {
   if (!anyDirty.value) return
@@ -926,6 +990,7 @@ async function discardAll() {
   loadHotlink()
   loadItemsDedupCache()
   loadTransfer()
+  loadMountServing()
 }
 
 // ==================== 危险操作（Phase 5） ====================
@@ -1150,6 +1215,16 @@ watch(
               >
                 <RefreshCw :size="13" />转存
                 <span v-if="transferDirty" class="chip-dot" aria-label="有未保存的改动" />
+              </button>
+              <button
+                v-if="sec.id === 'playback'"
+                type="button"
+                class="group-chip"
+                :class="{ 'is-dirty': mountServingDirty }"
+                @click="scrollToGroup('mount-serving')"
+              >
+                <HardDrive :size="13" />挂载直读
+                <span v-if="mountServingDirty" class="chip-dot" aria-label="有未保存的改动" />
               </button>
             </div>
           </nav>
@@ -1526,6 +1601,47 @@ watch(
                     <span class="field-suffix">条</span>
                   </div>
                   <span class="field-hint">同一用户同时在飞的转存任务上限，防一人灌单饿死别人，默认 2</span>
+                </div>
+              </el-form-item>
+            </el-form>
+          </SectionCard>
+          <!-- 挂载直读出流：独立卡片，归「播放与风控」段 -->
+          <SectionCard
+            v-if="sec.id === 'playback'"
+            id="group-mount-serving"
+            title="挂载直读出流"
+            :icon="HardDrive"
+            description="白名单内的共享盘原件改走本地挂载文件出流，绕开公开下载链的额度风控与中继交付不稳定。白名单为空 = 不介入，行为与现行一致；清空名单即一步回滚。"
+            :tone="mountServingDirty ? 'accent' : 'default'"
+            class="group-card"
+          >
+            <template v-if="mountServingDirty" #actions>
+              <span class="au-badge au-badge-amber">未保存</span>
+            </template>
+
+            <el-form label-position="top" class="field-form field-grid">
+              <el-form-item label="总开关">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch v-model="mountServing.enabled" />
+                  </div>
+                  <span class="field-hint">关掉 = 挂载直读一行不走，完整回退现行出法</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="白名单（挂载 id）">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input v-model="mountServing.mount_ids" placeholder="如 3" />
+                  </div>
+                  <span class="field-hint">逗号分隔的 storage_mounts id；留空 = 不介入任何挂载</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="本地根映射">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input v-model="mountServing.local_roots" placeholder="如 3=/mnt/gdrive-direct" />
+                  </div>
+                  <span class="field-hint">格式 id=/绝对路径，逗号分隔；须与白名单同时命中才生效，挂载文件缺失会明确报错、不静默换源</span>
                 </div>
               </el-form-item>
             </el-form>
