@@ -236,7 +236,8 @@ def test_probe_http_uses_open_range_no_auth(monkeypatch):
         seen["headers"] = dict(headers or {})
         return _Resp()
 
-    monkeypatch.setattr(tv.httpx, "stream", fake_stream)
+    monkeypatch.setattr(tv, "_shared_probe_client",
+                        lambda: SimpleNamespace(stream=fake_stream))
     status, ctype, head = tv._usercopy_probe_http("https://x/u")
     assert status == 206
     assert seen["headers"] == {"Range": "bytes=0-"}

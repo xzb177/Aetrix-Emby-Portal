@@ -477,20 +477,45 @@ _MOUNT_RELAY_TIMEOUT_CONNECT = 10.0
 _MOUNT_RELAY_TIMEOUT_READ = 30.0
 
 
-def _mount_relay_client() -> "httpx.AsyncClient":
-    """远程挂载中继的独立小客户端：按次创建、用完关闭。
+#: 中继客户端按 event loop 共享（2026-10-30 起播/拖动提速）：旧口径
+#: 「按次创建、用完关闭」让每次拉流/拖动都重付一遍连接建立（VPS 到
+#: 谷歌实测单次 TCP+TLS 约 0.11–0.16s；生产 stream 首字节 1.6–2.2s
+#: 里中继段约 0.87s 有相当部分耗在新建连接上）。共享只动连接层：
+#: DNS pinning 仍在 transport 层（连接建立时校验）、跳转仍由
+#: _follow_redirects 逐跳校验、凭据头仍按请求传——出法与顺序零
+#: 变化。注意 httpx 0.28 关 client 会连 transport 一起关，共享
+#: client 绝不许在请求路径上 aclose，只关响应把连接归还池中。
+_MOUNT_RELAY_CLIENTS: dict = {}
 
-    口径照抄 ``_drive_redirect_client``（中继全删后不再有共享 relay 池）：
-    DNS pinning 防 rebinding、跳转由 ``_follow_redirects`` 逐跳校验后手动跟。
+
+def _mount_relay_client() -> "httpx.AsyncClient":
+    """远程挂载中继的共享客户端（按 event loop 一份）。
+
+    池上限较旧按次口径放大（8→32）：旧口径每请求独享一份池，
+    共享后全进程中继共用一份，太小会让并发拉流互相等池
+    （PoolTimeout 的既有 503 口径不变）。
     """
+    import asyncio
+
     import httpx
 
     from backend.emby_server.dns_pinning import PinnedAsyncHTTPTransport
 
-    return httpx.AsyncClient(
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # 无运行中 loop：退回按次创建，调用方自负关闭
+        loop = None
+    if loop is not None:
+        for _dead in [l for l in _MOUNT_RELAY_CLIENTS if l.is_closed()]:
+            _MOUNT_RELAY_CLIENTS.pop(_dead, None)
+        client = _MOUNT_RELAY_CLIENTS.get(loop)
+        if client is not None and not client.is_closed:
+            return client
+    client = httpx.AsyncClient(
         transport=PinnedAsyncHTTPTransport(
             _PINNING_CACHE.lookup,
-            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            limits=httpx.Limits(max_connections=32,
+                                max_keepalive_connections=16),
         ),
         timeout=httpx.Timeout(
             connect=_MOUNT_RELAY_TIMEOUT_CONNECT,
@@ -500,6 +525,9 @@ def _mount_relay_client() -> "httpx.AsyncClient":
         ),
         follow_redirects=False,
     )
+    if loop is not None:
+        _MOUNT_RELAY_CLIENTS[loop] = client
+    return client
 
 
 async def serve_mount_relay_async(
@@ -592,7 +620,7 @@ async def serve_mount_relay_async(
         # 入队，本次播放回落现行链）；未命中 → 首块记为 prelude，
         # iter_mount 先吐首块再续流，字节一分不少、透传头不动。
         # 嗅探本身绝不能拖垮播放：预读失败时当作未嗅探，照常流式转发。
-        # 注意：QuotaPageError 在本块内关完客户端才抛——外层 except 只认
+        # 注意：QuotaPageError 在本块内关完响应才抛——外层 except 只认
         # HTTPException，QuotaPageError 会原样穿到调用方，不会漏关连接。
         _prelude = None
         if sniff_quota_page and resp.status_code == 200 and not range_header:
@@ -608,10 +636,6 @@ async def serve_mount_relay_async(
                         _first):
                     await resp.aclose()
                     resp = None
-                    try:
-                        await client.aclose()
-                    except Exception:
-                        pass
                     raise _tv.QuotaPageError("上游整段响应为 Quota 额度页")
                 _prelude = (_aiter, _first)
             except _tv.QuotaPageError:
@@ -659,14 +683,10 @@ async def serve_mount_relay_async(
                 logger.warning("远程挂载流中断 %s: %s",
                                url.split("?")[0], type(exc).__name__)
             finally:
-                # 只关响应和本请求的独立客户端——client 不是共享的，
-                # 关掉不影响其他请求。
+                # 只关响应：连接归还共享客户端的池（client 按 loop
+                # 共享，关掉会连 transport 一起关、后续请求全废）。
                 try:
                     await resp.aclose()
-                except Exception:
-                    pass
-                try:
-                    await client.aclose()
                 except Exception:
                     pass
 
@@ -682,10 +702,6 @@ async def serve_mount_relay_async(
                 await resp.aclose()
             except Exception:
                 pass
-        try:
-            await client.aclose()
-        except Exception:
-            pass
         raise
 
 

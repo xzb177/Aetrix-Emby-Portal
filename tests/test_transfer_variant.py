@@ -396,7 +396,9 @@ def test_relay_sniff_quota_raises(monkeypatch):
     with pytest.raises(tv.QuotaPageError):
         asyncio.run(serve_mount_relay_async(
             "https://example.com/file", request, sniff_quota_page=True))
-    assert resp.closed and client.closed
+    # 2026-10-30 连接复用后：client 按 loop 共享，Quota 路径只关
+    # 响应（连接处置由池负责），不许再关 client——关了后续请求全废。
+    assert resp.closed and not client.closed
 
 
 def test_relay_sniff_non_quota_streams_full_body(monkeypatch):
