@@ -340,6 +340,37 @@ def collect(db) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计扫描状态出错: %s", exc)
 
+    # ---- 媒体库列表投影新鲜度（2026-10-30 冻结事故的可见信号）----
+    # 投影重建工人连续失败时 live 行 computed_at 停住：读侧虽整包回落
+    # 现算（数字仍准），但冻结 4 天无人知道的教训不能重演——超读侧
+    # 陈旧口径（MAX_STALE_SEC）即 warn，管理端健康页与 /api/health 可见。
+    try:
+        from backend.emby_server import list_projection as _lp
+        ph = _lp.projection_health(db)
+        metrics["list_projection"] = {
+            "targets": ph["targets"], "rows": ph["rows"],
+            "newest_computed_at": (ph["newest_computed_at"].isoformat()
+                                   if ph["newest_computed_at"] else None),
+            "age_sec": (round(ph["age_sec"], 1)
+                        if ph["age_sec"] is not None else None),
+            "stale": ph["stale"],
+        }
+        if ph["stale"]:
+            _bump("warn")
+            if ph["reason"] == "no_rows":
+                msg = (f"媒体库列表投影无任何投影行（目标库 {ph['targets']} 个），"
+                       "重建工人可能从未成功；客户端库列表在走现算慢路，"
+                       "检查 worker 的列表投影重建日志")
+            else:
+                msg = (f"媒体库列表投影已冻结：最近一次成功重建在 "
+                       f"{ph['newest_computed_at']}（{int(ph['age_sec'] or 0)} 秒前），"
+                       "重建工人在连续失败；客户端库列表已回落现算（数字仍准、"
+                       "只是变慢），检查 worker 的列表投影重建日志")
+            issues.append({"level": "warn", "key": "list_projection",
+                           "message": msg})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("统计列表投影新鲜度出错: %s", exc)
+
     # ---- 错误码大白话：每条 issue 旁边挂中文解释 + 检查步骤 ----
     # translate() 命中返回 dict、无命中返回 None（前端按 None 隐藏）。
     for issue in issues:
