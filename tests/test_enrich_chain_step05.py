@@ -500,12 +500,15 @@ class TestAdminApi:
             assert got["success"] is True
             assert got["enabled"] is False  # 本文件 fixture 预置行 "0"
             assert got["banned"] is False
-            # 2026-10-21 A 类摘面板：PUT 不再写库（开关改走 env
-            # ENRICH_DOUBAN_BAN_DOWNGRADE / 存量行），只回读当前生效值
-            saved = admin_scrape.save_douban_ban_downgrade(
-                admin_scrape._DoubanBanDowngradeBody(enabled=True),
-                staff=staff, db=db)
-            assert saved["enabled"] is False
+            # A-024：PUT 不再谎称保存，改为 410 显式拒绝（开关改走 env
+            # ENRICH_DOUBAN_BAN_DOWNGRADE）；GET 值与 worker 读值均不变。
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as excinfo:
+                admin_scrape.save_douban_ban_downgrade(
+                    admin_scrape._DoubanBanDowngradeBody(enabled=True),
+                    staff=staff, db=db)
+            assert excinfo.value.status_code == 410
+            assert "ENRICH_DOUBAN_BAN_DOWNGRADE" in str(excinfo.value.detail)
             store.invalidate(FLAG)
             assert ew._douban_ban_downgrade_flag_on() is False
             # 存量行改成 "1" 后 GET 与 worker 都读到开，PUT 依旧不落库
@@ -515,10 +518,11 @@ class TestAdminApi:
             got2 = admin_scrape.get_douban_ban_downgrade(staff=staff, db=db)
             assert got2["enabled"] is True
             assert ew._douban_ban_downgrade_flag_on() is True
-            saved2 = admin_scrape.save_douban_ban_downgrade(
-                admin_scrape._DoubanBanDowngradeBody(enabled=False),
-                staff=staff, db=db)
-            assert saved2["enabled"] is True
+            with pytest.raises(HTTPException) as excinfo2:
+                admin_scrape.save_douban_ban_downgrade(
+                    admin_scrape._DoubanBanDowngradeBody(enabled=False),
+                    staff=staff, db=db)
+            assert excinfo2.value.status_code == 410
         finally:
             db.close()
         store.invalidate(FLAG)

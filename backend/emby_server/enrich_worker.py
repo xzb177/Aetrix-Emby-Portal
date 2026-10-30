@@ -327,10 +327,11 @@ def get_douban_ban_downgrade_config(db) -> dict:
 
 
 def save_douban_ban_downgrade_config(db, enabled: bool) -> dict:
-    """管理后台用（兼容保留）：A 类开关摘面板（2026-10-21）后不再落库。
+    """已废弃（A-024 deprecation）：A 类开关摘面板（2026-10-21）后不再落库。
 
     开关改走 env ENRICH_DOUBAN_BAN_DOWNGRADE（缺省开，与原出厂缺省一致）；
-    本函数只回读当前生效配置，``enabled`` 参数忽略。
+    本函数仅为旧调用方保留，只回读当前生效配置，``enabled`` 参数忽略，
+    不得再经本函数对外宣称已保存。PUT 端点已改为 410 显式拒绝。
     """
     return get_douban_ban_downgrade_config(db)
 
@@ -849,6 +850,7 @@ def save_enrich_tuning_config(db, values: dict) -> dict:
 
 
 _worker_threads: list = []
+_janitor_thread = None  # A-023：janitor 线程单列，start() 存活判定排除 janitor
 _effective_workers: int | None = None  # start() 时解析的实际线程数（供进度上报）
 _stop_event = threading.Event()
 
@@ -4766,7 +4768,16 @@ def _process_item(db, item: Any, holder: Optional[dict] = None,
 
     # WS5 季海报：IO 阶段（有 DB 会话、无事务）给剧的名下无图季拉 TMDB 季海报
     # 并预热，写库阶段由 _enrich_apply 落字段
-    _enrich_season_posters_io(db, snapshot, fetched)
+    # A-023：季海报瞬态失败整条送回重试队列（与函数 docstring 同口径），
+    # 绝不让 TmdbTransientError 穿出杀死 worker 线程。
+    from backend.emby_server.tmdb import TmdbTransientError
+    try:
+        _enrich_season_posters_io(db, snapshot, fetched)
+    except TmdbTransientError as exc:
+        logger.warning("季海报瞬态失败，整条送回重试 id=%s: %s", item_id, exc)
+        db.rollback()
+        return _mark_failed(db, item_id, attempts, str(exc),
+                            claim_token=snapshot.enrich_claim_token)
 
     # ---- 写库阶段：重新加载 ORM，单条短事务 ----
     try:
@@ -4927,7 +4938,19 @@ def _process_batch(db, batch: list) -> None:
             continue
         # WS5 季海报：IO 阶段给剧的名下无图季拉 TMDB 季海报并预热
         #（写库阶段由 _enrich_apply 落字段；与单条 _process_item 同口径）
-        _enrich_season_posters_io(db, snapshot, fetched)
+        # A-023：同单条口径，瞬态失败整条送回重试，不进写库、不杀线程。
+        from backend.emby_server.tmdb import TmdbTransientError
+        try:
+            _enrich_season_posters_io(db, snapshot, fetched)
+        except TmdbTransientError as exc:
+            logger.warning("批量季海报瞬态失败，整条送回重试 id=%s: %s", item_id, exc)
+            db.rollback()
+            outcome = _mark_failed(db, item_id, attempts, str(exc),
+                                   claim_token=snapshot.enrich_claim_token)
+            progress.note_stage(
+                "enrich_item", (time.monotonic() - started) * 1000.0)
+            progress.note_completed(outcome)
+            continue
         try:
             db.rollback()
             fresh = db.query(em.MediaItem).filter(
@@ -5053,6 +5076,12 @@ def _worker_loop(worker_id: int) -> None:
                 _note_enrich_batch_feed(db, batch)
                 # 批次之间释放 session 身份映射，避免长连接内存膨胀
                 db.expire_all()
+            except Exception as exc:
+                # A-023：批次处理段兜底（与 janitor 整轮 try/except 同口径）：
+                # 单批未预期异常记日志、回滚、睡眠后继续循环，绝不杀线程。
+                logger.warning("补全 worker 批次处理失败，继续下一批: %s", exc)
+                db.rollback()
+                _stop_event.wait(ENRICH_IDLE_POLL_SEC)
             finally:
                 _ts.release_enrich_permit(_permit)
 
@@ -5123,15 +5152,27 @@ def get_progress(light: bool = False) -> dict:
         db.close()
 
 
+def _is_janitor_thread(t) -> bool:
+    """A-023：判定某线程是否为 janitor（身份优先，名称兜底）。"""
+    if t is _janitor_thread:
+        return True
+    name = getattr(t, "name", None)
+    return isinstance(name, str) and name == "enrich-janitor"
+
+
 def start() -> None:
     """启动后台补全线程（幂等），线程数 = start() 时解析（env → 后台配置 → 默认 8）"""
-    global _worker_threads, _effective_workers
+    global _worker_threads, _effective_workers, _janitor_thread
     if not ENRICH_ENABLED:
         logger.info("补全 worker 已禁用（ENRICH_WORKER=0）")
         return
     with _worker_lock:
         _worker_threads = [t for t in _worker_threads if t.is_alive()]
-        if _worker_threads:
+        # A-023：存活判定排除 janitor（janitor 单独计，不算 worker）。
+        # 否则 janitor 活着时 start() 永远提前返回，死掉的 worker 补不回来。
+        alive_workers = [t for t in _worker_threads
+                         if not _is_janitor_thread(t)]
+        if alive_workers:
             return
         # 启动前：恢复崩溃残留 + 防老数据洪峰（只做一次）
         db = SessionLocal()
@@ -5156,17 +5197,25 @@ def start() -> None:
             _worker_threads.append(t)
         # 租约 janitor（v2.42.9）：运行期崩溃的 enriching 行由它周期回收，
         # 不再只能靠重启。与 worker 同一份幂等守卫（_worker_threads）。
-        j = threading.Thread(target=_janitor_loop, name="enrich-janitor", daemon=True)
-        j.start()
-        _worker_threads.append(j)
+        # A-023：若旧 janitor 仍存活则复用，不再起第二个 janitor。
+        existing_janitor = next(
+            (t for t in _worker_threads if _is_janitor_thread(t)), None)
+        if existing_janitor is None:
+            j = threading.Thread(target=_janitor_loop, name="enrich-janitor", daemon=True)
+            j.start()
+            _worker_threads.append(j)
+            _janitor_thread = j
+        else:
+            _janitor_thread = existing_janitor
         logger.info("补全 worker 启动 %d 个线程 + janitor", _effective_workers)
 
 
 def stop() -> None:
     """停止后台补全线程"""
-    global _worker_threads
+    global _worker_threads, _janitor_thread
     _stop_event.set()
     with _worker_lock:
         threads, _worker_threads = _worker_threads, []
+        _janitor_thread = None
     for t in threads:
         t.join(timeout=10)
