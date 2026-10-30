@@ -5280,6 +5280,59 @@ def _play_target(db: Session, item: em.MediaItem, *, variant=None):
     return target
 
 
+def _resolve_series_playback_episode(db: Session, user, series: em.MediaItem):
+    """剧级 PlaybackInfo（IsPlayback=true）的落集选择：目标集或 None。
+
+    背景见 playback_info 的落集分支（2026-10-30《眷思量》案）。选集
+    口径全部复用现行实现，不新造状态：
+    - 候选与排序与 NextUp 的 _next_up_first_unwatched 一致：本剧
+      item_type=episode、未隐藏、未合并，按 season_number /
+      episode_number（NULL 排最后）/ id 升序；本单另要求只算有
+      file_path 的集，且逐条过 _item_visible（与直接请求该集时的
+      可见范围校验同口径，不可见的集不落）。
+    - 「看完」只认 em.UserMediaData.played（mark_played / 完播置位的
+      已播标记）；有进度未看完（playback_position_ticks>0 且
+      played=False，Resume 口径）与完全没看过的都算未看完。
+    - 目标 = 第一部未看完的集；全部看完 → 第一部（重播从头）；
+      无候选 → None（调用方保持回空源）。
+    """
+    MI = em.MediaItem
+    episodes = (
+        db.query(MI)
+        .filter(
+            MI.item_type == "episode",
+            MI.series_id == series.id,
+            MI.is_hidden == False,  # noqa: E712
+            MI.merged_into_id.is_(None),
+            MI.file_path.isnot(None),
+            MI.file_path != "",
+        )
+        .order_by(
+            MI.season_number.asc().nullslast(),
+            MI.episode_number.asc().nullslast(),
+            MI.id.asc(),
+        )
+        .all()
+    )
+    episodes = [e for e in episodes if _item_visible(db, user, e)]
+    if not episodes:
+        return None
+    played_ids = {
+        row[0]
+        for row in db.query(em.UserMediaData.item_id)
+        .filter(
+            em.UserMediaData.user_id == user.id,
+            em.UserMediaData.item_id.in_([e.id for e in episodes]),
+            em.UserMediaData.played == True,  # noqa: E712
+        )
+        .all()
+    }
+    for ep in episodes:
+        if ep.id not in played_ids:
+            return ep
+    return episodes[0]
+
+
 @emby_router.post("/emby/Items/{item_id}/PlaybackInfo")
 @emby_router.post("/Items/{item_id}/PlaybackInfo")
 @emby_router.get("/emby/Items/{item_id}/PlaybackInfo")
@@ -5317,16 +5370,38 @@ async def playback_info(
         # 入队失败不影响本次播放；记日志——探测停摆会导致码率/时长长期缺失
         logger.warning("媒体探测入队失败 item=%s: %s", getattr(item, "id", "?"), exc)
     if not item.file_path:
-        # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
-        # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
-        # 返回空 MediaSources 是 Emby 客户端认可的「无可播放源」。
-        _pt.mark("no_file_path")
-        _pt.done()
-        return _strip_nulls({
-            "MediaSources": [],
-            "PlaySessionId": secrets.token_hex(8),
-            "ErrorCode": None,
-        })
+        # 剧级点播落集（2026-10-30，《眷思量》案）：SenPlayer 等客户端在
+        # 剧页面点播放时直接对 series 本体发 PlaybackInfo
+        # （IsPlayback=true&AutoOpenLiveStream=true），从不请求集级
+        # guid；对容器条目一律回空源会让它拿空源止步、黑屏。这里仅对
+        # series + IsPlayback=true 落到目标集（选集口径见
+        # _resolve_series_playback_episode），随后把 item 换成目标集、
+        # 走完下面全部原有逻辑——源构建、变体清单、转存门禁、
+        # play_sign 都与客户端直接请求该集等价，不另起一套。
+        # IsPlayback=false 是信息查询，保持回空源逐字不变；season 与
+        # series 共用本早退，season 不是 series，同样保持原样。
+        _series_episode = None
+        if item.item_type == "series" and (
+            request.query_params.get("IsPlayback") or ""
+        ).lower() == "true":
+            _series_episode = await run_db(
+                _resolve_series_playback_episode, db, user, item)
+        if _series_episode is None:
+            # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
+            # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
+            # 返回空 MediaSources 是 Emby 客户端认可的「无可播放源」。
+            _pt.mark("no_file_path")
+            _pt.done()
+            return _strip_nulls({
+                "MediaSources": [],
+                "PlaySessionId": secrets.token_hex(8),
+                "ErrorCode": None,
+            })
+        _pt.mark(f"series_resolve episode={_series_episode.guid}")
+        logger.info(
+            "剧级点播落集 series=%s -> episode=%s user=%s",
+            item.guid, _series_episode.guid, user.id)
+        item = _series_episode
     base = _base_url(request)
     body = {}
     try:
