@@ -24,6 +24,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend import models
 from backend.api.economy import payment_methods
+from backend.integrations import store
 from backend.api.emby_portal import _grant_register_gifts
 
 
@@ -36,13 +37,16 @@ def db():
     )
     models.Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
+    store.invalidate()  # store 缓存只按键名不分库，进场先清防串味
     yield session
     session.close()
+    store.invalidate()
 
 
 def _set_config(db, key, value):
     db.add(models.SystemConfig(key=key, value=value))
     db.commit()
+    store.invalidate(key)  # 与生产写时失效同口径
 
 
 def _make_user(db, username="newbie"):

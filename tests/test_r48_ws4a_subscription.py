@@ -36,6 +36,15 @@ def _user(db, username="u1", points=0, level=1):
     db.add(u)
     db.commit()
     db.refresh(u)
+    if points:
+        # 生产里余额变动必经 _add_points/_spend_points 写台账（全仓无
+        # 直接赋值 points 的代码路径）。P1-4 来源限定是台账纯函数，
+        # 裸余额不代表任何真实用户：这里把初始余额按「签到挣来」入账，
+        # 与成功路径用例的隐含前提（余额可花）对齐。
+        db.add(models.PointsLog(user_id=u.id, amount=points,
+                                balance_after=points, type="checkin",
+                                description="test", created_at=datetime.now()))
+        db.commit()
     return u
 
 
@@ -352,7 +361,11 @@ def test_auto_renew_clears_failed_notice_after_success(db):
     sub = _active_sub(db, u, plan, r, hours_left=12)
     out1 = subs.auto_renew_subscriptions(db)
     assert out1["failed"] == 1 and len(out1["notices"]) == 1
-    # 用户充值
+    # 用户补足能量（P1-4 来源限定后自动续订只认自挣能量：以签到
+    # 入账补足并同步台账——生产里余额变动必有台账，见 _user 注释）
+    db.add(models.PointsLog(user_id=u.id, amount=990, balance_after=1000,
+                            type="checkin", description="test",
+                            created_at=datetime.now()))
     u.points = 1000
     db.commit()
     out2 = subs.auto_renew_subscriptions(db)

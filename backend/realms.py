@@ -99,6 +99,10 @@ REALM_CONFIG_BASES = (
     "emby_external_enabled",
     "emby_external_reachable",
     "emby_external_api_key",
+    # 两服共存 P1-4/P1-5：订阅购买类开关按服（默认服仍读原键名）
+    "subscription_purchase_enabled",
+    "subscription_buy_self_earned_only",
+    "subscription_points_purchase_enabled",
     # 挂载体检快照：挂载跟着服走，结论文案也必须按服分别存
     "emby_managed_mounts_health",
 )
