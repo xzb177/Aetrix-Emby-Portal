@@ -13,10 +13,16 @@ v2.18.0 起不再包含「分享链接转存 / 下载任务」那一套（解析
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
+import time
+from base64 import b64encode
+from binascii import b2a_hex, crc32
 from typing import Optional
+from urllib.parse import urlencode
 
 from sqlalchemy.orm import Session
 
@@ -38,6 +44,241 @@ PAN115_UA = os.getenv(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0 Safari/537.36",
 )
+
+# ==================== 秒传（initupload）协议 ====================
+# 协议对照 p115cipher 0.0.6、p115client 的 upload_init/upload_file_init
+# 与 py115 的 UploadInitApi（三方实现公式互洽，2026-10-30 对照确认）：
+# - 先 GET proapi /app/uploadinfo 取 user_id + userkey；
+# - POST uplb /4.0/initupload.php：query 带 k_ec（ECDH token），body
+#   为 AES-128-CBC（固定 ECDH 派生 key/iv，PKCS7 填充）加密的
+#   urlencode 表单（空值字段不进表单）；
+# - sig = SHA1(userkey + hex(SHA1("{userid}{fileid}{target}0"))
+#   + "000000")，大写；token = MD5(MD5_SALT + fileid + filesize
+#   + sign_key + sign_val + userid + t + hex(MD5(userid))
+#   + appversion)，小写；
+# - 响应同为 AES 加密，解密后是分段 lz4 帧（2 字节小端块长 + lz4
+#   block）包着的 JSON；status：2 = 秒传命中（reuse，文件已落用户
+#   盘）、7 = 需 sign_check 二轮校验（按 sign_check 区间算 sha1
+#   回填 sign_val 重发）、1 = 未命中（需走 OSS 上传）。
+# 本模块只做到「命中判定」为止：未命中由调用方回落 simple_upload
+# 全量上传，不在此实现 initupload 的 OSS 多段上传（status=1 的
+# bucket/object 参数直接忽略）。**真实端到端未实测**（不许用生产
+# 用户 Cookie 做开发测试），协议正确性靠上述开源实现对照 + mock。
+
+PAN115_PROAPI_BASE = os.getenv(
+    "PAN115_PROAPI_BASE", "https://proapi.115.com").rstrip("/")
+PAN115_APP_VERSION = "36.2.28"  # p115client 当前 appversion
+
+_P115_MD5_SALT = b"Qclm8MGWUv59TnrR0XPg"
+_P115_CRC_SALT = b"^j>WD3Kr?J2gLFjD4W2y@"
+_P115_AES_PUBKEY = (
+    b"\x1d\x03\x0e\x80\xa1x\xdc\xee\xce\xcd\xa3w\xde\x12"
+    b"\x8d\x8e\xd9\xdd\xcfU\xaea\xedF\xea\x12\x1a\x1c\xfc\x81")
+_P115_AES_KEY = b"\xfb\x1a\x19\xd6R\xf5\xaa\xf7\xbce\x1d\x0fi\xbfB/"
+_P115_AES_IV = b"i\xbfB/I\x96\x05P\xa0\xadD\xec4F\xcbL"
+
+
+def _pkcs7_pad(data: bytes) -> bytes:
+    pad = 16 - (len(data) % 16)
+    return data + bytes([pad]) * pad
+
+
+def _pkcs7_unpad(data: bytes) -> bytes:
+    if not data:
+        raise Pan115Error("115 秒传响应为空")
+    pad = data[-1]
+    if pad < 1 or pad > 16 or data[-pad:] != bytes([pad]) * pad:
+        raise Pan115Error("115 秒传响应填充非法")
+    return data[:-pad]
+
+
+def _ecdh_aes_encrypt(data: bytes) -> bytes:
+    """AES-128-CBC 加密（ECDH 派生的固定 key/iv，p115cipher 口径）。"""
+    from cryptography.hazmat.primitives.ciphers import (
+        Cipher, algorithms, modes)
+    enc = Cipher(algorithms.AES(_P115_AES_KEY),
+                 modes.CBC(_P115_AES_IV)).encryptor()
+    return enc.update(_pkcs7_pad(data)) + enc.finalize()
+
+
+def _ecdh_aes_decrypt(cipher_data: bytes) -> bytes:
+    """AES-128-CBC 解密 + 分段 lz4 帧解压（p115cipher 口径）。"""
+    from cryptography.hazmat.primitives.ciphers import (
+        Cipher, algorithms, modes)
+    dec = Cipher(algorithms.AES(_P115_AES_KEY),
+                 modes.CBC(_P115_AES_IV)).decryptor()
+    plain = _pkcs7_unpad(dec.update(cipher_data) + dec.finalize())
+    return _framed_lz4_decompress(plain)
+
+
+def _lz4_block_decompress(block: bytes) -> bytes:
+    """纯 Python LZ4 block 解压（运行环境无 lz4 库，不新增依赖）。"""
+    out = bytearray()
+    i = 0
+    n = len(block)
+    while i < n:
+        token = block[i]
+        i += 1
+        lit_len = token >> 4
+        if lit_len == 15:
+            while True:
+                if i >= n:
+                    raise Pan115Error("lz4 块截断（字面量长度）")
+                b = block[i]
+                i += 1
+                lit_len += b
+                if b != 255:
+                    break
+        out += block[i:i + lit_len]
+        i += lit_len
+        if i >= n:
+            break
+        if i + 2 > n:
+            raise Pan115Error("lz4 块截断（偏移）")
+        offset = block[i] | (block[i + 1] << 8)
+        i += 2
+        if offset <= 0 or offset > len(out):
+            raise Pan115Error("lz4 偏移非法")
+        match_len = token & 0x0F
+        if match_len == 15:
+            while True:
+                if i >= n:
+                    raise Pan115Error("lz4 块截断（匹配长度）")
+                b = block[i]
+                i += 1
+                match_len += b
+                if b != 255:
+                    break
+        match_len += 4
+        start = len(out) - offset
+        for j in range(match_len):
+            out.append(out[start + j])
+    return bytes(out)
+
+
+def _framed_lz4_decompress(data: bytes) -> bytes:
+    """p115cipher 响应帧：重复（2 字节小端块长 + lz4 block）。
+
+    帧解析不成立且明文像 JSON 时原样返回（个别响应只加密不压缩
+    的兜底）；两者都不成立才报协议错误（调用方回落全量上传）。
+    """
+    out = bytearray()
+    src = data
+    ok = True
+    while src and len(src) > 2:
+        ln = src[0] | (src[1] << 8)
+        if ln == 0 or ln > len(src) - 2:
+            ok = False
+            break
+        try:
+            out += _lz4_block_decompress(src[2:2 + ln])
+        except Pan115Error:
+            ok = False
+            break
+        src = src[2 + ln:]
+    if ok and not src:
+        return bytes(out)
+    if data.lstrip()[:1] == b"{":
+        return data
+    raise Pan115Error("115 秒传响应解压失败")
+
+
+def _ecdh_encode_token(timestamp: int) -> str:
+    """k_ec 参数：公钥 + 时间戳 + CRC 的 base64（p115cipher 口径）。"""
+    token = bytearray()
+    token += _P115_AES_PUBKEY[:15]
+    token += b"\x00s\x00\x00\x00"
+    token += int(timestamp).to_bytes(4, "little")
+    token += _P115_AES_PUBKEY[15:]
+    token += b"\x00\x01\x00\x00\x00"
+    token += crc32(_P115_CRC_SALT + bytes(token)).to_bytes(4, "little")
+    return b64encode(bytes(token)).decode("ascii")
+
+
+def _make_upload_payload(payload: dict):
+    """构造 initupload 请求：返回 (params, AES 加密 body)。
+
+    payload 须含 userid/userkey/fileid/target/filesize/appversion，
+    sign_key/sign_val 可空（空值不进加密表单，与开源实现同口径）；
+    本函数补 t/sig/token（每次调用都刷新，二轮校验重发同理）。
+    """
+    payload = dict(payload)
+    t = payload["t"] = int(time.time())
+    sig = hashlib.sha1(payload["userkey"].encode("ascii"))
+    sig.update(b2a_hex(hashlib.sha1(
+        "{userid}{fileid}{target}0".format_map(payload)
+        .encode("ascii")).digest()))
+    sig.update(b"000000")
+    payload["sig"] = sig.hexdigest().upper()
+    token = hashlib.md5(_P115_MD5_SALT)
+    token.update(
+        "{fileid}{filesize}{sign_key}{sign_val}{userid}{t}"
+        .format_map(payload).encode("ascii"))
+    token.update(b2a_hex(hashlib.md5(
+        b"%d" % int(payload["userid"])).digest()))
+    token.update(payload["appversion"].encode("ascii"))
+    payload["token"] = token.hexdigest()
+    items = sorted((k, v) for k, v in payload.items() if v)
+    body = _ecdh_aes_encrypt(urlencode(items).encode("latin-1"))
+    return {"k_ec": _ecdh_encode_token(t)}, body
+
+
+def _parse_sign_check_range(sign_check):
+    """sign_check 是 Range 区间串 "start-end"（闭区间）；失败回 None。"""
+    try:
+        start_s, end_s = str(sign_check).strip().split("-", 1)
+        start, end = int(start_s), int(end_s)
+    except (TypeError, ValueError):
+        return None
+    if start < 0 or end < start:
+        return None
+    return start, end
+
+
+def _extract_init_result(resp):
+    """秒传命中响应里提 fid + pickcode（多字段容错）。
+
+    提不到返回空串，调用方走列目录匹配回落（不依赖本响应字段）。
+    """
+    if not isinstance(resp, dict):
+        return "", ""
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+    fid = str(data.get("file_id") or data.get("fid") or data.get("id")
+              or resp.get("file_id") or "")
+    pickcode = str(data.get("pickcode") or data.get("pick_code")
+                   or data.get("pc") or resp.get("pickcode") or "")
+    return fid, pickcode
+
+
+def _http_bytes(method: str, url: str, *, params: Optional[dict] = None,
+                data: Optional[bytes] = None, auth_ck: Optional[str] = None,
+                timeout: Optional[float] = None, ua: str = "",
+                content_type: str = "") -> bytes:
+    """initupload 专用薄封装：响应是加密字节、不是 JSON。
+
+    与 _http_json 同分工（测试可替换本函数，其余逻辑与网络解耦）。
+    """
+    import httpx
+
+    headers = {
+        "User-Agent": (ua or "").strip() or PAN115_UA,
+        "Referer": "https://115.com/",
+        "Accept": "application/json, text/plain, */*",
+    }
+    if auth_ck:
+        headers["Cookie"] = auth_ck
+    if content_type:
+        headers["Content-Type"] = content_type
+    with httpx.Client(timeout=timeout or PAN115_TIMEOUT,
+                      follow_redirects=True) as client:
+        resp = client.request(method, url, params=params, data=data,
+                              headers=headers)
+    if resp.status_code in (401, 403):
+        raise Pan115AuthError(
+            f"115 返回 HTTP {resp.status_code}，Cookie 可能已失效")
+    if resp.status_code >= 400:
+        raise Pan115Error(f"115 返回 HTTP {resp.status_code}")
+    return resp.content
 
 # ==================== 异常 ====================
 
@@ -436,7 +677,105 @@ class Pan115Client:
                   or data.get("id") or "")
         pickcode = str(data.get("pick_code") or data.get("pickcode")
                        or data.get("pc") or "")
-        return {"fid": fid, "pickcode": pickcode, "raw": body}
+        # sha1 一并透出：回调里的 sha1 是 115 对实际落盘字节算的
+        # 整文件哈希，调用方据此沉淀条目 content_hash（秒传资格）。
+        sha1 = str(data.get("sha1") or "")
+        return {"fid": fid, "pickcode": pickcode, "sha1": sha1,
+                "raw": body}
+
+    # ---- 秒传（initupload，跨 provider 转存 Drive→115 用） ----
+
+    def upload_info(self) -> dict:
+        """取上传身份 ``{user_id, userkey}``（GET proapi /app/uploadinfo）。
+
+        响应形态多容错：平铺或 data 包裹、userkey/user_key 两名。
+        缺任一字段报 Pan115Error（协议层失败，调用方回落全量上传）。
+        """
+        body = self._call("GET", f"{PAN115_PROAPI_BASE}/app/uploadinfo")
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        if not isinstance(data, dict):
+            raise Pan115Error("115 uploadinfo 响应形态异常")
+        user_id = str(data.get("user_id") or data.get("userid")
+                      or data.get("uid") or "")
+        userkey = str(data.get("userkey") or data.get("user_key") or "")
+        if not user_id or not userkey:
+            raise Pan115Error("115 uploadinfo 未返回完整 user_id/userkey")
+        return {"user_id": user_id, "userkey": userkey}
+
+    def rapid_upload(self, filename: str, filesize: int, file_sha1: str,
+                     pid: str, range_reader=None) -> dict:
+        """秒传尝试（initupload，可能秒传）：命中直接落用户盘，不搬字节。
+
+        :param range_reader: ``range_reader(start, end) -> bytes``
+            （闭区间），供 sign_check 二轮校验取区间字节；返回 str
+            时视为已算好的 sha1。文件 ≥ 1MB 时服务端通常要求二轮
+            校验，缺 range_reader 且被要求二轮 → Pan115Error。
+
+        返回 ``{"outcome": "hit", "fid", "pickcode", "raw"}`` 或
+        ``{"outcome": "miss", "fid": "", "pickcode": "", "raw"}``。
+        协议层失败抛 Pan115Error、Cookie 失效抛 Pan115AuthError；
+        回落全量上传与绑定落态一律由调用方决定，本方法不吞异常。
+        命中回执的 fid/pickcode 只作期望值，调用方仍须列目录核对。
+        """
+        info = self.upload_info()
+        payload = {
+            "appid": 0,
+            "appversion": PAN115_APP_VERSION,
+            "userid": info["user_id"],
+            "userkey": info["userkey"],
+            "target": f"U_1_{pid}",
+            "fileid": str(file_sha1).strip().upper(),
+            "filename": filename,
+            "filesize": int(filesize),
+            "sign_key": "",
+            "sign_val": "",
+            "topupload": "true",
+        }
+        resp = self._upload_init_once(payload)
+        status = (resp or {}).get("status")
+        if status == 7:
+            sign_key = str(resp.get("sign_key") or "")
+            rng = _parse_sign_check_range(resp.get("sign_check"))
+            if not sign_key or rng is None or range_reader is None:
+                raise Pan115Error(
+                    "115 秒传要求二轮校验但区间信息不全"
+                    f"（sign_check={resp.get('sign_check')!r}）")
+            content = range_reader(rng[0], rng[1])
+            if isinstance(content, str):
+                sign_val = content.strip().upper()
+            else:
+                sign_val = hashlib.sha1(bytes(content)).hexdigest().upper()
+            payload["sign_key"] = sign_key
+            payload["sign_val"] = sign_val
+            resp = self._upload_init_once(payload)
+            status = (resp or {}).get("status")
+        if status == 2:
+            fid, pickcode = _extract_init_result(resp)
+            return {"outcome": "hit", "fid": fid, "pickcode": pickcode,
+                    "raw": resp}
+        if status == 1:
+            return {"outcome": "miss", "fid": "", "pickcode": "",
+                    "raw": resp}
+        raise Pan115Error(
+            f"115 initupload 返回未知状态 status={status} "
+            f"statuscode={(resp or {}).get('statuscode')}")
+
+    def _upload_init_once(self, payload: dict) -> dict:
+        """一轮 initupload：加密请求 → 解密响应 JSON。"""
+        params, body = _make_upload_payload(payload)
+        raw = _http_bytes(
+            "POST", f"{PAN115_UPLB_BASE}/4.0/initupload.php",
+            params=params, data=body, auth_ck=self.cookie, ua=self.ua,
+            content_type="application/x-www-form-urlencoded")
+        try:
+            resp = json.loads(_ecdh_aes_decrypt(raw))
+        except Pan115Error:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 解密/解析失败即协议失败
+            raise Pan115Error(f"115 initupload 响应解析失败：{exc}") from exc
+        if not isinstance(resp, dict):
+            raise Pan115Error("115 initupload 响应形态异常")
+        return resp
 
     # ---- 内部 ----
 
