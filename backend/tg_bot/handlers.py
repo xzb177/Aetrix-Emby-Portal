@@ -922,3 +922,36 @@ def handle_reconcile(db, tg_user: dict, chat_id: int, args: str):
     result = reconcile.run_reconcile(db)
     reconcile.cache_result(int(tg_id), result)
     return reconcile.render_report(result)
+
+
+def handle_whois(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """管理员审计反查（只读，embyboss 借鉴第 2 项）。
+
+    双门与 handle_admin 同一口径：私聊限定（handler 层 guard，
+    router 的 private_only 另有一层）+ resolve 后 is_staff 判定，
+    一字不改判定逻辑；非管理员回现行拒绝卡，未绑定回绑定指引。
+    查询与渲染全在 whois.py（只读，只查现有表）。
+    """
+    from backend.tg_bot import queries, whois
+
+    tg_id = tg_user.get("id")
+    if not tg_id or chat_id != int(tg_id):
+        return queries.PRIVATE_ONLY_TEXT
+    user = resolve(db, int(tg_id))
+    if user is None:
+        return _bind_guide_text()
+    if not bool(getattr(user, "is_staff", False)):
+        return layout.card(
+            layout.title("账号反查"),
+            [layout.row("🔒", "访问状态", "仅管理员可用")],
+        )
+    keyword = (args or "").strip()
+    if not keyword:
+        return layout.card(
+            layout.title("账号反查"),
+            [
+                layout.row("🔍", "用法", "私聊发送 /whois 关键词"),
+                layout.row("🧭", "可查", "IP 地址、TG 号、站内用户名 / Emby 名、设备或客户端名"),
+            ],
+        )
+    return whois.render_whois(db, keyword)

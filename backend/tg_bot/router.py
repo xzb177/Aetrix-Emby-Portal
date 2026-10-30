@@ -187,6 +187,7 @@ _IDENTITY_COMMANDS = {
     "/redeem", "/lottery", "/redpacket",
     "/bindings", "/transfers", "/whyplay", "/wants", "/reconcile",
     "/rankpush",
+    "/whois",
 }
 
 
@@ -331,6 +332,7 @@ def dispatch(db, update: dict) -> None:
             "/wants": handlers.handle_wants,
             "/reconcile": handlers.handle_reconcile,
             "/rankpush": handlers.handle_rankpush,
+            "/whois": handlers.handle_whois,
         }
         fn = commands.get(cmd)
         if fn is None:
@@ -354,7 +356,7 @@ def dispatch(db, update: dict) -> None:
         # 账号展示（/account、/me）已放行群聊：只展示能量/活力/馆灵/成就等
         # 个人面板信息，不含任何凭据；登录与求片仍私聊限定。
         private_only = {"/request", "/myrequests", "/login", "/renew", "/govlog",
-                        "/report", "/propose", "/launch", "/reconcile", "/rankpush"}
+                        "/report", "/propose", "/launch", "/reconcile", "/rankpush", "/whois"}
         if cmd in private_only and in_group:
             _send_reply(db, chat_id, "🔒 这个功能请私聊机器人使用",
                         autodelete=True)
