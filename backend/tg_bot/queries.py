@@ -26,6 +26,7 @@ JOB_STATUS_TEXT = {
     "running": "转存中",
     "done": "已完成",
     "failed": "失败",
+    "cancelled": "已取消",
 }
 # 转存失败原因码 → 一句话（未知码原样展示，不编造）
 JOB_ERROR_TEXT = {
