@@ -101,13 +101,17 @@ def test_start_bound_private_has_dashboard_no_command_list(db):
 
 def test_start_bound_group_has_dashboard_no_login_link(db):
     row = _user(db)
+    # 群 /start 现返回 (正文, 群菜单) 元组：正文仍是 dashboard 九行卡，
+    # 登录链接不进正文、也不进群菜单按钮（群里无一键登录行）。
     reply = handlers.handle_start(db, _tg(), GROUP, "")
-    assert isinstance(reply, str)
-    assert "可用命令" not in reply
-    assert "能量" in reply
-    assert "一键免密登录请私聊" not in reply  # 末尾私聊登录指引行已删
-    assert "左下角" not in reply  # 末尾菜单指引行已删
-    assert "token=" not in reply
+    assert isinstance(reply, tuple)
+    text, markup = reply
+    assert "可用命令" not in text
+    assert "能量" in text
+    assert "一键免密登录请私聊" not in text  # 末尾私聊登录指引行已删
+    assert "左下角" not in text  # 末尾菜单指引行已删
+    assert "token=" not in text
+    assert not [b for r in markup["inline_keyboard"] for b in r if b.get("url")]
 
 
 def test_start_unbound_has_no_command_list(db):

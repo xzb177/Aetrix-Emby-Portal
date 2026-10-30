@@ -210,7 +210,9 @@ def test_slim_layout_full(db):
     _binding(db, row.id, "drive")
     _checkin(db, row.id, 7)
     reply = handlers.handle_start(db, _tg(), GROUP, "")
-    assert isinstance(reply, str)
+    # 群 /start 现返回 (正文, 群菜单) 元组：九行版式断言落在正文上。
+    assert isinstance(reply, tuple)
+    reply = reply[0]
     expected = "\n".join([
         "▎<b>欢迎进入用户面板！</b>Alice",
         f"· 🆔 <b>用户编号</b> | {row.id}",
