@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from backend import models, register_channel
 from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.db_retry import commit_with_retry
-from backend.authlog import client_ip as log_ip, record_event, user_agent
+from backend.authlog import REASONS as AUTHLOG_REASONS, client_ip as log_ip, record_event, user_agent
 from backend import share_guard
 from backend.database import get_db
 from backend.devices import device_limit
@@ -737,3 +737,44 @@ def change_password(
     current_user.token_version = int(current_user.token_version or 0) + 1
     db.commit()
     return {"success": True, "message": "密码已更新"}
+
+
+@auth_router.get("/login-history")
+def get_login_history(
+    limit: int = 20,
+    offset: int = 0,
+    current_user: models.WebUser = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db),
+):
+    """本人登录记录（只读）：只查自己名下的登录与安全事件，分页倒序。
+
+    字段白名单：时间 / IP / 地区 / 设备（UA）/ 成败 / 事件类别。
+    不返回 detail（内部备注口径）等白名单外字段；查询条件写死
+    user_id == 当前登录用户，不接受任何指定他人的参数。
+    """
+    limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
+    q = db.query(models.LoginLog).filter(
+        models.LoginLog.user_id == current_user.id)
+    total = q.count()
+    rows = (
+        q.order_by(models.LoginLog.created_at.desc(), models.LoginLog.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "items": [
+            {
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "ip": r.ip,
+                "region": r.region or "",
+                "user_agent": r.user_agent,
+                "success": bool(r.success),
+                "reason": r.reason,
+                "reason_label": AUTHLOG_REASONS.get(r.reason or "", r.reason or "-"),
+            }
+            for r in rows
+        ],
+    }
