@@ -29,6 +29,7 @@ r"""自建 Emby 服务器：媒体库扫描 + 元数据刮削
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json  # 扫描结果落库（scan_stats）需要
 import logging
 import os
@@ -2321,17 +2322,40 @@ def _is_transfer_dir_rel(rel: str) -> bool:
     return _tv.is_transfer_dir_rel(rel)
 
 
-def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
+def _mount_files(src, provider, failed_roots: list,
+                 prefixes: tuple = ()) -> Iterator[ScanFile]:
     """一个挂载里的媒体文件
 
     本机可读的挂载（local / strm）入库真实路径；远程挂载（115 / WebDAV / AList）
     入库 ``mount://<id>/<rel>``，播放时再解析成直链。
+
+    ``prefixes``（定向扫描）：非空时先按 ``_targeted_walk_plan`` 分拣——
+    没有任何前缀落在本来源内就整源跳过（不碰 provider、零列举调用）；
+    落入的换算成挂载内相对路径、只走目标子树。产出集合与「整源遍历 +
+    _prefix_filter」逐项一致（调用方仍套 _prefix_filter 兜底）。
     """
     root = provider.local_root
     mount_id = src.mount.id
     # src.subpath：库配置为 mount://<id>/<子目录> 时只扫描该子目录（默认为 "/" 即整个挂载）
     subpath = getattr(src, "subpath", "/") or "/"
-    for mount_file in provider.walk_media(root=subpath):
+    if not prefixes:
+        plan = None
+    else:
+        plan = _targeted_walk_plan(src, prefixes)
+        if plan is not None and not plan:
+            return  # 没有任何前缀落在本来源内：整源跳过，零列举调用
+    if plan is None:
+        mount_files = provider.walk_media(root=subpath)
+    elif hasattr(provider, "walk_media_targeted"):
+        # 提供者自己支持定向遍历（Drive：遍历内按 folder id 剪枝，
+        # 同名文件夹合并语义与整源遍历完全一致）
+        mount_files = provider.walk_media_targeted(root=subpath, limit_rels=plan)
+    else:
+        # 通用提供者：逐个目标子树走既有 walk_media(root=...)（内部按既有
+        # 路径解析逐级定位），结果合并；目标间包含关系已在 plan 里去冗余
+        mount_files = itertools.chain.from_iterable(
+            provider.walk_media(root=rel) for rel in plan)
+    for mount_file in mount_files:
         rel = mount_file.rel
         # 转存变体目录排除（硬性件，防御纵深）：正常布局下转存目录本
         # 就不在任何库的扫描源内；即使某库扫描源误指到它，首段命中即
@@ -2418,6 +2442,77 @@ def _source_path_prefix(src) -> str:
         return ""
     tail = (subpath + "/") if subpath else ""
     return f"{mount_lib.MOUNT_PATH_PREFIX}{mount_id}/{tail}"
+
+
+def _targeted_walk_plan(src, prefixes: tuple):
+    """定向扫描下本（挂载）来源的遍历计划。
+
+    返回值三态：
+
+    - ``None``：有前缀覆盖整个来源（前缀等于来源根、或在来源根之上），
+      或来源范围说不清——整源遍历（旧行为，产出再由 _prefix_filter 收窄）；
+    - ``[]``：没有任何前缀落在本来源内——整源跳过，调用方不许碰
+      provider（零列举调用：定向轮空转整个来源正是要省掉的成本）；
+    - ``[rel, ...]``：只遍历这些挂载内相对路径（形如 "/动漫/剧X/Season 1"，
+      挂载根相对），已去掉被其他目标包含的冗余项。
+    """
+    src_prefix = _source_path_prefix(src)
+    if not src_prefix:
+        return None  # 来源范围说不清：不冒险跳过，整源遍历
+    provider = getattr(src, "provider", None)
+    local_root = getattr(provider, "local_root", None) if provider is not None else None
+    mount_id = getattr(getattr(src, "mount", None), "id", None)
+    root_rel = "/" + (getattr(src, "subpath", "/") or "/").strip("/")
+    targets: list[str] = []
+    for raw in prefixes:
+        px = str(raw or "").rstrip("/")
+        if not px:
+            continue
+        if px == src_prefix.rstrip("/") or src_prefix.startswith(px + "/"):
+            return None  # 前缀覆盖整个来源
+        if not px.startswith(src_prefix):
+            continue  # 落在别的来源里
+        if local_root:
+            rel = "/" + os.path.relpath(px, local_root).replace(os.sep, "/")
+        else:
+            rel = px[len(mount_lib.MOUNT_PATH_PREFIX + str(mount_id)):]
+        rel = "/" + rel.strip("/")
+        if rel == root_rel or root_rel.startswith(rel.rstrip("/") + "/"):
+            return None  # 目标就是来源根（或在其上）：整源遍历
+        targets.append(rel)
+    uniq = sorted(set(targets))
+    return [r for r in uniq
+            if not any(r != o and r.startswith(o.rstrip("/") + "/") for o in uniq)]
+
+
+def _local_targeted_roots(root: str, prefixes: tuple):
+    """本机来源的定向遍历计划（与 _targeted_walk_plan 同三态口径）。
+
+    返回 ``None`` = 整源遍历；``[]`` = 整源跳过；``[dir, ...]`` = 只走
+    这些目录（已去包含冗余）。任一落入来源内的前缀不是现存目录（指向
+    单个文件、或目录已被删）时回退整源遍历：单文件前缀靠整源遍历 +
+    _prefix_filter 才能精确命中，宁可多走一遍也不漏文件。
+    """
+    if not prefixes:
+        return None
+    base = (root or "").rstrip("/")
+    if not base:
+        return None
+    dirs: list[str] = []
+    for raw in prefixes:
+        px = str(raw or "").rstrip("/")
+        if not px:
+            continue
+        if px == base or base.startswith(px + "/"):
+            return None  # 前缀覆盖整个来源
+        if not px.startswith(base + "/"):
+            continue  # 落在别的来源里
+        if not os.path.isdir(px):
+            return None  # 单文件/已消失：回退整源 + 过滤兜底
+        dirs.append(px)
+    uniq = sorted(set(dirs))
+    return [d for d in uniq
+            if not any(d != o and d.startswith(o + "/") for o in uniq)]
 
 
 def _count_visible_under(db: Session, library_id: int, prefix: str) -> int:
@@ -2514,20 +2609,31 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
             # 定向扫描只扫部分目录：来源 0 产出是正常的，不做空来源判定
             check_empty = not prefixes
             if src.kind == "local":
-                yield src.label, _watch_empty_source(
-                    src.label, src,
-                    _prefix_filter(_local_dir_files(
+                local_roots = _local_targeted_roots(src.path, prefixes)
+                if local_roots is None:
+                    local_files = _local_dir_files(
                         src.path, failed_roots,
-                        getattr(src, "source_row_id", None)), prefixes),
-                    db, library.id, failed_roots, check_empty)
+                        getattr(src, "source_row_id", None))
+                elif not local_roots:
+                    local_files = iter(())  # 无前缀落入本来源：整源跳过
+                else:
+                    local_files = itertools.chain.from_iterable(
+                        _local_dir_files(r, failed_roots,
+                                         getattr(src, "source_row_id", None))
+                        for r in local_roots)
+                yield src.label, _WalkMeter(_watch_empty_source(
+                    src.label, src,
+                    _prefix_filter(local_files, prefixes),
+                    db, library.id, failed_roots, check_empty))
                 continue
 
             def _guarded(src=src, check_empty=check_empty):
                 try:
                     yield from _watch_empty_source(
                         src.label, src,
-                        _prefix_filter(_mount_files(src, src.provider, failed_roots),
-                                           prefixes),
+                        _prefix_filter(_mount_files(src, src.provider, failed_roots,
+                                                    prefixes),
+                                       prefixes),
                         db, library.id, failed_roots, check_empty)
                 except mount_lib.MountError as exc:
                     logger.warning("媒体库「%s」的挂载「%s」不可用：%s", snap.name, src.label, exc)
@@ -2536,7 +2642,7 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
                     logger.warning("媒体库「%s」的挂载「%s」异常：%s", snap.name, src.label, exc)
                     failed_roots.append(f"{src.label}: {exc}")
 
-            yield src.label, _guarded()
+            yield src.label, _WalkMeter(_guarded(), src.provider)
     finally:
         if report is not None:
             report.extend(unavailable)
@@ -5005,7 +5111,10 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session, process_one,
     finally:
         # 正常结束、中途报错都要恢复真实提交
         db.commit = real_commit
-        sink.append(_source_entry(label, before_stats, stats, counted.total, failed_roots))
+        _walk_ms, _list_calls = _record_walk_metrics(stats, counted)
+        sink.append(_source_entry(label, before_stats, stats, counted.total,
+                                  failed_roots, walk_ms=_walk_ms,
+                                  list_calls=_list_calls))
         # 线程池是进程级的（_scan_pool）：扫描结束不销毁，也不影响后面的扫描
 
 
@@ -5457,6 +5566,9 @@ SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scr
                    # 到期调度（批二 #12）：目录判定计数，不进白名单落不了库
                    "dirs_new", "dirs_changed", "dirs_due", "dirs_not_due",
                    "failed_roots", "duplicate_files", "duration_ms", "sources",
+                   # walk 打点：本轮列举/遍历的调用量与耗时（分项在 sources
+                   # 明细里），定向扫描排障看它，不进白名单落不了库
+                   "walk_list_calls", "walk_ms",
                    # 删除保护拦截原因：finish_scan 的 error 兜底链 + _scan_metrics
                    # 对外口径都依赖它，不进白名单就落不了库（v2.55.x 修复）
                    "removal_guard",
@@ -5481,9 +5593,67 @@ def normalize_scan_trigger(trigger: Optional[str]) -> str:
 
 # 需要跟着一轮扫描一起落库的来源计数器
 SCAN_SOURCE_COUNTERS = ("files", "added", "updated", "probed", "scraped", "repaired", "unchanged")
+# 来源明细里的 walk 打点：不走 SCAN_SOURCE_COUNTERS 的差值记账，由
+# _record_walk_metrics 在来源收尾时单独写入（见 _source_entry）
+SCAN_SOURCE_WALK_KEYS = ("list_calls", "walk_ms")
 SCAN_SOURCES_MAX = 50              # 一个库的来源（路径 + 挂载）远小于这个量级；超了只留前 N 条
 SCAN_SOURCE_LABEL_MAX = 200
 SCAN_SOURCE_TEXT_MAX = 300
+
+
+class _WalkMeter:
+    """来源遍历计量（扫描 stats 的 walk 打点）：包在来源文件流外层。
+
+    - ``walk_ms``：从来源迭代器取数累计花的时间（毫秒）。下游处理发生在
+      取到文件之后，不计入——这个数就是列举/遍历本身的耗时，定向扫描
+      慢先看它涨在哪条来源上。
+    - ``list_calls``：provider 的列举调用增量（遍历前后 ``list_call_count``
+      的差）。只有实现了该计数的 provider（Drive 的 files.list 页调用）
+      有数，其余为 0。计数是 provider 实例级的：遍历期间同一实例被别处
+      调用也会算进来，是量级信号、不是审计数字。
+    """
+
+    def __init__(self, files, provider=None):
+        self._files = files
+        self._provider = provider
+        self._list_start = (int(getattr(provider, "list_call_count", 0) or 0)
+                            if provider is not None else 0)
+        self.walk_ms = 0.0
+
+    def __iter__(self):
+        it = iter(self._files)
+        while True:
+            t0 = time.perf_counter()
+            try:
+                item = next(it)
+            except StopIteration:
+                return
+            finally:
+                self.walk_ms += (time.perf_counter() - t0) * 1000.0
+            yield item
+
+    @property
+    def list_calls(self) -> int:
+        if self._provider is None:
+            return 0
+        return max(0, int(getattr(self._provider, "list_call_count", 0) or 0)
+                   - self._list_start)
+
+
+def _record_walk_metrics(stats: dict, counted) -> tuple[int, int]:
+    """把一条来源的 walk 计量记进整轮 stats，返回 (walk_ms, list_calls)。
+
+    计量器由 iter_scan_sources 包在来源流外层（_WalkMeter），经 _FileCounter
+    的 ``_files`` 透传到这里；没包计量器的来源（调用方自带迭代器等）记 0。
+    """
+    meter = getattr(counted, "_files", None)
+    walk_ms = int(getattr(meter, "walk_ms", 0) or 0)
+    list_calls = int(getattr(meter, "list_calls", 0) or 0)
+    if walk_ms:
+        stats["walk_ms"] = int(stats.get("walk_ms") or 0) + walk_ms
+    if list_calls:
+        stats["walk_list_calls"] = int(stats.get("walk_list_calls") or 0) + list_calls
+    return walk_ms, list_calls
 
 
 class _FileCounter:
@@ -5519,13 +5689,18 @@ def _attribute_source(label: str, counted: "_FileCounter", prepared,
     try:
         yield from prepared
     finally:
-        sink.append(_source_entry(label, before, stats, counted.total, failed_roots))
+        _walk_ms, _list_calls = _record_walk_metrics(stats, counted)
+        sink.append(_source_entry(label, before, stats, counted.total,
+                                  failed_roots, walk_ms=_walk_ms,
+                                  list_calls=_list_calls))
 
 
 def _source_entry(label: str, before: dict, stats: dict, seen: int,
-                  failed_roots: list) -> dict:
+                  failed_roots: list, walk_ms: int = 0,
+                  list_calls: int = 0) -> dict:
     """一条来源的明细：文件数 + 各计数器增量 + 该来源自己的失败原因（若有）"""
-    entry: dict = {"label": label, "files": seen}
+    entry: dict = {"label": label, "files": seen,
+                   "list_calls": list_calls, "walk_ms": walk_ms}
     for key in SCAN_SOURCE_COUNTERS:
         if key == "files":
             continue
@@ -5555,7 +5730,7 @@ def _encode_scan_sources(entries) -> list:
             for key in ("kind", "error"):
                 if entry.get(key):
                     item[key] = str(entry[key])[:SCAN_SOURCE_TEXT_MAX]
-            for key in SCAN_SOURCE_COUNTERS:
+            for key in SCAN_SOURCE_COUNTERS + SCAN_SOURCE_WALK_KEYS:
                 item[key] = max(0, int(entry.get(key) or 0))
         except Exception:  # noqa: BLE001 — 一条坏来源不该带走整轮统计
             continue
