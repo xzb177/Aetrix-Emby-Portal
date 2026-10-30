@@ -377,8 +377,14 @@ def test_menu_contains_new_buttons(db, monkeypatch):
     panel = handlers.user_panel_markup()
     panel_flat = [b["callback_data"] for row in panel["inline_keyboard"]
                   for b in row if "callback_data" in b]
+    # 分组后：四个查询入口收进二级分组面板，一级＋分组仍全可达
+    grouped_flat = [
+        b["callback_data"]
+        for key in ("media", "drive", "account", "welfare", "help")
+        for row in handlers.user_panel_group_markup(key)["inline_keyboard"]
+        for b in row if "callback_data" in b]
     for action in ("menu:bindings", "menu:transfers", "menu:whyplay", "menu:wants"):
-        assert action in panel_flat
+        assert action in panel_flat + grouped_flat
     assert panel_flat[-1] == "menu:main"  # 末行整行回主界面
 
 
