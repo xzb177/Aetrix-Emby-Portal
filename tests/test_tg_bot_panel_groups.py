@@ -145,7 +145,7 @@ def test_group_markup_and_title(key):
     assert handlers.user_panel_group_markup(key)["inline_keyboard"] == rows + [BACK_ROW]
     text = handlers.user_panel_group_text(key)
     assert text == f"▎<b>{label}</b>"
-    assert "用户 ID" not in text  # 不重复信息行
+    assert "用户编号" not in text  # 不重复信息行
     assert layout.caption_fits(text)
 
 
@@ -208,7 +208,7 @@ def test_back_button_returns_full_user_panel(db, monkeypatch):
     callbacks.handle_callback(db, _cq("user"))
     assert len(state["edits"]) == 1
     text, markup = state["edits"][0]
-    assert "欢迎进入用户面板" in text and "用户 ID" in text
+    assert "欢迎进入用户面板" in text and "用户编号" in text
     assert markup == handlers.user_panel_markup()
 
 

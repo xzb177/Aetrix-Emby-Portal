@@ -108,7 +108,7 @@ def test_menu_points_shows_card(db, monkeypatch):
     answered, edits = _patch_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("points"))
     assert len(edits) == 1
-    assert "✨ 当前能量 | 250" in edits[0][2]
+    assert "✨ <b>能量余额</b> | 250" in edits[0][2]
 
 
 def test_menu_unknown_action_ignored(db, monkeypatch):

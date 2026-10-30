@@ -117,8 +117,8 @@ def test_handler_bound_shows_today_progress_and_total(db):
 
     text = handlers.handle_chatpoints(db, {"id": 6101}, 6101, "")
     assert "群发言能量" in text
-    assert "今日已得 | <b>3</b> / 20 能量" in text
-    assert "累计发言能量 | <b>8</b> 能量" in text
+    assert "<b>今日已得</b> | <b>3</b> / 20 能量" in text
+    assert "<b>累计能量</b> | <b>8</b> 能量" in text
 
 
 def test_handler_unbound_returns_bind_guide(db):
@@ -131,7 +131,7 @@ def test_handler_cap_reached_notes_full(db):
     today_start = economy_mod._today_start_utc_naive()
     _add_log(db, u.id, 20, when=today_start + timedelta(hours=1))
     text = handlers.handle_chatpoints(db, {"id": 6102}, 6102, "")
-    assert "今日已得 | <b>20</b> / 20 能量" in text
+    assert "<b>今日已得</b> | <b>20</b> / 20 能量" in text
     assert "已达上限" in text
 
 
@@ -167,7 +167,7 @@ def test_dispatch_group_bound_shows_only_own_data(db, sent):
     chat_id, text = sent[0]
     assert chat_id == -100777  # 群里可用，回复发回群里
     assert "群发言能量" in text
-    assert "累计发言能量 | <b>8</b> 能量" in text
+    assert "<b>累计能量</b> | <b>8</b> 能量" in text
     assert "17" not in text  # 只显示调用者本人数据
     assert "请私聊" not in text and "未知命令" not in text
 

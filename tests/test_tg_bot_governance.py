@@ -162,15 +162,15 @@ def test_dashboard_sample_layout_exact(db):
     text = features.compact_dashboard(db, row, display_name="Shun")
     expected = "\n".join([
         "▎<b>欢迎进入用户面板！</b>Shun",
-        f"· 🆔 用户 ID | {row.id}",
-        "· 📊 公益资格 | 至 2026-11-27",
-        "· 🎟️ 查看凭证 | 至 2030-11-27",
-        "· 🍒 能量 | 57",
-        "· ⚡ 活力值 | 14/14",
-        "· 💠 等级 | Lv.1 初幕 · 馆灵 蛋 · 已观影 0.0 小时（距夜枭还差 50.0 小时）",
-        "· 🔗 网盘绑定 | Drive 已绑 ✓",
-        "· 📅 连签 | 2 天（满 30 天自动续公益资格）",
-        "· 🏅 成就 | 0/13",
+        f"· 🆔 <b>用户编号</b> | {row.id}",
+        "· 📊 <b>公益资格</b> | 至 2026-11-27",
+        "· 🎟️ <b>查看凭证</b> | 至 2030-11-27",
+        "· 🍒 <b>能量余额</b> | 57",
+        "· ⚡ <b>活力数值</b> | 14/14",
+        "· 💠 <b>当前等级</b> | Lv.1 初幕 · 馆灵 蛋 · 已观影 0.0 小时（距夜枭还差 50.0 小时）",
+        "· 🔗 <b>网盘绑定</b> | Drive 已绑 ✓",
+        "· 📅 <b>连签天数</b> | 2 天（满 30 天自动续公益资格）",
+        "· 🏅 <b>成就进度</b> | 0/13",
     ])
     assert text == expected
 
@@ -178,10 +178,10 @@ def test_dashboard_sample_layout_exact(db):
 def test_account_level_line(db):
     row = _user(db, xp=0)
     text = features.handle_account(db, _tg(), TG, "")
-    assert "⭐ 会员等级 | Lv.1 初幕 · 经验 0／100 ░░░░░░░░░░（距 Lv.2 影迷还差 100 经验）" in text
+    assert "⭐ <b>当前等级</b> | Lv.1 初幕 · 经验 0／100 ░░░░░░░░░░（距 Lv.2 影迷还差 100 经验）" in text
     row2 = _user(db, tg=TG + 1, name="max", xp=20000)
     text2 = features.handle_account(db, _tg(TG + 1), TG + 1, "")
-    assert "⭐ 会员等级 | Lv.6 传奇 · 经验 20000（已满级）" in text2
+    assert "⭐ <b>当前等级</b> | Lv.6 传奇 · 经验 20000（已满级）" in text2
 
 
 # ---------- /level ----------

@@ -328,15 +328,15 @@ def user_panel(db, user, display_name: str | None = None) -> str:
         )
     streak_text = _after_colon(_streak_line(db, user.id).removeprefix("📋 "))
     rows = [
-        layout.row("🆔", "用户 ID", user.id),
+        layout.row("🆔", "用户编号", user.id),
         layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
         layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
-        layout.row("🍒", "能量", int(user.points or 0)),
-        layout.row("⚡", "活力值", vitality_text),
-        layout.row("💠", "等级", pet_text),
+        layout.row("🍒", "能量余额", int(user.points or 0)),
+        layout.row("⚡", "活力数值", vitality_text),
+        layout.row("💠", "当前等级", pet_text),
         layout.row("🔗", "网盘绑定", bindings_text),
-        layout.row("📅", "连签", streak_text),
-        layout.row("🏅", "成就", f"{len(shown_ach)}/{total_ach}"),
+        layout.row("📅", "连签天数", streak_text),
+        layout.row("🏅", "成就进度", f"{len(shown_ach)}/{total_ach}"),
     ]
     return layout.card(layout.title("欢迎进入用户面板！", greet), rows)
 
@@ -370,21 +370,21 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
         .limit(3).all()
     )
     rows = [
-        layout.row("🆔", "用户 ID", user.id),
-        layout.row("👤", "账号", f"<b>{_esc(user.username)}</b>"),
-        layout.row("⭐", "会员等级", _level_value(db, user)),
-        layout.row("🍒", "能量", f"<b>{int(user.points or 0)}</b>"),
+        layout.row("🆔", "用户编号", user.id),
+        layout.row("👤", "账号名称", f"<b>{_esc(user.username)}</b>"),
+        layout.row("⭐", "当前等级", _level_value(db, user)),
+        layout.row("🍒", "能量余额", f"<b>{int(user.points or 0)}</b>"),
         layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
         layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
     ]
     vitality = getattr(user, "vitality", None)
     if vitality is not None:
         cap, _threshold = _vitality_config(db)
-        rows.append(layout.row("⚡", "活力值", f"<b>{int(vitality)}</b>/{cap}"))
+        rows.append(layout.row("⚡", "活力数值", f"<b>{int(vitality)}</b>/{cap}"))
 
     total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
     rows.append(layout.row(
-        "🐉", "馆灵",
+        "🐉", "当前馆灵",
         f"{_esc(pet_cur.get('icon', ''))} {_esc(pet_cur.get('name', ''))}"
         f"（累计观影 {total_hours:.1f} 小时）",
     ))
@@ -399,15 +399,15 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
 
     shown_ach, total_ach = _achievement_summary(db, user.id)
     rows.append(layout.row(
-        "🏅", "成就", f"已解锁 {len(shown_ach)}／共 {total_ach} 个"))
+        "🏅", "成就进度", f"已解锁 {len(shown_ach)}／共 {total_ach} 个"))
     if not shown_ach:
-        rows.append(layout.row("🏅", "已解锁成就", "暂无成就"))
+        rows.append(layout.row("🏅", "解锁成就", "暂无成就"))
     else:
         for d in shown_ach:
-            rows.append(layout.row("🏅", "已解锁成就", f"{_esc(d.icon)} {_esc(d.name)}"))
+            rows.append(layout.row("🏅", "解锁成就", f"{_esc(d.icon)} {_esc(d.name)}"))
 
     if not subs:
-        rows.append(layout.row("📦", "订阅", "暂无订阅"))
+        rows.append(layout.row("📦", "订阅状态", "暂无订阅"))
     else:
         for sub in subs:
             plan = getattr(sub, "plan", None)
@@ -417,7 +417,7 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
             status = "生效中" if active else "已结束"
             days = max(0, (sub.end_date - now).days) if active else 0
             rows.append(layout.row(
-                "📦", "订阅", f"{name}：{status}，{end}（剩 {days} 天）"))
+                "📦", "订阅状态", f"{name}：{status}，{end}（剩 {days} 天）"))
 
     if not devices:
         rows.append(layout.row("📱", "最近设备", "暂无设备记录"))
@@ -500,7 +500,7 @@ def handle_request(db, tg_user: dict, chat_id: int, args: str) -> str:
     return layout.card(
         layout.title("求片已提交"),
         [
-            layout.row("🎬", "片名", f"《{_esc(name)}》"),
+            layout.row("🎬", "影片名称", f"《{_esc(name)}》"),
             layout.row("🔢", "请求编号", f"<code>#{request_id}</code>"),
             layout.row("🔔", "后续状态", "会在网站和 Telegram 通知中更新"),
         ],
@@ -534,7 +534,7 @@ def handle_my_requests(db, tg_user: dict, chat_id: int, args: str) -> str:
             "🎬", f"#{row.id} {title}", f"{status} <i>{date}</i>"))
         if row.admin_note:
             card_rows.append(layout.row(
-                "📝", "备注", f"备注：{_esc(row.admin_note)[:120]}"))
+                "📝", "处理备注", f"备注：{_esc(row.admin_note)[:120]}"))
     return layout.card(layout.title("我的求片"), card_rows)
 
 
@@ -550,7 +550,7 @@ def handle_login(db, tg_user: dict, chat_id: int, args: str):
     return (
         layout.card(
             layout.title("快捷登录"),
-            [layout.row("⏱️", "有效期", "链接 10 分钟内有效，只能使用一次。请不要转发给别人。")],
+            [layout.row("⏱️", "有效时间", "链接 10 分钟内有效，只能使用一次。请不要转发给别人。")],
         ),
         {"inline_keyboard": [[{"text": "打开控制面板", "url": url}]]},
     )
@@ -569,7 +569,7 @@ def handle_request_board(db, tg_user: dict, chat_id: int, args: str) -> str:
     )
     if not rows:
         return layout.card(layout.title("求片榜"), [layout.row("🔥", "当前榜单", "没有排队中的求片")])
-    card_rows = [layout.row("🔥", "排序", "按加权热度排序")]
+    card_rows = [layout.row("🔥", "排序方式", "按加权热度排序")]
     for index, row in enumerate(rows, 1):
         title = _esc(row.movie_name)
         season = f"（{_esc(row.season)}）" if row.season and row.season != "all" else ""
@@ -720,7 +720,7 @@ def handle_level(db, tg_user: dict, chat_id: int, args: str) -> str:
             f"（距 Lv.{info['next_level']} {_esc(info['next_name'])}还差 {info['xp_to_next']} 经验）"
         )
     rows = [
-        layout.row("👤", "账号", f"{_esc(user.username)} · ⭐ Lv.{level} {_esc(info['name'])}"),
+        layout.row("👤", "账号名称", f"{_esc(user.username)} · ⭐ Lv.{level} {_esc(info['name'])}"),
         layout.row("⭐", "经验进度", progress),
     ]
     frozen = _governance.is_governance_frozen(db, user.id)
@@ -728,7 +728,7 @@ def handle_level(db, tg_user: dict, chat_id: int, args: str) -> str:
         rows.append(layout.row(
             "⚠️", "治理状态", "治理特权已被冻结（附议仍按 1 票计，提案／举报／复核暂停）"))
     if not _is_free_realm(db):
-        rows.append(layout.row("🏛️", "治理权", "治理权表仅公益服开放，付费服等级仅展示"))
+        rows.append(layout.row("🏛️", "治理权限", "治理权表仅公益服开放，付费服等级仅展示"))
         return layout.card(layout.title("会员等级！", user.username), rows)
     weight = 1 if frozen else _media_seek.vote_weight_for_level(level)
     if level >= 2:
@@ -751,7 +751,7 @@ def handle_level(db, tg_user: dict, chat_id: int, args: str) -> str:
         layout.row("📝", "活动提案", "活动提案：Lv.2+ 可提案，Lv.2/3 每月 1 次、Lv.4+ 每月 2 次"),
         layout.row("🚀", "直接发起", "直接发起：Lv.5 每月 1 次、Lv.6 每月 2 次（事后审计）"),
         layout.row("🚩", "举报复核", f"举报复核：Lv.3 权重 1、Lv.4 权重 2、Lv.5 权重 2、Lv.6 权重 3（我的权重：{rw_text}）"),
-        layout.row("📋", "治理审计日志", "治理审计日志：Lv.6 可用 /govlog 只读查看" if level >= 6 else "治理审计日志：仅 Lv.6 可见（/govlog）"),
+        layout.row("📋", "治理审计", "治理审计日志：Lv.6 可用 /govlog 只读查看" if level >= 6 else "治理审计日志：仅 Lv.6 可见（/govlog）"),
     ]
     return layout.card(layout.title("会员等级！", user.username), rows)
 
@@ -771,7 +771,7 @@ def _report_help() -> str:
             layout.row("🚩", "提交方式", "私聊发送 <code>/report 求片编号 原因 [补充说明]</code>"),
             layout.row("🔢", "求片编号", "来自 /myrequests（如 #123）"),
             layout.row("📝", "举报原因", "刷屏、重复、违规"),
-            layout.row("💡", "示例", "<code>/report 123 刷屏 这条求了好几次了</code>"),
+            layout.row("💡", "举报示例", "<code>/report 123 刷屏 这条求了好几次了</code>"),
         ],
     )
 
@@ -812,7 +812,7 @@ def handle_report(db, tg_user: dict, chat_id: int, args: str) -> str:
     return layout.card(
         layout.title("举报已提交"),
         [
-            layout.row("🎬", "求片", title),
+            layout.row("🎬", "求片标题", title),
             layout.row("🔢", "举报编号", f"<code>#{row['id']}</code>"),
             layout.row("📝", "举报原因", _REPORT_REASON_NAMES[reason]),
             layout.row("⚖️", "处理进度", "进入复核流程，结果会在复核后更新"),

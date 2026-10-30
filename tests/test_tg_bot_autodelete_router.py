@@ -160,7 +160,7 @@ def test_group_redpacket_success_body_exempt(db, wires):
 def test_group_redpacket_usage_card_autodelete(db, wires):
     _make_user(db, "g5", 710005, points=1000)
     router.dispatch(db, _msg(710005, GROUP_CHAT, "/redpacket", message_id=4246))
-    assert len(wires["ex"]) == 1 and "用法" in wires["ex"][0][1]
+    assert len(wires["ex"]) == 1 and "使用方法" in wires["ex"][0][1]
     assert _delays_for(wires, GROUP_CHAT, BOT_MSG_ID) == [30]
     assert db.query(models.RedPacket).count() == 0
 
