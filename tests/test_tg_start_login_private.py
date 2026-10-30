@@ -52,7 +52,15 @@ def test_start_in_group_has_no_login_button(db, monkeypatch):
                         lambda uid, tid: issued.append(uid) or "TOKEN")
     # 群聊：chat_id 为负数，与用户 id 不同
     result = handlers.handle_start(db, {"id": 555, "first_name": "T"}, -100123, "")
-    assert not isinstance(result, tuple), "群聊里不能下发一键免密登录按钮"
+    # 群 /start 现返回 (信息卡正文, 群菜单) 元组（PR-1 定版），旧断言
+    # “只能回纯字符串”已过时；本意不变：群里不下一键登录按钮。
+    # 按姊妹测试 test_start_bound_group_has_dashboard_no_login_link
+    # 的口径改判：菜单里不得有任何 url 按钮、正文不得含 token。
+    assert isinstance(result, tuple)
+    text, markup = result
+    assert "token=" not in text
+    assert not [b for r in markup["inline_keyboard"] for b in r
+                if b.get("url")], "群菜单里不能有一键免密登录按钮"
     assert issued == [], "群聊里不应签发登录 token"
 
 
