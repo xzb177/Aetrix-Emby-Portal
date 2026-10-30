@@ -22,6 +22,19 @@
         </div>
       </section>
 
+      <!-- 我的收藏：收藏列表页入口（/favorites；标星动作在播放器里做，这里看清单与取消收藏） -->
+      <section class=v4-sec aria-label=我的收藏>
+        <div class=v4-sec-title>我的收藏</div>
+        <div class=v4-sec-sub>收藏过的片子在这里看清单，也可以在这里取消收藏</div>
+        <div class=v4-card acct-card>
+          <RouterLink class=acct-row as-link to=/favorites>
+            <span class=acct-row-ic aria-hidden=true><Star :size=16 /></span>
+            <span class=acct-row-text>我的收藏</span>
+            <ChevronRight :size=15 class=acct-row-arrow />
+          </RouterLink>
+        </div>
+      </section>
+
       <!-- 我的会员：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
       <section class="v4-sec" aria-label="我的会员">
         <!-- R41：补上标题行，与其他两节结构对齐（标题+副标题） -->
@@ -415,7 +428,8 @@
  * （/game/operator）承接 —— realmCards 多服列表 + 正在播放一键远程结束。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Lock, ChevronRight, RefreshCw } from 'lucide-vue-next'
+import { RouterLink } from 'vue-router'
+import { Lock, ChevronRight, RefreshCw, Star } from 'lucide-vue-next'
 import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
@@ -1178,6 +1192,7 @@ watch(providersLoaded, (loaded) => {
   text-align: left;
 }
 .acct-row:active { background: var(--paper2); }
+.acct-row.as-link { text-decoration: none; box-sizing: border-box; }
 
 .acct-row-ic {
   display: flex;
