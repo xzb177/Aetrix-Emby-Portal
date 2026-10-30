@@ -180,18 +180,21 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
             text, markup = reply
         else:
             text, markup = reply, handlers.back_markup()
-    elif action == "bindings":
-        text = handlers.handle_bindings(db, tg_user, chat_id, "")
-        markup = handlers.back_markup()
-    elif action == "transfers":
-        text = handlers.handle_transfers(db, tg_user, chat_id, "")
-        markup = handlers.back_markup()
-    elif action == "whyplay":
-        text = handlers.handle_whyplay(db, tg_user, chat_id, "")
-        markup = handlers.back_markup()
-    elif action == "wants":
-        text = handlers.handle_wants(db, tg_user, chat_id, "")
-        markup = handlers.back_markup()
+    elif action in ("bindings", "transfers", "whyplay", "wants"):
+        # 个人查询私聊限定（与命令层口径一致）：群里点到只回私聊卡，
+        # 绝不把点击者本人的绑定/转存/想看数据编辑进群共享消息。
+        if not is_private:
+            text = handlers.private_only_card()
+            markup = handlers.private_only_markup(db)
+        else:
+            fn = {
+                "bindings": handlers.handle_bindings,
+                "transfers": handlers.handle_transfers,
+                "whyplay": handlers.handle_whyplay,
+                "wants": handlers.handle_wants,
+            }[action]
+            text = fn(db, tg_user, chat_id, "")
+            markup = handlers.back_markup()
     elif action == "bind":
         user = resolve(db, int(tg_id))
         if user is not None:

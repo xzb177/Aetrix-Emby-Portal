@@ -188,6 +188,16 @@ def main_markup(db, web_user, is_private: bool) -> dict:
     私聊登录 URL 是既有硬契约：生成成功时仍必须位于 [0][0]。
     """
     if web_user is None:
+        if not is_private:
+            # 群里未绑定：绑定/帮助之外加老虎机围观入口（公共面板
+            # 人人可看；点注时未绑定按既有逻辑只回绑定引导、不扣款）。
+            return {"inline_keyboard": [
+                [{"text": "🔗 绑定账号", "callback_data": "menu:bind"}],
+                [
+                    {"text": "🎰 老虎机", "callback_data": "menu:slots"},
+                    {"text": "❓ 帮助", "callback_data": "menu:help"},
+                ],
+            ]}
         return {"inline_keyboard": [
             [{"text": "🔗 绑定账号", "callback_data": "menu:bind"}],
             [{"text": "❓ 帮助", "callback_data": "menu:help"}],
@@ -209,18 +219,24 @@ def main_markup(db, web_user, is_private: bool) -> dict:
 
 
 def _group_menu_markup() -> dict:
-    """群聊主菜单：无登录行、无私聊专属入口，保留群内可用动作。"""
+    """群聊主菜单（2026-10-30 定版）：无登录行、无私聊专属入口。
+
+    老虎机进第一屏；个人查询（我的绑定/转存进度/为什么播不了/
+    我的想看）不进群菜单——点开会把点击者个人数据编辑进群里的
+    共享消息，与命令层私聊限定口径冲突，统一回私聊（callbacks
+    对这四项的群分支回「私聊使用」卡＋去私聊深链）。
+    """
     rows: list[list[dict]] = [
         [
             {"text": "✅ 签到", "callback_data": "menu:checkin"},
             {"text": "✨ 能量", "callback_data": "menu:points"},
         ],
         [
+            {"text": "🎰 老虎机", "callback_data": "menu:slots"},
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
-            {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
         ],
         [
-            {"text": "👤 账号中心", "callback_data": "menu:account"},
+            {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
             {"text": "🏆 能量榜", "callback_data": "menu:rank"},
         ],
         [
@@ -228,18 +244,38 @@ def _group_menu_markup() -> dict:
             {"text": "📜 群规", "callback_data": "menu:rules"},
         ],
         [
-            {"text": "🔗 我的绑定", "callback_data": "menu:bindings"},
-            {"text": "📦 转存进度", "callback_data": "menu:transfers"},
-        ],
-        [
-            {"text": "❓ 为什么播不了", "callback_data": "menu:whyplay"},
-            {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
-        ],
-        [
-            {"text": "🔗 绑定", "callback_data": "menu:bind"},
+            {"text": "👤 账号中心", "callback_data": "menu:account"},
             {"text": "❓ 帮助", "callback_data": "menu:help"},
         ],
     ]
+    return {"inline_keyboard": rows}
+
+
+def private_only_card() -> str:
+    """私聊限定功能在群里被点到时的统一提示卡（与 callbacks 既有口径一致）。"""
+    return layout.card(
+        layout.title("私聊使用"),
+        [layout.row("🔒", "使用方式", "这个功能请私聊机器人使用")])
+
+
+def private_only_markup(db) -> dict:
+    """私聊卡按钮：「💬 去私聊」深链（可解析时）＋回主界面。
+
+    深链用户名走既有来源 tg_bind.get_bot_username（缓存配置
+    telegram_bot_username，缺失时 getMe 回填）；解析不到就不挂
+    URL 按钮，绝不写死或猜测用户名。
+    """
+    rows: list[list[dict]] = []
+    username = ""
+    try:
+        from backend.tg_bind import get_bot_username
+
+        username = str(get_bot_username(db) or "").lstrip("@")
+    except Exception:
+        username = ""
+    if username:
+        rows.append([{"text": "💬 去私聊", "url": f"https://t.me/{username}"}])
+    rows.append(layout.home_row())
     return {"inline_keyboard": rows}
 
 
@@ -453,7 +489,10 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
             from backend.tg_bot.features import compact_dashboard
 
             greet = tg_user.get("first_name") or web_user.username
-            return compact_dashboard(db, web_user, display_name=greet)
+            # 正文仍是现行九行信息卡（一字不改），补挂群菜单按钮：
+            # 此前只回纯文本，群里没有任何按钮能点进功能。
+            return (compact_dashboard(db, web_user, display_name=greet),
+                    main_markup(db, web_user, False))
         return main_card_text(tg_user, web_user), main_markup(db, web_user, True)
 
     return unbound_card_text(tg_user, site_name), main_markup(db, None, is_private)
