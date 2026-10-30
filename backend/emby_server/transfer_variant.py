@@ -1570,6 +1570,54 @@ _TERMINAL_JOB_KINDS = {
     "file_only_copy_unavailable",
 }
 
+#: 已退役的 unsupported 失败签名（2026-10-30 PR-A 存量自愈）。
+#: 失败文案是当时代码自己写的：#1539 分片上线前的存量行写的是
+#: 「多段上传需 initupload OSS 协议（未实现）」——那是「能力没造
+#: 好」型失败，能力补齐后可按签名复活；「这文件真搬不了」型
+#: （如大小未知/为零）不命中任何签名，维持终态不误活。
+_RETIRED_UNSUPPORTED_SIGNATURES = frozenset({"多段上传", "未实现"})
+
+
+def _revivable_unsupported(db, job):
+    """failed/unsupported 行是否可复活（门禁跨/同两分支共用一套）。
+
+    三条全中才复活：error_kind == "unsupported"、error_detail 命中
+    已退役签名、115 分片上传开关当前为开。命中后由调用方按
+    retriable 同款走 ``_retrigger_failed_job``（预算把关、force
+    建 playback 新单）；不命中维持 failed 终态。
+    """
+    if (getattr(job, "error_kind", "") or "") != "unsupported":
+        return False
+    detail = getattr(job, "error_detail", "") or ""
+    if not any(sig in detail for sig in _RETIRED_UNSUPPORTED_SIGNATURES):
+        return False
+    return pan115_multipart_upload_enabled(db)
+
+
+#: 点播可提升的在途 trigger：用户主动意图触发的两类。系统触发
+#: （source_discovery/quota 等）不提升，防后台单被一次路过点播改性。
+_PROMOTABLE_TRIGGERS = frozenset({"prefetch", "store_want"})
+
+
+def _maybe_promote_inflight_job(db, job):
+    """在途单 trigger 提升（2026-10-30 PR-A）。
+
+    详情页 prefetch 先占位时，真点播走到门禁若不提升，该单在认领
+    排序里恒在 playback 组之后（同 provider 还堵死当场先办）。
+    pending 且 trigger ∈ {prefetch, store_want} 时就地提升为
+    playback：同一行 UPDATE、不重复建单、created_at 不动（等待
+    时长口径诚实）。running 单不提升（已在执行，提升无意义且
+    污染统计）。
+    """
+    if job is None or job.status != "pending":
+        return
+    old = (getattr(job, "trigger", "") or "").strip()
+    if old not in _PROMOTABLE_TRIGGERS:
+        return
+    job.trigger = "playback"
+    db.commit()
+    log_byos("byos_promote", job=job.id, **{"from": old})
+
 
 def log_byos(event: str, **fields) -> None:
     """方案 2 结构化日志。
@@ -2711,6 +2759,7 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
             preparing_detail = _cross_preparing_detail(provider, other)
             if job is not None:
                 if job.status in ("pending", "running"):
+                    _maybe_promote_inflight_job(db, job)
                     return {"verdict": "preparing",
                             "reason": "job_in_flight", "job_id": job.id,
                             "detail": preparing_detail}
@@ -2733,6 +2782,14 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                                 "job_id": job.id,
                                 "detail": CROSS_PROVIDER_DISABLED_DETAIL}
                     if job.error_kind == "retriable":
+                        return _retrigger_failed_job(
+                            db, item, user_id, provider, job, cross=True,
+                            dest=dest)
+                    if _revivable_unsupported(db, job):
+                        # 已退役签名 + 分片开关开：能力补齐型失败，
+                        # 按 retriable 同款预算内重触发，不再永久
+                        # 撞终态（存量自愈，见 _RETIRED_UNSUPPORTED_
+                        # SIGNATURES）。
                         return _retrigger_failed_job(
                             db, item, user_id, provider, job, cross=True,
                             dest=dest)
@@ -2789,6 +2846,7 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
         job = _latest_job(db, item_id, "user", str(user_id))
         if job is not None:
             if job.status in ("pending", "running"):
+                _maybe_promote_inflight_job(db, job)
                 return {"verdict": "preparing", "reason": "job_in_flight",
                         "job_id": job.id}
             if job.status == "failed":
@@ -2801,6 +2859,11 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                     # 行（dest 同侧）一律不走这里、不受影响。
                     pass
                 elif job.error_kind == "retriable":
+                    return _retrigger_failed_job(
+                        db, item, user_id, provider, job)
+                elif _revivable_unsupported(db, job):
+                    # 与跨分支共用同一 helper 判复活（横切只许
+                    # 一套）：已退役签名 + 分片开关开才走重触发。
                     return _retrigger_failed_job(
                         db, item, user_id, provider, job)
                 elif job.error_kind in _TERMINAL_JOB_KINDS:
