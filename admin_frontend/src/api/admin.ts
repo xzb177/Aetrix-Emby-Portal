@@ -180,6 +180,8 @@ export const generateCodes = (data: {
   reward_type?: string
   points_value?: number
   discount_pct?: number
+  /** G1：资格码核销时打包查看行（仅 welfare 型生效） */
+  welfare_include_view?: boolean
 }) => post<{
   success: boolean
   message: string

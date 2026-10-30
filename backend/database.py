@@ -768,6 +768,8 @@ def _auto_migrate():
             ("reward_type", "VARCHAR(20)", "'subscription'"),
             ("points_value", "INTEGER", "0"),
             ("discount_pct", "INTEGER", "0"),
+            # G1 资格码：核销打包查看行开关（老行补 1=打包，与生成默认开一致）
+            ("welfare_include_view", "BOOLEAN", "1"),
         ]),
         # v2.6.4 媒体库刮削策略、虚拟媒体库与搜索增强；v2.6.5 增加 115 账号绑定
         # v2.6.6 增加存储挂载绑定（storage_mounts）：媒体库的内容来源

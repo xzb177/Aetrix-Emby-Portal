@@ -110,6 +110,7 @@ const welfareFields = [
   { key: 'welfare_inactive_days', label: '未活跃禁用天数', hint: '默认 30', suffix: '天' },
   { key: 'welfare_streak_renew_min', label: '连签续期门槛', hint: '资格到期时，连签达到该天数自动续期、不扣分；查看凭证不自动续，默认 30', suffix: '天' },
   { key: 'welfare_streak_renew_days', label: '连签续期天数', hint: '连签自动续期一次续多少天，默认 30，范围 1-365', suffix: '天' },
+  { key: 'welfare_code_monthly_quota', label: '资格码月配额', hint: '每位管理员每月可生成的公益资格码张数，默认 30，填 0 不限', suffix: '张/月' },
   { key: 'register_gift_welfare_days', label: '新注册送公益天数', hint: '新用户注册默认赠送的公益资格天数，默认 30，填 0 为永不过期', suffix: '天' },
   { key: 'register_gift_view_days', label: '新注册送查看天数', hint: '新用户注册默认赠送的查看凭证天数，默认 30，最小 1', suffix: '天' },
   // 公益求片额度（welfare_request_monthly）已于 2026-10-23 去重 #5 移到

@@ -264,6 +264,9 @@ WELFARE_CONFIG_KEYS = {
     "points_chat_daily_cap": "20",
     "points_redeem_7d": "100",
     "points_redeem_30d": "300",
+    # G1 资格码月配额：每位管理员每月可生成的资格码（reward_type=welfare）
+    # 张数上限，默认 30（宽松值）；0=不限（读侧 codes.welfare_code_monthly_quota）
+    "welfare_code_monthly_quota": "30",
     # 新注册冷启动赠送天数（emby_portal._grant_register_gifts 读取；0=永不过期仅福利天数适用）
     "register_gift_welfare_days": "30",
     "register_gift_view_days": "30",
