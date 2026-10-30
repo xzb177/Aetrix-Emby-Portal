@@ -75,12 +75,15 @@ verdict 之外不回落）。搬字节按 FMBY open_range 口径 Range 分段
 远端不可用（有界重试）、搬运层不静默重试（中途失败整单重来，
 v1 已知代价）；上传侧 403 等不按凭据过期算（可能是空间/配额），
 走有界重试，见各执行器注释。两方向：
-- Drive→115：SA 令牌按段取源字节 → 用户 115 Cookie 简单上传
+- Drive→115：条目有可信 sha1 时先试秒传（initupload，p115cipher
+  ECDH-AES 协议，见 transfer115.rapid_upload）——命中不搬一字节
+  （>5 GiB 亦可）、未命中/协议异常无缝回落全量；无可信 sha1 时
+  不为算哈希多下整遍，直接全量并在该程沉淀 sha1 给下一单。
+  全量 = SA 令牌按段取源字节 → 用户 115 Cookie 简单上传
   （115cli 0.3.4 simple_upload 口径：sampleinitupload 取 OSS 表单
-  参数 → 表单 POST；上限 5 GiB，超限记 unsupported——多段上传
-  需 initupload 加密协议（p115cipher ECDH-AES），未实测不硬编；
-  秒传（initupload）同理未实现，v1 一律传全量字节）→ 列用户
-  115 转存目录按名核对 → 登记 pan115:user-<uid> 行，播出走现有
+  参数 → 表单 POST；上限 5 GiB，未命中且超限记 unsupported——
+  initupload 的 OSS 多段上传仍未实现）→ 列用户 115 转存目录
+  按名核对 → 登记 pan115:user-<uid> 行，播出走现有
   serve_115_copy（用户 Cookie 现签 302）。
 - 115→Drive：服主侧 115 账号现解析源 pickcode（绝不用 EA 播放
   的共享 pickcode 缓存）→ 现取 download_url → 按段取字节 →
@@ -106,6 +109,7 @@ copy、真实用户令牌、SA 暂存分享链均未实测，不许写成已实�
 """
 
 import asyncio
+import hashlib
 import os
 import threading
 import time
@@ -355,20 +359,34 @@ def cross_lane_concurrency(db=None):
     return TRANSFER_CROSS_LANE_DEFAULT
 
 
+#: 115 秒传（initupload）开关 SystemConfig 键；默认开（2026-10-30
+#: 用户亲点整套：记哈希＋秒传协议）。关 = Drive→115 跨单完全回
+#: 现行口径：不试秒传、只走 simple_upload 全量（哈希沉淀照常，
+#: 关开关不丢已沉淀的资格）。
+KEY_PAN115_RAPID_UPLOAD_ENABLED = "pan115_rapid_upload_enabled"
+
+
+def pan115_rapid_upload_enabled(db=None):
+    """115 秒传开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(db, KEY_PAN115_RAPID_UPLOAD_ENABLED, True)
+
+
 def transfer_config_payload(db):
-    """管理端转存卡片回包：转存四键当前生效值（默认值已折算）。"""
+    """管理端转存卡片回包：转存五键当前生效值（默认值已折算）。"""
     return {
         "cross_provider_transfer_enabled": cross_provider_enabled(db),
         "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
         "transfer_fast_lane_concurrency": lane_concurrency(db),
         "transfer_per_owner_inflight": per_owner_inflight(db),
+        "pan115_rapid_upload_enabled": pan115_rapid_upload_enabled(db),
     }
 
 
 def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_cross_lane_concurrency=None,
                           transfer_fast_lane_concurrency=None,
-                          transfer_per_owner_inflight=None):
+                          transfer_per_owner_inflight=None,
+                          pan115_rapid_upload_enabled=None):
     """管理端转存配置写入：走 config_service 的 transfer 家族校验。
 
     None = 该键不改。非法值抛 ConfigValueError（ValueError 子类，
@@ -378,6 +396,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if cross_provider_transfer_enabled is not None:
         values[KEY_CROSS_PROVIDER_TRANSFER_ENABLED] = (
             "true" if cross_provider_transfer_enabled else "false")
+    if pan115_rapid_upload_enabled is not None:
+        values[KEY_PAN115_RAPID_UPLOAD_ENABLED] = (
+            "true" if pan115_rapid_upload_enabled else "false")
     if transfer_cross_lane_concurrency is not None:
         values[KEY_TRANSFER_CROSS_LANE_CONCURRENCY] = str(
             transfer_cross_lane_concurrency)
@@ -4043,6 +4064,107 @@ class _SegmentReader:
         return bytes(out)
 
 
+class _HashingReader:
+    """透传哈希包装：委托内层读取器，read 到的字节顺序喂 sha1。
+
+    供 Drive→115 全量上传沉淀整文件 sha1：上传时字节完整流经
+    一次，算出的就是整文件 sha1，绝不为算哈希额外多下一遍。
+    回 seek 重读已计入区间不重复喂（同内容由内层分段读取器
+    保证）；跳读未计入区间则哈希链断裂、作废。读满全长前
+    sha1_hexdigest() 返回 None（半截哈希绝不冒充整文件）。
+    """
+
+    def __init__(self, inner, size):
+        self._inner = inner
+        self._size = int(size)
+        self._digest = hashlib.sha1()
+        self._hashed_until = 0
+        self._broken = False
+
+    def tell(self):
+        return self._inner.tell()
+
+    def seek(self, offset, whence=0):
+        return self._inner.seek(offset, whence)
+
+    def read(self, n=-1):
+        pos = self._inner.tell()
+        data = self._inner.read(n)
+        if data:
+            if pos == self._hashed_until:
+                self._digest.update(data)
+                self._hashed_until += len(data)
+            elif pos > self._hashed_until:
+                self._broken = True  # 跳过了未计入区间，哈希链断裂
+            # pos < _hashed_until：重读已计入区间，同内容不重复喂
+        return data
+
+    def sha1_hexdigest(self):
+        """整文件 sha1（hex 小写）；未读满/链断裂返回 None。"""
+        if self._broken or self._hashed_until != self._size:
+            return None
+        return self._digest.hexdigest()
+
+
+_HEX40_CHARS = frozenset("0123456789abcdef")
+
+
+def _is_sha1_hex(value):
+    return (len(value) == 40
+            and all(c in _HEX40_CHARS for c in value))
+
+
+def _trusted_item_sha1(item, source_size):
+    """条目存量 sha1 是否可信到能拿去试秒传（返回小写 sha1 或 ""）。
+
+    条件：algo 为 sha1、值是 40 位 hex、条目侧大小与本次源文件
+    大小对得上。大小对不上 = 条目内容多半已变（哈希是旧文件的），
+    宁可不用、走全量重沉淀；条目 size 为空时以源大小为准放行
+    （沉淀与源大小同源，见 _persist_item_sha1）。
+    """
+    algo = (getattr(item, "content_hash_algo", "") or "").strip().lower()
+    value = (getattr(item, "content_hash", "") or "").strip().lower()
+    if algo != "sha1" or not _is_sha1_hex(value):
+        return ""
+    item_size = _to_int(getattr(item, "size", None))
+    if item_size and source_size and item_size != int(source_size):
+        return ""
+    return value
+
+
+def _persist_item_sha1(db, item, sha1_hex, *, origin):
+    """把整文件 sha1 沉淀进 emby_items.content_hash（秒传资格）。
+
+    取舍（PR 正文同文）：content_hash 是单值列——已有 md5 时以
+    sha1 覆盖（秒传只认 sha1；md5 是 Drive 列举元数据，可随时
+    从 Drive get_file 的 md5Checksum 重得，不算丢数据）；已有
+    sha1 且不同值时以本次为准（本次值与当前 drive_file_id +
+    本次大小同源核过，存量值可能对应已变更的旧内容）。
+    沉淀是旁路：失败只记日志，绝不打挂转存主流程。
+    """
+    value = (sha1_hex or "").strip().lower()
+    if not _is_sha1_hex(value):
+        return
+    try:
+        old_algo = (getattr(item, "content_hash_algo", "") or "")
+        old_value = (getattr(item, "content_hash", "") or "")
+        if old_algo.strip().lower() == "sha1" and old_value.lower() == value:
+            return
+        item.content_hash = value
+        item.content_hash_algo = "sha1"
+        db.commit()
+        logger.info("条目 sha1 沉淀 item=%s origin=%s（was %s:%s）",
+                    getattr(item, "id", None), origin,
+                    old_algo or "none", (old_value or "")[:12])
+    except Exception:  # noqa: BLE001 — 沉淀失败不拖垮转存
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.warning("条目 sha1 沉淀失败 item=%s origin=%s",
+                       getattr(item, "id", None), origin, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # 工人（单线程顺序执行，调用方是 worker 守护；内部提交）
 # ---------------------------------------------------------------------------
@@ -4543,14 +4665,17 @@ def _extract_115_copy_result(result):
     return fid, pickcode
 
 
-def _match_115_copy_in_dir(client, dest_cid, name, size, expected_fid=None):
+def _match_115_copy_in_dir_ex(client, dest_cid, name, size,
+                              expected_fid=None):
     """列目标目录核对新文件（FMBY discover_transfer_target 口径）。
 
-    返回 (fid, pickcode)，核不到返回 ("", "")。只认非目录项。
+    返回 (fid, pickcode, sha1)，核不到返回 ("", "", "")。只认非
+    目录项。sha1 是目录项自带的整文件哈希（115 列表透传，缺时
+    为空），供转存成功后沉淀条目 content_hash。
     - 回执 fid 在目录中 → 返回回执 fid 及其 pickcode；
     - 否则按名 + 大小（大小缺失时只按名）匹配，命中时返回；
     - 否则恰好一个同名文件时返回它（目录为准）；
-    - 多个同名且无一是回执 id 时返回 ("", "")（冲突，不猜）。
+    - 多个同名且无一是回执 id 时返回空（冲突，不猜）。
     注意：目标目录若预先存在同名文件，单同名回落可能命中旧文件——
     回执 fid 路径是主路径，转存目录正常为空（用户自建同名文件是
     边缘情形，见报告已知项）；多同名冲突时宁可记 copy_unresolved
@@ -4565,19 +4690,30 @@ def _match_115_copy_in_dir(client, dest_cid, name, size, expected_fid=None):
             continue
         matches.append(entry)
     if not matches:
-        return "", ""
+        return "", "", ""
     if expected_fid:
         for entry in matches:
             if (entry.get("fid") or "") == expected_fid:
-                return expected_fid, entry.get("pickcode") or ""
+                return (expected_fid, entry.get("pickcode") or "",
+                        entry.get("sha1") or "")
     if size_int:
         for entry in matches:
             if _to_int(entry.get("size")) == size_int:
-                return entry.get("fid") or "", entry.get("pickcode") or ""
+                return (entry.get("fid") or "",
+                        entry.get("pickcode") or "",
+                        entry.get("sha1") or "")
     if len(matches) == 1:
         entry = matches[0]
-        return entry.get("fid") or "", entry.get("pickcode") or ""
-    return "", ""
+        return (entry.get("fid") or "", entry.get("pickcode") or "",
+                entry.get("sha1") or "")
+    return "", "", ""
+
+
+def _match_115_copy_in_dir(client, dest_cid, name, size, expected_fid=None):
+    """_match_115_copy_in_dir_ex 的两元组兼容口（旧调用点不动）。"""
+    fid, pickcode, _sha1 = _match_115_copy_in_dir_ex(
+        client, dest_cid, name, size, expected_fid=expected_fid)
+    return fid, pickcode
 
 
 def _run_pan115_job(db, job, item):
@@ -4624,7 +4760,7 @@ def _run_pan115_job(db, job, item):
         # 转存后目录核对（FMBY discover 口径）：copy 回执只作期望值，
         # 必须在目标目录里按名核到才登记；核不到记 copy_unresolved
         #（不重试，避免重复 copy 产生重复文件；不回落源文件播放）。
-        new_fid, pickcode = _match_115_copy_in_dir(
+        new_fid, pickcode, entry_sha1 = _match_115_copy_in_dir_ex(
             client, dest_cid, _copy_name_for_item(item),
             getattr(item, "size", None), expected_fid=resp_fid or None)
         if not new_fid:
@@ -4646,6 +4782,12 @@ def _run_pan115_job(db, job, item):
     except Exception as exc:
         return {"job_id": job.id,
                 "outcome": _schedule_retry(db, job, exc)}
+    # 同 provider copy 顺手沉淀：目标目录项自带整文件 sha1（115
+    # 列表透传），有就记进条目，给日后跨 provider 秒传留资格；
+    # 拿不到不硬凑、不为它新增任何下载。
+    if entry_sha1:
+        _persist_item_sha1(db, item, entry_sha1,
+                           origin="pan115_copy_dir")
     row = _register_ready_variant(db, job, item, new_fid,
                                   f"pan115:user-{uid}",
                                   pickcode=pickcode or None)
@@ -4739,7 +4881,9 @@ def _resolve_115_source(db, item):
     """跨 provider 115→Drive：服主侧解析源 pickcode（换链步骤）。
 
     绝不用 EA 播放的共享 pickcode 缓存（_get_cached_115_url）：每次
-    现解析。返回 (client, pickcode, size)：
+    现解析。返回 (client, pickcode, size, sha1)：sha1 是源列表项
+    自带的整文件哈希（115 透传，缺时为空），供转存成功后顺手
+    沉淀条目 content_hash，拿不到不硬凑、不为它新增整文件下载。
     - mount:// 路径：按挂载行构造 Pan115Mount（db + 条目所属库，
       凭据解析与播放侧同一套：源级凭据表 → 挂载/库绑定账号 →
       默认账号 → 服务器级），_locate 逐级定位；
@@ -4790,7 +4934,8 @@ def _resolve_115_source(db, item):
         if not pickcode:
             raise _NotFound("115 源未返回 pickcode")
         return (mount_obj._client(), pickcode,
-                _to_int(entry.get("size")))
+                _to_int(entry.get("size")),
+                (entry.get("sha1") or "").strip())
     if path.startswith("115:/"):
         from backend.emby_server import transfer115 as t115
         try:
@@ -4830,19 +4975,29 @@ def _resolve_115_source(db, item):
         pickcode = (entry.get("pickcode") or "").strip()
         if not pickcode:
             raise _NotFound("115 源未返回 pickcode")
-        return (client, pickcode, _to_int(entry.get("size")))
+        return (client, pickcode, _to_int(entry.get("size")),
+                (entry.get("sha1") or "").strip())
     raise _CrossRemoteError(f"115 源路径形态未知：{path[:60]}")
 
 
 def _run_cross_drive_to_115(db, job, item, drive_api):
-    """跨 provider Drive→115：SA 源按段取字节 → 用户 115 简单上传。
+    """跨 provider Drive→115：先试秒传，未命中/无哈希再全量搬字节。
 
-    字节必经 worker 中转（分段读取器直供 httpx 表单上传，不落盘）。
-    用户 115 Cookie 失效 → 绑定落 expired + failed/auth_error（与
-    同 provider 115 执行器同口径）；SA 源下载 401/403 → _CrossAuthError
-    → failed/auth_error，但绝不碰用户绑定（失效的是源侧 SA 凭据）；
-    其余失败 → 有界重试。上传后必列用户 115 转存目录按名核对
-    （FMBY discover 口径），核不到记 copy_unresolved 不重试。
+    秒传（initupload，2026-10-30 整套）：条目有可信 sha1 且开关
+    开时先试秒传——命中不搬一字节（>5 GiB 亦可），走现有按名
+    核对＋登记直接 done；未命中/协议异常无缝回落全量；没有可信
+    sha1 时不为算哈希额外多下一整遍，直接全量并在该程沉淀
+    sha1 留给下一单。全量走现行 simple_upload（≤5 GiB）：SA
+    令牌按段取字节、字节必经 worker 中转（分段读取器直供表单
+    上传，不落盘），读取器外包透传哈希计 sha1，与上传回调
+    sha1 交叉核对——不一致以回调为准（回调是 115 对实际落盘
+    字节算的整文件哈希，是目标端事实），沉淀进条目 content_hash。
+    用户 115 Cookie 失效 → 绑定落 expired + failed/auth_error
+    （与同 provider 115 执行器同口径）；SA 源下载 401/403 →
+    failed/auth_error，但绝不碰用户绑定（失效的是源侧 SA）；
+    其余失败 → 有界重试。上传/秒传后必列用户 115 转存目录
+    按名核对（FMBY discover 口径），核不到记 copy_unresolved
+    不重试。秒传尝试结果（hit/miss/error）均有结构化日志。
     """
     from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
     from backend.emby_server import user_bindings as ub
@@ -4883,43 +5038,97 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
         return _fail_job(
             db, job, "unsupported",
             "Drive 源文件大小未知/为零，无法分段搬运（不猜大小）")
-    if size > _115_SIMPLE_UPLOAD_LIMIT:
-        return _fail_job(
-            db, job, "unsupported",
-            f"文件 {size} 字节超过 115 简单上传 5 GiB 上限；多段上传需 "
-            f"initupload 加密协议（未实测），暂不支持，不静默回落")
-    try:
+
+    def _fetch(start, end):
+        return drive_api.download_range(source_drive, orig_fid, start, end)
+
+    def _open_client():
         client = _make_pan115_client(cookie)
-        dest_cid = _ensure_115_transfer_dir(client)
-    except Pan115AuthError as exc:
+        return client, _ensure_115_transfer_dir(client)
+
+    def _auth_fail(exc):
         try:
             ub._mark_failed(db, binding, "expired")
         except Exception:
             pass
         return _fail_job(db, job, "auth_error", str(exc))
-    except Exception as exc:
-        return {"job_id": job.id,
-                "outcome": _schedule_retry(db, job, exc)}
-    reader = _SegmentReader(
-        size,
-        lambda s, e: drive_api.download_range(source_drive, orig_fid, s, e))
-    try:
-        result = client.simple_upload(reader, name, dest_cid)
-    except Pan115AuthError as exc:
+
+    client = None
+    dest_cid = ""
+    rapid_fid = None  # None = 未命中路（走/已走全量）；str = 秒传回执期望 fid
+    chosen_sha1 = ""
+    stored_sha1 = _trusted_item_sha1(item, size)
+    if stored_sha1 and pan115_rapid_upload_enabled(db):
         try:
-            ub._mark_failed(db, binding, "expired")
-        except Exception:
-            pass
-        return _fail_job(db, job, "auth_error", str(exc))
-    except _CrossAuthError as exc:
-        # SA 源凭据失效：只记任务失败，绝不落用户 115 绑定。
-        return _fail_job(db, job, "auth_error", str(exc))
-    except Exception as exc:
-        return {"job_id": job.id,
-                "outcome": _schedule_retry(db, job, exc)}
-    resp_fid = (result or {}).get("fid") or ""
+            client, dest_cid = _open_client()
+        except Pan115AuthError as exc:
+            return _auth_fail(exc)
+        except Exception as exc:
+            return {"job_id": job.id,
+                    "outcome": _schedule_retry(db, job, exc)}
+        try:
+            rapid = client.rapid_upload(name, size, stored_sha1, dest_cid,
+                                        range_reader=_fetch)
+        except Pan115AuthError as exc:
+            return _auth_fail(exc)
+        except _CrossAuthError as exc:
+            # SA 源凭据失效（sign_check 取区间时）：只记任务失败，
+            # 绝不落用户 115 绑定（与全量路同口径）。
+            return _fail_job(db, job, "auth_error", str(exc))
+        except Exception as exc:  # noqa: BLE001 — 协议异常一律回落全量
+            logger.info("pan115_rapid outcome=error item=%s job=%s "
+                        "err=%s（回落全量上传）", item.id, job.id, exc)
+            rapid = None
+        if rapid is not None:
+            outcome = (rapid or {}).get("outcome")
+            logger.info("pan115_rapid outcome=%s item=%s job=%s size=%s",
+                        outcome, item.id, job.id, size)
+            if outcome == "hit":
+                rapid_fid = (rapid or {}).get("fid") or ""
+    if rapid_fid is None:
+        if size > _115_SIMPLE_UPLOAD_LIMIT:
+            return _fail_job(
+                db, job, "unsupported",
+                f"文件 {size} 字节超过 115 简单上传 5 GiB 上限且秒传"
+                f"未命中；多段上传需 initupload OSS 协议（未实现），"
+                f"暂不支持，不静默回落")
+        if client is None:
+            try:
+                client, dest_cid = _open_client()
+            except Pan115AuthError as exc:
+                return _auth_fail(exc)
+            except Exception as exc:
+                return {"job_id": job.id,
+                        "outcome": _schedule_retry(db, job, exc)}
+        reader = _HashingReader(_SegmentReader(size, _fetch), size)
+        try:
+            result = client.simple_upload(reader, name, dest_cid)
+        except Pan115AuthError as exc:
+            return _auth_fail(exc)
+        except _CrossAuthError as exc:
+            # SA 源凭据失效：只记任务失败，绝不落用户 115 绑定。
+            return _fail_job(db, job, "auth_error", str(exc))
+        except Exception as exc:
+            return {"job_id": job.id,
+                    "outcome": _schedule_retry(db, job, exc)}
+        resp_fid = (result or {}).get("fid") or ""
+        # sha1 沉淀：回调（115 落盘事实）优先、透传哈希兜底；
+        # 两者不一致打警告并以回调为准（见函数头注释）。
+        callback_sha1 = ((result or {}).get("sha1") or "").strip().lower()
+        stream_sha1 = reader.sha1_hexdigest() or ""
+        if callback_sha1 and stream_sha1 and callback_sha1 != stream_sha1:
+            logger.warning(
+                "pan115 上传 sha1 不一致 item=%s callback=%s "
+                "stream=%s（以回调为准）",
+                item.id, callback_sha1[:12], stream_sha1[:12])
+        chosen_sha1 = callback_sha1 or stream_sha1
+        if chosen_sha1:
+            _persist_item_sha1(db, item, chosen_sha1,
+                               origin="drive_to_115_upload")
+    else:
+        resp_fid = rapid_fid
     try:
-        new_fid, pickcode = _match_115_copy_in_dir(
+        new_fid, pickcode, entry_sha1 = _match_115_copy_in_dir_ex(
             client, dest_cid, name, size, expected_fid=resp_fid or None)
     except Exception as exc:
         return {"job_id": job.id,
@@ -4927,9 +5136,13 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     if not new_fid:
         return _fail_job(
             db, job, "copy_unresolved",
-            f"115 跨转存上传完成但目标目录核不到新文件（源 fid={orig_fid}，"
+            f"115 跨转存完成但目标目录核不到新文件（源 fid={orig_fid}，"
             f"回执 fid={resp_fid or '无'}，目标目录 cid={dest_cid}，"
             f"请人工核对，不自动重试）")
+    if rapid_fid is None and not chosen_sha1 and entry_sha1:
+        # 全量路回调与透传都没给 sha1 时，用目录项 sha1 兜底沉淀。
+        _persist_item_sha1(db, item, entry_sha1,
+                           origin="drive_to_115_dir")
     row = _register_ready_variant(db, job, item, new_fid,
                                   f"pan115:user-{uid}",
                                   pickcode=pickcode or None, size=size)
@@ -4963,7 +5176,8 @@ def _run_cross_115_to_drive(db, job, item):
     user_drive = f"myDrive:{user_id}"
     name = _copy_name_for_item(item)
     try:
-        server_client, pickcode, src_size = _resolve_115_source(db, item)
+        server_client, pickcode, src_size, src_sha1 = \
+            _resolve_115_source(db, item)
     except _NotFound as exc:
         return _fail_job(db, job, "dead", f"115 源已不存在：{exc}")
     except _CrossAuthError as exc:
@@ -5041,6 +5255,12 @@ def _run_cross_115_to_drive(db, job, item):
             db, job, "copy_unresolved",
             f"Drive 跨转存上传回执 id={new_fid} 在用户转存目录中核不到"
             f"（目录 id={folder_id}，文件名={name}），不登记、不回落")
+    # 源列表项带了整文件 sha1 就顺手沉淀（跨 provider 秒传资格）；
+    # 拿不到不硬凑。这一步在补 anyone-reader 之前：即使后面落
+    # orphan，哈希本身是内容的事实、照样成立。
+    if src_sha1:
+        _persist_item_sha1(db, item, src_sha1,
+                           origin="pan115_source_list")
     try:
         user_client.add_anyone_reader(user_drive, verified_fid)
     except Exception as exc:
