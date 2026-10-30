@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -1457,10 +1458,14 @@ class Pan115Mount(MountProvider):
             raise MountError(f"115 未返回该文件的 pickcode: {rel}")
         try:
             pickcode_115 = entry["pickcode"]
-            url = _get_cached_115_url(pickcode_115)
+            # A-016：换链缓存必须按凭据作用域隔离——键是（凭据摘要，
+            # pickcode），绝不把 Cookie 明文当键；同一凭据的两挂载
+            # 共用同一签名地址是正确的（URL 有效性只取决于账号＋文件）。
+            scope = _pan115_cache_scope(self._cookie())
+            url = _get_cached_115_url(pickcode_115, scope)
             if not url:
                 url = self._client().download_url(pickcode_115)
-                _set_cached_115_url(pickcode_115, url)
+                _set_cached_115_url(pickcode_115, url, scope)
         except (transfer115.Pan115Error, transfer115.Pan115AuthError) as exc:
             raise self._wrap(exc) from exc
         # 直链自带签名，但仍带上 UA/Cookie：EA 代理转发，客户端看不到这些头
@@ -1526,31 +1531,50 @@ _shared_clients: dict = {}
 _shared_clients_lock = threading.Lock()
 
 
-# 115 direct URL cache: pickcode -> (url, expire_at). URLs valid ~4h, cache 3h.
+# 115 direct URL cache: (scope, pickcode) -> (url, expire_at). URLs
+# valid ~4h, cache 3h. A-016：键必须含凭据作用域——裸 pickcode 会让
+# 后解析的账号拿到先解析账号的签名地址；scope 是凭据的 SHA256 摘要，
+# 绝不是 Cookie 明文；同一凭据的两挂载共用是正确的（URL 只取决于账号＋文件）。
 _pan115_url_cache = {}
 # 同上：模块级直接初始化，不许懒初始化。
 _pan115_url_cache_lock = threading.Lock()
 
-def _get_cached_115_url(pickcode):
+def _pan115_cache_scope(cookie) -> str:
+    """115 换链缓存作用域：凭据的 SHA256 摘要（绝不把 Cookie 明文当键）。"""
+    return hashlib.sha256((cookie or "").encode("utf-8")).hexdigest()
+
+
+def _get_cached_115_url(pickcode, scope):
     with _pan115_url_cache_lock:
-        entry = _pan115_url_cache.get(pickcode)
+        key = (scope, pickcode)
+        entry = _pan115_url_cache.get(key)
         if entry and entry[1] > time.time():
             return entry[0]
         elif entry:
-            del _pan115_url_cache[pickcode]
+            del _pan115_url_cache[key]
     return None
 
-def _set_cached_115_url(pickcode, url, ttl=10800):
+def _set_cached_115_url(pickcode, url, scope, ttl=10800):
     with _pan115_url_cache_lock:
         if len(_pan115_url_cache) >= 1000:
             sk = sorted(_pan115_url_cache, key=lambda k: _pan115_url_cache[k][1])
             for k in sk[:500]:
                 del _pan115_url_cache[k]
-        _pan115_url_cache[pickcode] = (url, time.time() + ttl)
+        _pan115_url_cache[(scope, pickcode)] = (url, time.time() + ttl)
 
-def _invalidate_115_url(pickcode):
+def _invalidate_115_url(pickcode, scope=None):
+    """清 115 换链缓存。scope 给出时只清该作用域；不给时按 pickcode
+    全量清——中继侧（streaming.py）只有 X-Pickcode、不知道账号，
+    全量清是唯一安全的方向。"""
     with _pan115_url_cache_lock:
-        _pan115_url_cache.pop(pickcode, None)
+        if scope is None:
+            for key in [k for k in _pan115_url_cache
+                        if (isinstance(k, tuple) and len(k) == 2
+                            and k[1] == pickcode)]:
+                del _pan115_url_cache[key]
+            _pan115_url_cache.pop(pickcode, None)
+        else:
+            _pan115_url_cache.pop((scope, pickcode), None)
 
 
 def _shared_http_client(key: str = "default", timeout=None):
