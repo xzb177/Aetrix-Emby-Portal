@@ -52,6 +52,22 @@ def packet_text(packet, sender_name: str) -> str:
     )
 
 
+def claim_feedback_text(claimer_name: str, amount: int, remaining_count: int) -> str:
+    """抢红包成功后的群内反馈消息正文（卡片式，纯文案函数）。
+
+    claimer_name 须已做 HTML 转义（与 packet_text 的 sender_name 同口径）。
+    这条反馈消息按 bot_msg_autodelete_seconds 自毁（默认 30 秒），
+    红包消息本体不在此列、永不自毁。
+    """
+    return layout.card(
+        layout.title("红包动态"),
+        [
+            layout.row("🧧", "抢红包",
+                       f"<b>{claimer_name}</b> 抢到了 <b>{amount} 积分</b> · 还剩 <b>{remaining_count} 个</b>"),
+        ],
+    )
+
+
 def finished_text(packet, sender_name: str, reason: str) -> str:
     """红包终态的按钮消息正文（卡片式）。
 

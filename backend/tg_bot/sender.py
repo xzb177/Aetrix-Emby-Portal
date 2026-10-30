@@ -53,6 +53,34 @@ def _call(db, method: str, payload: dict) -> tuple[bool, str | None]:
         return False, "响应解析失败"
 
 
+def _call_ex(db, method: str, payload: dict) -> tuple[bool, str | None, dict | None]:
+    """_call 的带结果版本：成功时第三项为 Telegram 响应里的 result。
+
+    需要 message_id 的新接口（send_message_ex 等）走这里；
+    _call 本体与既有调用方、打桩接缝一字不动。
+    """
+    bot_token = get_telegram_token(db)
+    if not bot_token:
+        return False, "token 未配置", None
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    try:
+        response = httpx.post(url, json=payload, timeout=15.0)
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok", False):
+            return False, f"Telegram API 错误: {data.get('description', '未知错误')}", None
+        result = data.get("result")
+        return True, None, result if isinstance(result, dict) else None
+    except httpx.HTTPStatusError as exc:
+        return False, f"HTTP 状态码错误: {exc.response.status_code}", None
+    except httpx.TimeoutException:
+        return False, "请求超时", None
+    except httpx.RequestError as exc:
+        return False, f"网络请求失败: {exc}", None
+    except ValueError:
+        return False, "响应解析失败", None
+
+
 def send_message(
     db,
     chat_id: int,
@@ -83,6 +111,34 @@ def send_message(
     return _call(db, "sendMessage", payload)
 
 
+def send_message_ex(
+    db,
+    chat_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None, int | None]:
+    """send_message 的带 message_id 版本（消息自毁调度等场景用）。
+
+    负载构造与 send_message 完全一致；成功时第三项为新消息的
+    message_id，失败时为 None。旧 send_message 签名/行为不变。
+    """
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+    }
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
+    ok, err, result = _call_ex(db, "sendMessage", payload)
+    if not ok or not result:
+        return ok, err, None
+    message_id = result.get("message_id")
+    return True, None, int(message_id) if isinstance(message_id, int) else None
+
+
 def _call_multipart(db, method: str, payload: dict, files: dict) -> tuple[bool, str | None]:
     """调用需要 multipart/form-data 的 Telegram API（如 sendPhoto）。"""
     bot_token = get_telegram_token(db)
@@ -104,6 +160,30 @@ def _call_multipart(db, method: str, payload: dict, files: dict) -> tuple[bool, 
         return False, f"网络请求失败: {exc}"
     except ValueError:
         return False, "响应解析失败"
+
+
+def _call_multipart_ex(db, method: str, payload: dict, files: dict) -> tuple[bool, str | None, dict | None]:
+    """_call_multipart 的带结果版本；既有调用方与打桩接缝不变。"""
+    bot_token = get_telegram_token(db)
+    if not bot_token:
+        return False, "token 未配置", None
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    try:
+        response = httpx.post(url, data=payload, files=files, timeout=20.0)
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok", False):
+            return False, f"Telegram API 错误: {data.get('description', '未知错误')}", None
+        result = data.get("result")
+        return True, None, result if isinstance(result, dict) else None
+    except httpx.HTTPStatusError as exc:
+        return False, f"HTTP 状态码错误: {exc.response.status_code}", None
+    except httpx.TimeoutException:
+        return False, "请求超时", None
+    except httpx.RequestError as exc:
+        return False, f"网络请求失败: {exc}", None
+    except ValueError:
+        return False, "响应解析失败", None
 
 
 def send_photo(
@@ -133,6 +213,39 @@ def send_photo(
         return _call_multipart(
             db, "sendPhoto", payload, {"photo": ("aetrix-card.png", photo_file, "image/png")}
         )
+
+
+def send_photo_ex(
+    db,
+    chat_id: int,
+    caption: str,
+    reply_markup: dict | None = None,
+    photo_path=None,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None, int | None]:
+    """send_photo 的带 message_id 版本；前置校验与旧接口一致。"""
+    if not caption_fits(caption):
+        return False, "caption 超过 1024 字符", None
+    path = photo_path or BRAND_IMAGE
+    try:
+        photo_file = open(path, "rb")
+    except OSError as exc:
+        return False, f"品牌图不可用: {exc}", None
+    payload: dict[str, str] = {"chat_id": str(chat_id), "caption": caption}
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        import json
+
+        payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    with photo_file:
+        ok, err, result = _call_multipart_ex(
+            db, "sendPhoto", payload, {"photo": ("aetrix-card.png", photo_file, "image/png")}
+        )
+    if not ok or not result:
+        return ok, err, None
+    message_id = result.get("message_id")
+    return True, None, int(message_id) if isinstance(message_id, int) else None
 
 
 def send_panel(
