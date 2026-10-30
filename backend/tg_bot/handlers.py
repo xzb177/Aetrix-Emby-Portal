@@ -6,7 +6,7 @@ from datetime import datetime
 
 from backend.integrations import store
 from backend.models import SubscriptionPlan, TgBindCode, UserSubscription, WebUser
-from backend.tg_bot import login_token
+from backend.tg_bot import layout, login_token
 from backend.tg_bot import redpacket_common
 from backend.tg_bot.identity import resolve
 
@@ -29,18 +29,17 @@ def _cmd(code: str) -> str:
 
 
 def _bind_guide_text() -> str:
-    return (
-        "🔗 <b>如何绑定账号</b>\n"
-        "\n"
-        "1️⃣ 登录网站 Dashboard\n"
-        "2️⃣ 点击「<b>绑定 Telegram</b>」按钮\n"
-        "3️⃣ 复制弹窗中显示的 <b>6 位绑定码</b>\n"
-        "4️⃣ 回到这里发送：/bind 绑定码\n"
-        "\n"
-        "🎁 <b>绑定后可收到</b>\n"
-        "• 🔔 求片进度通知\n"
-        "• ⏰ 订阅到期提醒\n"
-        "• 📣 系统公告推送"
+    return layout.card(
+        layout.title("如何绑定账号"),
+        [
+            layout.row("1️⃣", "第一步", "登录网站 Dashboard"),
+            layout.row("2️⃣", "第二步", "点击「<b>绑定 Telegram</b>」按钮"),
+            layout.row("3️⃣", "第三步", "复制弹窗中显示的 <b>6 位绑定码</b>"),
+            layout.row("4️⃣", "第四步", "回到这里发送：/bind 绑定码"),
+            layout.row("🔔", "绑定后可收到", "求片进度通知"),
+            layout.row("⏰", "绑定后可收到", "订阅到期提醒"),
+            layout.row("📣", "绑定后可收到", "系统公告推送"),
+        ],
     )
 
 
@@ -63,17 +62,14 @@ def _bind_success_text(db, user) -> str:
         if plan:
             plan_name = html.escape(str(plan.name))
     has_sub = sub is not None
-    return (
-        "✅ <b>绑定成功！</b>\n"
-        "\n"
-        f"👤 用户名：{username}\n"
-        f"📦 订阅服务：{plan_name}\n"
-        f"{'✅' if has_sub else '❌'} 订阅状态：{'有' if has_sub else '无'}有效订阅\n"
-        "\n"
-        "🔔 <b>您将收到</b>\n"
-        "• 求片进度通知\n"
-        "• 订阅到期提醒\n"
-        "• 系统公告推送"
+    return layout.card(
+        layout.title("绑定成功！"),
+        [
+            layout.row("👤", "用户名", username),
+            layout.row("📦", "订阅服务", plan_name),
+            layout.row("📊", "订阅状态", "有有效订阅" if has_sub else "无有效订阅"),
+            layout.row("🔔", "您将收到", "求片进度通知、订阅到期提醒、系统公告推送"),
+        ],
     )
 
 
@@ -153,129 +149,232 @@ def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None
     return _bind_success_text(db, user)
 
 
-def _menu_markup(db, web_user, is_private: bool) -> dict:
-    """主菜单 inline 按钮。私聊时首行是一键免密登录（URL 按钮必须在 [0][0]）。"""
-    rows: list[list[dict]] = []
-    if is_private:
-        url = login_token.build_login_url(db, web_user)
-        if url:
-            rows.append([{"text": "🚀 一键免密进入控制面板", "url": url}])
-    rows.append([
-        {"text": "📅 签到", "callback_data": "menu:checkin"},
-        {"text": "✨ 积分", "callback_data": "menu:points"},
-    ])
-    rows.append([
-        {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
-        {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
-    ])
-    if is_private:
-        rows.append([
-            {"text": "👤 账号中心", "callback_data": "menu:account"},
-            {"text": "🎬 求片", "callback_data": "menu:request"},
-        ])
-        rows.append([
-            {"text": "📋 我的求片", "callback_data": "menu:myrequests"},
-            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
-        ])
-    else:
-        rows.append([
-            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
-            {"text": "🔥 求片榜", "callback_data": "menu:requestboard"},
-        ])
-        rows.append([
-            {"text": "📜 群规", "callback_data": "menu:rules"},
-        ])
-    rows.append([
-        {"text": "🔗 我的绑定", "callback_data": "menu:bindings"},
-        {"text": "📦 转存进度", "callback_data": "menu:transfers"},
-    ])
-    rows.append([
-        {"text": "❓ 为什么播不了", "callback_data": "menu:whyplay"},
-        {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
-    ])
-    rows.append([
-        {"text": "🔗 绑定", "callback_data": "menu:bind"},
-        {"text": "❓ 帮助", "callback_data": "menu:help"},
-    ])
-    return {"inline_keyboard": rows}
+def _linked_name(tg_user: dict, fallback: str) -> str:
+    """问候行用户名链接：有 Telegram id 时链到该用户，否则纯文本。"""
+    name = html.escape(str(tg_user.get("first_name") or fallback or "朋友"))
+    tg_id = tg_user.get("id")
+    if tg_id:
+        return f'<a href="tg://user?id={int(tg_id)}">{name}</a>'
+    return name
 
 
-def back_markup() -> dict:
-    """「返回主菜单」按钮，供菜单子页面复用。"""
-    return {"inline_keyboard": [[{"text": "‹ 返回主菜单", "callback_data": "menu:main"}]]}
+def main_card_text(tg_user: dict, web_user) -> str:
+    """主界面卡片正文（已批准样稿）：标语＋带用户名问候。"""
+    fallback = getattr(web_user, "username", "") if web_user is not None else ""
+    return (
+        "✨ 想看的片，喊一声就来\n"
+        f"🍉 你好呀，{_linked_name(tg_user, fallback)} 请选择功能 👇"
+    )
 
 
-def menu_main(db, tg_user: dict, is_private: bool) -> tuple[str, dict]:
-    """主菜单卡片（文本, 按钮），供 /start 与 menu:main 回调复用。"""
-    web_user = resolve(db, int(tg_user.get("id") or 0))
+def unbound_card_text(tg_user: dict, site_name: str) -> str:
+    """未绑定主界面：同主卡骨架，信息行换成绑定状态与步骤。"""
+    return layout.card(
+        "✨ 想看的片，喊一声就来",
+        [
+            layout.row("🍉", "你好呀", f"{_linked_name(tg_user, '朋友')} 请选择功能 👇"),
+            layout.row("🏠", "站点", site_name),
+            layout.row("🔗", "账号绑定", "未绑定"),
+            layout.row("1️⃣", "第一步", "在网页端登录 → <b>个人中心</b> → <b>绑定 Telegram</b> 获取 6 位绑定码"),
+            layout.row("2️⃣", "第二步", "把绑定码发给我即可完成绑定"),
+            layout.row("📋", "全部命令", "点左下角的 / 菜单查看"),
+        ],
+    )
+
+
+def main_markup(db, web_user, is_private: bool) -> dict:
+    """新主界面按钮：分类入口在前、重要动作整行、管理员入口仅 staff。
+
+    私聊登录 URL 是既有硬契约：生成成功时仍必须位于 [0][0]。
+    """
     if web_user is None:
-        text = (
-            "🏠 <b>主菜单</b>\n"
-            "\n"
-            "还没有绑定账号，绑定后解锁签到、积分、抽奖、红包等功能。"
-        )
-        markup = {"inline_keyboard": [
+        return {"inline_keyboard": [
             [{"text": "🔗 绑定账号", "callback_data": "menu:bind"}],
             [{"text": "❓ 帮助", "callback_data": "menu:help"}],
         ]}
-        return text, markup
-    username = html.escape(str(web_user.username or ""))
-    text = (
-        "🏠 <b>主菜单</b>\n"
-        "\n"
-        f"👤 当前账号：{username}\n"
-        "\n"
-        "请选择功能："
+    if not is_private:
+        return _group_menu_markup()
+    rows: list[list[dict]] = []
+    url = login_token.build_login_url(db, web_user)
+    if url:
+        rows.append([{"text": "🚀 一键免密进入控制面板", "url": url}])
+    rows.append([
+        {"text": "👥 用户功能", "callback_data": "menu:user"},
+        {"text": "🌐 服务器", "callback_data": "menu:server"},
+    ])
+    rows.append([{"text": "🎟️ 使用续期码", "callback_data": "menu:renewcode"}])
+    if bool(getattr(web_user, "is_staff", False)):
+        rows.append([{"text": "👮 管理", "callback_data": "menu:admin"}])
+    return {"inline_keyboard": rows}
+
+
+def _group_menu_markup() -> dict:
+    """群聊主菜单：无登录行、无私聊专属入口，保留群内可用动作。"""
+    rows: list[list[dict]] = [
+        [
+            {"text": "✅ 签到", "callback_data": "menu:checkin"},
+            {"text": "✨ 积分", "callback_data": "menu:points"},
+        ],
+        [
+            {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
+            {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
+        ],
+        [
+            {"text": "👤 账号中心", "callback_data": "menu:account"},
+            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
+        ],
+        [
+            {"text": "🔥 求片榜", "callback_data": "menu:requestboard"},
+            {"text": "📜 群规", "callback_data": "menu:rules"},
+        ],
+        [
+            {"text": "🔗 我的绑定", "callback_data": "menu:bindings"},
+            {"text": "📦 转存进度", "callback_data": "menu:transfers"},
+        ],
+        [
+            {"text": "❓ 为什么播不了", "callback_data": "menu:whyplay"},
+            {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
+        ],
+        [
+            {"text": "🔗 绑定", "callback_data": "menu:bind"},
+            {"text": "❓ 帮助", "callback_data": "menu:help"},
+        ],
+    ]
+    return {"inline_keyboard": rows}
+
+
+def user_panel_markup() -> dict:
+    """用户面板按钮：批准样稿前三行＋既有查询/娱乐入口，末行回主界面。"""
+    rows: list[list[dict]] = [
+        [
+            {"text": "✅ 签到", "callback_data": "menu:checkin"},
+            {"text": "🎬 求片", "callback_data": "menu:request"},
+        ],
+        [
+            {"text": "📋 我的求片", "callback_data": "menu:myrequests"},
+            {"text": "📦 我的转存", "callback_data": "menu:transfers"},
+        ],
+        [
+            {"text": "🔗 绑定网盘", "callback_data": "menu:bindings"},
+            {"text": "🎟️ 续期", "callback_data": "menu:login"},
+        ],
+        [
+            {"text": "✨ 积分", "callback_data": "menu:points"},
+            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
+        ],
+        [
+            {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
+            {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
+        ],
+        [
+            {"text": "❓ 为什么播不了", "callback_data": "menu:whyplay"},
+            {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
+        ],
+        [
+            {"text": "🔗 绑定账号", "callback_data": "menu:bind"},
+            {"text": "❓ 帮助", "callback_data": "menu:help"},
+        ],
+        layout.home_row(),
+    ]
+    return {"inline_keyboard": rows}
+
+
+def _menu_markup(db, web_user, is_private: bool) -> dict:
+    """兼容旧调用：私聊返回新主界面网格，群聊返回群聊网格。"""
+    return main_markup(db, web_user, is_private)
+
+
+def back_markup() -> dict:
+    """菜单子页统一返回入口：整行主界面按钮。"""
+    return layout.back_markup()
+
+
+def menu_main(db, tg_user: dict, is_private: bool) -> tuple[str, dict]:
+    """主界面卡片（文本, 按钮），供 /start 与 menu:main 回调复用。"""
+    web_user = resolve(db, int(tg_user.get("id") or 0))
+    if web_user is None:
+        site_name = html.escape(str(store.get_value(db, "site_name", "Aetrix")))
+        return unbound_card_text(tg_user, site_name), main_markup(db, None, is_private)
+    return main_card_text(tg_user, web_user), main_markup(db, web_user, is_private)
+
+
+def handle_server(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """服务器面板：只读复用管理端 bot_status，不新增状态口径。"""
+    site_name = html.escape(str(store.get_value(db, "site_name", "Aetrix")))
+    rows = [layout.row("🏠", "站点", site_name)]
+    try:
+        from backend.api.tg_bot_admin import bot_status
+
+        status = bot_status(db)
+        rows += [
+            layout.row("🤖", "机器人", "运行中" if status.get("poller_active") else "未运行"),
+            layout.row("👥", "已绑定用户", status.get("bound_users", 0)),
+            layout.row("💓", "最近心跳", status.get("last_heartbeat") or "暂无"),
+        ]
+        if status.get("last_error"):
+            rows.append(layout.row("⚠️", "最近错误", html.escape(str(status["last_error"]))[:300]))
+    except Exception:
+        rows.append(layout.row("🤖", "机器人", "状态暂不可用"))
+    return layout.card(layout.title("服务器"), rows)
+
+
+def handle_admin(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """管理面板：仅网站 staff 可见，入口只挂既有只读/治理动作。"""
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    if not bool(getattr(user, "is_staff", False)):
+        return layout.card(
+            layout.title("管理面板"),
+            [layout.row("🔒", "访问状态", "仅管理员可用")],
+        )
+    return layout.card(
+        layout.title("管理面板！", user.username),
+        [
+            layout.row("👤", "管理员账号", html.escape(str(user.username or ""))),
+            layout.row("🛡️", "权限", "网站管理员"),
+            layout.row("🌐", "服务器", "可从下方按钮查看机器人状态"),
+            layout.row("📋", "治理审计", "私聊发送 /govlog（仅 Lv.6 且公益服）"),
+        ],
     )
-    return text, _menu_markup(db, web_user, is_private)
+
+
+def admin_markup() -> dict:
+    return {"inline_keyboard": [
+        [
+            {"text": "🌐 服务器", "callback_data": "menu:server"},
+            {"text": "📋 治理审计", "callback_data": "menu:govlog"},
+        ],
+        layout.home_row(),
+    ]}
 
 
 def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
     site_name = html.escape(str(store.get_value(db, "site_name", "Aetrix")))
-    name = html.escape(str(tg_user.get("first_name") or "朋友"))
     telegram_id = tg_user.get("id")
     web_user = resolve(db, int(telegram_id)) if telegram_id else None
     is_private = (chat_id == telegram_id)
 
     if web_user:
-        from backend.tg_bot.features import compact_dashboard
-
-        greet = tg_user.get("first_name") or web_user.username
-        dashboard = compact_dashboard(db, web_user, display_name=greet)
-        text = dashboard
         if not is_private:
-            return text
-        return text, _menu_markup(db, web_user, is_private=True)
+            from backend.tg_bot.features import compact_dashboard
 
-    text = (
-        f"✨ <b>欢迎回到{site_name}</b> ✨\n"
-        "\n"
-        f"👋 亲爱的 <b>{name}</b>，你的积分、抽奖、签到，都在这里等你。\n"
-        "\n"
-        "🎁 <b>公益服功能</b>（签到 / 积分 / 红包 / 抽奖）需要先绑定 Telegram，1 分钟搞定：\n"
-        "1️⃣ 在网页端登录 → <b>个人中心</b> → <b>绑定 Telegram</b> 获取 6 位绑定码\n"
-        "2️⃣ 把绑定码发给我即可完成绑定\n"
-        "\n"
-        "📋 全部命令请点左下角的 / 菜单查看"
-    )
-    markup = {"inline_keyboard": [
-        [{"text": "🔗 绑定账号", "callback_data": "menu:bind"}],
-        [{"text": "❓ 帮助", "callback_data": "menu:help"}],
-    ]}
-    return text, markup
+            greet = tg_user.get("first_name") or web_user.username
+            return compact_dashboard(db, web_user, display_name=greet)
+        return main_card_text(tg_user, web_user), main_markup(db, web_user, True)
+
+    return unbound_card_text(tg_user, site_name), main_markup(db, None, is_private)
 
 
 def handle_help(db, tg_user: dict, chat_id: int, args: str) -> str:
-    return (
-        "📖 <b>使用帮助</b>\n"
-        "\n"
-        "🤖 本机器人用于公益服快捷操作：签到领积分、查积分、发红包、抽奖，以及接收求片进度、订阅到期等通知。\n"
-        "\n"
-        "📋 全部命令请点左下角的 / 菜单查看。\n"
-        "\n"
-        f"{_bind_guide_text()}\n"
-        "\n"
-        "💬 如遇问题，请在网页端联系客服。"
+    return layout.card(
+        layout.title("使用帮助"),
+        [
+            layout.row("🤖", "用途", "公益服快捷操作：签到领积分、查积分、发红包、抽奖，以及接收求片进度、订阅到期等通知"),
+            layout.row("📋", "全部命令", "点左下角的 / 菜单查看"),
+            layout.row("💬", "遇到问题", "请在网页端联系客服"),
+        ],
+        _bind_guide_text().split("\n"),
     )
 
 
@@ -304,23 +403,14 @@ def handle_checkin(db, tg_user: dict, chat_id: int, args: str) -> str:
         return html.escape(str(e.detail))
     except Exception:
         return "签到失败，请稍后再试"
+    rows = [layout.row("📅", "连签", f"已连续签到 <b>{award['streak']}</b> 天")]
     if award["points_awarded"] > 0:
-        text = (
-            "📅 <b>签到成功！</b>\n"
-            "\n"
-            f"💰 积分 <b>+{award['points_awarded']}</b>\n"
-            f"🔥 已连续签到 <b>{award['streak']}</b> 天"
-        )
+        rows.insert(0, layout.row("💰", "积分", f"<b>+{award['points_awarded']}</b>"))
     else:
-        text = (
-            "📅 <b>签到成功！</b>\n"
-            "\n"
-            f"🔥 已连续签到 <b>{award['streak']}</b> 天\n"
-            "💡 积分仅限公益服用户领取"
-        )
+        rows.append(layout.row("💡", "积分", "积分仅限公益服用户领取"))
     if award.get("vitality_gained", 0) > 0:
-        text += f"\n⚡ 活力值 +{award['vitality_gained']}"
-    return text
+        rows.append(layout.row("⚡", "活力值", f"+{award['vitality_gained']}"))
+    return layout.card(layout.title("签到成功！"), rows)
 
 
 def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
@@ -328,7 +418,7 @@ def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
     if user is None:
         return _bind_guide_text()
     points = int(user.points or 0)
-    text = f"✨ 当前积分：{points}"
+    rows = [layout.row("✨", "当前积分", points)]
     try:
         from backend import vitality as _vitality
 
@@ -338,13 +428,10 @@ def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
             vmax = int(cfg.get("max", 14) or 14)
             filled = round(v / vmax * 10) if vmax > 0 else 0
             bar = "▓" * filled + "░" * (10 - filled)
-            text += (
-                f"\n\n⚡ <b>活力值</b> {v}/{vmax}\n"
-                f"<code>{bar}</code>"
-            )
+            rows.append(layout.row("⚡", "活力值", f"{v}/{vmax} <code>{bar}</code>"))
     except Exception:
         pass
-    return text
+    return layout.card(layout.title("我的能量"), rows)
 
 
 def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
@@ -358,26 +445,24 @@ def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
     cap = status["daily_cap"]
     per_msg = status["per_msg"]
     if per_msg == 0:
-        return (
-            "💬 <b>群发言积分</b>\n"
-            "\n"
-            "发言奖励当前已关闭，在群里发言暂不发放积分。\n"
-            f"🏆 累计发言积分：<b>{status['total_earned']}</b> 分"
+        return layout.card(
+            layout.title("群发言积分"),
+            [
+                layout.row("💬", "发言奖励", "当前已关闭，在群里发言暂不发放积分"),
+                layout.row("🏆", "累计发言积分", f"<b>{status['total_earned']}</b> 分"),
+            ],
         )
     filled = round(earned / cap * 10) if cap > 0 else 0
     bar = "▓" * filled + "░" * (10 - filled)
-    text = (
-        "💬 <b>群发言积分</b>\n"
-        "\n"
-        f"今日已得：<b>{earned}</b> / {cap} 分\n"
-        f"<code>{bar}</code>\n"
-        f"🏆 累计发言积分：<b>{status['total_earned']}</b> 分\n"
-        "\n"
-        f"在公益群里发言每条 +{per_msg} 分，每天最多 {cap} 分。"
-    )
+    rows = [
+        layout.row("📅", "今日已得", f"<b>{earned}</b> / {cap} 分 <code>{bar}</code>"),
+        layout.row("🏆", "累计发言积分", f"<b>{status['total_earned']}</b> 分"),
+        layout.row("📏", "规则", f"在公益群里发言每条 +{per_msg} 分，每天最多 {cap} 分"),
+    ]
+    notes = []
     if earned >= cap:
-        text += "\n✅ 今日发言积分已达上限，明天再继续。"
-    return text
+        notes.append("✅ 今日发言积分已达上限，明天再继续。")
+    return layout.card(layout.title("群发言积分"), rows, notes)
 
 
 def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
@@ -389,11 +474,12 @@ def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
         return _bind_guide_text()
     code_str = (args or "").strip()
     if not code_str:
-        return (
-            "🎟️ <b>兑换码兑换</b>\n"
-            "\n"
-            f"用法：{_cmd('/redeem')} <i>兑换码</i>\n"
-            f"例如：{_cmd('/redeem ABCD1234')}"
+        return layout.card(
+            layout.title("兑换码兑换"),
+            [
+                layout.row("🎟️", "用法", f"{_cmd('/redeem')} <i>兑换码</i>"),
+                layout.row("💡", "例如", _cmd('/redeem ABCD1234')),
+            ],
         )
     try:
         result = _redeem_exchange_core(db, user, code_str)
@@ -401,7 +487,10 @@ def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
         return html.escape(str(e.detail))
     except Exception:
         return "兑换失败，请稍后再试"
-    return "🎁 " + html.escape(str(result.get("message", "兑换成功")))
+    return layout.card(
+        layout.title("兑换结果"),
+        [layout.row("🎁", "兑换结果", html.escape(str(result.get("message", "兑换成功"))))],
+    )
 
 
 def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -> str | tuple[str, dict | None]:
@@ -448,15 +537,15 @@ def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -
         max_entries = getattr(round, "max_entries", None)
         suffix = f"/{max_entries}" if max_entries else ""
 
-        text = (
-            "🎲 <b>群抽奖</b>\n"
-            "\n"
-            f"📌 <b>{title}</b>\n"
-            f"🎁 奖品：{prize}\n"
-            f"⏰ 开奖：{draw_at_text}\n"
-            f"👥 已参加：<b>{entry_text}{suffix}</b>\n"
-            "\n"
-            "👇 点击下方按钮参加"
+        text = layout.card(
+            layout.title("群抽奖"),
+            [
+                layout.row("📌", "活动", f"<b>{title}</b>"),
+                layout.row("🎁", "奖品", prize),
+                layout.row("⏰", "开奖", draw_at_text),
+                layout.row("👥", "已参加", f"<b>{entry_text}{suffix}</b>"),
+            ],
+            ["👇 点击下方按钮参加"],
         )
         reply_markup = {
             "inline_keyboard": [
@@ -487,15 +576,15 @@ def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -
         "done": "已结束",
         "cancelled": "已取消",
     }
-    lines = ["🎲 <b>我的抽奖记录</b>", ""]
+    card_rows = []
     for row in rows:
         row_title = html.escape(str(getattr(row, "title", None) or "未命名抽奖"))
         row_status = getattr(row, "status", None)
         status_text = status_map.get(row_status, html.escape(str(row_status)))
         won = getattr(row, "won", 0) or 0
         result = "🏆 <b>已中奖</b>" if won > 0 else "未中奖/待开奖"
-        lines.append(f"📌 <b>{row_title}</b>\n　　状态：{status_text} ｜ {result}")
-    return "\n".join(lines)
+        card_rows.append(layout.row("📌", row_title, f"状态：{status_text} ｜ {result}"))
+    return layout.card(layout.title("我的抽奖记录"), card_rows)
 
 
 def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
@@ -510,16 +599,22 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
     # 3. 参数：取前两个并转 int，数量不对或转换失败则提示用法
     parts = args.split()[:2]
     if len(parts) != 2:
-        return (
-            "用法：/redpacket <i>总积分 个数</i>\n"
-            f"例如：{_cmd('/redpacket 100 10')}（100 积分分成 10 个）"
+        return layout.card(
+            layout.title("发红包"),
+            [
+                layout.row("🧧", "用法", "/redpacket <i>总积分 个数</i>"),
+                layout.row("💡", "例如", f"{_cmd('/redpacket 100 10')}（100 积分分成 10 个）"),
+            ],
         )
     try:
         total, count = int(parts[0]), int(parts[1])
     except ValueError:
-        return (
-            "用法：/redpacket <i>总积分 个数</i>\n"
-            f"例如：{_cmd('/redpacket 100 10')}"
+        return layout.card(
+            layout.title("发红包"),
+            [
+                layout.row("🧧", "用法", "/redpacket <i>总积分 个数</i>"),
+                layout.row("💡", "例如", _cmd('/redpacket 100 10')),
+            ],
         )
     # 4. 发红包：复用后端校验与扣减逻辑
     # P1 幂等：以 tg:<update_id> 作为幂等键（后端唯一约束），

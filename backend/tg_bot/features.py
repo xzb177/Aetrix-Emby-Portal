@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from backend import models
 from backend.api.user import MediaSeekRequest, _create_media_seek_sync
+from backend.tg_bot import layout
 from backend.tg_bot.identity import resolve
 
 logger = logging.getLogger(__name__)
@@ -270,88 +271,90 @@ def _level_info(db, user) -> dict:
     }
 
 
-def _level_line(db, user) -> str:
-    """会员等级行（/account 完整版）：等级名＋经验＋下一级差值＋进度条。"""
+def _level_value(db, user) -> str:
+    """会员等级值：等级名＋经验＋下一级差值＋进度条（不含标签）。"""
     info = _level_info(db, user)
     if info["next_level"] is None:
         return (
-            f"⭐ 会员等级：Lv.{info['level']} {_esc(info['name'])}"
+            f"Lv.{info['level']} {_esc(info['name'])}"
             f" · 经验 {info['xp']}（已满级）"
         )
     span = info["next_threshold"] - info["cur_threshold"]
     frac = (info["xp"] - info["cur_threshold"]) / span if span > 0 else 1.0
     return (
-        f"⭐ 会员等级：Lv.{info['level']} {_esc(info['name'])}"
+        f"Lv.{info['level']} {_esc(info['name'])}"
         f" · 经验 {info['xp']}／{info['next_threshold']} {_bar(frac, 10)}"
         f"（距 Lv.{info['next_level']} {_esc(info['next_name'])}还差 {info['xp_to_next']} 经验）"
     )
 
 
-def compact_dashboard(db, user, display_name: str | None = None) -> str:
-    """/start 已绑定用户 dashboard（用户 2026-10-29 晚间亲批瘦身版式，逐字照搬）：
+def _level_line(db, user) -> str:
+    """兼容旧调用：返回带「会员等级」标签的等级值。"""
+    return f"会员等级 | {_level_value(db, user)}"
 
-    问候＋账号·等级行之后把资格／状态／成长压成单行，全文 7 行：删三段标题、
-    删活力条与馆灵条，资格两行并一行、能量活力并一行、成就连签并一行。
-    字段与取值口径沿用上一版（各 helper 三态文案不变），仅改呈现：helper 文案
-    里标签后的全角冒号在合并行里换成空格。经验与下一级差值仍不进精简版
-    （只放 /account 与 /level）。display_name 缺省取账号名；低于活力阈值时
-    保留“暂时播不了”提示，挂 ⚡ 行行尾；馆灵已满级时去掉距下一阶段的括号。
-    """
+
+def _after_colon(text: str) -> str:
+    return text.split("：", 1)[-1]
+
+
+def user_panel(db, user, display_name: str | None = None) -> str:
+    """用户面板（卡片式）：样稿八行，字段口径沿用既有 helper。"""
     shown_ach, total_ach = _achievement_summary(db, user.id)
     total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
     cap, threshold = _vitality_config(db)
     info = _level_info(db, user)
     greet = display_name or getattr(user, "username", "") or "朋友"
 
-    welfare_text = _welfare_line(user).replace("：", " ", 1)
-    view_text = _view_unlock_line(db, user.id).replace("：", " ", 1)
-
     vitality = getattr(user, "vitality", None)
     if vitality is None:
-        vitality_text = "活力 —"
+        vitality_text = "—"
     elif cap <= 0:
-        vitality_text = f"活力 {int(vitality)}"
+        vitality_text = f"{int(vitality)}"
     else:
         v = int(vitality)
-        vitality_text = f"活力 {v}/{cap}"
+        vitality_text = f"{v}/{cap}"
         if v < threshold:
             vitality_text += "（暂时播不了）"
 
-    bindings_text = _bindings_line(db, user.id)
-    if bindings_text.startswith("网盘："):
-        bindings_text = bindings_text[len("网盘："):]
-
+    bindings_text = _after_colon(_bindings_line(db, user.id))
     pet_text = (
-        f"🌱 馆灵 {_esc(pet_cur.get('name', ''))} · 已观影 {total_hours:.1f} 小时"
+        f"Lv.{info['level']} {_esc(info['name'])} · 馆灵 {_esc(pet_cur.get('name', ''))}"
+        f" · 已观影 {total_hours:.1f} 小时"
     )
     if pet_nxt is not None:
         pet_text += (
             f"（距{_esc(pet_nxt.get('name', ''))}还差 "
             f"{pet_nxt['hours'] - total_hours:.1f} 小时）"
         )
-
-    streak_text = _streak_line(db, user.id)
-    if streak_text.startswith("📋 "):
-        streak_text = streak_text[len("📋 "):]
-    streak_text = streak_text.replace("：", " ", 1)
-
-    lines = [
-        f"✨ 欢迎回来，{_esc(greet)}",
-        f"👤 {_esc(user.username)} · ⭐ Lv.{info['level']} {_esc(info['name'])}",
-        f"🎫 {welfare_text} · {view_text}",
-        f"⚡ 能量 {int(user.points or 0)} · {vitality_text}",
-        f"💾 网盘 {bindings_text}",
-        pet_text,
-        f"🏅 成就 {len(shown_ach)}/{total_ach} · {streak_text}",
+    streak_text = _after_colon(_streak_line(db, user.id).removeprefix("📋 "))
+    rows = [
+        layout.row("🆔", "用户 ID", user.id),
+        layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
+        layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
+        layout.row("🍒", "能量", int(user.points or 0)),
+        layout.row("⚡", "活力值", vitality_text),
+        layout.row("💠", "等级", pet_text),
+        layout.row("🔗", "网盘绑定", bindings_text),
+        layout.row("📅", "连签", streak_text),
+        layout.row("🏅", "成就", f"{len(shown_ach)}/{total_ach}"),
     ]
-    return "\n".join(lines)
+    return layout.card(layout.title("欢迎进入用户面板！", greet), rows)
+
+
+def compact_dashboard(db, user, display_name: str | None = None) -> str:
+    """兼容旧函数名：/start 群聊 dashboard 与用户面板共用同一卡片构建。"""
+    return user_panel(db, user, display_name=display_name)
 
 
 def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """账号中心：能量、活力、馆灵、成就、订阅和最近设备。"""
+    """账号中心完整版：与用户面板同一骨架，并展开馆灵/成就/订阅/设备。"""
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 账号中心需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+        return layout.card(
+            layout.title("账号中心"),
+            [layout.row("🔒", "账号状态", "需要先绑定网站账号")],
+            ["发送 /bind 查看绑定方法。"],
+        )
 
     now = datetime.now()
     subs = (
@@ -366,46 +369,45 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
         .order_by(models.UserDevice.last_seen_at.desc())
         .limit(3).all()
     )
-    lines = [
-        "👤 <b>账号中心</b>",
-        "",
-        f"账号：<b>{_esc(user.username)}</b>",
-        _level_line(db, user),
-        f"能量：<b>{int(user.points or 0)}</b>",
+    rows = [
+        layout.row("🆔", "用户 ID", user.id),
+        layout.row("👤", "账号", f"<b>{_esc(user.username)}</b>"),
+        layout.row("⭐", "会员等级", _level_value(db, user)),
+        layout.row("🍒", "能量", f"<b>{int(user.points or 0)}</b>"),
+        layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
+        layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
     ]
-    if bool(getattr(user, "is_welfare", False)):
-        welfare_end = getattr(user, "welfare_expires_at", None)
-        suffix = welfare_end.strftime("%Y-%m-%d") if welfare_end else "长期有效"
-        lines.append(f"公益资格：有效至 {suffix}")
     vitality = getattr(user, "vitality", None)
     if vitality is not None:
-        lines.append(f"活力值：<b>{int(vitality)}</b>")
+        cap, _threshold = _vitality_config(db)
+        rows.append(layout.row("⚡", "活力值", f"<b>{int(vitality)}</b>/{cap}"))
 
     total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
-    lines += ["", "🐉 <b>馆灵</b>"]
-    lines.append(
+    rows.append(layout.row(
+        "🐉", "馆灵",
         f"{_esc(pet_cur.get('icon', ''))} {_esc(pet_cur.get('name', ''))}"
-        f"（累计观影 {total_hours:.1f} 小时）"
-    )
+        f"（累计观影 {total_hours:.1f} 小时）",
+    ))
     if pet_nxt is not None:
         remain = pet_nxt["hours"] - total_hours
-        lines.append(
-            f"下一阶段：{_esc(pet_nxt.get('name', ''))}，还差 {remain:.1f} 小时"
-        )
+        rows.append(layout.row(
+            "🌱", "下一阶段",
+            f"{_esc(pet_nxt.get('name', ''))}，还差 {remain:.1f} 小时",
+        ))
     else:
-        lines.append("已满级")
+        rows.append(layout.row("🌱", "下一阶段", "已满级"))
 
     shown_ach, total_ach = _achievement_summary(db, user.id)
-    lines += ["", f"🏅 <b>成就</b>（已解锁 {len(shown_ach)}／共 {total_ach} 个）"]
+    rows.append(layout.row(
+        "🏅", "成就", f"已解锁 {len(shown_ach)}／共 {total_ach} 个"))
     if not shown_ach:
-        lines.append("暂无成就")
+        rows.append(layout.row("🏅", "已解锁成就", "暂无成就"))
     else:
         for d in shown_ach:
-            lines.append(f"{_esc(d.icon)} {_esc(d.name)}")
+            rows.append(layout.row("🏅", "已解锁成就", f"{_esc(d.icon)} {_esc(d.name)}"))
 
-    lines += ["", "📦 <b>订阅</b>"]
     if not subs:
-        lines.append("暂无订阅")
+        rows.append(layout.row("📦", "订阅", "暂无订阅"))
     else:
         for sub in subs:
             plan = getattr(sub, "plan", None)
@@ -414,28 +416,29 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
             active = sub.status == "active" and sub.end_date and sub.end_date > now
             status = "生效中" if active else "已结束"
             days = max(0, (sub.end_date - now).days) if active else 0
-            lines.append(f"• {name}：{status}，{end}（剩 {days} 天）")
+            rows.append(layout.row(
+                "📦", "订阅", f"{name}：{status}，{end}（剩 {days} 天）"))
 
-    lines += ["", f"📱 <b>最近设备</b>（共显示 {len(devices)} 台）"]
     if not devices:
-        lines.append("暂无设备记录")
+        rows.append(layout.row("📱", "最近设备", "暂无设备记录"))
     else:
         for device in devices:
             label = _esc(device.client or device.name or "未知客户端")
             seen = device.last_seen_at.strftime("%m-%d %H:%M") if device.last_seen_at else "未知"
             blocked = "，已停用" if device.is_blocked else ""
-            lines.append(f"• {label}：{seen}{blocked}")
-    return "\n".join(lines)
+            rows.append(layout.row(
+                "📱", "最近设备", f"{label}：{seen}{blocked}"))
+    return layout.card(layout.title("账号中心！", user.username), rows)
 
 
 def _request_help() -> str:
-    return (
-        "🎬 <b>求片</b>\n\n"
-        "私聊发送：\n"
-        "<code>/request 片名</code>\n\n"
-        "也可以附加年份和备注：\n"
-        "<code>/request 片名 | 2026 | 想看国语版</code>\n\n"
-        "查看自己的求片：<code>/myrequests</code>"
+    return layout.card(
+        layout.title("求片"),
+        [
+            layout.row("🎬", "提交方式", "私聊发送 <code>/request 片名</code>"),
+            layout.row("🗓️", "附加信息", "<code>/request 片名 | 2026 | 想看国语版</code>"),
+            layout.row("📋", "查看进度", "发送 <code>/myrequests</code> 查看自己的求片"),
+        ],
     )
 
 
@@ -448,11 +451,13 @@ def _notify_staff_about_request(db, request_id: int, user, name: str) -> None:
         models.WebUser.is_active.is_(True),
         models.WebUser.telegram_id.isnot(None),
     ).all()
-    text = (
-        "📥 <b>新的求片请求</b>\n\n"
-        f"用户：{_esc(user.username)}\n"
-        f"片名：<b>{_esc(name)}</b>\n"
-        f"请求编号：<code>#{request_id}</code>"
+    text = layout.card(
+        layout.title("新的求片请求"),
+        [
+            layout.row("👤", "用户", _esc(user.username)),
+            layout.row("🎬", "片名", f"<b>{_esc(name)}</b>"),
+            layout.row("🔢", "请求编号", f"<code>#{request_id}</code>"),
+        ],
     )
     for admin in staff:
         try:
@@ -465,7 +470,7 @@ def handle_request(db, tg_user: dict, chat_id: int, args: str) -> str:
     """通过现有 media_seek 核心提交求片。"""
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 求片需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+        return layout.card(layout.title("求片"), [layout.row("🔒", "账号状态", "需要先绑定网站账号")], ["发送 /bind 查看绑定方法。"])
     raw = (args or "").strip()
     if not raw:
         return _request_help()
@@ -492,11 +497,13 @@ def handle_request(db, tg_user: dict, chat_id: int, args: str) -> str:
         logger.exception("TG 求片提交失败 user=%s", user.id)
         return "求片提交失败，请稍后再试。"
     _notify_staff_about_request(db, request_id, user, name)
-    return (
-        "✅ <b>求片已提交</b>\n\n"
-        f"《{_esc(name)}》\n"
-        f"请求编号：<code>#{request_id}</code>\n\n"
-        "后续状态会在网站和 Telegram 通知中更新。"
+    return layout.card(
+        layout.title("求片已提交"),
+        [
+            layout.row("🎬", "片名", f"《{_esc(name)}》"),
+            layout.row("🔢", "请求编号", f"<code>#{request_id}</code>"),
+            layout.row("🔔", "后续状态", "会在网站和 Telegram 通知中更新"),
+        ],
     )
 
 
@@ -504,7 +511,7 @@ def handle_my_requests(db, tg_user: dict, chat_id: int, args: str) -> str:
     """列出当前账号最近的求片。"""
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 请先绑定网站账号。发送 /bind 查看方法。"
+        return layout.card(layout.title("我的求片"), [layout.row("🔒", "账号状态", "请先绑定网站账号")], ["发送 /bind 查看方法。"])
     rows = (
         db.query(models.MovieRequest)
         .filter(models.MovieRequest.user_id == user.id,
@@ -513,34 +520,38 @@ def handle_my_requests(db, tg_user: dict, chat_id: int, args: str) -> str:
         .limit(10).all()
     )
     if not rows:
-        return "🎬 你还没有求片记录。\n\n发送 /request 片名 提交第一条求片。"
+        return layout.card(layout.title("我的求片"), [layout.row("🎬", "求片记录", "还没有求片记录")], ["发送 /request 片名 提交第一条求片。"])
     labels = {
         "pending": "排队中", "approved": "处理中", "completed": "已入库",
         "rejected": "未通过", "cancelled": "已取消",
     }
-    lines = ["🎬 <b>我的求片</b>", ""]
+    card_rows = []
     for row in rows:
         status = labels.get(str(row.status), str(row.status or "未知"))
         title = _esc(row.movie_name)
         date = row.created_at.strftime("%m-%d") if row.created_at else ""
-        lines.append(f"• <b>#{row.id}</b> {title}：{status} <i>{date}</i>")
+        card_rows.append(layout.row(
+            "🎬", f"#{row.id} {title}", f"{status} <i>{date}</i>"))
         if row.admin_note:
-            lines.append(f"  备注：{_esc(row.admin_note)[:120]}")
-    return "\n".join(lines)
+            card_rows.append(layout.row(
+                "📝", "备注", f"备注：{_esc(row.admin_note)[:120]}"))
+    return layout.card(layout.title("我的求片"), card_rows)
 
 
 def handle_login(db, tg_user: dict, chat_id: int, args: str):
     """仅私聊生成一次性快捷登录链接。"""
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 请先绑定网站账号。发送 /bind 查看方法。"
+        return layout.card(layout.title("快捷登录"), [layout.row("🔒", "账号状态", "请先绑定网站账号")], ["发送 /bind 查看方法。"])
     from backend.tg_bot import login_token
     url = login_token.build_login_url(db, user)
     if not url:
         return "暂时无法生成登录链接，请联系管理员检查站点地址配置。"
     return (
-        "🚀 <b>快捷登录</b>\n\n"
-        "链接 10 分钟内有效，只能使用一次。请不要转发给别人。",
+        layout.card(
+            layout.title("快捷登录"),
+            [layout.row("⏱️", "有效期", "链接 10 分钟内有效，只能使用一次。请不要转发给别人。")],
+        ),
         {"inline_keyboard": [[{"text": "打开控制面板", "url": url}]]},
     )
 
@@ -557,13 +568,14 @@ def handle_request_board(db, tg_user: dict, chat_id: int, args: str) -> str:
         .limit(10).all()
     )
     if not rows:
-        return "🔥 <b>求片榜</b>\n\n当前没有排队中的求片。"
-    lines = ["🔥 <b>求片榜</b>", "", "按加权热度排序："]
+        return layout.card(layout.title("求片榜"), [layout.row("🔥", "当前榜单", "没有排队中的求片")])
+    card_rows = [layout.row("🔥", "排序", "按加权热度排序")]
     for index, row in enumerate(rows, 1):
         title = _esc(row.movie_name)
         season = f"（{_esc(row.season)}）" if row.season and row.season != "all" else ""
-        lines.append(f"{index}. {title}{season} · {int(row.vote_count or 0)} 人想看")
-    return "\n".join(lines)
+        card_rows.append(layout.row(
+            "🔥", f"第 {index} 名", f"{title}{season} · {int(row.vote_count or 0)} 人想看"))
+    return layout.card(layout.title("求片榜"), card_rows)
 
 
 def handle_rules(db, tg_user: dict, chat_id: int, args: str) -> str:
@@ -576,7 +588,7 @@ def handle_rules(db, tg_user: dict, chat_id: int, args: str) -> str:
         "3. 求片请使用 /request，重复求片会被合并。\n"
         "4. 请遵守群公告和管理员安排。"
     )
-    return "📜 <b>群规与使用说明</b>\n\n" + _esc(rules).replace("\n", "\n")
+    return layout.card(layout.title("群规与使用说明"), [], _esc(rules).split("\n"))
 
 
 def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
@@ -595,7 +607,7 @@ def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
         .limit(10).all()
     )
     if not rows:
-        return "🏆 暂时还没有排行榜数据。"
+        return layout.card(layout.title("排行榜"), [layout.row("🏆", "榜单数据", "暂时还没有排行榜数据")])
     from backend.subscriptions import is_free_realm as _is_free_realm
     free_realm = _is_free_realm(db)
     level_names = {}
@@ -607,7 +619,8 @@ def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
             .all()
         }
     my_id = int(tg_user.get("id") or 0)
-    lines = ["🏆 <b>全站积分排行榜</b>", "", "仅显示已绑定且允许上榜的用户。"]
+    card_rows = [layout.row("🏆", "上榜范围", "仅显示已绑定且允许上榜的用户")]
+    lines = card_rows
     medals = ["🥇", "🥈", "🥉"]
     for index, row in enumerate(rows, 1):
         mark = medals[index - 1] if index <= 3 else f"{index}."
@@ -616,10 +629,10 @@ def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
             level = row.member_level or 1
             name = level_names.get(level)
             level_text = f" · Lv.{level} {_esc(name)}" if name else f" · Lv.{level}"
-            lines.append(f"{mark} {_esc(row.username)}：<b>{int(row.points or 0)}</b>{level_text}{mine}")
+            lines.append(layout.row(mark, f"第 {index} 名", f"{_esc(row.username)}：<b>{int(row.points or 0)}</b>{level_text}{mine}"))
         else:
-            lines.append(f"{mark} {_esc(row.username)}：<b>{int(row.points or 0)}</b>{mine}")
-    return "\n".join(lines)
+            lines.append(layout.row(mark, f"第 {index} 名", f"{_esc(row.username)}：<b>{int(row.points or 0)}</b>{mine}"))
+    return layout.card(layout.title("全站积分排行榜"), lines)
 
 
 _GOVLOG_ACTION_TEXT = {
@@ -647,7 +660,7 @@ def handle_govlog(db, tg_user: dict, chat_id: int, args: str) -> str:
         return "治理审计日志仅 Lv.6 传奇可见。"
     entries = _governance.list_audit_logs(db, limit=10)
     if not entries:
-        return "📋 <b>治理审计日志</b>\n\n暂无记录。"
+        return layout.card(layout.title("治理审计日志"), [layout.row("📋", "最近记录", "暂无记录")])
     user_ids = {e.actor_user_id for e in entries if e.actor_user_id}
     user_ids |= {e.target_user_id for e in entries if e.target_user_id}
     names = {}
@@ -656,7 +669,8 @@ def handle_govlog(db, tg_user: dict, chat_id: int, args: str) -> str:
             u.id: u.username
             for u in db.query(models.WebUser).filter(models.WebUser.id.in_(user_ids)).all()
         }
-    lines = ["📋 <b>治理审计日志（最近 10 条）</b>", ""]
+    card_rows = []
+    lines = card_rows
     for e in entries:
         action_text = _GOVLOG_ACTION_TEXT.get(e.action, e.action)
         actor = names.get(e.actor_user_id, "系统") if e.actor_user_id else "系统"
@@ -667,8 +681,8 @@ def handle_govlog(db, tg_user: dict, chat_id: int, args: str) -> str:
         else:
             target = "—"
         created = e.created_at.strftime("%m-%d %H:%M") if e.created_at else ""
-        lines.append(f"{created} {_esc(actor)} {action_text} {_esc(target)}")
-    return "\n".join(lines)
+        lines.append(layout.row("📋", created or "记录", f"{_esc(actor)} {action_text} {_esc(target)}"))
+    return layout.card(layout.title("治理审计日志（最近 10 条）"), lines)
 
 
 # ---------- 等级治理 bot 补完（Step 0–4＋停权接线，bot 侧入口） ----------
@@ -693,7 +707,7 @@ def handle_level(db, tg_user: dict, chat_id: int, args: str) -> str:
 
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 会员等级需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+        return layout.card(layout.title("会员等级"), [layout.row("🔒", "账号状态", "会员等级需要先绑定网站账号")], ["发送 /bind 查看绑定方法。"])
     info = _level_info(db, user)
     level = info["level"]
     if info["next_level"] is None:
@@ -705,18 +719,17 @@ def handle_level(db, tg_user: dict, chat_id: int, args: str) -> str:
             f"经验 {info['xp']}／{info['next_threshold']} {_bar(frac, 10)}"
             f"（距 Lv.{info['next_level']} {_esc(info['next_name'])}还差 {info['xp_to_next']} 经验）"
         )
-    lines = [
-        "⭐ <b>会员等级</b>",
-        "",
-        f"👤 {_esc(user.username)} · ⭐ Lv.{level} {_esc(info['name'])}",
-        progress,
+    rows = [
+        layout.row("👤", "账号", f"{_esc(user.username)} · ⭐ Lv.{level} {_esc(info['name'])}"),
+        layout.row("⭐", "经验进度", progress),
     ]
     frozen = _governance.is_governance_frozen(db, user.id)
     if frozen:
-        lines += ["", "⚠️ 治理特权已被冻结（附议仍按 1 票计，提案／举报／复核暂停）"]
+        rows.append(layout.row(
+            "⚠️", "治理状态", "治理特权已被冻结（附议仍按 1 票计，提案／举报／复核暂停）"))
     if not _is_free_realm(db):
-        lines += ["", "治理权表仅公益服开放，付费服等级仅展示。"]
-        return "\n".join(lines)
+        rows.append(layout.row("🏛️", "治理权", "治理权表仅公益服开放，付费服等级仅展示"))
+        return layout.card(layout.title("会员等级！", user.username), rows)
     weight = 1 if frozen else _media_seek.vote_weight_for_level(level)
     if level >= 2:
         p_used = _proposal_count(db, user.id, _dt.now())
@@ -732,21 +745,15 @@ def handle_level(db, tg_user: dict, chat_id: int, args: str) -> str:
         direct_line = "本月直接发起：Lv.5 起开放"
     rw = _review_weight(level)
     rw_text = str(rw) if rw else "无（Lv.3 起获得）"
-    lines += [
-        "",
-        propose_line + " · " + direct_line,
-        "",
-        "── 治理权表 ──",
-        f"附议权重：Lv.1–Lv.6 ＝ 1–6 票（我的权重：{weight} 票）",
-        "活动提案：Lv.2+ 可提案，Lv.2/3 每月 1 次、Lv.4+ 每月 2 次",
-        "直接发起：Lv.5 每月 1 次、Lv.6 每月 2 次（事后审计）",
-        f"举报复核：Lv.3 权重 1、Lv.4 权重 2、Lv.5 权重 2、Lv.6 权重 3（我的权重：{rw_text}）",
+    rows += [
+        layout.row("🗳️", "活动额度", propose_line + " · " + direct_line),
+        layout.row("⚖️", "附议权重", f"附议权重：Lv.1–Lv.6 ＝ 1–6 票（我的权重：{weight} 票）"),
+        layout.row("📝", "活动提案", "活动提案：Lv.2+ 可提案，Lv.2/3 每月 1 次、Lv.4+ 每月 2 次"),
+        layout.row("🚀", "直接发起", "直接发起：Lv.5 每月 1 次、Lv.6 每月 2 次（事后审计）"),
+        layout.row("🚩", "举报复核", f"举报复核：Lv.3 权重 1、Lv.4 权重 2、Lv.5 权重 2、Lv.6 权重 3（我的权重：{rw_text}）"),
+        layout.row("📋", "治理审计日志", "治理审计日志：Lv.6 可用 /govlog 只读查看" if level >= 6 else "治理审计日志：仅 Lv.6 可见（/govlog）"),
     ]
-    if level >= 6:
-        lines.append("治理审计日志：Lv.6 可用 /govlog 只读查看")
-    else:
-        lines.append("治理审计日志：仅 Lv.6 可见（/govlog）")
-    return "\n".join(lines)
+    return layout.card(layout.title("会员等级！", user.username), rows)
 
 
 _REPORT_REASON_ALIASES = {
@@ -758,13 +765,14 @@ _REPORT_REASON_NAMES = {"spam": "刷屏／广告", "duplicate": "重复求片", 
 
 
 def _report_help() -> str:
-    return (
-        "🚩 <b>举报求片</b>\n\n"
-        "私聊发送：\n"
-        "<code>/report 求片编号 原因 [补充说明]</code>\n\n"
-        "求片编号来自 /myrequests（如 #123）；\n"
-        "原因：刷屏、重复、违规。\n\n"
-        "例：<code>/report 123 刷屏 这条求了好几次了</code>"
+    return layout.card(
+        layout.title("举报求片"),
+        [
+            layout.row("🚩", "提交方式", "私聊发送 <code>/report 求片编号 原因 [补充说明]</code>"),
+            layout.row("🔢", "求片编号", "来自 /myrequests（如 #123）"),
+            layout.row("📝", "举报原因", "刷屏、重复、违规"),
+            layout.row("💡", "示例", "<code>/report 123 刷屏 这条求了好几次了</code>"),
+        ],
     )
 
 
@@ -774,7 +782,7 @@ def handle_report(db, tg_user: dict, chat_id: int, args: str) -> str:
 
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 举报需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+        return layout.card(layout.title("举报"), [layout.row("🔒", "账号状态", "举报需要先绑定网站账号")], ["发送 /bind 查看绑定方法。"])
     parts = (args or "").strip().split(None, 2)
     if len(parts) < 2:
         return _report_help()
@@ -801,11 +809,14 @@ def handle_report(db, tg_user: dict, chat_id: int, args: str) -> str:
         .first()
     )
     title = f"《{_esc(target.movie_name)}》" if target is not None else f"求片 #{target_id}"
-    return (
-        "✅ <b>举报已提交</b>\n\n"
-        f"{title}\n"
-        f"举报编号：<code>#{row['id']}</code> · 原因：{_REPORT_REASON_NAMES[reason]}\n\n"
-        "进入复核流程，结果会在复核后更新。"
+    return layout.card(
+        layout.title("举报已提交"),
+        [
+            layout.row("🎬", "求片", title),
+            layout.row("🔢", "举报编号", f"<code>#{row['id']}</code>"),
+            layout.row("📝", "举报原因", _REPORT_REASON_NAMES[reason]),
+            layout.row("⚖️", "处理进度", "进入复核流程，结果会在复核后更新"),
+        ],
     )
 
 
@@ -884,15 +895,15 @@ def _propose_help(direct: bool) -> str:
     verb = "直接发起" if direct else "活动提案"
     cmd = "/launch" if direct else "/propose"
     level = "Lv.5+" if direct else "Lv.2+"
-    return (
-        f"🎲 <b>{verb}</b>（仅公益服、{level}）\n\n"
-        "私聊发送：\n"
-        f"<code>{cmd} 标题 | 奖品 | 群组ID | 开奖时间 | 人数上限 | 口令</code>\n\n"
-        "奖品：逗号分隔，类型:价值[x数量]，类型为 积分／天数／白名单，\n"
-        "如 <code>积分:100x2,天数:30x1</code>。\n"
-        "群组ID 可空（仅当允许群恰好一个时自动取）；开奖时间如 2026-11-01 20:00，\n"
-        "为空则待定；人数上限为空则不限；口令给出时为口令抽奖，否则为按钮抽奖。\n\n"
-        "例：<code>/propose 周末观影趴 | 积分:100x2 | -1001234567890</code>"
+    return layout.card(
+        layout.title(verb),
+        [
+            layout.row("🎲", "开放范围", f"仅公益服、{level}"),
+            layout.row("📝", "提交方式", f"私聊发送 <code>{cmd} 标题 | 奖品 | 群组ID | 开奖时间 | 人数上限 | 口令</code>"),
+            layout.row("🎁", "奖品格式", "逗号分隔，类型:价值[x数量]，类型为 积分／天数／白名单，如 <code>积分:100x2,天数:30x1</code>"),
+            layout.row("💡", "填写说明", "群组ID 可空（仅当允许群恰好一个时自动取）；开奖时间如 2026-11-01 20:00，为空则待定；人数上限为空则不限；口令给出时为口令抽奖，否则为按钮抽奖"),
+            layout.row("💡", "示例", "<code>/propose 周末观影趴 | 积分:100x2 | -1001234567890</code>"),
+        ],
     )
 
 
@@ -902,7 +913,7 @@ def handle_propose(db, tg_user: dict, chat_id: int, args: str) -> str:
 
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 活动提案需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+        return layout.card(layout.title("活动提案"), [layout.row("🔒", "账号状态", "活动提案需要先绑定网站账号")], ["发送 /bind 查看绑定方法。"])
     if not (args or "").strip():
         return _propose_help(direct=False)
     try:
@@ -918,11 +929,13 @@ def handle_propose(db, tg_user: dict, chat_id: int, args: str) -> str:
         db.rollback()
         logger.exception("TG 活动提案提交失败 user=%s", user.id)
         return "活动提案提交失败，请稍后再试。"
-    return (
-        "✅ <b>活动提案已提交</b>\n\n"
-        f"📌 {_esc(proposal.title)}\n"
-        f"提案编号：<code>#{proposal.id}</code>\n\n"
-        "等待管理员批准，批准后开奖。"
+    return layout.card(
+        layout.title("活动提案已提交"),
+        [
+            layout.row("📌", "活动", _esc(proposal.title)),
+            layout.row("🔢", "提案编号", f"<code>#{proposal.id}</code>"),
+            layout.row("⏳", "处理进度", "等待管理员批准，批准后开奖"),
+        ],
     )
 
 
@@ -932,7 +945,7 @@ def handle_direct_launch(db, tg_user: dict, chat_id: int, args: str) -> str:
 
     user = _bound_user(db, tg_user)
     if user is None:
-        return "🔒 直接发起活动需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+        return layout.card(layout.title("直接发起活动"), [layout.row("🔒", "账号状态", "直接发起活动需要先绑定网站账号")], ["发送 /bind 查看绑定方法。"])
     if not (args or "").strip():
         return _propose_help(direct=True)
     try:
@@ -948,9 +961,11 @@ def handle_direct_launch(db, tg_user: dict, chat_id: int, args: str) -> str:
         db.rollback()
         logger.exception("TG 直接发起活动失败 user=%s", user.id)
         return "直接发起活动失败，请稍后再试。"
-    return (
-        "✅ <b>活动已直接发起</b>\n\n"
-        f"📌 {_esc(round_obj.title)}\n"
-        f"轮次编号：<code>#{round_obj.id}</code>\n\n"
-        "直接发起已记入事后审计，管理员可复核。"
+    return layout.card(
+        layout.title("活动已直接发起"),
+        [
+            layout.row("📌", "活动", _esc(round_obj.title)),
+            layout.row("🔢", "轮次编号", f"<code>#{round_obj.id}</code>"),
+            layout.row("📋", "审计", "直接发起已记入事后审计，管理员可复核"),
+        ],
     )

@@ -138,7 +138,7 @@ def _dispatch(db, monkeypatch, text, chat_id=TG, chat_type="private"):
 # ---------- 新版 dashboard：样例逐字结构 ----------
 
 def test_dashboard_sample_layout_exact(db):
-    """用户晚间瘦身样例逐字结构：问候＋账号·等级行＋资格／状态／成长各压一行。
+    """用户批准的卡片式用户面板逐字结构：▎标题＋「· emoji 标签 | 值」信息行。
 
     查看凭证日期用 2030 年（样例的 2026-11-27 在该日后会过期，测试不用时间炸弹）；
     公益资格行不校验过期，可直接用样例日期。
@@ -153,13 +153,16 @@ def test_dashboard_sample_layout_exact(db):
     _checkin(db, row.id, 2)
     text = features.compact_dashboard(db, row, display_name="Shun")
     expected = "\n".join([
-        "✨ 欢迎回来，Shun",
-        "👤 shunxian2580 · ⭐ Lv.1 初幕",
-        "🎫 公益资格 至 2026-11-27 · 查看凭证 至 2030-11-27",
-        "⚡ 能量 57 · 活力 14/14",
-        "💾 网盘 Drive 已绑 ✓",
-        "🌱 馆灵 蛋 · 已观影 0.0 小时（距夜枭还差 50.0 小时）",
-        "🏅 成就 0/13 · 连签 2 天（满 30 天自动续公益资格）",
+        "▎<b>欢迎进入用户面板！</b>Shun",
+        f"· 🆔 用户 ID | {row.id}",
+        "· 📊 公益资格 | 至 2026-11-27",
+        "· 🎟️ 查看凭证 | 至 2030-11-27",
+        "· 🍒 能量 | 57",
+        "· ⚡ 活力值 | 14/14",
+        "· 💠 等级 | Lv.1 初幕 · 馆灵 蛋 · 已观影 0.0 小时（距夜枭还差 50.0 小时）",
+        "· 🔗 网盘绑定 | Drive 已绑 ✓",
+        "· 📅 连签 | 2 天（满 30 天自动续公益资格）",
+        "· 🏅 成就 | 0/13",
     ])
     assert text == expected
 
@@ -167,10 +170,10 @@ def test_dashboard_sample_layout_exact(db):
 def test_account_level_line(db):
     row = _user(db, xp=0)
     text = features.handle_account(db, _tg(), TG, "")
-    assert "⭐ 会员等级：Lv.1 初幕 · 经验 0／100 ░░░░░░░░░░（距 Lv.2 影迷还差 100 经验）" in text
+    assert "⭐ 会员等级 | Lv.1 初幕 · 经验 0／100 ░░░░░░░░░░（距 Lv.2 影迷还差 100 经验）" in text
     row2 = _user(db, tg=TG + 1, name="max", xp=20000)
     text2 = features.handle_account(db, _tg(TG + 1), TG + 1, "")
-    assert "⭐ 会员等级：Lv.6 传奇 · 经验 20000（已满级）" in text2
+    assert "⭐ 会员等级 | Lv.6 传奇 · 经验 20000（已满级）" in text2
 
 
 # ---------- /level ----------

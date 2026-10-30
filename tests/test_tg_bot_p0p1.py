@@ -371,8 +371,15 @@ def test_menu_contains_new_buttons(db, monkeypatch):
     # 进程级 store 缓存会让它在全量顺序下出现，单跑时不出现），只对回调按钮断言。
     flat = [b["callback_data"] for row in markup["inline_keyboard"] for b in row
             if "callback_data" in b]
-    for action in ("menu:bindings", "menu:transfers", "menu:whyplay", "menu:wants"):
+    # 主界面改为分类入口：四项查询入口收进用户面板网格，主界面挂分类与整行动作
+    for action in ("menu:user", "menu:server", "menu:renewcode"):
         assert action in flat
+    panel = handlers.user_panel_markup()
+    panel_flat = [b["callback_data"] for row in panel["inline_keyboard"]
+                  for b in row if "callback_data" in b]
+    for action in ("menu:bindings", "menu:transfers", "menu:whyplay", "menu:wants"):
+        assert action in panel_flat
+    assert panel_flat[-1] == "menu:main"  # 末行整行回主界面
 
 
 def test_menu_callbacks_render_new_pages(db, monkeypatch):

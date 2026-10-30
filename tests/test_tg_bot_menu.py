@@ -74,11 +74,11 @@ def test_menu_main_bound_edits_message(db, monkeypatch):
     assert len(edits) == 1
     chat_id, message_id, text, markup, parse_mode = edits[0]
     assert chat_id == 800001 and message_id == 55
-    assert "主菜单" in text
+    assert "✨ 想看的片，喊一声就来" in text and "请选择功能" in text
     assert parse_mode == "HTML"
     # 私聊：首行是一键登录 URL 按钮（无 token 时可能没有首行，只断言结构合法）
     rows = markup["inline_keyboard"]
-    assert any("menu:checkin" in b.get("callback_data", "") for r in rows for b in r)
+    assert any("menu:user" in b.get("callback_data", "") for r in rows for b in r)
 
 
 def test_menu_main_unbound_shows_bind(db, monkeypatch):
@@ -108,7 +108,7 @@ def test_menu_points_shows_card(db, monkeypatch):
     answered, edits = _patch_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("points"))
     assert len(edits) == 1
-    assert "✨ 当前积分：250" in edits[0][2]
+    assert "✨ 当前积分 | 250" in edits[0][2]
 
 
 def test_menu_unknown_action_ignored(db, monkeypatch):

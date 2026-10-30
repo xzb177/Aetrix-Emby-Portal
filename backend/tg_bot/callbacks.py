@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from backend import models
-from . import redpacket_common, sender
+from . import layout, redpacket_common, sender
 from .identity import resolve
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,9 @@ def _handle_menu(db, callback_query: dict) -> None:
         logger.exception("tg menu render failed: action=%s", action)
         text, markup = "系统繁忙，请稍后再试", handlers.back_markup()
 
-    ok, err = sender.edit_message_text(db, chat_id, message_id, text, markup)
+    has_photo = bool(msg.get("photo"))
+    ok, err = sender.edit_panel(
+        db, chat_id, message_id, text, markup, has_photo=has_photo)
     if not ok:
         logger.debug("tg menu edit failed: action=%s err=%s", action, err)
 
@@ -71,18 +73,51 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
 
     text: str
     markup: dict | None
-    if action == "main":
+    if action in ("main", "home", "panel"):
         text, markup = handlers.menu_main(db, tg_user, is_private)
+    elif action == "user":
+        user = resolve(db, int(tg_id))
+        if user is None:
+            text, markup = handlers._bind_guide_text(), handlers.back_markup()
+        elif not is_private:
+            text = layout.card(
+                layout.title("用户面板"),
+                [layout.row("🔒", "使用方式", "这个功能请私聊机器人使用")])
+            markup = handlers.back_markup()
+        else:
+            from . import features
+
+            text = features.user_panel(db, user, display_name=tg_user.get("first_name"))
+            markup = handlers.user_panel_markup()
+    elif action == "server":
+        text = handlers.handle_server(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action == "admin":
+        text = handlers.handle_admin(db, tg_user, chat_id, "")
+        admin_user = resolve(db, int(tg_id))
+        if admin_user is not None and bool(getattr(admin_user, "is_staff", False)):
+            markup = handlers.admin_markup()
+        else:
+            markup = handlers.back_markup()
+    elif action == "renewcode":
+        text = handlers.handle_redeem(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
     elif action == "checkin":
         text = handlers.handle_checkin(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
     elif action == "points":
         text = handlers.handle_points(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
-    elif action in ("account", "request", "myrequests", "rank", "requestboard", "rules", "login"):
+    elif action == "chatpoints":
+        text = handlers.handle_chatpoints(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action in ("account", "request", "myrequests", "rank", "requestboard", "rules", "login", "govlog", "level", "report", "propose", "launch"):
         # 凭据类与求片类仍私聊限定；账号展示已放行群聊（只展示个人面板信息）。
-        if not is_private and action in ("request", "myrequests", "login"):
-            text, markup = "🔒 这个功能请私聊机器人使用", handlers.back_markup()
+        if not is_private and action in ("request", "myrequests", "login", "govlog", "report", "propose", "launch"):
+            text = layout.card(
+                layout.title("私聊使用"),
+                [layout.row("🔒", "使用方式", "这个功能请私聊机器人使用")])
+            markup = handlers.back_markup()
         else:
             fn = {
                 "account": handlers.handle_account,
@@ -92,6 +127,11 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
                 "requestboard": handlers.handle_request_board,
                 "rules": handlers.handle_rules,
                 "login": handlers.handle_login,
+                "govlog": handlers.handle_govlog,
+                "level": handlers.handle_level,
+                "report": handlers.handle_report,
+                "propose": handlers.handle_propose,
+                "launch": handlers.handle_direct_launch,
             }[action]
             reply = fn(db, tg_user, chat_id, "")
             if isinstance(reply, tuple):
@@ -119,7 +159,9 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
     elif action == "bind":
         user = resolve(db, int(tg_id))
         if user is not None:
-            text = "✅ 你的账号已绑定，无需重复绑定；如需更换绑定请联系客服解绑。"
+            text = layout.card(
+                layout.title("账号绑定"),
+                [layout.row("✅", "绑定状态", "你的账号已绑定，无需重复绑定；如需更换绑定请联系客服解绑")])
         else:
             text = handlers._bind_guide_text()
         markup = handlers.back_markup()
@@ -127,13 +169,13 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         text = handlers.handle_help(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
     elif action == "redpacket":
-        text = (
-            "🧧 <b>发红包</b>\n"
-            "\n"
-            f"用法：{handlers._cmd('/redpacket')} <i>总积分 个数</i>\n"
-            f"例如：{handlers._cmd('/redpacket 100 10')}（100 积分分成 10 个）\n"
-            "\n"
-            "💡 请直接发送命令发红包（按钮不支持输入参数）"
+        text = layout.card(
+            layout.title("发红包"),
+            [
+                layout.row("🧧", "用法", f"{handlers._cmd('/redpacket')} <i>总积分 个数</i>"),
+                layout.row("💡", "例如", f"{handlers._cmd('/redpacket 100 10')}（100 积分分成 10 个）"),
+            ],
+            ["💡 请直接发送命令发红包（按钮不支持输入参数）"],
         )
         markup = handlers.back_markup()
     else:

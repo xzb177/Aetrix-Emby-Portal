@@ -70,13 +70,13 @@ def test_redpacket_unbound(db):
 def test_redpacket_missing_args(db):
     _make_user(db, username="arg1", tg_id=1011, points=1000)
     result = handlers.handle_redpacket(db, {"id": 1011}, 1, "")
-    assert _text(result).startswith("用法：/redpacket")
+    assert "🧧 用法 | /redpacket" in _text(result)
 
 
 def test_redpacket_non_numeric_args(db):
     _make_user(db, username="arg2", tg_id=1012, points=1000)
     result = handlers.handle_redpacket(db, {"id": 1012}, 1, "abc xyz")
-    assert _text(result).startswith("用法：/redpacket")
+    assert "🧧 用法 | /redpacket" in _text(result)
 
 
 def test_redpacket_amount_less_than_count(db):

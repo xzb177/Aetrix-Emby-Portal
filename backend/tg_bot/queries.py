@@ -14,6 +14,7 @@ import logging
 from datetime import datetime
 
 from backend.emby_server import models as em
+from backend.tg_bot import layout
 from backend.emby_server.transfer_variant import _item_provider
 from backend.emby_server.user_bindings import BINDING_ERROR_MESSAGES
 
@@ -44,7 +45,10 @@ JOB_ERROR_TEXT = {
 RECENT_LIMIT = 5
 SEARCH_LIMIT = 6
 
-PRIVATE_ONLY_TEXT = "🔒 个人查询请私聊我发送，群里不查"
+PRIVATE_ONLY_TEXT = layout.card(
+    layout.title("私聊查询"),
+    [layout.row("🔒", "使用方式", "个人查询请私聊我发送，群里不查")],
+)
 BIND_GUIDE_SHORT = (
     "🔗 请先在网页端「我的网盘」里绑定你的网盘，绑定后再回来查询。"
 )
@@ -95,52 +99,56 @@ def render_bindings(db, user) -> str:
         .all()
     )
     if not rows:
-        return (
-            "🔗 <b>我的网盘绑定</b>\n"
-            "\n"
-            "你还没有绑定网盘。\n"
-            "\n"
-            + BIND_GUIDE_SHORT
+        return layout.card(
+            layout.title("我的网盘绑定"),
+            [layout.row("🔗", "绑定状态", "你还没有绑定网盘")],
+            [BIND_GUIDE_SHORT],
         )
-    lines = ["🔗 <b>我的网盘绑定</b>", ""]
+    card_rows = []
     for row in rows:
         provider = PROVIDER_TEXT.get(row.provider, html.escape(str(row.provider)))
         status = BINDING_STATUS_TEXT.get(
             row.status, html.escape(str(row.status)))
-        line = (
-            f"• {html.escape(str(row.account_label))}"
-            f"（{provider}）｜状态：{status}"
-        )
+        card_rows.append(layout.row(
+            "🔗", html.escape(str(row.account_label)),
+            f"{provider}｜状态：{status}"))
         if row.status != "active" and row.last_error_kind:
             msg = BINDING_ERROR_MESSAGES.get(str(row.last_error_kind))
             if msg:
-                line += f"\n　　{html.escape(msg)}"
-        lines.append(line)
-    lines.append("")
-    lines.append("绑定失效时请在网页端「我的网盘」里重新绑定。")
-    return "\n".join(lines)
+                card_rows.append(layout.row("⚠️", "失效原因", html.escape(msg)))
+    return layout.card(
+        layout.title("我的网盘绑定"), card_rows,
+        ["绑定失效时请在网页端「我的网盘」里重新绑定。"])
 
 
 def render_transfers(db, user) -> str:
     """该用户最近的转存任务（只查自己的 owner_scope=user 行）。"""
     jobs = _user_jobs(db, user.id)
     if not jobs:
-        return "📦 <b>转存进度</b>\n\n还没有转存任务。"
-    lines = ["📦 <b>转存进度</b>", ""]
-    for job in jobs:
-        lines.append(_job_line(job, _item_name(db, job.item_id)))
-    return "\n".join(lines)
+        return layout.card(
+            layout.title("转存进度"),
+            [layout.row("📦", "转存任务", "还没有转存任务")],
+        )
+    card_rows = [
+        layout.row("📦", "转存任务", _job_line(job, _item_name(db, job.item_id)))
+        for job in jobs
+    ]
+    return layout.card(layout.title("转存进度"), card_rows)
 
 
 def render_wants(db, user) -> str:
     """该用户的想看条目（本人 trigger=store_want 的转存任务行）。"""
     jobs = _user_jobs(db, user.id, trigger="store_want")
     if not jobs:
-        return "⭐ <b>我的想看</b>\n\n还没有想看的条目。"
-    lines = ["⭐ <b>我的想看</b>", ""]
-    for job in jobs:
-        lines.append(_job_line(job, _item_name(db, job.item_id)))
-    return "\n".join(lines)
+        return layout.card(
+            layout.title("我的想看"),
+            [layout.row("⭐", "想看条目", "还没有想看的条目")],
+        )
+    card_rows = [
+        layout.row("⭐", "想看条目", _job_line(job, _item_name(db, job.item_id)))
+        for job in jobs
+    ]
+    return layout.card(layout.title("我的想看"), card_rows)
 
 
 def _find_items(db, title: str):
@@ -186,6 +194,11 @@ def _ready_variant(db, user_id: int, item_id: int):
     )
 
 
+def _whyplay_card(name: str, rows: list[str], notes: list[str] | None = None) -> str:
+    heading = "为什么播不了" + (f"｜《{name}》" if name else "")
+    return layout.card(layout.title(heading), rows, notes)
+
+
 def diagnose_whyplay(db, user, title: str) -> str:
     """为什么播不了：只解释、不放行、不建任务、不发播放链接。
 
@@ -195,44 +208,35 @@ def diagnose_whyplay(db, user, title: str) -> str:
     """
     title = (title or "").strip()
     if not title:
-        return (
-            "❓ <b>为什么播不了</b>\n"
-            "\n"
-            "用法：<code>/whyplay 片名</code>\n"
-            "例如：<code>/whyplay 嫁金钗</code>"
-        )
+        return _whyplay_card("", [
+            layout.row("❓", "用法", "<code>/whyplay 片名</code>"),
+            layout.row("💡", "例如", "<code>/whyplay 嫁金钗</code>"),
+        ])
     items = _find_items(db, title)
     if not items:
-        return (
-            "❓ <b>为什么播不了</b>\n"
-            "\n"
-            f"没找到叫「{html.escape(title)}」的片子，请检查片名再试。"
-        )
+        return _whyplay_card("", [
+            layout.row("🔍", "查找结果", f"没找到叫「{html.escape(title)}」的片子，请检查片名再试"),
+        ])
     if len(items) > 1:
-        lines = [
-            "❓ <b>为什么播不了</b>",
-            "",
-            "片名太宽泛，找到了多个结果，请发送更完整的片名：",
-            "",
-        ]
+        rows = [layout.row(
+            "🔍", "查找结果", "片名太宽泛，找到了多个结果，请发送更完整的片名")]
         for row in items[:5]:
-            lines.append(f"• 《{html.escape(str(row.name))}》")
-        return "\n".join(lines)
+            rows.append(layout.row("🎬", "候选影片", f"《{html.escape(str(row.name))}》"))
+        return _whyplay_card("", rows)
 
     item = items[0]
     name = html.escape(str(item.name))
-    head = f"❓ <b>为什么播不了</b>｜《{name}》\n\n"
 
     path = (getattr(item, "file_path", "") or "").strip()
     if path.startswith("byos://"):
-        return head + "这部片已在你自己的盘里，直接点播即可。"
+        return _whyplay_card(name, [
+            layout.row("💾", "所在位置", "这部片已在你自己的盘里，直接点播即可"),
+        ])
     provider = _item_provider(db, item)
     if provider is None:
-        return (
-            head
-            + "这部片的来源暂无法识别，请在网页端重试一次，"
-            "仍播不了请联系客服。"
-        )
+        return _whyplay_card(name, [
+            layout.row("❓", "来源", "这部片的来源暂无法识别，请在网页端重试一次，仍播不了请联系客服"),
+        ])
     provider_text = PROVIDER_TEXT.get(provider, html.escape(str(provider)))
     bindings = (
         db.query(em.UserStorageBinding)
@@ -244,68 +248,57 @@ def diagnose_whyplay(db, user, title: str) -> str:
     active_matching = [b for b in matching if b.status == "active"]
     if not active_matching:
         if not bindings:
-            return (
-                head
-                + "你还没有绑定网盘，点播需要先绑定自己的账号。\n\n"
-                + BIND_GUIDE_SHORT
-            )
+            return _whyplay_card(name, [
+                layout.row("🔗", "网盘绑定", "你还没有绑定网盘，点播需要先绑定自己的账号"),
+            ], [BIND_GUIDE_SHORT])
         if matching:
             row = matching[0]
+            rows = [layout.row(
+                "🔗", "网盘绑定", f"你绑的{provider_text}已失效，点播前请先重新绑定")]
             msg = BINDING_ERROR_MESSAGES.get(str(row.last_error_kind or ""))
-            detail = f"\n　　{html.escape(msg)}" if msg else ""
-            return (
-                head
-                + f"你绑的{provider_text}已失效，点播前请先重新绑定。{detail}\n\n"
-                + BIND_GUIDE_SHORT
-            )
+            if msg:
+                rows.append(layout.row("⚠️", "失效原因", html.escape(msg)))
+            return _whyplay_card(name, rows, [BIND_GUIDE_SHORT])
         other = "pan115" if provider == "drive" else "drive"
         other_text = PROVIDER_TEXT.get(other, html.escape(str(other)))
-        return (
-            head
-            + f"你只绑了{other_text}，这部片是{provider_text}的片，"
-            "按“绑哪播哪”会转存到你绑的盘里再播。\n"
-            "去详情页点一次播放，系统会先转存，转完才可点。"
-        )
+        return _whyplay_card(name, [
+            layout.row(
+                "🔀", "绑定与来源",
+                f"你只绑了{other_text}，这部片是{provider_text}的片，"
+                "按“绑哪播哪”会转存到你绑的盘里再播"),
+            layout.row("▶️", "下一步", "去详情页点一次播放，系统会先转存，转完才可点"),
+        ])
     variant = _ready_variant(db, user.id, item.id)
     if variant is not None:
         if getattr(variant, "share_revoked_at", None) is not None:
-            return (
-                head
-                + "副本已就绪，但分享权限曾被收回，重新点播时会自动恢复。\n"
-                "如果仍播不了，把这部片从播放器的“继续观看”里移除，"
-                "再从详情页重新点播放。"
-            )
-        return (
-            head
-            + "副本已就绪，服务端这边没问题。\n"
-            "如果播放器里仍播不了，多半是它用了旧链接："
-            "把这部片从“继续观看”里移除（或退出重进），"
-            "再从详情页重新点播放，拿到新链接即可。"
-        )
+            return _whyplay_card(name, [
+                layout.row("📦", "副本状态", "副本已就绪，但分享权限曾被收回，重新点播时会自动恢复"),
+                layout.row("▶️", "下一步", "如果仍播不了，把这部片从播放器的“继续观看”里移除，再从详情页重新点播放"),
+            ])
+        return _whyplay_card(name, [
+            layout.row("📦", "副本状态", "副本已就绪，服务端这边没问题"),
+            layout.row("▶️", "下一步", "如果播放器里仍播不了，多半是它用了旧链接：把这部片从“继续观看”里移除（或退出重进），再从详情页重新点播放，拿到新链接即可"),
+        ])
     job = _latest_job(db, user.id, item.id)
     if job is not None:
         if job.status in ("pending", "running"):
-            return (
-                head
-                + "正在转存到你的盘里，转完才可点播。\n"
-                f"任务开始于 {_fmt_time(job.created_at)}，请稍后再从详情页点播放。"
-            )
+            return _whyplay_card(name, [
+                layout.row("📦", "转存状态", "正在转存到你的盘里，转完才可点播"),
+                layout.row("🕒", "任务开始", f"{_fmt_time(job.created_at)}，请稍后再从详情页点播放"),
+            ])
         if job.status == "failed":
             kind = str(job.error_kind or "")
             reason = JOB_ERROR_TEXT.get(kind, f"原因码：{html.escape(kind)}" if kind else "未知原因")
-            return (
-                head
-                + f"上一次转存失败（{reason}）。\n"
-                "重新点播一次可再试，仍失败请联系客服。"
-            )
+            return _whyplay_card(name, [
+                layout.row("📦", "转存状态", f"上一次转存失败（{reason}）"),
+                layout.row("▶️", "下一步", "重新点播一次可再试，仍失败请联系客服"),
+            ])
         if job.status == "done":
-            return (
-                head
-                + "转存任务已完成，但副本行暂未就绪。\n"
-                "重新点播一次，仍播不了请联系客服。"
-            )
-    return (
-        head
-        + "这部片还没有转存到你的盘里。\n"
-        "去详情页点一次播放，系统会先转存再播，转完才可点。"
-    )
+            return _whyplay_card(name, [
+                layout.row("📦", "转存状态", "转存任务已完成，但副本行暂未就绪"),
+                layout.row("▶️", "下一步", "重新点播一次，仍播不了请联系客服"),
+            ])
+    return _whyplay_card(name, [
+        layout.row("📦", "转存状态", "这部片还没有转存到你的盘里"),
+        layout.row("▶️", "下一步", "去详情页点一次播放，系统会先转存再播，转完才可点"),
+    ])

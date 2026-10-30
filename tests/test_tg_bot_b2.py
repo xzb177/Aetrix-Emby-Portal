@@ -87,7 +87,7 @@ def test_checkin_vitality_gained(db):
     db.commit()
     user = _make_user(db, username="u5", tg_id=910005, is_welfare=True)
     text = handlers.handle_checkin(db, {"id": 910005}, 910005, "")
-    assert "⚡ 活力值 +1" in text
+    assert "⚡ 活力值 | +1" in text
 
 
 def test_checkin_duplicate(db):
@@ -113,7 +113,8 @@ def test_points_bound(db):
     user.points = 250
     db.commit()
     text = handlers.handle_points(db, {"id": 910008}, 910008, "")
-    assert text == "✨ 当前积分：250"
+    assert "▎<b>我的能量</b>" in text
+    assert "✨ 当前积分 | 250" in text
 
 
 def test_points_vitality_row(db):
