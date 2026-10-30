@@ -119,6 +119,40 @@ def _award_group_chat_points(db, tg_user: dict) -> None:
 # P1 自助查询命令：个人数据，群聊里不执行（handler 层另有私聊 guard 双保险）
 _P1_COMMANDS = ("/bindings", "/transfers", "/whyplay", "/wants")
 
+# 群匿名管理员：以群/频道身份发言时，消息的 from 是 GroupAnonymousBot
+# （固定 id 1087968824）且带 sender_chat——Telegram 协议上认不出背后是
+# 哪位管理员，handler 里 resolve 永远查不到人。此前这类消息会被误当
+# 未绑定用户回绑定指引（2026-10-30 站长群里匿名发 /redpacket 坐实）。
+GROUP_ANONYMOUS_BOT_ID = 1087968824
+
+ANON_ADMIN_TEXT = (
+    "🎭 你现在是匿名管理员身份，我认不出是哪位管理员，这个操作办不了。\n"
+    "请关掉匿名、用你本人身份再发一次就行；你的账号绑定是好的，不用重新绑定。"
+)
+
+# 需要发送者身份的命令全集：handler 内走 resolve / _bound_user /
+# _p1_user，匿名发在 router 层统一拦下回 ANON_ADMIN_TEXT。
+# 不在表内＝公开命令（/help /rank /requestboard /rules：不查发送者
+# 身份、只读全站或群级数据），匿名发照常执行。
+_IDENTITY_COMMANDS = {
+    "/start", "/bind", "/checkin", "/points", "/chatpoints",
+    "/account", "/me", "/request", "/myrequests", "/login", "/renew",
+    "/govlog", "/level", "/report", "/propose", "/launch",
+    "/redeem", "/lottery", "/redpacket",
+    "/bindings", "/transfers", "/whyplay", "/wants",
+}
+
+
+def _is_anonymous_admin(msg: dict) -> bool:
+    """消息是否为匿名身份（群匿名管理员 / 以频道身份发言）。
+
+    判据任一命中：消息带 sender_chat，或 from 是 GroupAnonymousBot
+    固定 id。私聊没有这种消息，天然不受影响。
+    """
+    if msg.get("sender_chat"):
+        return True
+    return (msg.get("from") or {}).get("id") == GROUP_ANONYMOUS_BOT_ID
+
 
 def dispatch(db, update: dict) -> None:
     """分发单个 update 到对应的处理器。
@@ -175,6 +209,10 @@ def dispatch(db, update: dict) -> None:
         # 6 位纯数字 → 绑定码验证
         if text.isdigit() and len(text) == 6:
             if in_group and not _group_allow(chat_id, group_limit):
+                return
+            # 匿名发的绑定码认不出是谁，验了也绑不到本人：回匿名说明
+            if _is_anonymous_admin(msg):
+                sender.send_message(db, chat_id, ANON_ADMIN_TEXT)
                 return
             _verify_bind_code(db, update)
             return
@@ -238,6 +276,18 @@ def dispatch(db, update: dict) -> None:
         fn = commands.get(cmd)
         if fn is None:
             sender.send_message(db, chat_id, "未知命令，发送 /help 查看可用命令")
+            return
+
+        # 匿名管理员拦截：需要身份的命令统一回匿名说明，不许落进
+        # handler 被 resolve→None 误回绑定指引（对方其实早已绑定）。
+        # 唯一例外：群内 /redeem 的删消息护码分支在下方先于 handler
+        # 执行、给的是私聊提示而非绑定指引，匿名发继续走它不拦。
+        if (
+            _is_anonymous_admin(msg)
+            and cmd in _IDENTITY_COMMANDS
+            and not (cmd == "/redeem" and in_group)
+        ):
+            sender.send_message(db, chat_id, ANON_ADMIN_TEXT)
             return
 
         # 账号、求片和免密登录都可能泄露隐私/凭据，强制私聊。
