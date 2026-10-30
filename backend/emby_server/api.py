@@ -706,6 +706,27 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs,
                                              synthesize=True, user=_src_user)]
         dto["MediaSourceCount"] = 1
+        # 详情源补「回本服务取流」地址（甲方案）：此前详情 MediaSource
+        # 申报 SupportsDirectPlay=True 却不带任何地址，不走 PlaybackInfo、
+        # 直放详情源的播放器（如 SenPlayer 关掉「始终播放原始路径」时）
+        # 手里没地址，服务端零请求直接黑屏。这里与 PlaybackInfo 共用
+        # 唯一构造点 _signed_local_stream_url 下发同形地址；只给可播条目
+        # （movie/episode 且有 file_path，与 PlaybackInfo 无路径回空源的
+        # 口径对齐），容器类（series/season）不加。地址只回本服务：
+        # 门禁 / quota 改道 / 副本形态仍由 video_stream 取流时裁决，
+        # 详情面绝不下发网盘直链、绝不带真实 Path（hide 口径不变）。
+        # 签名轨只给已有 active 绑定的用户：播放签名是「已过门禁才
+        # 下发」的凭证，未绑定用户拿无签地址打流端点会被现场 403 并
+        # 看到去绑定引导，不许在这里先把凭证发出去。
+        if (dto["MediaSources"] and item.item_type in ("movie", "episode")
+                and item.file_path):
+            from backend.emby_server import playback_gate as _gate_mod
+            _detail_url, _, _ = _signed_local_stream_url(
+                item, base, user_id, db, api_key,
+                with_sign=bool(user_id)
+                and _gate_mod.has_active_binding(db, user_id))
+            dto["MediaSources"][0]["DirectPlayUrl"] = _detail_url
+            dto["MediaSources"][0]["DirectStreamUrl"] = _detail_url
         # 片头片尾标记 → Chapters：复用 MediaSource 里已算好的（_chapters_for_item
         # 同一套口径），不重复跑两次 intro 管道
         dto["Chapters"] = (dto["MediaSources"][0].get("Chapters")
@@ -1311,6 +1332,42 @@ def _effective_bitrate(item) -> int | None:
     return None
 
 
+def _signed_local_stream_url(item, base: str, user_id, db,
+                             api_key: str = "", with_sign: bool = True):
+    """本站 Videos/stream 播放地址的唯一构造点（横切只许一套）。
+
+    PlaybackInfo 与详情 MediaSource 共用，形态逐字一致：
+    {base}/emby/Videos/{guid}/stream{容器后缀}?static=true&MediaSourceId={guid}
+    + api_key 回显（仅 Emby 客户端 token，JWT 不进 URL，见 _api_key_for）
+    + play_sign 短期签名（uid/exp/sign，有效期按片长发放，见 play_sign）。
+    带后缀的地址走 video_stream_ext 路由（与无后缀行为逐字一致），严格
+    播放器靠后缀认格式。只构造「回本服务取流」的地址：域名改写（流节点 /
+    加速域名）是 PlaybackInfo 层的后续步骤；门禁、quota 改道、用户副本
+    形态一律由 video_stream 在实际取流时裁决，本函数不做任何判定。
+
+    with_sign=False 时不带签名轨：播放签名在门禁口径里是「已过门禁
+    才下发」的凭证（见 playback_gate：带有效签名的消费请求不再重复查
+    绑定），详情面没有过门禁，未绑定用户绝不能在这里拿到签名——他们拿
+    无签地址打流端点，由流端点现场过门禁回 403 并给出绑定引导。
+
+    返回 (url, play_exp, play_sig)；with_sign=False 时后两项为 None。
+    PlaybackInfo 还需要 exp/sig 拼字幕授权串，故一并返回。
+    """
+    play_exp = play_sig = None
+    signed_qs = ""
+    if with_sign:
+        play_ttl = play_sign.play_sign_ttl_for_runtime(
+            db, _run_time_ticks(item) // TICKS)
+        play_exp, play_sig = play_sign.issue_play_sign(
+            user_id, item.guid, play_ttl)
+        signed_qs = f"&uid={user_id}&exp={play_exp}&sign={play_sig}"
+    key_qs = f"&api_key={api_key}" if api_key else ""
+    suffix = _direct_stream_suffix(_container_of(item))
+    url = (f"{base}/emby/Videos/{item.guid}/stream{suffix}"
+           f"?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}")
+    return url, play_exp, play_sig
+
+
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
                   auth_qs: str = "", synthesize: bool = False, user=None) -> dict:
     # 转码删除（2026-10-24）：服务端不再转码，申报恒 False。
@@ -1376,8 +1433,9 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
     if item.audio_codec:
         dto["AudioCodec"] = item.audio_codec
     # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
-    # 注：DirectStreamUrl 由调用方（playback_info）在拿到 _play_target 后
-    # 拼装，CDN 域名改写也在那一层完成（这里只管字幕 DeliveryUrl）。
+    # 注：DirectStreamUrl / DirectPlayUrl 由调用方经唯一构造点
+    # _signed_local_stream_url 补上（PlaybackInfo 与详情 DTO 两面），
+    # CDN 域名改写在 PlaybackInfo 层完成（这里只管字幕 DeliveryUrl）。
     # 转码删除后不再有 TranscodingUrl。
     return _strip_nulls(dto)
 
@@ -3545,6 +3603,7 @@ def get_item_detail(
     except Exception:  # noqa: BLE001 — 预热启动失败不影响详情页
         pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
+                     api_key=_api_key_for(db, request),
                      auth_qs=_url_auth_qs(
                          db, request, user, item.guid,
                          runtime_seconds=_run_time_ticks(item) // TICKS))
@@ -5327,18 +5386,14 @@ async def playback_info(
     # api_key：只回显 Emby 客户端 token（第三方客户端兼容）。
     # 安全修复 H2：门户 / 管理员 JWT 不再进 URL——网页端只拿短期播放签名（uid/exp/sign）。
     api_key = _api_key_for(db, request)
-    # 播放短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带 uid/exp/sign，
-    # 播放端点优先验签。签名有效期按条目时长发放（2026-10-29 用户拍板：
-    # 电视剧一集的时间、电影一部电影的时间）：时长 + 缓冲（默认 15 分钟），
-    # 下限 30 分钟 / 上限 6 小时 / 时长未知默认 60 分钟，四旋钮走 play_sign
-    # 的 SystemConfig 键热读（play_sign_ttl_for_runtime）；双轨（api_key 轨 /
-    # 网页端轨）统一此口径。绑定 user_id+item_id，泄露窗口随片长走但有上限。
-    # P0：async 路由里同步 DB 读走 run_db 线程池（store 热缓存命中时只是内存读）。
-    play_ttl = await run_db(
-        play_sign.play_sign_ttl_for_runtime, db, _run_time_ticks(item) // TICKS)
-    play_exp, play_sig = play_sign.issue_play_sign(user.id, item.guid, play_ttl)
-    signed_qs = f"&uid={user.id}&exp={play_exp}&sign={play_sig}"
-    key_qs = f"&api_key={api_key}" if api_key else ""
+    # 播放地址 + 短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带
+    # uid/exp/sign，播放端点优先验签。签名有效期按条目时长发放
+    # （2026-10-29 用户拍板：一集管一集、一部影片管一部），细则在
+    # play_sign.play_sign_ttl_for_runtime。地址构造与详情 MediaSource
+    # 共用唯一构造点 _signed_local_stream_url（横切只许一套）。
+    # P0：构造里有同步 DB 读（签名有效期热读），走 run_db 线程池。
+    stream_url, play_exp, play_sig = await run_db(
+        _signed_local_stream_url, item, base, user.id, db, api_key)
     # 字幕 DeliveryUrl：缓存里的 media_source 不带凭据（不能把别人的凭据缓存出去），
     # 这里按本次请求补上——Emby 客户端补 api_key，门户（JWT）补播放签名，JWT 不进 URL（H2）
     sub_auth = f"api_key={api_key}" if api_key else f"uid={user.id}&exp={play_exp}&sign={play_sig}"
@@ -5346,13 +5401,6 @@ async def playback_info(
         _du = _st.get("DeliveryUrl") if isinstance(_st, dict) else None
         if _du and _du.endswith("?api_key="):
             _st["DeliveryUrl"] = _du[: -len("api_key=")] + sub_auth
-    # 直链格式一致化：有白名单容器时下发带后缀的地址
-    #（/stream.mkv），走 video_stream_ext 路由；无后缀地址曾让严格播放器
-    # 认不出格式而报 Invalid media format。改写链只换基址，后缀原样保留。
-    _stream_suffix = _direct_stream_suffix(await run_db(_container_of, item))
-    stream_url = (
-        f"{base}/emby/Videos/{item.guid}/stream{_stream_suffix}?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}"
-    )
     # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
     # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
     # 最简播放（2026-10-16 用户拍板）：Drive 条目且直链开关开启时，跳过
