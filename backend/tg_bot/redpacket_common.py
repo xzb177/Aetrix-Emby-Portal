@@ -42,15 +42,16 @@ def packet_text(packet, sender_name: str) -> str:
     """红包进行中的按钮消息正文（卡片式）。
 
     packet 是 backend.models.RedPacket 对象；sender_name 须已做 HTML 转义。
-    保留 "总额 X 能量 / 共 N 个 / 剩余 M 个" 口径（测试与客户端展示依赖）。
+    值口径保留 "总额 X 能量 / 共 N 个 / 剩余 M 个"（测试与客户端展示依赖）；
+    标签位已按用户 2026-10-30 要求与全站面板统一为恰好 4 个汉字。
     """
     return layout.card(
         layout.title("幸运红包！", sender_name),
         [
-            layout.row("🧧", "红包", f"<b>{sender_name} 的幸运红包</b>"),
-            layout.row("💰", "总额", f"<b>总额 {packet.total_amount} 能量</b> ｜ <b>共 {packet.total_count} 个</b>"),
-            layout.row("📦", "剩余", f"<b>剩余 {packet.remaining_count} 个</b>（待领 <b>{packet.remaining_amount}</b> 能量）"),
-            layout.row("⏰", "有效期", "24 小时后过期，手慢无"),
+            layout.row("🧧", "红包主人", f"<b>{sender_name} 的幸运红包</b>"),
+            layout.row("💰", "红包总额", f"<b>总额 {packet.total_amount} 能量</b> ｜ <b>共 {packet.total_count} 个</b>"),
+            layout.row("📦", "剩余份数", f"<b>剩余 {packet.remaining_count} 个</b>（待领 <b>{packet.remaining_amount}</b> 能量）"),
+            layout.row("⏰", "有效期限", "24 小时后过期，手慢无"),
         ],
         ["👇 点击下方按钮开抢"],
     )
@@ -78,17 +79,17 @@ def finished_text(packet, sender_name: str, reason: str) -> str:
     reason: "empty"（已抢完）/ "expired"（已过期）。
     """
     if reason == "empty":
-        status_rows = [layout.row("🎉", "状态", "<b>红包已抢完</b>")]
+        status_rows = [layout.row("🎉", "红包状态", "<b>红包已抢完</b>")]
     else:
         status_rows = [
-            layout.row("⌛", "状态", "<b>红包已过期</b>"),
-            layout.row("💸", "退款", "剩余能量已退回发送者"),
+            layout.row("⌛", "红包状态", "<b>红包已过期</b>"),
+            layout.row("💸", "过期退款", "剩余能量已退回发送者"),
         ]
     return layout.card(
         layout.title("红包！", sender_name),
         [
-            layout.row("🧧", "红包", f"<b>{sender_name} 的红包</b>"),
-            layout.row("💰", "总额", f"总额 {packet.total_amount} 能量 ｜ 共 {packet.total_count} 个"),
+            layout.row("🧧", "红包主人", f"<b>{sender_name} 的红包</b>"),
+            layout.row("💰", "红包总额", f"总额 {packet.total_amount} 能量 ｜ 共 {packet.total_count} 个"),
             *status_rows,
         ],
     )
