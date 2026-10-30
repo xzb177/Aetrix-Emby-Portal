@@ -4434,14 +4434,41 @@ def _persist_item_sha1(db, item, sha1_hex, *, origin):
     try:
         old_algo = (getattr(item, "content_hash_algo", "") or "")
         old_value = (getattr(item, "content_hash", "") or "")
-        if old_algo.strip().lower() == "sha1" and old_value.lower() == value:
-            return
-        item.content_hash = value
-        item.content_hash_algo = "sha1"
-        db.commit()
-        logger.info("条目 sha1 沉淀 item=%s origin=%s（was %s:%s）",
-                    getattr(item, "id", None), origin,
-                    old_algo or "none", (old_value or "")[:12])
+        same = (old_algo.strip().lower() == "sha1"
+                and old_value.lower() == value)
+        if not same:
+            item.content_hash = value
+            item.content_hash_algo = "sha1"
+        # 同 fid 兄弟行共享登记（2026-10-30 扩围）：同一文件在多库
+        # 有多行时只沉淀命中的一行，兄弟行仍是 no_trusted_sha1。
+        # 同 drive_file_id 即同字节（_trusted_item_sha1 用时还会按
+        # 实时源大小复核），一并补齐；软删/已合并行不是有效登记
+        # 面，不动。本行已是同值时也要查兄弟行（早退会漏补）。
+        siblings = 0
+        fid = (getattr(item, "drive_file_id", "") or "").strip()
+        if fid:
+            sib_rows = (db.query(em.MediaItem)
+                        .filter(em.MediaItem.drive_file_id == fid,
+                                em.MediaItem.id != getattr(item, "id", None),
+                                em.MediaItem.deleted_at.is_(None),
+                                em.MediaItem.merged_into_id.is_(None))
+                        .all())
+            for sib in sib_rows:
+                s_algo = (getattr(sib, "content_hash_algo", "")
+                          or "").strip().lower()
+                s_val = (getattr(sib, "content_hash", "")
+                         or "").strip().lower()
+                if s_algo == "sha1" and s_val == value:
+                    continue
+                sib.content_hash = value
+                sib.content_hash_algo = "sha1"
+                siblings += 1
+        if not same or siblings:
+            db.commit()
+            logger.info("条目 sha1 沉淀 item=%s origin=%s（was %s:%s）%s",
+                        getattr(item, "id", None), origin,
+                        old_algo or "none", (old_value or "")[:12],
+                        f"，同 fid 兄弟行 +{siblings}" if siblings else "")
     except Exception:  # noqa: BLE001 — 沉淀失败不拖垮转存
         try:
             db.rollback()
@@ -5611,7 +5638,9 @@ def _run_cross_115_to_drive(db, job, item):
                 f"实得 {len(data)} 字节")
         return data
 
-    reader = _SegmentReader(size, _fetch)
+    # 透传哈希包装（2026-10-30 扩围）：字节实际流经本进程，顺手
+    # 算整文件 sha1 供下方沉淀——源列表没给 sha1 时也不再白搬。
+    reader = _HashingReader(_SegmentReader(size, _fetch), size)
     try:
         new_fid = user_client.resumable_upload(user_drive, name, folder_id,
                                                size, reader)
@@ -5634,10 +5663,25 @@ def _run_cross_115_to_drive(db, job, item):
             db, job, "copy_unresolved",
             f"Drive 跨转存上传回执 id={new_fid} 在用户转存目录中核不到"
             f"（目录 id={folder_id}，文件名={name}），不登记、不回落")
-    # 源列表项带了整文件 sha1 就顺手沉淀（跨 provider 秒传资格）；
-    # 拿不到不硬凑。这一步在补 anyone-reader 之前：即使后面落
-    # orphan，哈希本身是内容的事实、照样成立。
-    if src_sha1:
+    # 沉淀（跨 provider 秒传资格）：透传哈希优先——算的是实际搬
+    # 运字节，是内容的事实；源列表 sha1 与透传不一致说明列表值
+    # 已陈旧/写错，以透传为准（旧口径照单全收会毒化后续秒传资
+    # 格，先打警告留痕）。透传没算满（哈希链断裂/未读全）才回落
+    # 源列表值，都没有就不硬凑。这一步在补 anyone-reader 之前：
+    # 即使后面落 orphan，哈希本身照样成立。
+    stream_sha1 = reader.sha1_hexdigest() or ""
+    listing_sha1 = (src_sha1 or "").strip().lower()
+    if (stream_sha1 and listing_sha1 and _is_sha1_hex(listing_sha1)
+            and listing_sha1 != stream_sha1):
+        logger.warning(
+            "115→Drive 搬运 sha1 不一致 item=%s list=%s stream=%s"
+            "（以透传为准）",
+            getattr(item, "id", None), listing_sha1[:12],
+            stream_sha1[:12])
+    if stream_sha1:
+        _persist_item_sha1(db, item, stream_sha1,
+                           origin="pan115_to_drive_stream")
+    elif src_sha1:
         _persist_item_sha1(db, item, src_sha1,
                            origin="pan115_source_list")
     try:

@@ -6623,13 +6623,25 @@ def _apply_scan_identity(item, scan_file) -> None:
     - 本轮列举给了哈希才写列；没给（115 sha1 未实测、rclone RC 无可用
       opt、本机文件）时**不清除**已有值——缺位 = 身份未知，落 NULL 只
       发生在新行第一次写（列默认 NULL），绝不拿空串占位、绝不猜值。
+    - 例外（2026-10-30 秒传接力扩围）：存量列已是转存沉淀的 sha1 时，
+      源给的非 sha1 哈希不降级覆盖列值——与 _persist_item_sha1 的
+      既有取舍一致（md5 是 Drive 列举元数据、随时可重得；sha1 只能
+      靠整文件字节算出，洗掉要再搬一遍字节才挣得回来）。源给 sha1
+      时照常刷新（内容真变了新 sha1 跟着变）。证据快照不受此例外
+      影响，仍按源值原样组装。
     - identity_json 只组装本轮实际拿到的证据键（present-only，键按
       字母序）；本轮零证据时不动已有快照（不把旧证据洗成空）。
     """
     _hash = getattr(scan_file, "content_hash", "") or ""
     if _hash:
-        item.content_hash = _hash
-        item.content_hash_algo = getattr(scan_file, "content_hash_algo", "") or ""
+        _scan_algo = (getattr(scan_file, "content_hash_algo", "")
+                      or "").strip().lower()
+        _stored_algo = (getattr(item, "content_hash_algo", "")
+                        or "").strip().lower()
+        if not (_stored_algo == "sha1" and _scan_algo != "sha1"):
+            item.content_hash = _hash
+            item.content_hash_algo = getattr(
+                scan_file, "content_hash_algo", "") or ""
     evidence: dict[str, str] = {}
     if _hash:
         evidence["content_hash"] = _hash
