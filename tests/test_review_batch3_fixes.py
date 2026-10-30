@@ -37,7 +37,7 @@ def test_redeem_welfare_atomic_spend():
             points.redeem_welfare(db, user, 7)  # 默认 100 分，不够
             raise AssertionError("应抛 ValueError")
         except ValueError as e:
-            assert "积分不足" in str(e)
+            assert "能量不足" in str(e)
         db.refresh(user)
         assert int(user.points) == 50, "扣款失败时余额不应变化"
     finally:

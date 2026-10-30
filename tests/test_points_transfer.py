@@ -108,7 +108,7 @@ def test_transfer_inactive(db):
 def test_transfer_insufficient(db):
     u1 = _make_user(db, "u1", 100)
     _make_user(db, "u2", 0)
-    with pytest.raises(ValueError, match="积分不足"):
+    with pytest.raises(ValueError, match="能量不足"):
         economy.transfer_points_core(db, u1, "u2", 100)  # 需 105
 
 

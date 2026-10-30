@@ -582,7 +582,7 @@ def distribute_round(db: Session, round_id: int) -> dict[str, Any]:
             continue
         if prize.type in ("points", "days") and (prize.value or 0) <= 0:
             # days=0 在 grant_welfare 语义里是永久，days 奖品不许借道发放永久资格
-            errors.append({"winner_id": w.id, "error": f"{'积分' if prize.type == 'points' else '天数'}奖品 value 非正：{prize.value}"})
+            errors.append({"winner_id": w.id, "error": f"{'能量' if prize.type == 'points' else '天数'}奖品 value 非正：{prize.value}"})
             continue
         if prize.type not in ("points", "days", "whitelist"):
             errors.append({"winner_id": w.id, "error": f"未知奖品类型：{prize.type}"})
@@ -867,7 +867,7 @@ def notify_new_round(db: Session, round_id: int) -> dict:
         if ptype == "days":
             return f"🎁 {name}：公益{p.value}天 ×{qty}"
         elif ptype == "points":
-            return f"🎁 {name}：{p.value}积分 ×{qty}"
+            return f"🎁 {name}：{p.value}能量 ×{qty}"
         elif ptype == "whitelist":
             return f"🎁 {name}：白名单 ×{qty}"
         return f"🎁 {name} ×{qty}"

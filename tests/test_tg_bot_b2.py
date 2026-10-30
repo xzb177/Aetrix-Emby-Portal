@@ -144,7 +144,7 @@ def test_redeem_points_success(db):
     text = handlers.handle_redeem(db, {"id": 910012}, 910012, "test100")
     assert "🎁" in text
     assert "兑换成功" in text
-    assert "+100 积分" in text
+    assert "+100 能量" in text
     db.refresh(user)
     assert user.points == 100
 

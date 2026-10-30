@@ -564,7 +564,7 @@ def unlock_emby_view(
     if realm is None:
         raise HTTPException(status_code=404, detail="服不存在")
     if not realms.is_free_realm(db, realm_id):
-        raise HTTPException(status_code=400, detail="当前服为付费服，查看权限来自有效订阅，无需积分解锁")
+        raise HTTPException(status_code=400, detail="当前服为付费服，查看权限来自有效订阅，无需能量解锁")
     now = datetime.now()
     existing = (db.query(models.EmbyViewUnlock)
                   .filter(models.EmbyViewUnlock.user_id == request_user.id,
@@ -577,7 +577,7 @@ def unlock_emby_view(
                 "expires_at": existing.expires_at.isoformat() if existing.expires_at else None}
     price_points, price_days = _view_unlock_pricing(db)
     if price_points <= 0:
-        raise HTTPException(status_code=400, detail="当前无需积分即可查看")
+        raise HTTPException(status_code=400, detail="当前无需能量即可查看")
     # 原子扣费：余额检查写进 WHERE，并发下至多一个成功
     rows = (db.query(models.WebUser)
               .filter(models.WebUser.id == request_user.id,
@@ -585,7 +585,7 @@ def unlock_emby_view(
               .update({models.WebUser.points: func.coalesce(models.WebUser.points, 0) - price_points},
                       synchronize_session="fetch"))
     if not rows:
-        raise HTTPException(status_code=409, detail="积分不足")
+        raise HTTPException(status_code=409, detail="能量不足")
     db.flush()
     balance = int(db.query(models.WebUser.points)
                     .filter(models.WebUser.id == request_user.id).scalar() or 0)
