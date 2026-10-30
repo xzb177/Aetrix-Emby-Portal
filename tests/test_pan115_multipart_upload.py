@@ -266,7 +266,7 @@ def test_multipart_part_failure_fails_job_no_variant(db, monkeypatch):
                  content_hash_algo="sha1")
     _binding(db, 7)
     job = _cross_job(db, item.id)
-    job.attempts = tv.MAX_ATTEMPTS
+    job.attempts = tv.MAX_ATTEMPTS - 1  # 门控在 attempts>=MAX 时直接终态，预设 MAX 会截走本次运行、丢分片文案；留一次让本次真实走完分片失败再耗尽
     db.commit()
     fake = _FakeUser115(rapid="miss", multipart="error")
     _patch_cross(monkeypatch, fake)

@@ -231,3 +231,113 @@ def test_process_claimed_round_runs_fast_job(db_factory, db, monkeypatch):
         em.TransferJob.id == job.id).first()
     assert fresh.status == "done"
     assert fresh.lease_expires_at is None
+def _boom_factory():
+    raise RuntimeError("SA client factory exploded")
+
+
+def _read_job(db_factory, job_id):
+    s = db_factory()
+    try:
+        return s.query(em.TransferJob).filter(em.TransferJob.id == job_id).first()
+    finally:
+        s.close()
+
+
+def test_execute_claimed_job_factory_escape_retries_with_backoff(db_factory, db):
+    """A-013：工厂逃逸不再只 rollback——计次 1、pending + 退避、租约清掉。"""
+    item = _item(db)
+    job = _job(db, item_id=item.id, status="running", claimed_by="w1",
+               lease_expires_at=datetime.now() + timedelta(seconds=3600),
+               attempts=0)
+    outcome = tv._execute_claimed_job(job.id, db_factory, _boom_factory)
+    assert outcome == "retried"
+    fresh = _read_job(db_factory, job.id)
+    assert fresh.status == "pending"
+    assert fresh.attempts == 1
+    assert fresh.error_kind == "retriable"
+    assert fresh.lease_expires_at is None
+    assert fresh.claimed_by is None
+    assert fresh.next_retry_at is not None
+    assert fresh.next_retry_at > datetime.now()
+    assert fresh.next_retry_at <= datetime.now() + timedelta(seconds=120)
+
+
+def test_execute_claimed_job_factory_escape_at_max_fails_terminal(db_factory, db):
+    """A-013：逃逸计次到 3 次即终态 failed/worker_error，不再被认领。"""
+    item = _item(db)
+    job = _job(db, item_id=item.id, status="running", claimed_by="w1",
+               lease_expires_at=datetime.now() + timedelta(seconds=3600),
+               attempts=2)
+    outcome = tv._execute_claimed_job(job.id, db_factory, _boom_factory)
+    assert outcome == "failed"
+    fresh = _read_job(db_factory, job.id)
+    assert fresh.status == "failed"
+    assert fresh.attempts == 3
+    assert fresh.error_kind == "worker_error"
+    assert fresh.lease_expires_at is None
+    assert fresh.claimed_by is None
+
+
+def test_execute_claimed_job_in_run_escape_counts_once(db_factory, db, monkeypatch):
+    """A-013：run 内已计次的逃逸不再重复计次（1 次逃逸 = attempts 1，不是 2）。"""
+    item = _item(db)
+    job = _job(db, item_id=item.id, status="running", claimed_by="w1",
+               lease_expires_at=datetime.now() + timedelta(seconds=3600),
+               attempts=0)
+
+    def _raising_run(db_session, job_row, drive_api):
+        job_row.status = "running"
+        job_row.attempts += 1
+        db_session.commit()
+        raise RuntimeError("executor exploded after counting")
+
+    monkeypatch.setattr(tv, "run_transfer_job_once", _raising_run)
+    outcome = tv._execute_claimed_job(job.id, db_factory, lambda: SimpleNamespace())
+    assert outcome == "retried"
+    fresh = _read_job(db_factory, job.id)
+    assert fresh.attempts == 1
+    assert fresh.status == "pending"
+    assert fresh.error_kind == "retriable"
+
+
+def test_execute_claimed_job_escape_three_cycles_never_reclaimed(db_factory, db):
+    """A-013：逃逸 3 轮后行终态，租约回收与认领都不再捡它。"""
+    item = _item(db)
+    job = _job(db, item_id=item.id, status="running", claimed_by="w1",
+               lease_expires_at=datetime.now() + timedelta(seconds=3600),
+               attempts=0)
+    for i in range(3):
+        outcome = tv._execute_claimed_job(job.id, db_factory, _boom_factory)
+        if i < 2:
+            assert outcome == "retried"
+            # 模拟租约回收打回 pending 后被重新认领
+            s = db_factory()
+            row = s.query(em.TransferJob).filter(em.TransferJob.id == job.id).first()
+            row.status = "running"
+            row.lease_expires_at = datetime.now() + timedelta(seconds=3600)
+            row.claimed_by = "w1"
+            row.next_retry_at = None
+            s.commit()
+            s.close()
+    assert outcome == "failed"
+    fresh = _read_job(db_factory, job.id)
+    assert fresh.status == "failed"
+    assert fresh.attempts == 3
+    s = db_factory()
+    try:
+        assert tv.reclaim_expired_leases(s) == 0
+        assert job.id not in tv.claim_due_jobs(s, worker_id="w2")
+    finally:
+        s.close()
+
+
+def test_run_transfer_job_once_attempts_guard_fails_terminal(db_factory, db):
+    """A-013：执行入口兜底门控——attempts 已达上限的行直接终态，不再执行。"""
+    item = _item(db)
+    job = _job(db, item_id=item.id, status="pending", attempts=3)
+    result = tv.run_transfer_job_once(db, job, SimpleNamespace())
+    assert result["outcome"] == "failed"
+    fresh = _read_job(db_factory, job.id)
+    assert fresh.status == "failed"
+    assert fresh.attempts == 3
+    assert fresh.error_kind == "retriable"
