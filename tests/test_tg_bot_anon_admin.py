@@ -26,7 +26,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend import models
 from backend.integrations import store
-from backend.tg_bot import handlers, router, sender
+from backend.tg_bot import ephemeral, handlers, router, sender
 
 ANON_ID = 1087968824
 GROUP_ID = -100777
@@ -54,6 +54,13 @@ def sent(monkeypatch):
         sender, "send_message",
         lambda db_, chat_id, text, reply_markup=None, **kw: out.append(text) or (True, None),
     )
+    # 自毁二期接线后，群里匿名说明改走 send_message_ex 拿 message_id 挂自毁：
+    # ex 通道同样记进 out（断言口径不变），自毁调度打桩成空操作不真挂定时器。
+    monkeypatch.setattr(
+        sender, "send_message_ex",
+        lambda db_, chat_id, text, reply_markup=None, **kw: out.append(text) or (True, None, 9001),
+    )
+    monkeypatch.setattr(ephemeral, "schedule_delete", lambda *a, **kw: True)
     return out
 
 
@@ -140,7 +147,7 @@ def test_real_user_redpacket_flow_unchanged(db, sent):
     _make_user(db)
     router.dispatch(db, _user_update("/redpacket 50 5"))
     assert len(sent) == 1
-    assert "总额 50 积分" in sent[0]
+    assert "总额 50 能量" in sent[0]
     assert db.query(models.RedPacket).count() == 1
 
 

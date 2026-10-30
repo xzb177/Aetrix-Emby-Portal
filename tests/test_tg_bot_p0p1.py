@@ -306,6 +306,14 @@ def test_p1_group_chat_refused(db, monkeypatch):
 
     import backend.tg_bot.router as router_mod
     monkeypatch.setattr(sender, "send_message", fake_send)
+
+    def fake_send_ex(db_, chat_id, text_, reply_markup=None, parse_mode="HTML"):
+        sent.append(text_)
+        return (True, None, 1)
+
+    monkeypatch.setattr(sender, "send_message_ex", fake_send_ex)
+    monkeypatch.setattr(
+        "backend.tg_bot.ephemeral.schedule_delete", lambda *a, **k: True)
     router_mod.dispatch(db, update)
     assert sent and "私聊" in sent[0]
 
