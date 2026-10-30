@@ -1885,10 +1885,14 @@ def save_douban_ban_downgrade(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存豆瓣封禁降级开关（写 SystemConfig，60 秒内热生效，无需重启）。"""
-    from backend.emby_server import enrich_worker
-    cfg = enrich_worker.save_douban_ban_downgrade_config(db, body.enabled)
-    return {"success": True, **cfg}
+    """A-024：该开关已改走环境变量，面板不可写（410 Gone）。
+
+    开关现由 env ENRICH_DOUBAN_BAN_DOWNGRADE 接管，GET 端点仍可读当前
+    生效值；PUT 不再谎称保存，显式拒绝，调用方应改走环境变量。
+    """
+    raise HTTPException(
+        status_code=410,
+        detail="该开关已改走环境变量 ENRICH_DOUBAN_BAN_DOWNGRADE，面板不可写")
 
 
 # ==================== 兜底链路统一（链路规划 Step 2） ====================
