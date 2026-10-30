@@ -176,11 +176,11 @@ class TestPlaySignConfig:
         from backend import models
         from backend.emby_server import play_sign
 
-        payload = play_sign.write_config(db, enabled=False, play_sign_ttl=1800)
+        payload = play_sign.write_config(db, play_sign_ttl=1800)
         assert payload["enabled"] is False
         assert payload["play_sign_ttl"] == 1800
         assert payload["defaults"] == {"enabled": True, "play_sign_ttl": 900}
-        # 摘面板后开关不再落库（enabled 参数仅兼容保留），生效值来自 env
+        # A-008：write_config 不再接受 enabled；摘面板后开关不落库，生效值来自 env
         row = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == play_sign.CONFIG_HOTLINK_ENABLED).first()
         assert row is None
@@ -195,11 +195,11 @@ class TestPlaySignConfig:
         from backend.emby_server import play_sign
 
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl=30)
+            play_sign.write_config(db, play_sign_ttl=30)
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl=90000)
+            play_sign.write_config(db, play_sign_ttl=90000)
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl="abc")
+            play_sign.write_config(db, play_sign_ttl="abc")
 
     def test_sign_ttl_seconds_constant_kept(self):
         """SIGN_TTL_SECONDS 常量保留（兼容旧引用）。"""

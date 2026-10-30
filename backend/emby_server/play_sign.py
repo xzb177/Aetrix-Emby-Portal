@@ -196,7 +196,7 @@ def config_payload(db: Session | None = None) -> dict:
     }
 
 
-def write_config(db: Session, *, enabled: bool, play_sign_ttl: int) -> dict:
+def write_config(db: Session, *, play_sign_ttl: int) -> dict:
     """管理后台写入：校验范围 → 落库 → 失效热缓存。
 
     r36 起走 ``config_service`` 统一编排层（校验→批量落库→写时失效）。
@@ -204,15 +204,17 @@ def write_config(db: Session, *, enabled: bool, play_sign_ttl: int) -> dict:
     main.py 统一 handler 转端点 400：状态码与旧实现一致，但文案变了——
     旧实现是"播放签名有效期必须为整数秒"/"需在 60~86400 秒之间"，
     现在是"play_sign_ttl_seconds 必须是整数"/"需在 60~86400 之间"）；
-    开关落库 "true"/"false"；返回 ``config_payload`` 即时生效。
+    开关不由本函数写：防盗链总开关改走 env HOTLINK_PROTECTION_ENABLED
+    （2026-10-21 A 类摘面板），PUT /hotlink-config 不再接受 enabled 字段；
+    返回 ``config_payload`` 即时生效，其中 enabled 为当前生效值、仅展示。
 
     提交由调用方决定（``admin_economy.hotlink_update_config`` 已在审计后统一
     commit；旧实现自带 commit，端点逻辑不变）。
     """
     from backend import config_service
 
-    # A 类开关摘面板（2026-10-21）：enabled 参数仅为兼容旧调用方保留，不再落库
-    # ——开关改走 env HOTLINK_PROTECTION_ENABLED（缺省=开，见 HOTLINK_DEFAULT）。
+    # A 类开关摘面板（2026-10-21）：总开关改走 env HOTLINK_PROTECTION_ENABLED
+    # （缺省=开，见 HOTLINK_DEFAULT）；本函数只写 TTL，不碰开关行。
     values = {
         CONFIG_PLAY_SIGN_TTL: play_sign_ttl,
     }

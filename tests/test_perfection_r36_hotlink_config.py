@@ -78,9 +78,9 @@ class TestWriteConfigViaUnifiedChannel:
         from backend import models
         from backend.emby_server import play_sign
 
-        # 2026-10-21 A 类摘面板：write_config 的 enabled 参数保留但忽略，
-        # 不落库；payload 的 enabled 是当前生效值（缺省开）
-        payload = play_sign.write_config(db, enabled=False, play_sign_ttl=1800)
+        # A-008（2026-10-30）：write_config 已不再接受 enabled 参数；
+        # payload 的 enabled 是当前生效值（缺省开），不是写进去的
+        payload = play_sign.write_config(db, play_sign_ttl=1800)
         assert payload["enabled"] is True
         assert payload["play_sign_ttl"] == 1800
         row = db.query(models.SystemConfig).filter(
@@ -104,11 +104,11 @@ class TestWriteConfigViaUnifiedChannel:
         from backend.emby_server import play_sign
 
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl=30)
+            play_sign.write_config(db, play_sign_ttl=30)
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl=90000)
+            play_sign.write_config(db, play_sign_ttl=90000)
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl="abc")
+            play_sign.write_config(db, play_sign_ttl="abc")
         # 非法写入不留半截行
         from backend import models
 
@@ -139,7 +139,7 @@ class TestWriteConfigViaUnifiedChannel:
 
         # 2026-10-21 A 类摘面板：write_config 不再写开关行；word 风格的
         # 读口径保留——存量行写 "false"/"true" 都能被正确读出
-        play_sign.write_config(db, enabled=True, play_sign_ttl=900)
+        play_sign.write_config(db, play_sign_ttl=900)
         row = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == play_sign.CONFIG_HOTLINK_ENABLED).first()
         assert row is None

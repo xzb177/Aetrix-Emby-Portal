@@ -145,7 +145,7 @@ class TestAllowedReferers:
 
         fakedb.config_rows = {play_sign.CONFIG_ALLOWED_REFERERS: "old.com"}
         # 老前端：不带 allowed_referers 字段（缺省 None）
-        req = HotlinkConfigRequest(enabled=True, play_sign_ttl=900)
+        req = HotlinkConfigRequest(play_sign_ttl=900)
         assert req.allowed_referers is None
         hotlink_update_config(req, _staff(), fakedb)
         assert fakedb.config_rows[play_sign.CONFIG_ALLOWED_REFERERS] == "old.com"
@@ -154,7 +154,7 @@ class TestAllowedReferers:
         from backend.api.admin_economy import HotlinkConfigRequest, hotlink_update_config
 
         req = HotlinkConfigRequest(
-            enabled=True, play_sign_ttl=900,
+            play_sign_ttl=900,
             allowed_referers="NEW.com, other.com, NEW.com")
         result = hotlink_update_config(req, _staff(), fakedb)
         assert result["allowed_referers"] == ["new.com", "other.com"]
