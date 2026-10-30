@@ -5005,7 +5005,9 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     failed/auth_error，但绝不碰用户绑定（失效的是源侧 SA）；
     其余失败 → 有界重试。上传/秒传后必列用户 115 转存目录
     按名核对（FMBY discover 口径），核不到记 copy_unresolved
-    不重试。秒传尝试结果（hit/miss/error）均有结构化日志。
+    不重试。秒传尝试结果（hit/miss/error）均有结构化日志；
+    接力漏斗另有 transfer_relay outcome=hit|miss|error|skip
+    结构化日志（预检段落点与口径见函数内「秒传接力预检段」）。
     """
     from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
     from backend.emby_server import user_bindings as ub
@@ -5065,8 +5067,30 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     dest_cid = ""
     rapid_fid = None  # None = 未命中路（走/已走全量）；str = 秒传回执期望 fid
     chosen_sha1 = ""
+    # ---- 秒传接力预检段（2026-10-30）----
+    # 落点定在执行侧（本执行器由 run_transfer_job_once 在认领后
+    # 调用），绝不放在建单时：排队 job 建单时条目可能尚无哈希，
+    # 在途 job 完成沉淀后，只有等排队 job 自己被认领执行、走到
+    # 这里再查 content_hash 才看得到——同片同 provider 的第二人
+    # 靠这一眼命中接力，不必再搬一遍字节。口径：条目可信 sha1
+    # （_trusted_item_sha1）且开关开时，用目标用户本人 Cookie 试
+    # initupload 认领；命中走下方现行目录核对＋登记本人变体行
+    # 直接 done；未命中/无哈希/协议异常一律原样回落全量搬运，
+    # 失败口径一行不变。他人变体行绝不共用——命中也只在本人盘
+    # 生成本人行。接力漏斗以结构化日志 transfer_relay
+    # outcome=hit|miss|error|skip 观测（跨用户真实命中率上线后
+    # 靠它读）；pan115_rapid 是协议层日志，并行保留。
     stored_sha1 = _trusted_item_sha1(item, size)
-    if stored_sha1 and pan115_rapid_upload_enabled(db):
+    rapid_enabled = pan115_rapid_upload_enabled(db)
+    if not stored_sha1:
+        logger.info("transfer_relay outcome=skip item=%s job=%s "
+                    "provider=pan115 owner=%s reason=no_trusted_sha1",
+                    item.id, job.id, uid)
+    elif not rapid_enabled:
+        logger.info("transfer_relay outcome=skip item=%s job=%s "
+                    "provider=pan115 owner=%s reason=switch_off",
+                    item.id, job.id, uid)
+    if stored_sha1 and rapid_enabled:
         try:
             client, dest_cid = _open_client()
         except Pan115AuthError as exc:
@@ -5086,11 +5110,17 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
         except Exception as exc:  # noqa: BLE001 — 协议异常一律回落全量
             logger.info("pan115_rapid outcome=error item=%s job=%s "
                         "err=%s（回落全量上传）", item.id, job.id, exc)
+            logger.info("transfer_relay outcome=error item=%s job=%s "
+                        "provider=pan115 owner=%s err=%s",
+                        item.id, job.id, uid, exc)
             rapid = None
         if rapid is not None:
             outcome = (rapid or {}).get("outcome")
             logger.info("pan115_rapid outcome=%s item=%s job=%s size=%s",
                         outcome, item.id, job.id, size)
+            logger.info("transfer_relay outcome=%s item=%s job=%s "
+                        "provider=pan115 owner=%s",
+                        outcome, item.id, job.id, uid)
             if outcome == "hit":
                 rapid_fid = (rapid or {}).get("fid") or ""
     if rapid_fid is None:
