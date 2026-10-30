@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import FrozenSet, Iterator, Optional
+from typing import FrozenSet, Iterable, Iterator, Optional
 from urllib.parse import parse_qsl, urlparse
 
 from backend.emby_server import disc_filter, drive_auth, drive_changes
@@ -138,6 +138,10 @@ class DriveMount(RemoteMount):
         root_override = str(self.config.get("root_id") or "").strip()
         # 共享盘根目录 id == 盘 id；个人盘根目录是固定的 "root"
         self.root_id = root_override or ("root" if self.personal else self.drive_id)
+        # files.list 页调用计数：扫描 stats 的 walk 打点取增量（见
+        # scanner._WalkMeter）；本实例的其他调用方（解析/探活）也会计入，
+        # 口径是「实例级近似值」，不是审计数字
+        self.list_call_count = 0
         # rel → folder id（只在本次提供者实例内；list_dir 的共享 TTL 缓存另在基类层）
         self._fid_cache: dict[str, str] = {"/": self.root_id}
 
@@ -208,6 +212,7 @@ class DriveMount(RemoteMount):
 
         返回 ``(body, 实际用到的 token)``。
         """
+        self.list_call_count += 1
         params: dict = {
             "q": f"'{folder_id}' in parents and trashed = false",
             "pageSize": _PAGE_SIZE,
@@ -457,7 +462,9 @@ class DriveMount(RemoteMount):
         return 4
 
     def walk_media(self, max_depth: int = 32, root: str = "/",
-                   exts: Optional[set] = None) -> Iterator[mount_lib.MountFile]:
+                   exts: Optional[set] = None,
+                   limit_rels: Optional[Iterable[str]] = None
+                   ) -> Iterator[mount_lib.MountFile]:
         """Drive 覆盖：按 folder id 遍历，合并同名文件夹的命名空间。
 
         基类 ``RemoteMount.walk_media`` 按 rel 文本逐级解析（每级取首个同名
@@ -479,12 +486,34 @@ class DriveMount(RemoteMount):
         子目录列举失败收集后统一抛错（扫描器据此跳过清理，防误删）。
         _locate/_fid_of 的首个匹配语义不受影响（本方法不写 _fid_cache，
         列举走 _list_by_id 直查）。
+
+        ``limit_rels``（定向扫描，可选）：挂载内目标相对路径集合。给了就
+        只列「目标子树」与「通往目标的脊柱目录」——BFS 仍按 folder id 走、
+        同名文件夹照常全部分支下探，只是与所有目标都不相交的目录整棵剪掉、
+        不再发列举请求。产出集合与「整源遍历后按同一批前缀过滤」完全一致
+        （含真撞改名：同组文件同在一个父目录下，要么全收要么全剪）。
+        缺省 None / 空集合时行为逐字不变。
         """
         import os as _os
         from collections import defaultdict as _defaultdict
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         want_exts = exts or mount_lib.REMOTE_MEDIA_EXTS
+
+        # 定向剪枝（limit_rels）：目标归一成 "/a/b" 形；空元组 = 不剪枝
+        targets = tuple({"/" + str(r).strip("/") for r in limit_rels}) \
+            if limit_rels else ()
+
+        def _under(rel: str, base: str) -> bool:
+            return rel == base or rel.startswith(base.rstrip("/") + "/")
+
+        def _dir_relevant(rel: str) -> bool:
+            # 目录值得列举：它在某个目标之内，或它是通往某个目标的脊柱
+            return any(_under(rel, t) or _under(t, rel) for t in targets)
+
+        def _file_relevant(dir_rel: str, file_rel: str) -> bool:
+            # 文件值得收：父目录在某个目标之内；或前缀本身就指向这个文件
+            return any(_under(dir_rel, t) or file_rel == t for t in targets)
 
         # 起始目录解析失败直接抛（基类同理：来源不可用，不能当成空目录）
         root_fid = self._fid_of(root)
@@ -523,6 +552,9 @@ class DriveMount(RemoteMount):
                             # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵跳过
                             if disc_filter.is_disc_subtree_dir(entry.name):
                                 continue
+                            if targets and not _dir_relevant(
+                                    _child_rel(dpath, entry.name)):
+                                continue  # 定向剪枝：与所有目标都不相交，整棵不列
                             if not entry.entry_id or entry.entry_id in seen_folders:
                                 continue
                             if depth < max_depth:
@@ -534,6 +566,9 @@ class DriveMount(RemoteMount):
                                     bkey + (entry.entry_id,),
                                 ))
                             continue
+                        if targets and not _file_relevant(
+                                dpath, _child_rel(dpath, entry.name)):
+                            continue  # 定向剪枝：不在任何目标子树内
                         ext = _os.path.splitext(entry.name)[1].lower()
                         if ext not in want_exts:
                             continue
@@ -595,6 +630,20 @@ class DriveMount(RemoteMount):
         追新的旧遍历永远发现不了（只能等全量扫描兜底）。这个入口修的就是它。
         """
         return self.walk_media(root=root, max_depth=max_depth, exts=exts)
+
+    def walk_media_targeted(self, root: str = "/", limit_rels=(),
+                            max_depth: int = 32,
+                            exts: Optional[set] = None) -> Iterator[mount_lib.MountFile]:
+        """定向扫描入口：只遍历 ``root`` 下与 ``limit_rels`` 相交的子树。
+
+        与 ``walk_media_merged`` 同款分发约定：扫描器按这个方法是否存在
+        决定走定向遍历（见 scanner._mount_files）。实现就是 ``walk_media``
+        的 ``limit_rels`` 剪枝——遍历仍从 ``root`` 起、仍经 ``_fid_of``
+        解析根目录、仍按 folder id BFS 合并同名分支，只是无关目录整棵
+        不列。产出与整源遍历后过滤逐项一致（回归测试钉死）。
+        """
+        return self.walk_media(max_depth=max_depth, root=root, exts=exts,
+                               limit_rels=tuple(limit_rels or ()))
 
     def _locate(self, rel: str) -> MountEntry:
         """按 rel 定位文件条目（resolve 用）。

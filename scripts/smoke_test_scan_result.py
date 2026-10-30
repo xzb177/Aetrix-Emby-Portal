@@ -659,7 +659,7 @@ with Session() as db:
 real_mount_files = sc._mount_files
 
 
-def boom_mount_files(src, provider, failed_roots):  # noqa: ANN001, ARG001
+def boom_mount_files(src, provider, failed_roots, prefixes=()):  # noqa: ANN001, ARG001
     raise mnt.MountError("模拟挂载读一半炸了")
     yield  # pragma: no cover
 
