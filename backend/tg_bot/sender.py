@@ -456,6 +456,28 @@ def set_my_commands(db, commands: list[tuple[str, str]], scope: dict | None = No
     return _call(db, "setMyCommands", payload)
 
 
+def send_dice(db, chat_id: int, emoji: str = "🎰") -> tuple[bool, str | None, int | None, int | None]:
+    """发 Telegram 原生骰子/老虎机动画（sendDice）。
+
+    老虎机的唯一结果来源：平台返回 result.dice.value（老虎机为 1-64），
+    服务端不自造随机数，结算只认这个值。
+
+    :param db: 数据库会话对象（读 bot token 用；无 token 环境传 None 也可）
+    :param chat_id: 目标会话
+    :param emoji: 骰子表情，老虎机固定 🎰
+    :return: (是否成功, 错误信息, dice.value, message_id)
+    """
+    ok, err, result = _call_ex(db, "sendDice", {"chat_id": chat_id, "emoji": emoji})
+    if not ok or not isinstance(result, dict):
+        return False, err, None, None
+    dice = result.get("dice") or {}
+    value = dice.get("value")
+    if not isinstance(value, int):
+        return False, "sendDice 响应缺少 dice.value", None, None
+    message_id = result.get("message_id")
+    return True, None, value, message_id if isinstance(message_id, int) else None
+
+
 # 三重门·身份门：在群成员列表里才算自己人
 _MEMBER_STATUSES = ("creator", "administrator", "member", "restricted")
 

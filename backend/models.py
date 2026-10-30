@@ -1717,6 +1717,50 @@ class RedPacketClaim(Base):
     user = relationship("WebUser")
 
 
+class SlotsPool(Base):
+    """老虎机头奖池（单行表，id 恒为 1）。
+
+    余额必须事务安全：begin/settle 都在行锁内改这行，绝不放 SystemConfig。
+    抽水按百分之一能量精确累计：整数能量在 balance，余数在
+    remainder_hundredths（每注抽水 bet×pct 个百分之一，可跨局攒满 1 整数）。
+    """
+    __tablename__ = 'slots_pool'
+
+    id = Column(Integer, primary_key=True)
+    balance = Column(Integer, nullable=False, default=0)
+    remainder_hundredths = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SlotsSpin(Base):
+    """老虎机对局（一行一局）。
+
+    spin_key = Telegram callback_query.id（"tgcq:<id>"），唯一约束 +
+    应用层先查实现下注→结算全程幂等：重复回调只认这一行，不重复扣款。
+    结算依据是 TG 原生 sendDice 返回的 dice_value（1-64）。
+    """
+    __tablename__ = 'slots_spins'
+
+    __table_args__ = (
+        UniqueConstraint('spin_key', name='uq_slots_spin_key'),
+        Index('idx_slots_spin_user_status', 'user_id', 'status'),
+        Index('idx_slots_spin_created', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    spin_key = Column(String(64), nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    bet = Column(Integer, nullable=False)
+    dice_value = Column(Integer, nullable=True)
+    reels = Column(String(32), nullable=True)  # 三轴符号 key，逗号分隔
+    base_payout = Column(Integer, nullable=False, default=0)
+    pool_payout = Column(Integer, nullable=False, default=0)
+    rake_hundredths = Column(Integer, nullable=False, default=0)
+    status = Column(String(16), nullable=False, default='pending')  # pending/settled/failed
+    created_at = Column(DateTime, default=datetime.now)
+    settled_at = Column(DateTime, nullable=True)
+
+
 class Review(Base):
     """影评表"""
     __tablename__ = 'reviews'
