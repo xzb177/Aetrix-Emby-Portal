@@ -5509,9 +5509,11 @@ def _patrol_115_row(db, row, stats, now):
     - 其它错 → strike，满 2 次 stale；
     - pickcode 为空的老行 → 目录匹配回落补 pickcode；
     - 绑定已无 → 跳过（不记 strike、不改行）；
-    - 取链通道大小限制（50028，两通道都撞限时）→ 不记 strike
-      （文件没死，是通道不肯发地址；download_url 已先回落 app
-      通道，能走到这里说明两通道都没取到）。
+    - 取链通道大小限制（50028，两通道都撞限时）→ 先以转存目录按 fid
+      列目核对：核到即按验活处理（文件没死，只是通道不肯发地址），
+      核不到仍不记 strike；
+    - stale 行验活成功 → 复活为 ready（stale_count 清零，计 revived）；
+      核不到/认证错/通道限且目录核不到 → 保持 stale，不重复记 strike。
     """
     from backend.emby_server.transfer115 import (
         Pan115AuthError, Pan115ChannelLimitError, Pan115Error)
@@ -5540,13 +5542,29 @@ def _patrol_115_row(db, row, stats, now):
     except Pan115AuthError:
         return  # 不记 strike
     except Pan115ChannelLimitError:
+        # 两通道都撞限时，下载地址发不出不等于文件已死：再以转存
+        # 目录按 fid 列目核对一次（副本只应在此目录，fid 精确匹配）。
+        # 核到即按验活处理；核不到/列目本身失败仍不记 strike。
+        try:
+            listed = _find_115_pickcode_by_fid(client, row.variant_file_id)
+        except Exception:
+            listed = ""
+        if not listed:
+            row.last_checked_at = now
+            return  # 通道大小限制不记 strike（文件没死）
+        if row.status == "stale":
+            row.status = "ready"
+            stats["revived"] = stats.get("revived", 0) + 1
+        row.stale_count = 0
         row.last_checked_at = now
-        return  # 通道大小限制不记 strike（文件没死）
+        return
     except ub.BindingError:
         return  # 凭据问题不记 strike（绑定落态已由 helper 处理）
     except (_NotFound, _Forbidden, Pan115Error):
-        row.stale_count += 1
         row.last_checked_at = now
+        if row.status == "stale":
+            return  # 已是 stale，不重复记 strike、不重复计入本轮新 stale
+        row.stale_count += 1
         if row.stale_count >= STALE_STRIKES:
             row.status = "stale"
             stats["stale"] += 1
@@ -5556,6 +5574,9 @@ def _patrol_115_row(db, row, stats, now):
                        row.id, exc_info=True)
         return
     else:
+        if row.status == "stale":
+            row.status = "ready"
+            stats["revived"] = stats.get("revived", 0) + 1
         row.stale_count = 0
         row.last_checked_at = now
 
@@ -7191,14 +7212,25 @@ def patrol_once(db, drive_api_factory, now=None):
     - get_file 成功 → stale_count 清零；
     - 404/403 → strike+1，满 2 次置 stale（解除锚定，下次播放回原件；
       重拷只由下次播放 Quota 事件在节流允许时触发，巡检不自动重拷）；
+    - 115 stale 行每轮同样重验：download_url 成功（或两通道撞限时
+      转存目录按 fid 核到）→ 复活为 ready（stale_count 清零，计
+      revived）；核不到/认证错/通道限且目录核不到 → 保持 stale，
+      不重复记 strike；Drive stale 行不在本单救回范围；
     - 其它异常（429/5xx/网络）→ 只记日志，不记 strike。
     孤儿文件的自动删除不在 v1（删用户数据自动执行风险高，留复核）。
     """
     now = now or datetime.now()
-    stats = {"checked": 0, "stale": 0, "orphaned_items": 0, "errors": 0}
+    stats = {"checked": 0, "stale": 0, "orphaned_items": 0, "errors": 0,
+             "revived": 0}
     client = drive_api_factory()
     rows = db.query(em.TransferVariant).filter(
         em.TransferVariant.status == "ready").all()
+    # 旧逻辑只查 ready，stale 永不重验——#1575 修通道后旧 stale 行
+    # 也回不来。本单只把 stale 的 115 行纳入重验（Drive stale 行
+    # 的 get_file 验活口径不同，不在本单范围，仍排除）。
+    rows += db.query(em.TransferVariant).filter(
+        em.TransferVariant.status == "stale",
+        em.TransferVariant.variant_drive_id.startswith("pan115:")).all()
     for row in rows:
         stats["checked"] += 1
         item = (db.query(em.MediaItem)
