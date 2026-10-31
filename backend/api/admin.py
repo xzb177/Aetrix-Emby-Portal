@@ -232,6 +232,13 @@ async def extend_subscription(
             subscription.end_date or datetime.now(), datetime.now()
         ) + timedelta(days=request.days)
         subscription.updated_at = datetime.now()
+        # A-107：延长复用同一行：清掉上一周期的提醒去重记录，否则新周期
+        # 的 7d/3d/1d/expired 档位会被旧记录挡住、用户再也收不到到期提醒。
+        # 与 _grant_subscription 顺延同口径（退款回滚缩短 end_date 不适用，
+        # 同周期内已发档位不应重发，故只清延长入口）。
+        db.query(models.SubscriptionReminder).filter(
+            models.SubscriptionReminder.subscription_id == subscription.id
+        ).delete(synchronize_session=False)
         db.commit()
 
         # 订阅分档权益（PR-1）：到期时间变了，清该用户的权益解析缓存
