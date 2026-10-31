@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI 门禁：后端依赖必须锁定（审计 A-078 的回归兜底）。
 
-断言三件事，任一不满足即 exit 1：
+断言四件事，任一不满足即 exit 1：
 1. backend/requirements.txt 里没有裸下界：每个直接依赖要么钉死
    （==），要么带上界（< / <= / ~=），只有 BARE_ALLOWLIST 里的
    例外可保持裸下界（当前为空——pypinyin 是 == 钉死，不是例外）。
@@ -11,6 +11,9 @@
 3. backend/requirements-ci.lock（CI 附加依赖 zhconv/pytest 及其
    传递依赖）同样哈希齐全，且与生产锁共有的包版本必须一致
    （防止 CI 测的版本集合与生产锁脱节）。
+4. （审计 A-125）每个直接依赖的生产锁版本必须落在 requirements.txt
+   声明的范围内（>= / <= / > / < / == / != / ~= 求值）：范围抬升或
+   收紧后忘重编锁时，门禁红灯而非绿灯放行。
 
 只用标准库。用法（仓库根目录下）：
     python scripts/check_backend_deps_locked.py
@@ -85,6 +88,89 @@ def _spec_is_bounded(spec):
     return False
 
 
+def _parse_version(version):
+    """PEP 440 近似解析：剥离 epoch（N!）与 local 后缀（+...），
+    每段取前导数字（如 0.115.0 → (0, 115, 0)）。只用于范围求值，
+    不做严格合法性校验。"""
+    version = version.strip()
+    if "!" in version:
+        version = version.split("!", 1)[1]
+    version = version.split("+", 1)[0]
+    parts = []
+    for seg in version.split("."):
+        m = re.match(r"(\d+)", seg)
+        parts.append(int(m.group(1)) if m else 0)
+    return tuple(parts)
+
+
+def _pad(a, b):
+    """两版本元组补齐到等长（缺段按 0 计，如 2.0 == 2.0.0）。"""
+    n = max(len(a), len(b))
+    return a + (0,) * (n - len(a)), b + (0,) * (n - len(b))
+
+
+def _version_satisfies(version, spec):
+    """锁版本是否满足声明范围（逗号分隔的多条件取交集）。
+
+    支持 >= / <= / > / < / == / != / ~=；== / != 带 .* 后缀时按
+    前缀匹配；~= 按 PEP 440 展开为 >=x 且 ==x 前缀（去掉最后一段，
+    如 ~=0.114.0 即 >=0.114.0 且 ==0.114.*）。空 spec 视为无约束
+    （裸依赖另由有界检查判违规）；无法解析的约束按不满足处理
+    （fail-closed，不让可疑范围蒙混过关）。
+    """
+    if not spec:
+        return True
+    ver = _parse_version(version)
+    for clause in spec.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        m = re.match(r"(===|==|~=|>=|<=|>|<|!=)\s*(\S+)$", clause)
+        if not m:
+            return False
+        op, req = m.group(1), m.group(2)
+        if op == "===":
+            if version.strip() != req:
+                return False
+            continue
+        if op == "~=":
+            base = _parse_version(req)
+            if len(base) < 2:
+                # 单段 ~= 无上界可展，退化为 >=。
+                lo, vv = _pad(base, ver)
+                if vv < lo:
+                    return False
+                continue
+            lo, vv = _pad(base, ver)
+            if vv < lo or vv[:len(base) - 1] != base[:-1]:
+                return False
+            continue
+        if req.endswith(".*"):
+            prefix = _parse_version(req[:-2])
+            _, vv = _pad(prefix, ver)
+            matched = vv[:len(prefix)] == prefix
+            if op == "==" and not matched:
+                return False
+            if op == "!=" and matched:
+                return False
+            continue
+        req_v = _parse_version(req)
+        rv, vv = _pad(req_v, ver)
+        if op == "==" and vv != rv:
+            return False
+        if op == "!=" and vv == rv:
+            return False
+        if op == ">=" and vv < rv:
+            return False
+        if op == "<=" and vv > rv:
+            return False
+        if op == ">" and vv <= rv:
+            return False
+        if op == "<" and vv >= rv:
+            return False
+    return True
+
+
 def parse_lock(path):
     """解析 pip-compile --generate-hashes 锁文件。
 
@@ -144,6 +230,10 @@ def check(repo_root):
         for name, _spec, line in reqs:
             if name not in lock:
                 violations.append(f"锁缺直接依赖：{line} 未出现在生产锁中")
+            elif not _version_satisfies(lock[name]["version"], _spec):
+                violations.append(
+                    f"范围漂移：{name} 锁版本 {lock[name]['version']} 不在 "
+                    f"{_spec} 内，请重编锁")
 
     if not ci_lock_path.exists():
         violations.append(
