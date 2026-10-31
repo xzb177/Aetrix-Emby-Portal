@@ -1175,11 +1175,17 @@ class LocalMount(MountProvider):
                 is_strm = _is_strm_name(fname)
                 full = os.path.join(dirpath, fname)
                 rel = "/" + os.path.relpath(full, fs_root).replace(os.sep, "/")
+                # A-096：一次 stat 同时取 size 与 mtime 填 mod_ts（不新增
+                # FUSE 往返）；本机可读挂载的同尺寸原地替换靠它进文件指纹。
                 try:
-                    size = os.path.getsize(full)
+                    _st = os.stat(full)
+                    size = _st.st_size
+                    mod_ts = _st.st_mtime
                 except OSError:
                     size = 0
-                yield MountFile(rel=rel, name=fname, size=size, is_strm=is_strm)
+                    mod_ts = 0.0
+                yield MountFile(rel=rel, name=fname, size=size, is_strm=is_strm,
+                                mod_ts=mod_ts)
         if walk_errors:
             # 生成器收尾时抛：已产出的文件照常处理，上层 _guarded 会把错误记进
             # failed_roots 并跳过清理阶段，避免误删该子目录下的条目。
