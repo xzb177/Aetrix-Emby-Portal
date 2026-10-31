@@ -535,10 +535,9 @@ def create_lottery_round(
         raise HTTPException(status_code=400, detail="抽奖类型只能是 button 或 password")
     if req.lottery_type == "password" and not (req.password_keyword or "").strip():
         raise HTTPException(status_code=400, detail="口令抽奖必须设置口令关键词")
-    # 总开关：读 SystemConfig，查不到视为开启
-    enabled_cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == "lottery_enabled").first()
-    enabled_raw = enabled_cfg.value if enabled_cfg else "1"
-    if str(enabled_raw).strip().lower() in ("0", "false"):
+    # 总开关：走 lottery.is_enabled（env 接管口径，A-114），与 TG 门、
+    # 提案审批门同一谓词，不许再直读 DB 行导致两门分叉
+    if not lottery_module.is_enabled(db):
         raise HTTPException(status_code=403, detail="群抽奖功能未开启")
     # 群白名单：查不到视为不限制
     group_cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == "lottery_group_ids").first()
