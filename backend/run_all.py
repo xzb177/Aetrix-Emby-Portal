@@ -8,11 +8,28 @@
   WORKER_STABLE_SECONDS（默认 10 分钟）后退避计数清零；**worker 永远不会拉停整个容器**
   （旧实现累计重启 3 次就 sys.exit(1)，Redis 启动慢 20 秒就把播放全断了）
 """
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+# 日志脱敏：密钥/令牌不得进日志（与 main.py / worker.py 同口径）。
+# 本文件以 `python backend/run_all.py` 直跑时仓库根不在 sys.path，
+# import 失败则先把仓库根补进去再重试。
+try:
+    from backend.log_redact import install_secret_redaction
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from backend.log_redact import install_secret_redaction
+
+install_secret_redaction()
+logger = logging.getLogger("run_all")
 
 CHILDREN = {
     "api": [sys.executable, "serve.py"],
@@ -57,7 +74,8 @@ procs = {}
 
 
 def log(msg):
-    print("[run_all] " + str(msg), flush=True)
+    # 走 logging（原 print 前缀 "[run_all]" 由 logger 名 run_all 承担）
+    logger.info(str(msg))
 
 
 def start(name):

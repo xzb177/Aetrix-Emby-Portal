@@ -6,6 +6,7 @@
 - 演员索引沿用恢复补丁（PR #403/#406）的 idx_person_item_tmdb (item_id, person_tmdb_id)
 - 缺的索引按原 DDL 补上；已存在 → 不重复建（幂等）
 """
+import logging
 import os
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
@@ -160,29 +161,40 @@ def test_browse_sort_partial_predicate_and_model_spec_cross_check(tmp_path, monk
     eng.dispose()
 
 
-def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys):
+def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, caplog):
     eng = _engine(tmp_path)
     monkeypatch.setattr(database, "engine", eng)
     tables = {"emby_items", "emby_people"}
 
-    database._ensure_legacy_indexes(tables)
+    def _migration_log_text() -> str:
+        # A-084 起迁移日志走 logging（原 print）：断言对象不变，只换捕获面
+        return "\n".join(
+            r.getMessage() for r in caplog.records if r.name == database.__name__
+        )
+
+    with caplog.at_level(logging.INFO, logger=database.__name__):
+        database._ensure_legacy_indexes(tables)
     assert _indexes(eng, "emby_items") == _ITEM_INDEXES
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
-    first = capsys.readouterr().out
+    first = _migration_log_text()
     assert first.count("已迁移") == 12
 
     # 第二次：全部已存在，不再建、不再打日志
-    database._ensure_legacy_indexes(tables)
-    assert capsys.readouterr().out == ""
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=database.__name__):
+        database._ensure_legacy_indexes(tables)
+    assert _migration_log_text() == ""
 
     # 补上列之后再跑 → 只补演员索引
     with eng.begin() as conn:
         conn.execute(text("ALTER TABLE emby_people ADD COLUMN item_id INTEGER"))
         conn.execute(text("ALTER TABLE emby_people ADD COLUMN person_tmdb_id TEXT"))
-    database._ensure_legacy_indexes(tables)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=database.__name__):
+        database._ensure_legacy_indexes(tables)
     assert _indexes(eng, "emby_people") == {"idx_person_item_tmdb": ["item_id", "person_tmdb_id"]}
-    assert capsys.readouterr().out.count("已迁移") == 1
+    assert _migration_log_text().count("已迁移") == 1
     eng.dispose()
 
 
