@@ -127,6 +127,14 @@ APPLECMS_SYNC_ENV = "UPSTREAM_SYNC_ENABLED"
 #: 上游探活/认证单次超时（秒，运维常量，见模块 docstring）。
 UPSTREAM_PROBE_TIMEOUT_SEC = 10.0
 
+#: 播放探活重定向跟随上限（跳，运维常量）：上游以 302 发流是常态
+#: （Emby stream → 网盘直链 → 对象存储签名链，生产实测两跳），
+#: 但跟随必须有界且逐跳复验，见 ``_default_http_range_probe``。
+UPSTREAM_PROBE_MAX_REDIRECTS = 3
+
+#: 探活层视为重定向、需要跟随的状态码集合。
+_PROBE_REDIRECT_STATUSES = frozenset((301, 302, 303, 307, 308))
+
 
 class UpstreamPlaybackError(Exception):
     """上游播放结构化错误：HTTP 状态 + 机器码 + 人话 + 源 id。
@@ -276,19 +284,19 @@ def _default_http_post(url: str, payload: dict, headers: dict,
         return None, None
 
 
-def _default_http_range_probe(url: str, headers: dict, timeout: float):
-    """默认 Range 探活层（urllib）：只读 1 字节，不拉整条流。
+def _probe_single_hop(url: str, headers: dict, timeout: float):
+    """探活单跳：返回 (status, retry_after, location)。
 
-    返回 (status:int|None, retry_after:int|None)：HTTPError 带状态码
-    与 Retry-After（能转 int 才带，转不了按没有计，不编数字）；
-    超时/断连返回 (None, None)。
+    单跳口径与旧探活逐字一致：成功回状态码；HTTPError 带状态码与
+    Retry-After（能转 int 才带，转不了按没有计，不编数字）；
+    超时/断连/出站校验拦截回 (None, None, None)。location 只取
+    Location 头，任何一跳都不读响应体（探活不是拉流）。
     """
-    probe_headers = dict(headers)
-    probe_headers["Range"] = "bytes=0-0"
-    req = urllib.request.Request(url, headers=probe_headers, method="GET")
+    req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with upstream_http.safe_urlopen(req, timeout=timeout) as resp:
-            return resp.status, None
+            location = resp.headers.get("Location") if resp.headers else None
+            return resp.status, None, location
     except urllib.error.HTTPError as exc:
         retry_after = None
         raw = exc.headers.get("Retry-After") if exc.headers else None
@@ -297,9 +305,46 @@ def _default_http_range_probe(url: str, headers: dict, timeout: float):
                 retry_after = int(str(raw).strip())
             except (TypeError, ValueError):
                 retry_after = None
-        return exc.code, retry_after
+        location = exc.headers.get("Location") if exc.headers else None
+        return exc.code, retry_after, location
     except Exception:
-        return None, None
+        return None, None, None
+
+
+def _default_http_range_probe(url: str, headers: dict, timeout: float):
+    """默认 Range 探活层（urllib）：只读 1 字节，不拉整条流。
+
+    有界跟随重定向（最多 ``UPSTREAM_PROBE_MAX_REDIRECTS`` 跳）：
+    上游以 302 发流是 Emby 常见形态（stream → 网盘直链 → 签名链），
+    而 safe_urlopen 按 SSRF 纪律刻意不跟随；若探活也不跟，302 会
+    落进 ``_classify_probe_status`` 的兜底 502，把完全可播的内容
+    误判不可用（2026-10-31 生产实证：两跳 302 后 206 可播）。
+    跟随只在本层手工逐跳做：每一跳的新 URL 先过
+    ``upstream_http.verify_outbound_url`` 复验才发请求（safe_urlopen
+    发请求前还会再验一次，opener 本身仍不装重定向处理器）；
+    验不过、没有 Location、或跳数超限，一律按连不上口径处理。
+
+    返回 (status:int|None, retry_after:int|None)：均为**最终跳**
+    的状态与 Retry-After，调用方的分类表只看最终跳，与直达同
+    口径；超时/断连返回 (None, None)。
+    """
+    probe_headers = dict(headers)
+    probe_headers["Range"] = "bytes=0-0"
+    current_url = url
+    for hop in range(UPSTREAM_PROBE_MAX_REDIRECTS + 1):
+        status, retry_after, location = _probe_single_hop(
+            current_url, probe_headers, timeout)
+        if status not in _PROBE_REDIRECT_STATUSES:
+            return status, retry_after
+        if hop >= UPSTREAM_PROBE_MAX_REDIRECTS or not location:
+            return None, None
+        next_url = urllib.parse.urljoin(current_url, location)
+        try:
+            upstream_http.verify_outbound_url(next_url)
+        except Exception:
+            return None, None
+        current_url = next_url
+    return None, None
 
 
 def _auth_token_for_source(source, *,
