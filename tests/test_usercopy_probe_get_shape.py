@@ -21,6 +21,14 @@ text/html「Google Drive - Quota exceeded」。播放器起播含整拉形态
   （verdict=direct）；只有 Range 腿判 quota（shape=range）才走
   本人令牌中继 → 本人 115 → 409 明示的改道链。专门钉这条规矩
   的回归测试见下方 test_rule_direct_first_relay_second_*。
+- 出法矩阵修订（2026-10-31，用户亲点「起播很慢」定案，生产实证
+  item 859178）：公开链已被探针证明回额度页时（Range 腿判 quota
+  或 GET 腿整拉回额度页，detail page=quota），该链对播放器任何
+  形态的请求都是死的——首播不再发这条直链、缓存期内不重复探，
+  一律直接走本人令牌中继 → 本人 115 → 409 明示。GET 腿的
+  scan / html 插页仍只是信号（不改道）。已知 quota（含缓存命中）
+  的收窄口径见下方 test_rule_known_quota_*；08:29 的「判定零
+  缓存」只保留给非 quota 的缓存裁决（见 decision 段）。
 全部离线。
 """
 import os
@@ -163,9 +171,9 @@ def _stub_legs(monkeypatch, range_resp, get_resp):
 
 def test_probe_range206_get_quota_is_ok_with_get_signal(monkeypatch):
     """事故形态：Range 206 视频、整拉回额度页 → probe 返 ok
-    （出法裁决口径），GET 信号只进 detail（shape=get、page=quota）。
-    判定点按 detail 打信号日志、出法仍发直链，见
-    test_rule_direct_first_relay_second_*。"""
+    （probe 自身口径不变），GET 信号进 detail（shape=get、
+    page=quota）。判定点按 detail 改道中继，见
+    test_rule_known_quota_*。"""
     calls = _stub_legs(monkeypatch,
                        (206, "video/mp4", VIDEO_HEAD),
                        (200, "text/html; charset=utf-8", QUOTA_HTML))
@@ -362,8 +370,9 @@ def _stub_detail(monkeypatch, shape, page):
 def test_stream_get_interstitial_issues_direct_not_relay(db, monkeypatch):
     """GET 腿 interstitial 信号（shape=get）：照常发直链，中继不许动。
 
-    即使本人令牌可用也一样——直链优先（规矩全程版见
-    test_rule_direct_first_relay_second_*，这里是桩判定版）。"""
+    即使本人令牌可用也一样——插页信号不改道（规矩全程版见
+    test_rule_direct_first_relay_second_stream_get_scan_*，这里是
+    桩判定版）。"""
     monkeypatch.setattr(tv, "probe_user_copy_quota",
                         lambda u, f: "interstitial")
     _stub_detail(monkeypatch, "get", "scan")
@@ -477,11 +486,16 @@ def test_pi_get_interstitial_keeps_direct_manifest(db, monkeypatch):
 
 
 # ------------------------------------------------------------------
-# 规矩兜底（2026-10-30 01:40 用户亲点立规矩）：直链优先、中继
-# 第二位。用户副本 Range 腿健康时，两个判定点的最终出法必须是
-# 直链；GET 腿的 quota / interstitial 信号单独出现，绝不许触发
-# 中继改道、绝不许清 PlaybackInfo 清单。只有 Range 腿本身判
-# quota，才轮到中继（第二位）出场。谁改判定，先红这一组。
+# 规矩兜底（2026-10-30 01:40 用户亲点立规矩，2026-10-31 修订）：
+# 直链优先、中继第二位——Range 腿与 GET 腿都健康时，两个判定点
+# 的最终出法必须是直链；GET 腿的 scan / html 插页信号仍只是
+# 信号，绝不许触发中继改道、绝不许清 PlaybackInfo 清单。
+# 2026-10-31 修订（用户亲点，生产实证 item 859178）：GET 腿整拉
+# 回额度页（page=quota）不再是「只是信号」——公开链已被证明对
+# 播放器的 GET 形首请求回额度页，首播发出去就是约 45 秒黑屏；
+# page=quota（无论 Range 腿还是 GET 腿探到）一律改道中继，且
+# 已知 quota（含缓存命中）在缓存期内不重复探、任何形态的流
+# 请求直接中继。谁改判定，先红这一组。
 # 本组全部走真实 probe（只桩两条 HTTP 腿），不桩判定本身。
 # ------------------------------------------------------------------
 
@@ -492,25 +506,36 @@ def _record_byos(monkeypatch):
     return events
 
 
-def test_rule_direct_first_relay_second_stream_get_quota_keeps_direct(
+def test_rule_known_quota_stream_get_quota_diverts_to_relay(
         db, monkeypatch):
-    """事故形态全程：Range 206 视频 + 整拉额度页 → 仍发直链 302。
+    """2026-10-31 修订：Range 206 视频 + 整拉额度页 → 改道中继。
 
-    probe 返 ok（出法裁决口径），GET 信号只进 detail（shape=get），
-    但 video_stream 的最终出法
-    必须是本人副本 usercontent 直链；中继不许被调用（_stub_stream
-    已把 serve_drive_relay_async 桩成一调就炸）；信号日志要在，
-    且 verdict=direct、shape=get、page=quota。
+    probe 仍返 ok（probe 自身口径不变），但 GET 腿已证明公开链对
+    整拉形态回额度页（detail shape=get、page=quota）：video_stream
+    不许再把这条链发给客户端——本人令牌中继出流（206）；判定
+    日志 verdict=quota、shape=get、page=quota。
     """
     _stub_legs(monkeypatch,
                (206, "video/mp4", VIDEO_HEAD),
                (200, "text/html; charset=utf-8", QUOTA_HTML))
+    _token_ok(monkeypatch)
+    record = {}
+
+    async def fake_relay(request, drive_id, file_id, **kwargs):
+        record.update(file_id=file_id, kwargs=kwargs)
+        return Response(b"vid", status_code=206)
+
+    item = _drive_item()
+    _stub_stream(monkeypatch, item)
+    monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
     events = _record_byos(monkeypatch)
-    resp = _stream(monkeypatch, db)
-    assert resp.status_code == 302
-    assert resp.headers["location"] == f"https://usercontent.test/{COPY_FID}"
+    resp = asyncio.run(api.video_stream(
+        item.guid, _stream_request(), user=_user(), db=db))
+    assert resp.status_code == 206
+    assert record["file_id"] == COPY_FID
+    assert record["kwargs"]["access_token"] == USER_TOKEN
     sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
-    assert sig and sig[0]["verdict"] == "direct"
+    assert sig and sig[0]["verdict"] == "quota"
     assert sig[0]["shape"] == "get" and sig[0]["page"] == "quota"
 
 
@@ -529,12 +554,13 @@ def test_rule_direct_first_relay_second_stream_get_scan_keeps_direct(
     assert sig[0]["shape"] == "get" and sig[0]["page"] == "scan"
 
 
-def test_rule_direct_first_relay_second_pi_get_signal_keeps_manifest(
+def test_rule_known_quota_pi_get_quota_no_direct_manifest(
         db, monkeypatch):
-    """PlaybackInfo：GET 腿额度页信号在，清单里的直链不许被清。
+    """2026-10-31 修订：PlaybackInfo GET 腿额度页 → 不发直链清单。
 
-    最终清单必须保留本人副本直链条目、无 ErrorMessage；信号日志
-    verdict=direct 要在。
+    无本人 115 副本、无可保留的 /stream 后路（测试用户无 active
+    Drive 绑定行）时，清单里的副本直链必须被清、ErrorMessage 为
+    额度明示文案；判定日志 verdict=quota、shape=get、page=quota。
     """
     _stub_legs(monkeypatch,
                (206, "video/mp4", VIDEO_HEAD),
@@ -543,14 +569,14 @@ def test_rule_direct_first_relay_second_pi_get_signal_keeps_manifest(
                         lambda db_, iid, uid: None)
     events = _record_byos(monkeypatch)
     resp = _pi(monkeypatch, db)
-    assert not resp.get("ErrorMessage")
+    assert resp.get("ErrorMessage") == tv.USERCOPY_QUOTA_DETAIL
     urls = [(src.get("DirectPlayUrl") or "")
             + (src.get("DirectStreamUrl") or "")
             for src in resp["MediaSources"]]
-    assert any(COPY_FID in u for u in urls), urls
+    assert all(COPY_FID not in u for u in urls), urls
     assert all(SHARED_FID not in u for u in urls)
     sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
-    assert sig and sig[0]["verdict"] == "direct"
+    assert sig and sig[0]["verdict"] == "quota"
     assert sig[0]["shape"] == "get" and sig[0]["page"] == "quota"
 
 
@@ -586,13 +612,21 @@ def test_rule_direct_first_relay_second_stream_range_quota_diverts(
     assert sig[0]["shape"] == "range"
 
 
-# ---------- 改道判定零缓存（2026-10-30 08:29 事故回归兜底） ----------
-# 事故：user 1 播《大唐妖探》（本人副本 fid 当场 Range 实测已回
-# 206 真字节），日志却连续 byos_usercopy_quota verdict=quota
-# cached=True——几分钟前间歇额度页留下的缓存裁决（TTL 300 秒）
-# 被两判定点反复当成实时裁决改道中继，播放器 8 次重连播不出。
-# 钉死：改道判定（probe_user_copy_quota_decision）不读裁决缓存、
-# 当场跑新鲜两腿；非判定调用仍可吃缓存（日志探活/复用口径不变）。
+# ---------- 改道判定与缓存（08:29 事故兜底 + 2026-10-31 收窄） ----------
+# 08:29 事故：user 1 播《大唐妖探》（本人副本 fid 当场 Range 实测
+# 已回 206 真字节），日志却连续 byos_usercopy_quota verdict=quota
+# cached=True——几分钟前间歇额度页留下的缓存裁决（TTL 300 秒）被
+# 两判定点反复当成实时裁决改道中继，播放器 8 次重连播不出。当时
+# 的修法是判定零缓存、每请求新鲜两腿。
+# 2026-10-31 收窄（用户亲点，生产实证 item 859178）：额度是持续
+# 状态时，每请求新鲜两腿让每个分段请求先白付一发注定 quota 的
+# 探测（约 0.85 秒）才轮到中继，起播约 45 秒。现口径：已知
+# quota（缓存裁决 quota，或缓存 detail 的 page=quota）→ 判定
+# 直接吃缓存、零外呼，判定点据此直接中继；缓存到期后下一请求
+# 才重新探一次，谷歌解除额度即可恢复直链。非 quota 的缓存
+# （ok 且无 quota 信号 / interstitial）仍沿 08:29 口径：判定先
+# 失效再新鲜探测——08:29 防的「间歇页残留裁决」只在 quota 方向
+# 被本次定案有意让位，其余方向不变。
 
 def _seed_verdict_cache(verdict, detail="range:quota"):
     from backend.database import CacheManager
@@ -602,24 +636,56 @@ def _seed_verdict_cache(verdict, detail="range:quota"):
                      detail, 300, domain="playback")
 
 
-def test_rule_decision_fresh_probe_ignores_cached_quota(monkeypatch):
-    """缓存预置 quota 裁决 + 新鲜 Range 回 206 → 改道判定发直链。
+def test_rule_decision_honors_cached_quota_no_reprobe(monkeypatch):
+    """缓存预置 quota 裁决 → 判定直接吃缓存、两腿零外呼。
 
-    fresh 判定必须真跑两腿（calls 计数证明不是吃缓存），且新鲜
-    结果回写缓存：其后的非判定调用看到的不再是旧 quota。
+    两腿桩成一调就炸：判定仍返回 quota 且缓存/detail 原样保留
+    （判定点随后按 detail=range/quota 改道，日志 cached=True
+    名副其实）。这正是 2026-10-31 定案要的：已知 quota 不重复探。
     """
     _seed_verdict_cache("quota")
     calls = _stub_legs(monkeypatch,
-                       (206, "video/mp4", VIDEO_HEAD),
-                       (200, "video/mp4", VIDEO_HEAD))
-    # 非判定调用仍吃缓存：返回旧 quota、零外呼（复用口径保留）。
+                       AssertionError("已知 quota 不许再探 Range 腿"),
+                       AssertionError("已知 quota 不许再探 GET 腿"))
+    assert tv.probe_user_copy_quota_decision(7, COPY_FID) == "quota"
+    assert calls == {"range": 0, "get": 0}
+    assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
+        "shape": "range", "page": "quota"}
+    # 非判定调用同样吃缓存（复用口径保留）。
     assert tv.probe_user_copy_quota(7, COPY_FID) == "quota"
     assert calls == {"range": 0, "get": 0}
-    assert tv.usercopy_quota_probe_cached(7, COPY_FID)
-    # 改道判定：无视缓存 quota，新鲜 Range 206 → ok（发直链）。
+
+
+def test_rule_decision_honors_cached_get_quota_signal_no_reprobe(
+        monkeypatch):
+    """缓存是 GET 腿额度页信号（verdict=ok + detail get/quota）：
+    同样算已知 quota——判定零外呼、detail 原样保留，判定点按
+    detail 改道。否则 Range 健康但整拉持续回额度页的副本，每个
+    分段请求仍要白付两腿探测才轮到中继（variant 627 形态）。"""
+    _seed_verdict_cache("ok", "get:quota")
+    calls = _stub_legs(monkeypatch,
+                       AssertionError("已知 quota 不许再探 Range 腿"),
+                       AssertionError("已知 quota 不许再探 GET 腿"))
+    assert tv.probe_user_copy_quota_decision(7, COPY_FID) == "ok"
+    assert calls == {"range": 0, "get": 0}
+    assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
+        "shape": "get", "page": "quota"}
+
+
+def test_rule_decision_reprobes_once_after_cache_expiry(monkeypatch):
+    """缓存到期（键消失）后判定重新探一次：谷歌已解除额度
+    （两腿回视频）→ 判定 ok、新裁决回写缓存，直链自动恢复。"""
+    _seed_verdict_cache("quota")
+    from backend.database import CacheManager
+    CacheManager.delete(tv._usercopy_quota_cache_key(7, COPY_FID),
+                        domain="playback")
+    CacheManager.delete(tv._usercopy_quota_detail_key(7, COPY_FID),
+                        domain="playback")
+    calls = _stub_legs(monkeypatch,
+                       (206, "video/mp4", VIDEO_HEAD),
+                       (200, "video/mp4", VIDEO_HEAD))
     assert tv.probe_user_copy_quota_decision(7, COPY_FID) == "ok"
     assert calls == {"range": 1, "get": 1}
-    # 新鲜裁决已回写：非判定调用不再吃到旧 quota。
     assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
     assert calls == {"range": 1, "get": 1}
 
@@ -639,3 +705,61 @@ def test_rule_decision_fresh_probe_range_quota_still_diverts(monkeypatch):
     assert calls == {"range": 1, "get": 0}
     assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
         "shape": "range", "page": "quota"}
+
+
+# ---------- 已知 quota 全程（2026-10-31 生产实证 item 859178） ----------
+# 缓存里已有 quota 裁决时，后续每个分段流请求必须零探测直接
+# 中继——旧行为是判定先失效缓存再新鲜两腿，每请求白付约 0.85 秒
+# 注定 quota 的探测、ttfb 0.9–1.7 秒。两腿桩成一调就炸：还探
+# 就是红。
+
+def test_rule_known_quota_stream_cached_quota_relays_without_probing(
+        db, monkeypatch):
+    """video_stream：缓存 quota 在效 → 不探、直接本人令牌中继。"""
+    _seed_verdict_cache("quota")
+    calls = _stub_legs(monkeypatch,
+                       AssertionError("已知 quota 不许再探 Range 腿"),
+                       AssertionError("已知 quota 不许再探 GET 腿"))
+    _token_ok(monkeypatch)
+    record = {}
+
+    async def fake_relay(request, drive_id, file_id, **kwargs):
+        record.update(file_id=file_id, kwargs=kwargs)
+        return Response(b"vid", status_code=206)
+
+    item = _drive_item()
+    _stub_stream(monkeypatch, item)
+    monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
+    events = _record_byos(monkeypatch)
+    resp = asyncio.run(api.video_stream(
+        item.guid, _stream_request(), user=_user(), db=db))
+    assert resp.status_code == 206
+    assert record["file_id"] == COPY_FID
+    assert record["kwargs"]["access_token"] == USER_TOKEN
+    assert calls == {"range": 0, "get": 0}
+    sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
+    assert sig and sig[0]["verdict"] == "quota"
+    assert sig[0]["cached"] is True
+
+
+def test_rule_known_quota_pi_cached_quota_no_direct_manifest(
+        db, monkeypatch):
+    """PlaybackInfo：缓存 quota 在效 → 不探、不发副本直链清单。"""
+    _seed_verdict_cache("quota")
+    calls = _stub_legs(monkeypatch,
+                       AssertionError("已知 quota 不许再探 Range 腿"),
+                       AssertionError("已知 quota 不许再探 GET 腿"))
+    monkeypatch.setattr(tv, "ready_user115_variant",
+                        lambda db_, iid, uid: None)
+    events = _record_byos(monkeypatch)
+    resp = _pi(monkeypatch, db)
+    assert resp.get("ErrorMessage") == tv.USERCOPY_QUOTA_DETAIL
+    urls = [(src.get("DirectPlayUrl") or "")
+            + (src.get("DirectStreamUrl") or "")
+            for src in resp["MediaSources"]]
+    assert all(COPY_FID not in u for u in urls), urls
+    assert all(SHARED_FID not in u for u in urls)
+    assert calls == {"range": 0, "get": 0}
+    sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
+    assert sig and sig[0]["verdict"] == "quota"
+    assert sig[0]["cached"] is True
