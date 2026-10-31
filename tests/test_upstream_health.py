@@ -175,7 +175,7 @@ def test_probe_success_with_auth_proves_credentials(monkeypatch):
             return 200, {"Id": "1", "ServerName": "up"}
         return 200, {"Id": "1"}
 
-    src = uh.UpstreamSource(key="s1", kind="emby", base_url="http://127.0.0.1:8096/", api_key="SECRET-KEY")
+    src = uh.UpstreamSource(key="s1", kind="emby", base_url="http://example.com:8096/", api_key="SECRET-KEY")
     res = uh.probe_source(src, store, http_get=fake_http, now=100.0, threshold=3)
     assert res["outcome"] == "success"
     assert store.get_source("s1").availability_state == uh.STATE_ACTIVE
@@ -187,7 +187,7 @@ def test_probe_flips_after_threshold_and_skips_when_not_due(monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setattr(uh, "provider_breaker", FakeBreaker())
     store = uh.InMemoryHealthStore()
-    src = uh.UpstreamSource(key="s1", kind="jellyfin", base_url="http://127.0.0.1:8096")
+    src = uh.UpstreamSource(key="s1", kind="jellyfin", base_url="http://example.com:8096")
     calls = []
 
     def dead(url, headers, timeout):
@@ -211,7 +211,7 @@ def test_probe_unknown_shape_does_not_flip(monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setattr(uh, "provider_breaker", FakeBreaker())
     store = uh.InMemoryHealthStore()
-    src = uh.UpstreamSource(key="s1", kind="emby", base_url="http://127.0.0.1:8096")
+    src = uh.UpstreamSource(key="s1", kind="emby", base_url="http://example.com:8096")
     rec = uh.SourceHealthRecord(source_key="s1", availability_state=uh.STATE_ACTIVE,
                                 consecutive_unavailable_failures=2)
     store.set_source(rec)

@@ -70,6 +70,7 @@ from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
 from backend.emby_server import upstream_aggregation as agg
+from backend.emby_server import upstream_http
 from backend.emby_server import upstream_item_mappings as uim
 from backend.emby_server import upstream_sources as us
 
@@ -159,7 +160,7 @@ def _default_http_post(url: str, payload: dict, headers: dict,
     headers.setdefault("User-Agent", "Aetrix/1.0")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with upstream_http.safe_urlopen(req, timeout=timeout) as resp:
             try:
                 body = json.loads(resp.read().decode("utf-8", "replace"))
             except (ValueError, UnicodeDecodeError):
@@ -181,7 +182,7 @@ def _default_http_get(url: str, headers: dict, timeout: float):
     headers.setdefault("User-Agent", "Aetrix/1.0")
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with upstream_http.safe_urlopen(req, timeout=timeout) as resp:
             try:
                 body = json.loads(resp.read().decode("utf-8", "replace"))
             except (ValueError, UnicodeDecodeError):
