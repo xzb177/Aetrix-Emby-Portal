@@ -5,7 +5,8 @@
 # 精确版本与哈希见 backend/requirements.lock（pip-compile 生成），
 # Dockerfile 与 CI 一律装锁文件（--require-hashes），禁止装回本文件，
 # 否则 CI 测的版本集合与部署的会再次脱节。
-# 改动本文件后须同步重编锁并跑 scripts/check_backend_deps_locked.py。
+# 改动本文件后须同步重编锁并跑 scripts/check_backend_deps_locked.py
+# （门禁会验锁版本落在声明范围内：范围改了忘重编锁时门禁红灯）。
 
 # Web 框架
 fastapi>=0.104.0,<1

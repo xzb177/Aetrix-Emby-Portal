@@ -101,3 +101,48 @@ def test_direct_dep_missing_from_lock_fails(tmp_path):
     proc = _run(tmp_path)
     assert proc.returncode != 0
     assert "锁缺直接依赖" in proc.stdout
+
+
+def test_lock_version_below_lower_bound_fails(tmp_path):
+    """审计 A-125：范围下界抬过锁版本（忘重编锁）→ 红。"""
+    _write(tmp_path, """\
+        fastapi>=0.200.0,<1
+        pypinyin==0.55.0
+        """, lock=_GOOD_LOCK, ci_lock=_GOOD_CI_LOCK)
+    proc = _run(tmp_path)
+    assert proc.returncode != 0
+    assert "范围漂移" in proc.stdout
+
+
+def test_lock_version_above_upper_bound_fails(tmp_path):
+    """审计 A-125：范围上界收到锁版本之下（忘重编锁）→ 红。"""
+    _write(tmp_path, """\
+        fastapi>=0.104.0,<0.115.0
+        pypinyin==0.55.0
+        """, lock=_GOOD_LOCK, ci_lock=_GOOD_CI_LOCK)
+    proc = _run(tmp_path)
+    assert proc.returncode != 0
+    assert "范围漂移" in proc.stdout
+
+
+def test_lock_version_within_range_passes(tmp_path):
+    """审计 A-125：锁版本在声明范围内 → 绿。"""
+    _write(tmp_path, """\
+        fastapi>=0.104.0,<1
+        pypinyin==0.55.0
+        """, lock=_GOOD_LOCK, ci_lock=_GOOD_CI_LOCK)
+    proc = _run(tmp_path)
+    assert proc.returncode == 0, proc.stdout
+    assert "门禁通过" in proc.stdout
+
+
+def test_tilde_equal_range_fails(tmp_path):
+    """审计 A-125：~= 按 PEP 440 展开（~=0.114.0 即 >=0.114.0 且 ==0.114.*），
+    锁 0.115.0 不在其中 → 红。"""
+    _write(tmp_path, """\
+        fastapi~=0.114.0
+        pypinyin==0.55.0
+        """, lock=_GOOD_LOCK, ci_lock=_GOOD_CI_LOCK)
+    proc = _run(tmp_path)
+    assert proc.returncode != 0
+    assert "范围漂移" in proc.stdout
