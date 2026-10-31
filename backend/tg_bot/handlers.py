@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import html
 import logging
+import threading
+import time
+from collections import deque
 from datetime import datetime
 
 from backend.integrations import store
@@ -77,40 +80,87 @@ def _bind_success_text(db, user) -> str:
 # （绑定成功即可用 /start 一键免密登录该网页账号，等同账号接管）
 BIND_ATTEMPTS_MAX = 5
 BIND_ATTEMPTS_WINDOW = 600
-# 单 TG 账号限流挡不住「多个 TG 账号分布式枚举」：每个待验证的网页绑定码累计全站猜错次数，
-# 达到上限即作废（expires_at 置为现在），网页端验证时提示「已失效，请重新生成」，不会静默 DoS。
+# 猜错计数（A-111 起改口径）：旧口径把每次猜错记到全部待验证绑定码头上，
+# 累计达上限即把所有人的码一并作废——任意几个 TG 账号互相串通猜错即可
+# 作废全站待绑码（可用性 DoS）。现口径分两路，猜错只影响猜错者本人：
+# 1）可归属到某个码行的猜错（提交的字符串命中一个已存在但当前不可绑定的
+#    码行）：只给该行 fail_count+1，累计达 BIND_GLOBAL_FAIL_MAX 只作废该行；
+# 2）无归属的猜错只记入全站失败信号窗：窗内全站猜错达 BIND_GLOBAL_FAIL_MAX
+#    次，只对触发越线的那个 TG 账号加严锁定一个窗口期，绝不触碰他人绑定码。
 BIND_GLOBAL_FAIL_MAX = 20
 
+_bind_fail_lock = threading.Lock()
+_bind_fail_events: deque = deque()
+_bind_lockout_until: dict = {}
 
-def _record_global_bind_failure(db, now) -> None:
-    """一次猜错：所有待验证的网页绑定码 fail_count+1，超限的直接作废。"""
-    from sqlalchemy import func
 
-    pending = (
-        TgBindCode.user_id.isnot(None),
-        TgBindCode.telegram_id.is_(None),
-        TgBindCode.used_at.is_(None),
-        TgBindCode.expires_at > now,
-    )
+def _reset_bind_failure_state() -> None:
+    """清空全站失败信号窗与账号锁定（测试隔离用）。"""
+    with _bind_fail_lock:
+        _bind_fail_events.clear()
+        _bind_lockout_until.clear()
+
+
+def _bind_lockout_active(tg_user_id: int) -> bool:
+    """该 TG 账号是否处于全站猜错信号触发的加严锁定期。"""
+    now = time.monotonic()
+    with _bind_fail_lock:
+        until = _bind_lockout_until.get(tg_user_id)
+        if until is None:
+            return False
+        if until <= now:
+            _bind_lockout_until.pop(tg_user_id, None)
+            return False
+        return True
+
+
+def _record_bind_failure(db, now, tg_user_id: int, code: str) -> None:
+    """记一次绑定码猜错：归属计数只动命中的码行，全站计数只作速率信号。"""
+    # 1）归属计数：提交的字符串命中某个已存在码行时，只累计该行；
+    #    待验证可绑定的码在 verify 主流程里已被命中返回，不会走到这里，
+    #    故这里命中的只会是当前不可绑定的行（已用/已绑/已过期/Bot 发起）。
     try:
-        db.query(TgBindCode).filter(*pending).update(
-            {TgBindCode.fail_count: func.coalesce(TgBindCode.fail_count, 0) + 1},
-            synchronize_session=False,
+        row = (
+            db.query(TgBindCode)
+            .filter(TgBindCode.code == (code or "").strip())
+            .order_by(TgBindCode.id.desc())
+            .first()
         )
-        n = db.query(TgBindCode).filter(
-            *pending, TgBindCode.fail_count >= BIND_GLOBAL_FAIL_MAX,
-        ).update({TgBindCode.expires_at: now}, synchronize_session=False)
-        db.commit()
-        if n:
-            logger.warning("tg 绑定码全站猜错次数超限，已作废 %s 个待验证绑定码", n)
+        if row is not None:
+            row.fail_count = (row.fail_count or 0) + 1
+            if (
+                row.fail_count >= BIND_GLOBAL_FAIL_MAX
+                and row.used_at is None
+                and row.expires_at is not None
+                and row.expires_at > now
+            ):
+                row.expires_at = now
+                logger.warning("tg 绑定码自身猜错次数超限，已作废该码 id=%s", row.id)
+            db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         logger.error("记录绑定码猜错次数失败：%s", exc)
+    # 2）全站信号：窗内猜错达阈值，只锁定本次越线的猜错账号
+    ts = time.monotonic()
+    with _bind_fail_lock:
+        _bind_fail_events.append(ts)
+        cutoff = ts - BIND_ATTEMPTS_WINDOW
+        while _bind_fail_events and _bind_fail_events[0] < cutoff:
+            _bind_fail_events.popleft()
+        tripped = len(_bind_fail_events) >= BIND_GLOBAL_FAIL_MAX
+        if tripped:
+            _bind_lockout_until[tg_user_id] = ts + BIND_ATTEMPTS_WINDOW
+    if tripped:
+        logger.warning(
+            "tg 绑定码全站猜错信号越线，已临时锁定猜错账号 tg_user_id=%s", tg_user_id)
 
 
 def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None:
     from backend.ratelimit import check_rate_limit
 
+    if _bind_lockout_active(tg_user_id):
+        logger.warning("tg 绑定码猜错信号锁定中，已拒绝 tg_user_id=%s", tg_user_id)
+        return "绑定码尝试过于频繁，请 10 分钟后再试"
     allowed, _retry = check_rate_limit(
         f"tg_bind_attempt:{tg_user_id}", BIND_ATTEMPTS_MAX, BIND_ATTEMPTS_WINDOW)
     if not allowed:
@@ -130,7 +180,7 @@ def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None
         .first()
     )
     if not record:
-        _record_global_bind_failure(db, now)
+        _record_bind_failure(db, now, tg_user_id, code)
         return None
     user = db.query(WebUser).filter(WebUser.id == record.user_id).first()
     if not user:

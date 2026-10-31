@@ -1,4 +1,10 @@
-"""绑定码分布式枚举防护：多个 TG 账号各猜几次，全站累计猜错达到上限后待验证码作废。"""
+"""绑定码猜错计数口径（A-111 改版）：分布式猜错不再作废受害者绑定码。
+
+旧口径（已废）：全站累计猜错达上限即作废全部待验证绑定码——本身就是
+可用性 DoS：几个 TG 账号串通猜错即可让所有人的绑定码失效。
+新口径：猜错只影响猜错者本人——无归属的猜错只记入全站失败信号窗，
+越线后只锁定触发的那个 TG 账号；可归属到某个码行的猜错只累计该行。
+"""
 from __future__ import annotations
 
 import os
@@ -27,9 +33,11 @@ def db():
     models.Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     store.invalidate()
+    handlers._reset_bind_failure_state()
     yield session
     session.close()
     store.invalidate()
+    handlers._reset_bind_failure_state()
 
 
 def _user(db, name):
@@ -39,34 +47,29 @@ def _user(db, name):
     return u
 
 
-def test_distributed_bruteforce_invalidates_pending_code(db, monkeypatch):
+def test_distributed_bruteforce_no_longer_invalidates_pending_code(db):
     from backend import tg_bind
 
     victim = _user(db, "gvictim")
-    db.add(models.TgBindCode(user_id=victim.id, code="654321",
-                             expires_at=datetime.now() + timedelta(minutes=10)))
+    row = models.TgBindCode(user_id=victim.id, code="654321",
+                            expires_at=datetime.now() + timedelta(minutes=10))
+    db.add(row)
     db.commit()
-    # 每个攻击账号只猜 2 次（远低于单账号限流），但账号很多
+    # 每个攻击账号只猜 2 次（远低于单账号限流），但账号很多：
+    # 旧口径下全站累计 60 次早已把受害者的码作废
     guess = 100000
     for i in range(30):
         attacker = 7_100_000 + i
         for _ in range(2):
             handlers.verify_bind_code(db, attacker, attacker, str(guess))
             guess += 1
-    handlers.verify_bind_code(db, 7_200_000, 7_200_000, "654321")
-    db.refresh(victim)
-    assert victim.telegram_id is None, "多 TG 账号分布式枚举仍可命中绑定码"
-
-    # 受害者网页端验证时被明确告知失效，而不是静默失败
-    monkeypatch.setattr(tg_bind.tg_integration, "token", lambda db_: "t")
-    res = tg_bind.verify_bind(db, victim)
-    assert res["success"] is False and res.get("code_expired") is True
-
-    # 重新生成后可正常绑定
-    monkeypatch.setattr(tg_bind, "get_bot_username", lambda db_: "")
-    code = tg_bind.generate_bind_code(db, victim)["code"]
-    db.commit()
-    reply = handlers.verify_bind_code(db, 7_300_000, 7_300_000, code)
+    db.refresh(row)
+    assert (row.fail_count or 0) == 0, "他人的猜错不得记到受害者绑定码上"
+    assert row.expires_at > datetime.now(), "受害者绑定码不得被分布式猜错作废"
+    # 网页端也不再把该码判为「因猜错超限失效」
+    assert tg_bind._latest_code_expired_by_attempts(db, victim) is False
+    # 受害者本人仍可正常绑定
+    reply = handlers.verify_bind_code(db, 7_300_000, 7_300_000, "654321")
     assert reply and "绑定成功" in reply
 
 
