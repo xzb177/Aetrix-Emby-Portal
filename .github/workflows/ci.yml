@@ -82,7 +82,7 @@ jobs:
 
   smoke:
     name: 后端 · 冒烟测试
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, aetrix-insta]
     # job 级 55 分钟是后备上限：pytest 步骤 45 分钟（2026-10-30 容量一期，
     # 见 pytest 步注释）+ 其余步骤实测约 5 分钟，55 分钟留有余量；
     # 单步仍各有超时，卡死仍会失败报错，不会静默转圈。
