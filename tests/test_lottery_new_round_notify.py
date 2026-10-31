@@ -62,12 +62,19 @@ def test_notify_new_round_defined():
 
 
 def test_notify_new_round_has_join_button():
-    """notify_new_round 必须带 lottery_join: 参加按钮。"""
+    """公告必须带 lottery_join: 参加按钮。
+
+    2026-10-31 根治后按钮由同源 builder build_announce_markup 构造
+    （notify_new_round 与人数编辑共用），断言扩到 builder 本体，
+    守卫意图不变：公告卡上必须有 lottery_join 参加按钮。
+    """
     with open("backend/lottery.py", encoding="utf-8") as fh:
         tree = ast.parse(fh.read())
     func = _get_func_node(tree, "notify_new_round")
     assert func is not None, "找不到 notify_new_round 函数"
-    assert _has_join_button(func), (
-        "notify_new_round 没有构造 lottery_join: 回调按钮，"
+    builder = _get_func_node(tree, "build_announce_markup")
+    assert builder is not None, "找不到 build_announce_markup 函数"
+    assert _has_join_button(builder), (
+        "build_announce_markup 没有构造 lottery_join: 回调按钮，"
         "群成员无法一键参加。"
     )

@@ -307,6 +307,36 @@ def _lottery():
         return None
 
 
+def _send_lottery_feedback(db, chat_id: int, text: str) -> None:
+    """抽奖群内反馈（旁路：失败只记日志，绝不影响参加结果）。
+
+    与红包领取反馈同口径：send_message_ex 拿 message_id 后按
+    bot_msg_autodelete_seconds（默认 30 秒）自毁，不新起无自毁的刷屏源。
+    """
+    try:
+        ok, err, feedback_id = sender.send_message_ex(db, chat_id, text)
+        if not ok:
+            logger.warning("tg lottery feedback send failed: chat=%s err=%s", chat_id, err)
+            return
+        if feedback_id:
+            delay = ephemeral.bot_msg_delay_seconds(db)
+            if delay > 0:
+                ephemeral.schedule_delete(chat_id, feedback_id, delay)
+    except Exception:
+        logger.warning("tg lottery feedback failed: chat=%s", chat_id, exc_info=True)
+
+
+def _refresh_lottery_announce(db, lot, round_id: int) -> None:
+    """参加成功后节流编辑公告卡人数（旁路，旧版 lottery 无此函数时跳过）。"""
+    refresh = getattr(lot, "refresh_announce_card", None)
+    if refresh is None:
+        return
+    try:
+        refresh(db, round_id)
+    except Exception:
+        logger.warning("tg lottery announce refresh failed: round=%s", round_id, exc_info=True)
+
+
 def _handle_lottery_join(db, callback_query: dict) -> None:
     """处理抽奖参加按钮点击（幂等）。"""
     cb_id = callback_query.get("id")
@@ -437,6 +467,7 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
         reason = result.get("reason") if isinstance(result, dict) else ""
         if ok:
             _answer_callback(db, cb_id, "🎉 参加成功，祝你好运！")
+            _refresh_lottery_announce(db, lot, round_id)
         elif reason == "already":
             _answer_callback(db, cb_id, "你已参加过本轮抽奖")
         elif reason == "full":
@@ -468,7 +499,9 @@ def handle_lottery_password(db, chat_id: int, tg_user: dict, text: str) -> bool:
 
     三重门校验与按钮参加一致：身份门（getChatMember，fail-open）+
     资格门（join_round 内集中检查：黑名单/新号/限流/已参加/名额）。
-    同一用户重复发送口令只算一次（join_round 返回 already 时静默，不刷屏）。
+    同一用户重复发送口令只算一次；参加成功与重复参加都发一条带人数的
+    自毁反馈（2026-10-31 根治：旧版重复静默、成功反馈无人数且发送失败
+    被吞，用户亲报「发了口令群里没反馈」）。
     """
     lot = _lottery()
     if lot is None:
@@ -529,11 +562,31 @@ def handle_lottery_password(db, chat_id: int, tg_user: dict, text: str) -> bool:
 
     display_name = html.escape(str(tg_user.get("first_name") or tg_user.get("username") or telegram_id))
     if ok:
-        sender.send_message(db, chat_id, f"🎉 {display_name} 参加成功，祝你好运！")
+        # 参加反馈（2026-10-31 根治）：带当前总人数 + 公告卡节流刷新；
+        # 反馈消息走自毁，不留刷屏。旧行为「发了口令群里没反应」是用户亲报缺陷。
+        count = None
+        counter = getattr(lot, "participant_count", None)
+        if counter is not None:
+            try:
+                count = counter(db, round_obj.id)
+            except Exception:
+                logger.exception("lottery participant_count failed")
+        count_text = f"，当前共 {count} 人参与" if count is not None else ""
+        _send_lottery_feedback(db, chat_id, f"🎉 {display_name} 参加成功{count_text}，祝你好运！")
+        _refresh_lottery_announce(db, lot, round_obj.id)
     elif reason == "already":
-        pass  # 重复发送口令：静默，不刷屏
+        # 重复发口令也要有反馈（用户亲定），同样带人数、同样自毁
+        count = None
+        counter = getattr(lot, "participant_count", None)
+        if counter is not None:
+            try:
+                count = counter(db, round_obj.id)
+            except Exception:
+                logger.exception("lottery participant_count failed")
+        count_text = f"，当前共 {count} 人参与" if count is not None else ""
+        _send_lottery_feedback(db, chat_id, f"🎲 {display_name} 已参加过本轮抽奖{count_text}，请等开奖啦")
     elif reason == "full":
-        sender.send_message(db, chat_id, f"名额已满，{display_name} 下次再来")
+        _send_lottery_feedback(db, chat_id, f"名额已满，{display_name} 下次再来")
     elif reason in ("closed", "disabled"):
         pass  # 活动已结束：静默
     elif reason in ("blacklisted", "too_new", "rate_limited"):
