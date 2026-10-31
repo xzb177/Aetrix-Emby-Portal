@@ -11,10 +11,17 @@
 本层只做映射的读写，不做下列事（范围收住，不许扩）：
 - 不动 video_stream 的选路、不接自动兜底——那是映射落地后的另一步；
 - 不改 ``upstream_aggregation``（它是纯模型，不碰数据库）；
-- 不校验源存在性：调用方（未来同步工人）持有合法源；读到死映射
-  时未来兜底口按源不存在 / 条目不存在结构化处理，不在本层联动清理；
-- 不加外键（照 UpstreamSource 先例）：源删了、本地条目删了，映射行
-  留着供追溯，删源 / 删条目时是否联动清理由调用方设计定。
+- 不联动清理死映射：源删了、本地条目删了，映射行留着供追溯，
+  本层只读不删（删源是否级联由调用方设计定，见 O-04）；
+- 不加外键（照 UpstreamSource 先例）。
+
+读契约（2026-10-31 优化 O-10 收紧）：``get_best_mapping`` 默认过两道
+校验——源必须存在且 enabled、本地条目必须是活行（未软删、未合并、
+未隐藏，与找源适配器 / orchestrator.resolve_candidate 的既有口径
+对齐）；不过的映射不算数，自动回落下一条有效映射，全无效返回
+None。「读映射必须过这两道」是映射层默认行为，消费方不用再各自
+防；只有明确要看原始行（如管理端追溯）的调用方才许显式
+``validate=False`` 自担后果。
 
 开关与回滚：
 - ``UPSTREAM_ITEM_MAPPING_ENABLED``（默认关）只管写路径：关时
@@ -124,17 +131,56 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
     return row
 
 
-def get_best_mapping(db: Session, local_item_id: int):
+def _local_item_live(db: Session, local_id: int) -> bool:
+    """本地条目是否活行：行在、未软删、未合并、未隐藏。
+
+    与找源适配器 ``_resolve_items`` / ``orchestrator.resolve_candidate``
+    的可见活行口径逐字对齐——同一条目在映射层与消费层不能有两种生死。
+    """
+    return (db.query(em.MediaItem.id)
+            .filter(em.MediaItem.id == local_id,
+                    em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None),
+                    em.MediaItem.is_hidden == False)  # noqa: E712
+            .first()) is not None
+
+
+def get_best_mapping(db: Session, local_item_id: int, *,
+                     validate: bool = True):
     """读本地条目对应的最佳上游映射。
 
     多条时取置信度最高；置信度相同时取最近更新（再相同时取 id 最大，
     保证同一输入同一输出）。空映射返回 None——读路径无害，不抛异常，
     也不受写路径开关影响。
+
+    ``validate=True``（默认，O-10 读契约）：先验本地条目是活行
+    （见 :func:`_local_item_live`），已死直接 None；再按偏好序逐条
+    验源——源行不存在或未 enabled 的映射不算数，回落到下一条有效
+    映射，全无效返回 None。``validate=False`` 跳过两道、返回原始
+    最佳行，只许追溯类调用方显式使用。
     """
-    return (db.query(em.UpstreamItemMapping)
-            .filter(em.UpstreamItemMapping.local_item_id
-                    == _as_pos_int(local_item_id, "local_item_id"))
+    local_id = _as_pos_int(local_item_id, "local_item_id")
+    rows = (db.query(em.UpstreamItemMapping)
+            .filter(em.UpstreamItemMapping.local_item_id == local_id)
             .order_by(em.UpstreamItemMapping.confidence.desc(),
                       em.UpstreamItemMapping.updated_at.desc(),
                       em.UpstreamItemMapping.id.desc())
-            .first())
+            .all())
+    if not rows:
+        return None
+    if not validate:
+        return rows[0]
+    if not _local_item_live(db, local_id):
+        return None
+    source_ids = {row.source_id for row in rows}
+    enabled_ids = {
+        source_id for (source_id,) in (
+            db.query(em.UpstreamSource.id)
+            .filter(em.UpstreamSource.id.in_(source_ids),
+                    em.UpstreamSource.enabled.is_(True))
+            .all())
+    }
+    for row in rows:
+        if row.source_id in enabled_ids:
+            return row
+    return None

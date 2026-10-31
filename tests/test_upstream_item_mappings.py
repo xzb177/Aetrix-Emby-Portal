@@ -38,6 +38,27 @@ def _switch_on(monkeypatch):
     monkeypatch.setenv(uim.MAPPING_ENABLED_ENV, "1")
 
 
+@pytest.fixture(autouse=True)
+def _seed_live_rows(db):
+    """O-10 读契约下 get_best_mapping 默认验源与本地活行：给本文件
+    用到的条目 10/11 与源 3/5 预置活行（源 enabled），旧行为测试
+    的断言口径不变。"""
+    library = em.Library(guid="lib-mappings", name="映射库")
+    db.add(library)
+    db.flush()
+    for item_id in (10, 11):
+        db.add(em.MediaItem(
+            id=item_id, guid=f"item-mappings-{item_id}",
+            library_id=library.id, item_type="movie",
+            name=f"片{item_id}", file_path=f"mount://1/{item_id}.mp4"))
+    for source_id in (3, 5):
+        db.add(em.UpstreamSource(
+            id=source_id, name=f"src-{source_id}", source_type="emby",
+            base_url="https://example.invalid", auth_method="api_key",
+            enabled=True))
+    db.commit()
+
+
 def _count(db):
     return db.query(em.UpstreamItemMapping).count()
 
