@@ -45,17 +45,24 @@
 - 本地侧只认活行：``merged_into_id IS NULL``（``deleted_at``
   由 ORM 全局钩子自动拼）；同一身份多行时取 id 最小（确定性）。
 
-备注-分类对位（2026-10-31 用户亲定）：配对不再全库乱配——
-源备注（``upstream_sources.note``）按「备注-分类」约定写
-（如「乐观-国产剧」），聚合先从备注解析出分类，再把分类对位
-到一个本地真实库（分类→库名可经 SystemConfig
-``upstream_aggregate_category_library_map`` 改配，没配到的分类
-默认同名对位；分类名单与库名一律来自服主数据，代码不写死），
-本源全部配对只在该库内进行。备注为空/解析不出分类、或分类
-对不上任何本地库时，整源跳过：不解析凭据、不拉上游，结果带
-``skipped`` 与 ``skip_reason``（短码 + 文案 + 分类），日志同
-步记一条——绝不静默回落全库配对。跳过不是失败，任务照常以
-succeeded 落终态、结果里看得到跳过原因。
+备注-分类对位（2026-10-31 用户亲定，2026-11-01 口径修订）：
+分类只用来收窄，不写就不收窄。源备注（``upstream_sources.note``）
+按「备注-分类」约定写分类时（如「乐观-国产剧」），聚合先从
+备注解析出分类，再把分类对位到一个本地真实库（分类→库名
+可经 SystemConfig ``upstream_aggregate_category_library_map``
+改配，没配到的分类默认同名对位；分类名单与库名一律来自
+服主数据，代码不写死），本源全部配对只在该库内进行；写了
+分类却对不上任何本地库时整源跳过：不解析凭据、不拉上游，
+结果带 ``skipped`` 与 ``skip_reason``（短码 + 文案 + 分类），
+日志同步记一条——写错分类名不许静默全量乱配。跳过不是
+失败，任务照常以 succeeded 落终态、结果里看得到跳过原因。
+
+全量模式（2026-11-01 简单方案，用户亲定，取代按分类拆源）：
+备注没写分类（空/解析不出）默认就是全量：整源聚合、配对
+不收窄，按条目自身所属逐库对位——分类本来就是机器按片子
+对位，没必要让人先分。分类段恰写「全部」是同一模式的显式
+写法，与没写分类等效。服主全程不用为聚合碰备注，除非他
+想把某个源收窄到一个库。
 
 写路径开关：``UPSTREAM_ITEM_MAPPING_ENABLED``（默认关）只管
 写路径——关时 ``record_mapping`` 返回 None、不写任何东西，
@@ -215,9 +222,20 @@ def _system_config_text(db, key):
 #: env.example（#1527 先例）。
 KEY_CATEGORY_LIBRARY_MAP = "upstream_aggregate_category_library_map"
 
-#: 整源跳过短码：备注为空/解析不出分类；分类对不上任何本地库。
-SKIP_REMARK_MISSING = "category_remark_missing"
+#: 整源跳过短码：只剩「分类对不上任何本地库」一种——备注没写
+#: 分类不再跳过（2026-11-01 口径修订：默认全量，见 CATEGORY_ALL
+#: 与 resolve_target_library），旧短码 category_remark_missing
+#: 已随口径取消，不要再产生。
 SKIP_LIBRARY_UNMATCHED = "category_library_unmatched"
+
+#: 全量模式保留分类（2026-11-01 简单方案，用户亲定）：备注分类
+#: 段恰为此值时整源全量聚合、配对不收窄到单一库（按条目自身
+#: 逐库对位）。它是模式开关、不是分类名也不是库名：对位解析
+#: 先于改配表命中它就短路，改配表里给它配了值也不生效——映射
+#: 表只管分类→改配库。同日口径修订后它只是全量的显式写法：
+#: 备注没写分类默认就是全量（见 resolve_target_library），写
+#: 不写「全部」等效；服主不必按分类拆源（拆源方案已被取代）。
+CATEGORY_ALL = "全部"
 
 #: 备注里「备注」与「分类」的分隔符：半角与全角横线都认。
 _REMARK_SEPARATORS = ("-", "－")
@@ -277,24 +295,27 @@ def resolve_target_library(db: Session, source) -> dict:
     """把源备注的分类对位到本地真实库（备注-分类对位的唯一实现）。
 
     返回 {"library": Library|None, "category": str|None,
+    "all_libraries": bool,
     "skip": None|{"code", "message", "category"}}：
-    - 备注解析不出分类 → skip=category_remark_missing；
-    - 目标库名 = 改配表命中值，未命中默认分类同名；按名找
-      非虚拟库（虚拟库是平台生成的展示库、没有自己的条目，
-      不是对位目标），同名多行取 id 最小（确定性）；找不到
-      → skip=category_library_unmatched。
+    - 备注为空/解析不出分类 → 默认全量模式（2026-11-01 口径
+      修订）：library=None、category=None、all_libraries=True、
+      不跳过——分类只用来收窄，没写就不收窄；
+    - 分类恰为「全部」（CATEGORY_ALL）→ 同样是全量模式（显式
+      写法，与没写分类等效）：先于改配表短路，映射表只管
+      分类→改配库，劫持不了模式开关；
+    - 其余分类：目标库名 = 改配表命中值，未命中默认分类同名；
+      按名找非虚拟库（虚拟库是平台生成的展示库、没有自己的
+      条目，不是对位目标），同名多行取 id 最小（确定性）；
+      找不到 → skip=category_library_unmatched（写了分类就要
+      对得上，对不上响亮跳过并报明，不许静默全量）。
     """
     category = parse_remark_category(getattr(source, "note", None))
     if category is None:
-        return {
-            "library": None, "category": None,
-            "skip": {
-                "code": SKIP_REMARK_MISSING,
-                "message": "源备注为空或未写分类（「备注-分类」，"
-                           "如「乐观-国产剧」），已跳过该源聚合",
-                "category": None,
-            },
-        }
+        return {"library": None, "category": None, "skip": None,
+                "all_libraries": True}
+    if category == CATEGORY_ALL:
+        return {"library": None, "category": category, "skip": None,
+                "all_libraries": True}
     target_name = category_library_map(db).get(category, category)
     # 同名多行取 id 最小（确定性）；虚拟判定走全仓同款 Python 侧
     # bool() 口径（is_virtual 为 NULL 的老行算非虚拟，SQL == False
@@ -308,7 +329,7 @@ def resolve_target_library(db: Session, source) -> dict:
             break
     if library is None:
         return {
-            "library": None, "category": category,
+            "library": None, "category": category, "all_libraries": False,
             "skip": {
                 "code": SKIP_LIBRARY_UNMATCHED,
                 "message": f"源备注分类「{category}」对位本地库"
@@ -316,7 +337,8 @@ def resolve_target_library(db: Session, source) -> dict:
                 "category": category,
             },
         }
-    return {"library": library, "category": category, "skip": None}
+    return {"library": library, "category": category, "skip": None,
+            "all_libraries": False}
 
 
 def _system_config_float(db, key):
@@ -769,8 +791,9 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem],
     上游条目 id（逐线路）、置信度、证据、集序号；unpaired_reasons
     按原因码计数（不逐条列未配对明细，响应体保持小）。
     ``library_id`` 给了时只在该本地库内配对（备注-分类对位，
-    见 resolve_target_library）；不给 = 旧口径全库配对（仅存量
-    直接调用方与旧测试用，新链路一律经 run 的对位解析传库）。
+    见 resolve_target_library）；不给 = 全库配对——run 的全量
+    模式（默认/分类「全部」）经对位解析传 None 走这条，另有
+    存量直接调用方与旧测试。
 
     查询策略（批量，不逐聚合查库）：
     - tmdb / imdb 各一次 IN 查询建映射；
@@ -1044,13 +1067,19 @@ def run_manual_aggregation(db: Session, source, *,
     - 源未启用 → 400（停用即断聚合）；
     - applecms 型 → 400（走它自己的同步，不按 Emby 协议撞接口）。
 
-    备注-分类对位（2026-10-31）：前置校验后先按源备注解析对位
-    库（见 resolve_target_library）。解析不出分类或分类对不上
-    本地库时整源跳过——不算失败：不解析凭据、不拉上游，直接
-    返回带 ``skipped=True`` 与 ``skip_reason`` 的零计数结果，
-    并记一条 warning 日志；对位命中后全部配对只在对位库内
-    进行，结果带 ``category`` / ``target_library_id`` /
-    ``target_library_name`` 供追溯。
+    备注-分类对位（2026-10-31，2026-11-01 口径修订）：前置
+    校验后先按源备注解析对位（见 resolve_target_library）。
+    写了分类却对不上本地库时整源跳过——不算失败：不解析
+    凭据、不拉上游，直接返回带 ``skipped=True`` 与
+    ``skip_reason`` 的零计数结果，并记一条 warning 日志；
+    对位命中后全部配对只在对位库内进行，结果带 ``category`` /
+    ``target_library_id`` / ``target_library_name`` 供追溯。
+    没写分类（默认）或分类恰为「全部」时走全量模式：不收窄、
+    按条目自身逐库对位，结果带显式模式标记
+    ``all_libraries=True``（单库对位与跳过时为 False）、
+    ``target_library_id`` / ``target_library_name`` 为 None、
+    ``category`` 为解析出的分类（「全部」或 None），另记一行
+    全量模式日志；逐库推进/逐库提交的既有机制不因此改变。
     逐库语义：
     - 先取库清单，再逐库分窗（WINDOW_RECORDS 条一窗）拉取/聚合/
       配对/写映射（flush，调用方事务内提交）；
@@ -1117,11 +1146,25 @@ def run_manual_aggregation(db: Session, source, *,
             "skipped": True,
             "skip_reason": skip,
             "category": routing["category"],
+            "all_libraries": bool(routing.get("all_libraries")),
             "target_library_id": None,
             "target_library_name": None,
         }
     target_library = routing["library"]
-    target_library_id = target_library.id
+    # 全量模式（没写分类或分类=「全部」）没有单一对位库：target
+    # 置 None，pair_aggregates 收到 library_id=None 即走不收窄
+    # 的逐库对位。
+    target_library_id = (target_library.id
+                         if target_library is not None else None)
+    if routing.get("all_libraries"):
+        if routing["category"]:
+            logger.info("上游聚合全量模式 source_id=%s category=%s"
+                        "（备注分类「全部」：配对不收窄，按条目自身"
+                        "逐库对位）", source.id, routing["category"])
+        else:
+            logger.info("上游聚合全量模式 source_id=%s category=None"
+                        "（备注未写分类，默认全量：配对不收窄，"
+                        "按条目自身逐库对位）", source.id)
     if page_size is None:
         page_size = configured_default_page_size(db)
     page_retries, page_backoff = _page_retry_config(db)
@@ -1310,6 +1353,8 @@ def run_manual_aggregation(db: Session, source, *,
         "skipped": False,
         "skip_reason": None,
         "category": routing["category"],
+        "all_libraries": bool(routing.get("all_libraries")),
         "target_library_id": target_library_id,
-        "target_library_name": target_library.name,
+        "target_library_name": (target_library.name
+                                if target_library is not None else None),
     }
