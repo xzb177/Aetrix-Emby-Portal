@@ -195,6 +195,14 @@ def admin_change_password(
     current_admin.password_hash = hash_password(request.new_password)
     # 改密后旧 token 全部作废：版本号+1，get_current_admin 的新鲜度检查会拒绝旧 tv 的 token
     current_admin.token_version = int(current_admin.token_version or 0) + 1
+    # A-085（360° 审计第二遍 R25-01）：改密/重置必须同时吊销该用户全部 Emby 客户端令牌——
+    # 只 bump 门户 JWT 的话，被盗的播放器令牌（历史令牌 expires_at 为空、永不过期）
+    # 改密后仍可播放。复用 share_guard._disable_user 的现成写法，与 JWT bump 同一事务提交。
+    from backend.emby_server import models as emby_models
+    db.query(emby_models.EmbyApiToken).filter(
+        emby_models.EmbyApiToken.user_id == current_admin.id
+    ).update({emby_models.EmbyApiToken.is_revoked: True}, synchronize_session=False)
+
     # 审计与密码修改在同一个事务里提交，避免"密码已改但审计丢失"（双 commit 问题）
     _audit(db, current_admin.id, "admin_change_password", "self", current_admin.id)
     db.commit()
