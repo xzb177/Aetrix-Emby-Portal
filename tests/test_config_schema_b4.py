@@ -62,8 +62,9 @@ class TestFamilySchemas:
         assert normalize("registration_mode", s["registration_mode"], "closed") == "closed"
         with pytest.raises(ConfigValueError):
             normalize("registration_mode", s["registration_mode"], "invite")
-        # 2026-10-21 A 类摘面板：register_ratelimit_enabled 已摘除（env 控制）
-        assert "register_ratelimit_enabled" not in s
+        # A-112：register_ratelimit_enabled 恢复登记（bool word 风格）。
+        assert normalize("register_ratelimit_enabled", s["register_ratelimit_enabled"], True) == "true"
+        assert normalize("register_ratelimit_enabled", s["register_ratelimit_enabled"], False) == "false"
         assert normalize("register_ratelimit_max", s["register_ratelimit_max"], 5) == "5"
         with pytest.raises(ConfigValueError):
             normalize("register_ratelimit_max", s["register_ratelimit_max"], 0)

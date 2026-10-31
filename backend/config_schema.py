@@ -250,10 +250,13 @@ COUPONS_CONFIG_SCHEMA: dict[str, tuple] = {
 }
 
 # 注册模式（admin.set_registration_mode；mode 端点层只认 open/closed；
-# ratelimit_max≥1、ratelimit_window≥60 是端点现有校验，上限沿用 _BIG 口径）
+# ratelimit_max≥1、ratelimit_window≥60 是端点现有校验，上限沿用 _BIG 口径；
+# A-112：register_ratelimit_enabled 恢复登记（bool word 风格存 true/false，
+# 与 _get_register_ratelimit 的 =="true" 判定一致；env 显式设置时仍接管））
 REGISTRATION_CONFIG_SCHEMA: dict[str, tuple] = {
     "registration_mode": ("enum", ("open", "closed")),
     "registration_closed_message": ("str",),
+    "register_ratelimit_enabled": ("bool",),
     "register_ratelimit_max": ("int", 1, _BIG),
     "register_ratelimit_window": ("int", 60, _BIG),
 }
