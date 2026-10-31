@@ -342,6 +342,20 @@ def _resolve_api_key(source, *, http_post=None):
     return _api_key_for_source(source, http_post=http_post)
 
 
+#: 进度日志频率（每 N 窗一行）SystemConfig 键（O-02）：默认 1
+#: （每窗一行）；大库一轮约几十行，可接受。钳 [1, 100]。
+KEY_PROGRESS_LOG_EVERY = "upstream_aggregate_progress_log_every"
+PROGRESS_LOG_EVERY_DEFAULT = 1
+
+
+def _progress_log_every(db) -> int:
+    """进度日志每 N 窗一行：SystemConfig > 默认 1，钳 [1, 100]。"""
+    configured = _system_config_int(db, KEY_PROGRESS_LOG_EVERY)
+    if configured is not None:
+        return max(1, min(100, configured))
+    return PROGRESS_LOG_EVERY_DEFAULT
+
+
 def _page_fetcher(source, api_key, get, *, parent_id=None,
                   retries: int = PAGE_RETRIES_DEFAULT,
                   backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT):
@@ -746,6 +760,9 @@ def run_manual_aggregation(db: Session, source, *,
     进度回调（``on_event``，O-01/O-02 的可观测面）：
     - ``libraries_discovered``：库清单拿到后发一次，带 libraries
       与 total；发在任何写库之前，回调可自行 commit；
+    - ``window``（O-02）：每窗结束发一次，带当前库、窗序号与
+      累计 fetched/paired/unpaired_reasons（信息性进度，含当前
+      库未提交部分；落库实况以 library_done/failed 为准）；
     - ``library_done``：一库跑完、commit 之前发（commit 模式），
       回调对任务行的更新搭同一事务一起提交——回调**不许**自己
       commit；非 commit 模式下在一库跑完后发，回调可自行 commit；
@@ -763,6 +780,7 @@ def run_manual_aggregation(db: Session, source, *,
     if page_size is None:
         page_size = configured_default_page_size(db)
     page_retries, page_backoff = _page_retry_config(db)
+    progress_log_every = _progress_log_every(db)
     api_key = _resolve_api_key(source, http_post=http_post)
     libraries = fetch_upstream_libraries(
         source, http_get=http_get, http_post=http_post, api_key=api_key)
@@ -810,6 +828,7 @@ def run_manual_aggregation(db: Session, source, *,
             "status": "ok",
         }
         lib_fetched = lib_aggregates = lib_paired = lib_written = 0
+        lib_window_index = 0
         lib_pairs: List[dict] = []
         failure: Optional[Tuple[str, str]] = None
         try:
@@ -853,6 +872,19 @@ def run_manual_aggregation(db: Session, source, *,
                 total_aggregates += len(items)
                 total_paired += len(pairs)
                 total_written += written
+                lib_window_index += 1
+                _fire_event(on_event, {
+                    "type": "window",
+                    "library_id": lib_id, "library_name": lib_name,
+                    "window_index": lib_window_index,
+                    "fetched": total_fetched, "paired": total_paired,
+                    "unpaired_reasons": dict(unpaired_total)})
+                if lib_window_index % progress_log_every == 0:
+                    logger.info(
+                        "上游聚合进度 source_id=%s library=%s(%s) "
+                        "window=%s fetched=%s paired=%s written=%s",
+                        source.id, lib_name, lib_id, lib_window_index,
+                        total_fetched, total_paired, total_written)
         except UpstreamAggregateRunError as exc:
             failure = (exc.code, exc.message)
         except IntegrityError:

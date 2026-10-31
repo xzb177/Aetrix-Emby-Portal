@@ -156,12 +156,21 @@ def _view_from_row(row) -> dict:
             error = json.loads(row.error_json)
         except ValueError:
             error = None
+    unpaired_reasons: dict = {}
+    if row.unpaired_reasons_json:
+        try:
+            parsed = json.loads(row.unpaired_reasons_json)
+            if isinstance(parsed, dict):
+                unpaired_reasons = parsed
+        except ValueError:
+            unpaired_reasons = {}
     return {
         "task_id": row.task_id,
         "source_id": row.source_id,
         "status": status,
         "result": result,
         "error": error,
+        "unpaired_reasons": unpaired_reasons,
         "trigger": row.trigger,
         "resume_of": row.resume_of,
         "libraries_total": row.libraries_total or 0,
@@ -358,14 +367,25 @@ def _make_progress_handler(task_id: str) -> Callable:
     def handle(event: dict) -> None:
         etype = event.get("type")
         if etype not in ("libraries_discovered", "library_done",
-                        "library_failed"):
+                        "library_failed", "window"):
             return
         db = _open_session()
         try:
             row = _get_row(db, task_id)
             if row is None:
                 return
-            if etype == "libraries_discovered":
+            if etype == "window":
+                # 逐窗进度（O-02）：当前库 + 累计计数 + 未配对原因，
+                # 含当前库未提交部分（落库实况以逐库事件为准）；
+                # 心跳在下方统一刷新——长库不再靠整库跑完才续命。
+                row.current_library_id = event.get("library_id")
+                row.current_library_name = event.get("library_name")
+                row.fetched = int(event.get("fetched") or 0)
+                row.paired = int(event.get("paired") or 0)
+                if event.get("unpaired_reasons") is not None:
+                    row.unpaired_reasons_json = json.dumps(
+                        event["unpaired_reasons"], ensure_ascii=False)
+            elif etype == "libraries_discovered":
                 total = event.get("total")
                 if total is None:
                     total = len(event.get("libraries") or [])
