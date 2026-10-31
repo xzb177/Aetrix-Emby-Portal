@@ -581,6 +581,65 @@ def fill_candidates_from_fetched(fetched: dict) -> dict:
     return {k: v for k, v in candidates.items() if not _empty(v)}
 
 
+#: 补资料段图片字段 → (远程 URL 字段, _set_image 的 kind)。
+#: poster_path / backdrop_path 的语义是**本地文件路径**（models 注释与
+#: 图片接口都按本地文件处理）；TMDB 详情里同名的是相对路径原值
+#: （"/x.jpg"），直接写进本地字段会被图片接口当本地文件找、404 后
+#: 由 _queue_image_repair 清成 NULL——2026-11-01「已绑定、done、四项
+#: 图片全空」17 条样本的成因（8 条 TMDB 有图、补资料段也报了
+#: filled，落库形态却是坏的）。远程图一律走 _land_remote_image：
+#: 全量 URL 落 *_image_url，本地路径只在已预热落盘时由 _set_image 顺
+#: 带落（与现行 enrich 写库的 apply_images 同口径）。
+_IMAGE_FIELDS = {
+    "poster_path": ("primary_image_url", "Primary"),
+    "backdrop_path": ("backdrop_image_url", "Backdrop"),
+}
+
+
+def _image_missing(item, field) -> bool:
+    """图片是否缺：本地路径与远程 URL 双空才算缺（任一有即有图）。"""
+    url_field = _IMAGE_FIELDS[field][0]
+    return _empty(getattr(item, field, None)) and _empty(
+        getattr(item, url_field, None))
+
+
+def _fill_still_missing(item, field) -> bool:
+    """字段级缺失判定（图片走双字段口径，其余走 _empty）。"""
+    if field in _IMAGE_FIELDS:
+        return _image_missing(item, field)
+    return _empty(getattr(item, field, None))
+
+
+def _land_remote_image(item, field, value) -> list:
+    """远程图落库（与现行 tmdb._set_image 同口径，返回实际落的字段名）。
+
+    value 是 TMDB 相对路径原值时按 image_specs 的尺寸口径拼全量 URL
+    （海报 w500 / 背景 w1280，不另拼第二套）；已是 http(s) URL
+    （Frodo 图）时直接用。写事务里不发网络：_set_image 内部
+    localize 是 allow_download=False，没预热上就只落 URL，本地化
+    交给取图按需自愈 / 图片补下载巡检（与现行口径一致）。
+    """
+    url_field, kind = _IMAGE_FIELDS[field]
+    url = value
+    if not (isinstance(url, str) and (
+            url.startswith("http://") or url.startswith("https://"))):
+        from backend.emby_server.tmdb import image_base
+
+        size = "w500" if kind == "Primary" else "w1280"
+        rel = str(value)
+        url = f"{image_base()}/{size}{rel if rel.startswith('/') else '/' + rel}"
+    from backend.emby_server.tmdb import _set_image
+
+    before = (getattr(item, field, None), getattr(item, url_field, None))
+    _set_image(item, kind, url)
+    landed = []
+    if getattr(item, url_field, None) != before[1]:
+        landed.append(url_field)
+    if getattr(item, field, None) != before[0]:
+        landed.append(field)
+    return landed
+
+
 def _frodo_imdb_id(item, fetched: Optional[dict] = None) -> Optional[str]:
     """Frodo 桥用的 IMDb 编号解析（与 extract_binding 同口径，不发请求）。
 
@@ -780,24 +839,46 @@ def apply_fill(db, item, fetched: dict, people_fetcher=None) -> list:
         return []
     filled = []
     candidates = fill_candidates_from_fetched(fetched)
-    for field in FILL_FIELDS:
+    fetched = fetched or {}
+    # 文字字段（简介 / 评分）：只填空缺，原口径不变。
+    for field in ("overview", "community_rating"):
         if _empty(getattr(item, field, None)) and field in candidates:
             setattr(item, field, candidates[field])
             filled.append(field)
+    # 图片字段：side 本地图是本地文件路径，直落本地字段；TMDB 详情的
+    # 相对路径原值走 _land_remote_image 落远程 URL（见 _IMAGE_FIELDS
+    # 注释的事故成因）。缺图判定是双字段口径：已有远程 URL 的条目
+    # 不许再被相对路径写进本地字段。
+    details = fetched.get("tmdb_details") or {}
+    if _image_missing(item, "poster_path"):
+        if fetched.get("poster"):
+            item.poster_path = fetched["poster"]
+            filled.append("poster_path")
+        elif details.get("poster_path"):
+            filled += _land_remote_image(
+                item, "poster_path", details["poster_path"])
+    if _image_missing(item, "backdrop_path"):
+        if fetched.get("fanart"):
+            item.backdrop_path = fetched["fanart"]
+            filled.append("backdrop_path")
+        elif details.get("backdrop_path"):
+            filled += _land_remote_image(
+                item, "backdrop_path", details["backdrop_path"])
     still_missing = [
-        f for f in FRODO_FILL_FIELDS
-        if f not in filled and _empty(getattr(item, f, None))
+        f for f in FRODO_FILL_FIELDS if _fill_still_missing(item, f)
     ]
     if still_missing:
         frodo_candidates = fill_from_frodo(item, fetched)
         for field in still_missing:
-            if field in frodo_candidates:
+            if field not in frodo_candidates:
+                continue
+            if field in _IMAGE_FIELDS:
+                filled += _land_remote_image(
+                    item, field, frodo_candidates[field])
+            else:
                 setattr(item, field, frodo_candidates[field])
                 filled.append(field)
-    agg_missing = [
-        f for f in FILL_FIELDS
-        if f not in filled and _empty(getattr(item, f, None))
-    ]
+    agg_missing = [f for f in FILL_FIELDS if _fill_still_missing(item, f)]
     if agg_missing:
         try:
             from backend.emby_server.metasources import zh_aggregate as _zh
@@ -807,7 +888,12 @@ def apply_fill(db, item, fetched: dict, people_fetcher=None) -> list:
             logger.warning("中文聚合失败，跳过 id=%s: %s", item.id, exc)
             agg_candidates = {}
         for field in agg_missing:
-            if field in agg_candidates:
+            if field not in agg_candidates:
+                continue
+            if field in _IMAGE_FIELDS:
+                filled += _land_remote_image(
+                    item, field, agg_candidates[field])
+            else:
                 setattr(item, field, agg_candidates[field])
                 filled.append(field)
     try:

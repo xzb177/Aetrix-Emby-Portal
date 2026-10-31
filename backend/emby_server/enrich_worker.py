@@ -4117,6 +4117,12 @@ def dirty_done_patrol(db, *, now=None, details_fetcher=None) -> dict:
     last_scraped_at 最旧优先，单轮上限 _DIRTY_DONE_PATROL_PER_ROUND
     （200，details 复核同此上限，TMDB 请求量有界）。
 
+    repair 绕过口（2026-11-01 零图片事故）：带 repair_requested_at 的
+    行是图片接口已实证「库里记的图取不到」的行——证据已在手，不等
+    7 天 min-age；且剧是容器条目、指纹在集上，这类行 file_fingerprint
+    恒空，原指纹门会把它们永久挡在巡检外。故 repair 行同时绕过
+    min-age 与指纹两道门（两个条件都是「repair 或原条件」）。
+
     命中任一即翻回 pending（attempts 清零、priority=50、next_retry
     记本轮时间）：
     - bind_<reason>：有 tmdb_id 且复核门（tmdb.binding_reject_reason）
@@ -4145,9 +4151,11 @@ def dirty_done_patrol(db, *, now=None, details_fetcher=None) -> dict:
                     em.MediaItem.deleted_at.is_(None),
                     em.MediaItem.merged_into_id.is_(None),
                     em.MediaItem.metadata_locked.isnot(True),
-                    em.MediaItem.file_fingerprint.isnot(None),
+                    _or(em.MediaItem.file_fingerprint.isnot(None),
+                        em.MediaItem.repair_requested_at.isnot(None)),
                     _or(em.MediaItem.last_scraped_at.is_(None),
-                        em.MediaItem.last_scraped_at <= min_age_cutoff))
+                        em.MediaItem.last_scraped_at <= min_age_cutoff,
+                        em.MediaItem.repair_requested_at.isnot(None)))
             .order_by(em.MediaItem.last_scraped_at.asc().nullsfirst(),
                       em.MediaItem.id.asc())
             .limit(_DIRTY_DONE_PATROL_PER_ROUND)
@@ -4964,6 +4972,14 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
             item.enrich_claimed_at = None
             item.enrich_claim_token = None
             return
+        # 图片修复请求消费（与现行 _enrich_apply 清 repair 同口径）：
+        # 本轮补资料把海报落上了（远程 URL 或本地路径任一）就清标记；
+        # 图仍缺时保留——留给干净度巡检（repair 绕过口）/扫描再修。
+        # 此前两段式收尾从不清这个标记：图被图片接口判坏清掉后，
+        # 就算补资料段后来补上图，行上仍挂着陈旧修复请求。
+        if getattr(item, "repair_requested_at", None) and (
+                item.poster_path or item.primary_image_url):
+            item.repair_requested_at = None
         item.enrich_status = "done"
         _clear_blank_identity(item)
         item.enrich_attempts = 0
