@@ -697,7 +697,8 @@ def set_registration_mode(
     """设置注册模式：open 开放注册 / closed 关闭注册
 
     可选附带注册限流配置（None 表示不修改）：
-    - ratelimit_enabled: 是否启用注册限流
+    - ratelimit_enabled: 是否启用注册限流（落库 register_ratelimit_enabled；
+      但 env REGISTER_RATELIMIT_ENABLED 显式设置时仍由 env 接管，见 GET 口径）
     - ratelimit_max: 窗口内最大注册次数（必须 >= 1）
     - ratelimit_window: 窗口秒数（必须 >= 60）
     """
@@ -713,8 +714,10 @@ def set_registration_mode(
         "registration_mode": request.mode,
         "registration_closed_message": request.message,
     }
-    # A 类开关摘面板（2026-10-21）：ratelimit_enabled 不再落库——开关改走
-    # env REGISTER_RATELIMIT_ENABLED（缺省=开）；max/window 仍可经面板改。
+    # A-112：ratelimit_enabled 恢复落库（与 max/window 同批写入）；
+    # 2026-10-21 摘面板时漏写导致 PUT 200 却永远改不动，已反转。
+    if request.ratelimit_enabled is not None:
+        values["register_ratelimit_enabled"] = request.ratelimit_enabled
     if request.ratelimit_max is not None:
         values["register_ratelimit_max"] = str(request.ratelimit_max)
     if request.ratelimit_window is not None:
@@ -727,6 +730,8 @@ def set_registration_mode(
     config_service.save_config(db, values, schema="registration")
     db.commit()
     audit_details = {"mode": request.mode}
+    if request.ratelimit_enabled is not None:
+        audit_details["ratelimit_enabled"] = request.ratelimit_enabled
     if request.ratelimit_max is not None:
         audit_details["ratelimit_max"] = request.ratelimit_max
     if request.ratelimit_window is not None:
@@ -734,7 +739,15 @@ def set_registration_mode(
     _audit(db, current_admin, "set_registration_mode", "system", None,
            audit_details)
     db.commit()
-    return {"success": True, "mode": request.mode}
+    # 回包给生效值（与 GET 同口径：env 显式设置时以 env 为准），
+    # 避免 env 接管时回包写的值与实际生效值不一致造成假成功感。
+    from backend.api.emby_portal import _get_register_ratelimit
+
+    return {
+        "success": True,
+        "mode": request.mode,
+        "ratelimit_enabled": _get_register_ratelimit(db)[0],
+    }
 
 
 @admin_router.get("/settings/registration")

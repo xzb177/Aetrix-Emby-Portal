@@ -122,14 +122,14 @@ def test_ratelimit_config_roundtrip(db):
 
     got = get_registration_mode(current_admin=admin, db=db)
     assert got["mode"] == "open"
-    # 2026-10-21 A 类摘面板：ratelimit_enabled 不再经面板写（PUT 传 False
-    # 被忽略），GET 回显生效值（缺省开）；max/window 照常写读
-    assert got["ratelimit_enabled"] is True
+    # A-112：ratelimit_enabled 恢复落库，PUT 传 False 即真关；
+    # 2026-10-21 摘面板时 PUT False 被忽略、GET 恒回 True 的旧行为已反转。
+    assert got["ratelimit_enabled"] is False
     assert got["ratelimit_max"] == 3
     assert got["ratelimit_window"] == 600
 
     # 注册侧读取到同一份配置
-    assert _get_register_ratelimit(db) == (True, 3, 600)
+    assert _get_register_ratelimit(db) == (False, 3, 600)
 
 
 def test_register_uses_configured_limit():
