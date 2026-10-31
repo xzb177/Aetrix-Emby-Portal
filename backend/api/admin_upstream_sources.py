@@ -249,9 +249,11 @@ def delete_upstream_source(
 
 
 class UpstreamAggregateRequest(BaseModel):
-    page_size: int = Field(
-        default=100, ge=10, le=500,
-        description="Emby Items 单页大小（10–500；默认 100）")
+    page_size: Optional[int] = Field(
+        default=None, ge=10, le=500,
+        description="Emby Items 单页大小（10–500；不传 = 用配置缺省"
+                    "（SystemConfig upstream_aggregate_default_page_size，"
+                    "出厂 500），与调度路径同口径（O-05）")
 
 
 @admin_emby_router.post("/upstream-sources/{source_id}/aggregate")
@@ -279,7 +281,10 @@ def aggregate_upstream_source(
         uar.ensure_aggregatable(source)
     except uar.UpstreamAggregateRunError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc
-    page_size = body.page_size if body is not None else 100
+    if body is not None and body.page_size is not None:
+        page_size = body.page_size
+    else:
+        page_size = uar.configured_default_page_size(db)
     return uaj.enqueue(source.id, page_size)
 
 
@@ -290,15 +295,41 @@ def get_upstream_aggregate_task(
     task_id: str,
     staff: base_models.WebUser = Depends(require_staff),
 ):
-    """查一条聚合任务。完成时 result 与原先同步口的聚合结果同形。
+    """查一条聚合任务（O-01 起读任务表，进程重启后终态仍可查）。
 
-    失败时 HTTP 仍是 200，``error.status`` / ``error.code`` /
-    ``error.detail`` 沿用同步口的状态码和中文文案（凭据 409、
-    上游不可用 502、额度 429、映射冲突 409 等），方便轮询区分
-    「任务还在跑」和「这次聚合失败了」。任务不存在、或任务不属于
-    这个源，返回 404。
+    完成时 result 是聚合摘要（与原先同步口同形，但不带全量
+    pairs——明细走映射列表查，见设计稿 P-12），另带进度计数
+    （libraries_total / libraries_done / fetched / paired /
+    written）与时间戳。失败时 HTTP 仍是 200，``error.status`` /
+    ``error.code`` / ``error.detail`` 沿用同步口的状态码和中文
+    文案（凭据 409、上游不可用 502、额度 429、映射冲突 409 等），
+    方便轮询区分「任务还在跑」和「这次聚合失败了」。任务不存在、
+    或任务不属于这个源，返回 404。
     """
     view = uaj.get_task(source_id, task_id)
     if view is None:
         raise HTTPException(status_code=404, detail="聚合任务不存在或已过期")
+    return view
+
+
+@admin_emby_router.post(
+    "/upstream-sources/{source_id}/aggregate/{task_id}/resume")
+def resume_upstream_aggregate_task(
+    source_id: int,
+    task_id: str,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """续跑一条被打断 / 失败的聚合任务（O-01）。
+
+    新建一条任务，跳过原任务里已完成的库（映射已逐库落库，不
+    重复拉取），未完成的库重跑。原任务不存在 / 不属于该源 /
+    不在可续跑状态（interrupted、failed 以外），返回 404；
+    同源已有进行中任务时返回那条任务的视图（与触发口同口径）。
+    """
+    source = _get_source_or_404(db, source_id)
+    view = uaj.resume_task(source.id, task_id)
+    if view is None:
+        raise HTTPException(status_code=404,
+                            detail="聚合任务不存在或不可续跑")
     return view

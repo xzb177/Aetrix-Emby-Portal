@@ -42,6 +42,13 @@
 本模块照实回 ``written=0`` 与 ``mapping_enabled=false``，
 配对结果照常返回（管理员先看配对质量、再决定开不开写）。
 
+拉取口径（2026-10-31 优化 O-05）：分页 Fields 只留 ProviderIds
+（MediaSources 解析出的 versions 不落库、不参与配对，每页白背
+是纯浪费）；单页默认 500（SystemConfig 可调，见
+``configured_default_page_size``）；单页瞬时失败（断连/超时/
+5xx）有限重试（默认 2 次、退避 2 秒，SystemConfig 可调），
+401/403/429 等确定性错误不重试、映射逐字不变。
+
 有界性：按库分窗聚合，不再整源一把梭，也不再设单库总量上限。
 先经 ``/Library/MediaFolders`` 取上游库清单，再逐库按 ``ParentId``
 拉取、每 ``WINDOW_RECORDS`` 条一窗聚合配对写映射；内存与单次
@@ -54,18 +61,25 @@ IN 查询规模恒以窗为界，不随库大小增长。旧单库 20000 上限�
 ``record_mapping`` 的幂等 upsert 续跑（已写窗不建新行），本模块
 不新增持久检查点表——断点续跑 = 重跑本接口，失败库重试、成功
 窗 upsert 不重复。全局性失败（源未启用、凭据失效、额度耗尽）
-发生在首库之前时仍响亮报错，不写任何东西。
+发生在首库之前时仍响亮报错，不写任何东西。2026-10-31 优化
+O-01 起，任务层（upstream_aggregate_jobs + upstream_aggregate_
+tasks 表）在此之上加了逐库提交与可恢复续跑：执行器传
+commit_each_library=True 时逐库一事务、撞冲突只回滚单库；
+续跑按任务行里已完成的库跳过（skip_library_ids），本模块
+自身仍不建检查点表。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Callable, Dict, List, Optional, Tuple
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
@@ -92,8 +106,70 @@ MAX_RECORDS_PER_LIBRARY = MAX_RECORDS_PER_RUN
 #: 5000 条约数 MB 内存、50 次分页请求，6 小时调度轮次内绰绰有余。
 WINDOW_RECORDS = 5000
 
-#: 单页默认大小（Emby StartIndex/Limit 分页）。
-DEFAULT_PAGE_SIZE = 100
+#: 单页默认大小（Emby StartIndex/Limit 分页）。2026-10-31 优化
+#: O-05：100 → 500（接口上限），同样数据量请求数降到 1/5；缺省值
+#: 可经 SystemConfig ``upstream_aggregate_default_page_size`` 调
+#: （钳 10–500，见 configured_default_page_size），显式传参仍优先。
+DEFAULT_PAGE_SIZE = 500
+
+#: 单页瞬时失败重试次数 SystemConfig 键（O-05）：默认 2 次；
+#: 只重试断连/超时/5xx 这类瞬时形态，401/403/429 是确定性错误
+#: 不重试。钳 [0, 5]，配 0 即关重试、回旧行为。纯 SystemConfig
+#: 键，不进 env.example（#1527 先例）。
+KEY_PAGE_RETRIES = "upstream_aggregate_page_retries"
+PAGE_RETRIES_DEFAULT = 2
+
+#: 单页重试退避（秒）SystemConfig 键（O-05）：默认 2 秒，钳 [0, 30]。
+KEY_PAGE_RETRY_BACKOFF_SEC = "upstream_aggregate_page_retry_backoff_sec"
+PAGE_RETRY_BACKOFF_DEFAULT = 2
+
+#: 默认页大小 SystemConfig 键（O-05）：钳 [10, 500]，无行/非法
+#: 回落 DEFAULT_PAGE_SIZE。
+KEY_DEFAULT_PAGE_SIZE = "upstream_aggregate_default_page_size"
+
+#: 测试注入：重试退避的睡眠实现（生产用 time.sleep）。
+_sleep = time.sleep
+
+
+def _system_config_int(db, key):
+    """SystemConfig 整数热读：无行/非法/异常一律返回 None（回退）。
+
+    与 transfer_variant._system_config_int 同口径（读失败不许把
+    聚合打停，一律回落代码默认）。
+    """
+    if db is None:
+        return None
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, key, "")
+    except Exception:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    # 与 transfer 版的唯一差别：本家族里 0 是合法值（重试配 0 = 关
+    # 重试、退避配 0 = 不等待），只有负数按未设置处理。
+    return value if value >= 0 else None
+
+
+def configured_default_page_size(db=None) -> int:
+    """聚合缺省页大小：SystemConfig > DEFAULT_PAGE_SIZE，钳 [10, 500]。"""
+    configured = _system_config_int(db, KEY_DEFAULT_PAGE_SIZE)
+    if configured is not None:
+        return max(10, min(500, configured))
+    return DEFAULT_PAGE_SIZE
+
+
+def _page_retry_config(db):
+    """单页重试 (次数, 退避秒)：SystemConfig > 代码默认，钳同注册表。"""
+    retries = _system_config_int(db, KEY_PAGE_RETRIES)
+    if retries is None:
+        retries = PAGE_RETRIES_DEFAULT
+    backoff = _system_config_int(db, KEY_PAGE_RETRY_BACKOFF_SEC)
+    if backoff is None:
+        backoff = PAGE_RETRY_BACKOFF_DEFAULT
+    return max(0, min(5, retries)), max(0, min(30, backoff))
 
 #: 单次请求超时（秒）：目录页带数据，比探活的 10 秒放宽。
 HTTP_TIMEOUT_SEC = 30.0
@@ -266,12 +342,22 @@ def _resolve_api_key(source, *, http_post=None):
     return _api_key_for_source(source, http_post=http_post)
 
 
-def _page_fetcher(source, api_key, get, *, parent_id=None):
+def _page_fetcher(source, api_key, get, *, parent_id=None,
+                  retries: int = PAGE_RETRIES_DEFAULT,
+                  backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT):
     """造一个 Emby Items 取页回调：parent_id 给了就按库拉，不给走整源。
 
     错误映射与旧整源路径同款：401→凭据失效、403 分流（JSON 体→
     凭据失效、无 JSON 体→前门拦截 502）、429→额度、其余→上游
     不可用，绝不把半页数据当成完整目录返回。
+
+    拉取瘦身（O-05）：Fields 只留 ProviderIds——MediaSources 解析出
+    的 versions 从不落库、不参与配对（见上游聚合链优化设计稿
+    P-06），每页白背全量版本信息是纯浪费。
+
+    分页韧性（O-05）：断连/超时（status None）与 5xx 是瞬时形态，
+    按 retries/backoff_sec 有限重试后才判上游不可用；401/403/429
+    是确定性错误，重试只会放大上游压力且改变不了结论，不重试。
     """
 
     base = (source.base_url or "").rstrip("/")
@@ -281,7 +367,7 @@ def _page_fetcher(source, api_key, get, *, parent_id=None):
         params = {
             "Recursive": "true",
             "IncludeItemTypes": "Movie,Series,Episode",
-            "Fields": "ProviderIds,MediaSources",
+            "Fields": "ProviderIds",
             "StartIndex": str(start),
             "Limit": str(limit),
         }
@@ -290,16 +376,28 @@ def _page_fetcher(source, api_key, get, *, parent_id=None):
         if api_key:
             params["api_key"] = api_key
         url = f"{base}/Items?{urllib.parse.urlencode(params)}"
-        status, body = get(url, headers, HTTP_TIMEOUT_SEC)
-        if status == 200 and isinstance(body, dict):
-            return body
-        if status == 401:
-            raise _credential_error()
-        if status == 403:
-            raise _forbidden_error(body)
-        if status == 429:
-            raise _quota_error()
-        raise _unavailable_error()
+        attempt = 0
+        while True:
+            status, body = get(url, headers, HTTP_TIMEOUT_SEC)
+            if status == 200 and isinstance(body, dict):
+                return body
+            if status == 401:
+                raise _credential_error()
+            if status == 403:
+                raise _forbidden_error(body)
+            if status == 429:
+                raise _quota_error()
+            # 其余（None / 5xx / 200 非 dict）按瞬时失败处理。
+            if attempt >= retries:
+                raise _unavailable_error()
+            attempt += 1
+            logger.warning(
+                "上游聚合取页瞬时失败重试 source_id=%s start=%s "
+                "attempt=%s/%s status=%s",
+                getattr(source, "id", None), start, attempt, retries,
+                status)
+            if backoff_sec > 0:
+                _sleep(backoff_sec)
 
     return fetch_page
 
@@ -357,7 +455,9 @@ def fetch_upstream_libraries(source, *, http_get=None,
 
 def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
                            http_post: Optional[Callable] = None,
-                           page_size: int = DEFAULT_PAGE_SIZE
+                           page_size: int = DEFAULT_PAGE_SIZE,
+                           retries: int = PAGE_RETRIES_DEFAULT,
+                           backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT
                            ) -> List[agg.UpstreamCatalogRecord]:
     """拉回某源的全部目录记录（Emby Items 分页，Recursive）。
 
@@ -365,13 +465,16 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
     新的 run_manual_aggregation 不再走这里（走逐库路径），本函数
     保留供显式整源调用与旧测试使用；单库上限语义见模块头。
     取页失败（401/403/429/5xx/断连）按播放口同款短码映射，绝不
-    把半页数据当成完整目录返回。
+    把半页数据当成完整目录返回；瞬时形态先按 retries 有限重试
+    （O-05，本路径无 DB 会话，重试参数用代码默认，逐库路径才
+    从 SystemConfig 解析）。
     """
     if page_size <= 0:
         raise ValueError("page_size must be positive")
     get = _default_http_get if http_get is None else http_get
     api_key = _resolve_api_key(source, http_post=http_post)
-    fetch_page = _page_fetcher(source, api_key, get)
+    fetch_page = _page_fetcher(source, api_key, get,
+                               retries=retries, backoff_sec=backoff_sec)
     records: List[agg.UpstreamCatalogRecord] = []
     for record in agg.iter_emby_pages(fetch_page, source_id=str(source.id),
                                       page_size=page_size):
@@ -388,7 +491,9 @@ def iter_upstream_records_for_parent(
         source, parent_id, *, http_get: Optional[Callable] = None,
         http_post: Optional[Callable] = None,
         page_size: int = DEFAULT_PAGE_SIZE,
-        api_key: Optional[str] = None):
+        api_key: Optional[str] = None,
+        retries: int = PAGE_RETRIES_DEFAULT,
+        backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT):
     """按 ParentId 流式拉回某上游库的目录记录（逐库分窗的核心）。
 
     只产出、不攒 list、不设单库总量上限：总量上限曾把真实大库
@@ -405,7 +510,8 @@ def iter_upstream_records_for_parent(
     get = _default_http_get if http_get is None else http_get
     if api_key is None:
         api_key = _resolve_api_key(source, http_post=http_post)
-    fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id)
+    fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id,
+                               retries=retries, backoff_sec=backoff_sec)
     yield from agg.iter_emby_pages(
         fetch_page, source_id=str(source.id),
         category_id=str(parent_id), page_size=page_size)
@@ -565,8 +671,10 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
 
 
 # ---------------------------------------------------------------------------
-# 手动触发总入口（只 flush 不 commit，调用方事务内提交）
+# 手动触发总入口（默认只 flush 不 commit；O-01 起执行器可传
+# commit_each_library=True 改走逐库一事务）
 # ---------------------------------------------------------------------------
+
 
 def ensure_aggregatable(source) -> None:
     """不发上游请求的前置校验：未启用、苹果 CMS 直接拒。
@@ -584,10 +692,30 @@ def ensure_aggregatable(source) -> None:
             "苹果 CMS 源走自己的同步，不走 Emby 目录聚合")
 
 
+def _fire_event(on_event, event: dict) -> None:
+    """把进度事件交给调用方（任务行更新等）；回调异常不许打断聚合。
+
+    回调是观测面：它失败最多丢一条进度，绝不能让一轮聚合陪葬；
+    异常记日志后继续。回调契约见 run_manual_aggregation docstring。
+    """
+    if on_event is None:
+        return
+    try:
+        on_event(event)
+    except Exception:
+        logger.exception("上游聚合进度回调失败 type=%s",
+                         event.get("type"))
+
+
 def run_manual_aggregation(db: Session, source, *,
                            http_get: Optional[Callable] = None,
                            http_post: Optional[Callable] = None,
-                           page_size: int = DEFAULT_PAGE_SIZE) -> dict:
+                           page_size: Optional[int] = None,
+                           on_event: Optional[Callable] = None,
+                           commit_each_library: bool = False,
+                           skip_library_ids=None,
+                           prior_summaries: Optional[Dict[str, dict]] = None
+                           ) -> dict:
     """手动聚合一轮：按库分批拉目录 → 逐库聚合 → 逐库配对 → 开关开时写映射。
 
     前置校验（响亮失败，不静默跳过，发生在任何写库之前）：
@@ -603,34 +731,92 @@ def run_manual_aggregation(db: Session, source, *,
     返回的 pairs 含 written 标记：开关关时一律 false、written=0；
     每对另带 library_id / library_name 供追溯；written 计 upsert
     返回的行数（含重复三元组的更新行，与旧口径一致）。
-    断点续跑：重跑本接口即可，成功库的映射 upsert 不建新行，
-    失败库重试；本函数不新增持久检查点表。
+
+    事务口径（2026-10-31 优化 O-01，``commit_each_library``）：
+    - 默认 False = 旧口径：全程只 flush，提交归调用方；单库失败
+      隔离只挡 UpstreamAggregateRunError，IntegrityError 等穿透
+      到调用方（整轮回滚）；
+    - True = 逐库一事务：一库跑完即 commit 该库映射；该库中途
+      撞 IntegrityError（映射三元组冲突）只回滚该库、记
+      failed_libraries（code=mapping_conflict）后继续下一库，
+      前面库的成果不陪葬。该库 summary 的 paired/written 按
+      落库实况归 0（fetched/aggregates 照实），其 pairs 不进
+      返回的 pairs 列表。
+
+    进度回调（``on_event``，O-01/O-02 的可观测面）：
+    - ``libraries_discovered``：库清单拿到后发一次，带 libraries
+      与 total；发在任何写库之前，回调可自行 commit；
+    - ``library_done``：一库跑完、commit 之前发（commit 模式），
+      回调对任务行的更新搭同一事务一起提交——回调**不许**自己
+      commit；非 commit 模式下在一库跑完后发，回调可自行 commit；
+    - ``library_failed``：该库已 rollback（commit 模式）或已记入
+      失败项后发，回调可自行 commit。
+    回调异常被吞并记日志（见 _fire_event），不影响聚合本身。
+
+    断点续跑（O-01）：``skip_library_ids`` 里的库不再拉取，其
+    ``prior_summaries``（上一轮该库的 summary）原样并入本轮
+    libraries 列表与总量，summary 副本带 ``skipped_resume=True``
+    标记；不给 prior 的跳过库按零计数空摘要并入。靠的是任务表
+    （upstream_aggregate_tasks），本函数仍不自建检查点表。
     """
     ensure_aggregatable(source)
+    if page_size is None:
+        page_size = configured_default_page_size(db)
+    page_retries, page_backoff = _page_retry_config(db)
     api_key = _resolve_api_key(source, http_post=http_post)
     libraries = fetch_upstream_libraries(
         source, http_get=http_get, http_post=http_post, api_key=api_key)
+    _fire_event(on_event, {
+        "type": "libraries_discovered",
+        "libraries": libraries, "total": len(libraries)})
     mapping_on = uim.mapping_enabled()
+    skip_ids = {str(x) for x in (skip_library_ids or [])}
+    prior = prior_summaries or {}
     all_pairs: List[dict] = []
     unpaired_total: Dict[str, int] = {}
     library_summaries: List[dict] = []
     failed_libraries: List[dict] = []
     total_fetched = 0
     total_aggregates = 0
+    total_paired = 0
     total_written = 0
     for library in libraries:
         lib_id = library["id"]
         lib_name = library["name"]
+        if str(lib_id) in skip_ids:
+            # 续跑跳过：上一轮已完成的库不再拉取，摘要续报。
+            summary = dict(prior.get(str(lib_id)) or {
+                "library_id": lib_id, "library_name": lib_name,
+                "fetched": 0, "aggregates": 0, "paired": 0, "written": 0,
+                "status": "ok",
+            })
+            summary["library_id"] = lib_id
+            summary["library_name"] = lib_name
+            summary["status"] = "ok"
+            summary["skipped_resume"] = True
+            library_summaries.append(summary)
+            total_fetched += int(summary.get("fetched") or 0)
+            total_aggregates += int(summary.get("aggregates") or 0)
+            total_paired += int(summary.get("paired") or 0)
+            total_written += int(summary.get("written") or 0)
+            _fire_event(on_event,
+                        {"type": "library_done", "summary": summary})
+            if commit_each_library:
+                db.commit()
+            continue
         summary: Dict[str, object] = {
             "library_id": lib_id, "library_name": lib_name,
             "fetched": 0, "aggregates": 0, "paired": 0, "written": 0,
             "status": "ok",
         }
         lib_fetched = lib_aggregates = lib_paired = lib_written = 0
+        lib_pairs: List[dict] = []
+        failure: Optional[Tuple[str, str]] = None
         try:
             record_iter = iter_upstream_records_for_parent(
                 source, lib_id, http_get=http_get, http_post=http_post,
-                page_size=page_size, api_key=api_key)
+                page_size=page_size, api_key=api_key,
+                retries=page_retries, backoff_sec=page_backoff)
             for window in iter_record_windows(record_iter, WINDOW_RECORDS):
                 aggregated = agg.aggregate_sources({str(source.id): window})
                 if aggregated and aggregated[0].error:
@@ -657,38 +843,95 @@ def run_manual_aggregation(db: Session, source, *,
                 lib_aggregates += len(items)
                 lib_paired += len(pairs)
                 lib_written += written
-                all_pairs.extend(pairs)
+                if commit_each_library:
+                    lib_pairs.extend(pairs)
+                else:
+                    all_pairs.extend(pairs)
                 for reason, count in unpaired.items():
                     unpaired_total[reason] = unpaired_total.get(reason, 0) + count
                 total_fetched += len(window)
                 total_aggregates += len(items)
+                total_paired += len(pairs)
                 total_written += written
-            summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
-                            "paired": lib_paired, "written": lib_written})
         except UpstreamAggregateRunError as exc:
-            # 窗粒度断点：已写窗的进度照实留在 summary 里，重跑续写剩余窗。
-            summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
-                            "paired": lib_paired, "written": lib_written})
-            summary.update({"status": "failed", "error_code": exc.code,
-                            "error": exc.message})
+            failure = (exc.code, exc.message)
+        except IntegrityError:
+            if not commit_each_library:
+                raise
+            failure = ("mapping_conflict", "映射写入冲突，请重试")
+            logger.exception("上游按库聚合映射冲突回滚单库 source_id=%s "
+                             "library=%s", source.id, lib_id)
+        if failure is not None:
+            code, message = failure
+            if commit_each_library:
+                # 逐库事务：回滚本库未提交的窗，前面库的成果不动；
+                # 本库 paired/written 按落库实况归 0、其 pairs 不进
+                # 返回列表，总量同步扣回。
+                db.rollback()
+                total_paired -= lib_paired
+                total_written -= lib_written
+                summary.update({
+                    "fetched": lib_fetched, "aggregates": lib_aggregates,
+                    "paired": 0, "written": 0,
+                    "status": "failed", "error_code": code, "error": message})
+            else:
+                # 窗粒度断点（旧口径）：已写窗的进度照实留在 summary。
+                summary.update({
+                    "fetched": lib_fetched, "aggregates": lib_aggregates,
+                    "paired": lib_paired, "written": lib_written,
+                    "status": "failed", "error_code": code, "error": message})
             failed_libraries.append({
                 "library_id": lib_id, "library_name": lib_name,
-                "code": exc.code, "message": exc.message})
+                "code": code, "message": message})
             logger.warning("上游按库聚合单库失败 source_id=%s library=%s "
-                           "code=%s", source.id, lib_id, exc.code)
+                           "code=%s", source.id, lib_id, code)
+            library_summaries.append(summary)
+            _fire_event(on_event,
+                        {"type": "library_failed", "summary": summary})
+            continue
+        summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
+                        "paired": lib_paired, "written": lib_written})
         library_summaries.append(summary)
+        if commit_each_library:
+            all_pairs.extend(lib_pairs)
+            _fire_event(on_event,
+                        {"type": "library_done", "summary": summary})
+            try:
+                db.commit()
+            except IntegrityError:
+                # 提交期才暴露的冲突（延后约束）：按单库失败处理，
+                # library_done 的进度更新同事务回滚、随失败事件重记。
+                db.rollback()
+                total_paired -= lib_paired
+                total_written -= lib_written
+                summary.update({
+                    "paired": 0, "written": 0, "status": "failed",
+                    "error_code": "mapping_conflict",
+                    "error": "映射写入冲突，请重试"})
+                del all_pairs[len(all_pairs) - len(lib_pairs):]
+                failed_libraries.append({
+                    "library_id": lib_id, "library_name": lib_name,
+                    "code": "mapping_conflict",
+                    "message": "映射写入冲突，请重试"})
+                logger.exception("上游按库聚合提交期映射冲突 source_id=%s "
+                                 "library=%s", source.id, lib_id)
+                _fire_event(on_event,
+                            {"type": "library_failed", "summary": summary})
+        else:
+            _fire_event(on_event,
+                        {"type": "library_done", "summary": summary})
     logger.info("上游按库手动聚合 source_id=%s libraries=%s fetched=%s "
                 "aggregates=%s pairs=%s written=%s failed_libraries=%s "
                 "mapping_enabled=%s",
                 source.id, len(libraries), total_fetched, total_aggregates,
-                len(all_pairs), total_written, len(failed_libraries),
+                total_paired, total_written, len(failed_libraries),
                 mapping_on)
     return {
         "source_id": source.id,
         "fetched": total_fetched,
         "aggregates": total_aggregates,
         "pairs": all_pairs,
-        "paired": len(all_pairs),
+        "paired": total_paired,
         "written": total_written,
         "mapping_enabled": mapping_on,
         "unpaired_reasons": unpaired_total,

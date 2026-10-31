@@ -330,6 +330,21 @@ DRIVE_API_CONFIG_SCHEMA: dict[str, tuple] = {
     "drive_api_qps": ("float", 1, 20),
 }
 
+# 上游聚合拉取参数（2026-10-31 优化 O-05 起，后续 O-01/O-02/O-03
+# 的任务参数同家族登记）：读取唯一实现在 upstream_aggregate_run /
+# upstream_aggregate_jobs，范围与读取侧钳制同口径；无行时读取侧
+# 回退代码默认（页大小 500、心跳过期 120 秒等）。纯 SystemConfig
+# 键，不进 env.example（#1527 先例）。
+UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
+    "upstream_aggregate_default_page_size": ("int", 10, 500),
+    "upstream_aggregate_page_retries": ("int", 0, 5),
+    "upstream_aggregate_page_retry_backoff_sec": ("int", 0, 30),
+    "upstream_aggregate_heartbeat_stale_sec": ("int", 30, 3600),
+    "upstream_aggregate_claim_poll_sec": ("int", 1, 60),
+    "upstream_aggregate_progress_log_every": ("int", 1, 100),
+    "upstream_aggregate_task_retention_days": ("int", 1, 365),
+}
+
 
 def coerce_player_blacklist_rules(value: Any, *, strict: bool) -> list[dict]:
     """播放器黑名单规则结构归一：[{label, match[], exclude[]}]。
