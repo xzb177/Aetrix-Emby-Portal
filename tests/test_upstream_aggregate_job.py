@@ -135,6 +135,10 @@ def test_post_returns_queued_before_aggregation_runs(
     assert resp["source_id"] == source.id
     assert resp["result"] is None
     assert resp["error"] is None
+    # O-03：api 入队不在 api 进程起执行线程；执行由 worker 认领。
+    assert started == []
+    assert not entered.is_set()
+    assert jobs.claim_queued_tasks() == [resp["task_id"]]
     assert started == [resp["task_id"]]
     assert not entered.is_set()
 
@@ -351,13 +355,13 @@ def test_get_unknown_task_is_404_and_inflight_is_reused(db_factory, staff, monke
     assert nxt["status"] == "queued"
 
 
-def test_scheduler_still_calls_run_manual_aggregation_directly():
-    """调度不改走任务表。"""
+def test_scheduler_goes_through_enqueue_o03():
+    """O-03/A-120：调度改走任务表入队，不再直接调聚合入口。"""
     import inspect
 
     from backend.emby_server import upstream_aggregate_scheduler as sched
 
     src = inspect.getsource(sched.run_scheduled_aggregation)
-    assert "run_manual_aggregation" in src
-    assert "enqueue" not in src
-    assert "upstream_aggregate_jobs" not in src
+    assert "run_manual_aggregation" not in src
+    assert "enqueue_scheduled" in src
+    assert "upstream_aggregate_jobs" in src

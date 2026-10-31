@@ -15,8 +15,9 @@
 苹果 CMS 手动同步触发口（只调生产触发入口，不自写同步逻辑），以及
 25-2 的手动聚合触发口（POST /upstream-sources/{id}/aggregate）。
 聚合经常超过管理端 axios 的 30 秒，POST 只做入队并立刻返回任务 id，
-真正的拉目录与配对在后台线程里走 emby_server/upstream_aggregate_run，
-进度用 GET /upstream-sources/{id}/aggregate/{task_id} 查。
+真正的拉目录与配对由 worker 认领循环在 worker 进程内执行
+（O-03，见 emby_server/upstream_aggregate_jobs），进度用
+GET /upstream-sources/{id}/aggregate/{task_id} 查。
 管理端不直接发上游请求。触发是手动动作，不接自动调度、不接定时任务。
 """
 
@@ -265,10 +266,10 @@ def aggregate_upstream_source(
 ):
     """手动触发某源的目录聚合，立刻返回任务，不阻塞到跑完。
 
-    后台线程再走原来的按库流程：取上游库清单 → 逐库拉目录 →
+    worker 认领循环再走原来的按库流程：取上游库清单 → 逐库拉目录 →
     聚合 → 配对 → 写路径开关开时写映射。单库失败仍只进
-    failed_libraries，不毁已写映射。写映射的提交在后台线程里完成
-    （record_mapping 只 flush）。
+    failed_libraries，不毁已写映射。写映射的提交在认领执行线程里完成
+    （record_mapping 只 flush，逐库提交）。
 
     不发上游请求就能判定的错误仍在本接口立刻返回，映射与以前相同：
     查无此源 404；源未启用 / applecms 型 400。

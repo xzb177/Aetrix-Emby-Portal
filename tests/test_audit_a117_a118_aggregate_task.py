@@ -7,6 +7,12 @@ A-118：聚合心跳只在库边界刷新——窗/分页循环内零心跳，�
 120 秒心跳阈值即被误判死亡，二次触发先标 interrupted 再放行第
 二轮，双跑并发写映射。
 
+O-03 整合注记（2026-10-31）：执行面统一到 worker 后，提交发生
+在 worker 认领（claim_queued_tasks → _submit），api 入队不再起
+线程。A-117 的三条不变量（启动失败落 failed 不抛、超龄 queued
+清扫、failed 可续跑）在认领侧继续钉死，本文件的断言位置随之移
+到认领调用；A-118 两条（活线程守卫、窗级心跳）位置不变。
+
 HTTP 全部注入替身；DB 用内存 SQLite。
 """
 
@@ -100,12 +106,14 @@ class _BoomThread:
 # ---------------------------------------------------------------------------
 
 def test_a117_submit_failure_marks_failed_not_500(db, monkeypatch):
-    """start() 失败时 enqueue 不抛异常：行落 failed、视图带失败态，
-    管理端不再回 500 悬案。"""
+    """start() 失败时认领不抛异常：行落 failed、不永卡 queued，
+    管理端不再回 500 悬案（O-03 后提交点在 worker 认领侧）。"""
     source = _source(db)
-    monkeypatch.setattr(jobs.threading, "Thread", _BoomThread)
     view = jobs.enqueue(source.id, 100)
-    assert view["status"] == "failed"
+    assert view["status"] == "queued"
+    monkeypatch.setattr(jobs.threading, "Thread", _BoomThread)
+    submitted = jobs.claim_queued_tasks()
+    assert submitted == []
     row = _task_row(jobs._session_factory, view["task_id"])
     assert row.status == "failed"
     assert row.error_json is not None
@@ -124,14 +132,16 @@ def test_a117_stale_queued_row_swept_next_enqueue_creates_fresh(
         heartbeat_at=datetime.now() - timedelta(hours=1))
     db.add(stale)
     db.commit()
-    started = _hold_submit(monkeypatch)
     view = jobs.enqueue(source.id, 100)
     assert view["task_id"] != "stale-queued"
     assert view["status"] == "queued"
-    assert started == [view["task_id"]]
     row = _task_row(db_factory, "stale-queued")
     assert row.status == "failed"
     assert "queued_stale" in (row.error_json or "")
+    # O-03：新建行由 worker 认领接手（A-117 复用重提的认领侧形态）。
+    started = _hold_submit(monkeypatch)
+    jobs.claim_queued_tasks()
+    assert started == [view["task_id"]]
 
 
 def test_a117_failed_task_resumable(db, monkeypatch):
@@ -147,11 +157,13 @@ def test_a117_failed_task_resumable(db, monkeypatch):
         heartbeat_at=datetime.now() - timedelta(hours=1))
     db.add(old)
     db.commit()
-    started = _hold_submit(monkeypatch)
     view = jobs.resume_task(source.id, "old-failed")
     assert view is not None
     assert view["task_id"] != "old-failed"
     assert view["resume_of"] == "old-failed"
+    # O-03：续跑新行由 worker 认领接手（A-117 复用重提的认领侧形态）。
+    started = _hold_submit(monkeypatch)
+    jobs.claim_queued_tasks()
     assert started == [view["task_id"]]
     row = _task_row(jobs._session_factory, view["task_id"])
     assert row.skip_libraries_json is not None

@@ -21,22 +21,32 @@
 ``running`` 且心跳过期（SystemConfig
 ``upstream_aggregate_heartbeat_stale_sec``，默认 120 秒）的任务
 在入队清扫时标 ``interrupted``，可经 ``resume_task`` 续跑（跳过
-已完成的库）。执行面统一到 worker 是 O-03：本模块的 enqueue 暂
-仍在 api 进程内起线程执行，认领语义（queued → running 的条件
-更新）已按跨进程口径写，O-03 只换认领方、不换任务表。
+已完成的库）。
 
-苹果 CMS 不进这里；调度器（O-03 前）仍直接调聚合入口。
+执行面统一到 worker（O-03，解 P-04）：api 只入队（写任务行）不
+执行；worker 进程的认领循环（``claim_queued_tasks`` /
+``start_aggregate_worker``，worker.py 接线）按 FIFO 认领 queued
+任务并在 worker 进程内执行。认领语义（queued → running 的条件
+更新）按跨进程口径写，且认领时同源串行：同一 source_id 已有
+running 任务时，后入队的同源任务暂不认领、留在 queued 等下一
+轮——手动（api）与调度（worker）从此走同一张表、同一认领口径，
+跨进程的同源双跑被任务表本身挡住。调度口（A-120）同样只入队：
+``enqueue_scheduled``，进行中复用即调度轮的去重语义。
 
-审计 A-117 / A-118（2026-10-31）：
+审计 A-117 / A-118（2026-10-31，随 #1620 先行落地；O-03 整合后
+机制保留、位置随执行面移到认领侧）：
 - A-117：``_submit`` 曾裸调 ``Thread.start()``，启动失败时异常穿
-  出、管理端回 500，但行已是 queued；且无 queued 清扫、去重又把
-  queued 计入进行中，致死行永复用。现：启动失败记 failed（不抛）、
-  入队维护清扫超龄 queued 行（600 秒无认领即 failed）、同源复用
-  queued 行时顺手重提认领（认领是条件更新，重复进入无害）。
+  出、行永卡 queued；且无 queued 清扫、去重又把 queued 计入进行
+  中，致死行永复用。现：认领提交走 ``_submit`` 兜底（启动失败记
+  failed、不抛）、入队维护清扫超龄 queued 行（600 秒无认领即
+  failed）、复用到的 queued 行由认领循环在轮询间隔内接手（认领
+  是条件更新，重复进入无害）。
 - A-118：心跳曾只在库边界刷新，长库窗内无心跳、跑超 120 秒即被
   误判死亡、二次触发致双跑。现：执行侧每窗调轻量心跳回调（只刷
   heartbeat，不碰执行事务）；``mark_stale_interrupted`` 跳过本进
   程仍有活线程的任务（跨进程死亡仍由心跳兜底）。
+
+苹果 CMS 不进这里。
 """
 
 from __future__ import annotations
@@ -71,6 +81,15 @@ HEARTBEAT_STALE_DEFAULT = 120
 KEY_TASK_RETENTION_DAYS = "upstream_aggregate_task_retention_days"
 TASK_RETENTION_DEFAULT = 30
 
+#: worker 认领轮询间隔（秒）SystemConfig 键：认领循环每轮扫一次
+#: queued 任务行。默认 5（设计稿 O-03），钳 [1, 60]；键已在
+#: config_schema 的 upstream_aggregate 家族登记，本模块是唯一读取方。
+KEY_CLAIM_POLL_SEC = "upstream_aggregate_claim_poll_sec"
+CLAIM_POLL_DEFAULT = 5
+
+#: worker 认领循环单轮提交上限：防止某轮 queued 积压时一次起太多线程。
+CLAIM_BATCH_LIMIT = 50
+
 _lock = threading.Lock()
 
 #: 本进程活执行线程登记（A-118）：task_id → 执行线程。认领成功后
@@ -81,11 +100,15 @@ _live_lock = threading.Lock()
 _LIVE: dict = {}
 
 #: queued 超龄阈值（秒，A-117）：入队后这么久仍无人认领即判启动
-#: 失败。线程是入队时立刻起的，正常认领在毫秒级；600 秒是给部
-#: 署重启 / 线程池抖动的宽限，不是正常排队等待。纯模块常量，
-#: 不新增配置键（与 heartbeat 阈值分开：后者量的是 running 任务
-#: 的存活，前者量的是 queued 行的认领）。
+#: 失败。认领由 worker 循环轮询（默认 5 秒），600 秒是给 worker
+#: 停摆 / 部署重启的宽限，不是正常排队等待。纯模块常量，不新增
+#: 配置键（与 heartbeat 阈值分开：后者量的是 running 任务的
+#: 存活，前者量的是 queued 行的认领）。
 QUEUED_STALE_DEFAULT = 600
+
+#: worker 认领循环线程（start_aggregate_worker 幂等登记，照调度器写法）。
+_claim_thread: Optional[threading.Thread] = None
+_claim_lock = threading.Lock()
 
 #: 测试注入：不设则用 ``SessionLocal`` / ``run_manual_aggregation`` / 真线程。
 _session_factory: Optional[Callable] = None
@@ -158,6 +181,14 @@ def task_retention_days(db) -> int:
     if configured is not None:
         return max(1, min(365, configured))
     return TASK_RETENTION_DEFAULT
+
+
+def claim_poll_sec(db) -> int:
+    """worker 认领轮询间隔（秒）：SystemConfig > 默认 5，钳 [1, 60]。"""
+    configured = uar._system_config_int(db, KEY_CLAIM_POLL_SEC)
+    if configured is not None:
+        return max(1, min(60, configured))
+    return CLAIM_POLL_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -324,52 +355,90 @@ def _create_row(db, *, source_id: int, page_size: int, trigger: str,
 # 入队 / 查询 / 续跑
 # ---------------------------------------------------------------------------
 
-def enqueue(source_id: int, page_size: int, *, trigger: str = "manual") -> dict:
-    """登记任务行并启动执行，立刻返回当前视图（新任务恒为 queued）。
+def _enqueue_locked(db, *, source_id: int, page_size: int, trigger: str,
+                    resume_of: Optional[str] = None,
+                    skip_library_ids=None):
+    """入队核心（调用方须持 _lock、带开着的会话）：先做入队维护
+    （心跳过期标 interrupted、超龄 queued 标 failed、超保留期终态
+    行清掉），再查重——同源已有 queued/running 时不另起一轮，返
+    回那条的视图与 created=False；否则新建 queued 行，返回视图
+    与 created=True。是否执行不由本函数决定：worker 认领循环认领
+    queued 行（O-03）。
+    """
+    mark_stale_interrupted(db)
+    mark_stale_queued_failed(db)
+    cleanup_terminal_tasks(db)
+    existing = _active_row_for(db, source_id)
+    if existing is not None:
+        db.commit()
+        view = _view_from_row(existing)
+        logger.info(
+            "上游聚合任务复用进行中的任务 task_id=%s source_id=%s "
+            "status=%s", view["task_id"], source_id, view["status"])
+        return view, False
+    row = _create_row(db, source_id=source_id, page_size=page_size,
+                      trigger=trigger, resume_of=resume_of,
+                      skip_library_ids=skip_library_ids)
+    db.commit()
+    return _view_from_row(row), True
 
-    同一源已有 queued/running 时不另起一轮，返回那条任务的当前
-    视图（可能已是 running）。入队前顺手做三件维护：心跳过期的
-    running 标 interrupted、超龄 queued 标 failed、超保留期的终态
-    行清掉。复用到的若是 queued 行，顺手重提一次认领（A-117：
-    线程可能在提交后、认领前被部署重启冲掉；认领是条件更新，
-    重复进入无害）。
+def enqueue(source_id: int, page_size: int, *, trigger: str = "manual") -> dict:
+    """登记任务行，立刻返回当前视图（新任务恒为 queued）。
+
+    O-03：本函数只入队，不在调用进程（api）启动执行——执行由
+    worker 认领循环认领 queued 行。同一源已有 queued/running 时
+    不另起一轮，返回那条任务的当前视图（可能已是 running）。入队
+    前顺手做三件维护：心跳过期的 running 标 interrupted、超龄
+    queued 标 failed、超保留期的终态行清掉（维护在
+    ``_enqueue_locked`` 内）。
     """
     with _lock:
         db = _open_session()
         try:
-            mark_stale_interrupted(db)
-            mark_stale_queued_failed(db)
-            cleanup_terminal_tasks(db)
-            existing = _active_row_for(db, source_id)
-            if existing is not None:
-                db.commit()
-                view = _view_from_row(existing)
-                task_id = existing.task_id
-                resubmit = existing.status == "queued"
-                logger.info(
-                    "上游聚合任务复用进行中的任务 task_id=%s source_id=%s "
-                    "status=%s", view["task_id"], source_id, view["status"])
-            else:
-                row = _create_row(db, source_id=source_id,
-                                  page_size=page_size, trigger=trigger)
-                db.commit()
-                view = _view_from_row(row)
-                task_id = row.task_id
-                resubmit = True
-                logger.info("上游聚合任务入队 task_id=%s source_id=%s "
-                            "trigger=%s", task_id, source_id, trigger)
+            view, _ = _enqueue_locked(db, source_id=source_id,
+                                      page_size=page_size, trigger=trigger)
         finally:
             _close(db)
-    if resubmit:
-        return _submit_and_view(source_id, task_id, view)
+    logger.info("上游聚合任务入队 task_id=%s source_id=%s trigger=%s "
+                "（worker 认领执行）",
+                view["task_id"], source_id, trigger)
     return view
+
+
+def enqueue_scheduled(source_id: int) -> dict:
+    """调度口入队（A-120）：与手动口同一张表、同一去重语义。
+
+    返回 ``{"task_id", "status", "trigger", "created", "view"}``：
+    created=True 是本轮新入队（调度轮的任务行，worker 认领执行）；
+    created=False 是复用了同源进行中的任务——调度轮不启动第二路
+    执行，这正是期望的去重行为，调用方（调度器）据此记 skipped。
+    页大小与手动口同口径（SystemConfig 缺省页大小）。
+    """
+    db = _open_session()
+    try:
+        page_size = uar.configured_default_page_size(db)
+    finally:
+        _close(db)
+    with _lock:
+        db = _open_session()
+        try:
+            view, created = _enqueue_locked(
+                db, source_id=source_id, page_size=page_size,
+                trigger="scheduled")
+        finally:
+            _close(db)
+    logger.info("上游聚合调度任务入队 task_id=%s source_id=%s created=%s",
+                view["task_id"], source_id, created)
+    return {"task_id": view["task_id"], "status": view["status"],
+            "trigger": view["trigger"], "created": created, "view": view}
 
 
 def resume_task(source_id: int, task_id: str) -> Optional[dict]:
     """续跑一条 interrupted / failed 任务：新建任务行跳过已完成库。
 
     任务不存在 / 不属于该源 / 状态不在可续跑集 → None（同源已有
-    进行中任务时返回那条的视图，与 enqueue 同口径）。
+    进行中任务时返回那条的视图，与 enqueue 同口径）。O-03：续跑
+    同样只入队不执行，worker 认领循环认领新行。
     """
     with _lock:
         db = _open_session()
@@ -383,11 +452,10 @@ def resume_task(source_id: int, task_id: str) -> Optional[dict]:
             existing = _active_row_for(db, source_id)
             if existing is not None:
                 view = _view_from_row(existing)
-                new_task_id = existing.task_id
-                resubmit = existing.status == "queued"
                 logger.info(
                     "上游聚合续跑复用进行中的任务 task_id=%s source_id=%s",
                     view["task_id"], source_id)
+                return view
             else:
                 if row.status not in ("interrupted", "failed"):
                     return None
@@ -408,14 +476,14 @@ def resume_task(source_id: int, task_id: str) -> Optional[dict]:
                 db.commit()
                 view = _view_from_row(new_row)
                 new_task_id = new_row.task_id
-                resubmit = True
                 logger.info("上游聚合任务续跑 task_id=%s resume_of=%s "
                             "source_id=%s skip_libraries=%s",
                             new_task_id, task_id, source_id, len(done_ids))
         finally:
             _close(db)
-    if resubmit:
-        return _submit_and_view(source_id, new_task_id, view)
+    logger.info("上游聚合任务续跑 task_id=%s resume_of=%s source_id=%s "
+                "skip_libraries=%s（worker 认领执行）",
+                new_task_id, task_id, source_id, len(done_ids))
     return view
 
 
@@ -463,7 +531,8 @@ def _submit(task_id: str) -> bool:
     """启动执行线程。start() 失败（线程耗尽等）时不抛异常（A-117，
     照 A-050 扫描队列的口径）：行已提交为 queued，异常穿出只会让
     管理端回 500、行却永卡 queued；改为记 failed 并返回 False，
-    调用方据此返回失败视图。成功返回 True。"""
+    认领方（``claim_queued_tasks``）据此不计入已提交。成功返回
+    True。"""
     try:
         threading.Thread(
             target=execute_task, args=(task_id,), daemon=True,
@@ -477,15 +546,115 @@ def _submit(task_id: str) -> bool:
     return True
 
 
-def _submit_and_view(source_id: int, task_id: str,
-                     fallback_view: dict) -> dict:
-    """起执行线程并返回视图：启动成功返回原视图（恒为 queued）；
-    启动失败时行已记 failed，重读后返回失败视图——管理端既不拿
-    到 500 悬案，也不拿到过期的 queued 视图。行读不到时回落原视图。"""
-    if _submit(task_id):
-        return fallback_view
-    view = get_task(source_id, task_id)
-    return view if view is not None else fallback_view
+# ---------------------------------------------------------------------------
+# worker 认领循环（O-03）
+# ---------------------------------------------------------------------------
+
+def claim_queued_tasks(*, limit: int = CLAIM_BATCH_LIMIT) -> list:
+    """认领一轮 queued 任务（worker 进程调用）：按 created_at/id FIFO
+    取行，对每条调 ``_submit`` 起执行线程。同源只提交最早的一条：
+    后入队的同源行留待下一轮（FIFO＋同源串行的语义在认领侧钉死，
+    不靠线程调度谁先跑到认领门——两条同源行同轮齐发时，后行线程
+    可能抢先认领，先行反而滞留 queued）。认领本身是
+    ``execute_task`` 内的条件更新（queued → running），重复提交
+    无害：已被认领的线程直接返回。返回本轮已提交的 task_id 列表。
+
+    兼容 #1620 前后的 ``_submit`` 语义：旧版返回 None、启动失败
+    抛异常（此处吞并记日志，行留 queued 等下轮）；#1620 版返回
+    bool、启动失败时行已记 failed（返回 False 的不计入已提交）。
+    """
+    db = _open_session()
+    try:
+        rows = (db.query(em.UpstreamAggregateTask)
+                .filter(em.UpstreamAggregateTask.status == "queued")
+                .order_by(em.UpstreamAggregateTask.created_at.asc(),
+                          em.UpstreamAggregateTask.id.asc())
+                .limit(limit)
+                .all())
+        task_ids = []
+        seen_sources = set()
+        for row in rows:
+            if row.source_id in seen_sources:
+                continue
+            seen_sources.add(row.source_id)
+            task_ids.append(row.task_id)
+    finally:
+        _close(db)
+    submitted = []
+    for task_id in task_ids:
+        try:
+            ok = _submit(task_id)
+        except Exception:
+            logger.exception("上游聚合认领提交执行线程失败 task_id=%s",
+                             task_id)
+            continue
+        if ok is not False:
+            submitted.append(task_id)
+    if submitted:
+        logger.info("上游聚合认领循环提交任务 task_ids=%s", submitted)
+    return submitted
+
+
+def run_claim_loop(stop_event=None, *, claim_fn=None,
+                   interval_sec: Optional[float] = None) -> None:
+    """worker 认领循环：每轮认领一次，再按间隔等，停表置位即退出。
+
+    ``claim_fn`` 未传时走 :func:`claim_queued_tasks`（生产路径）；
+    间隔优先用显式值，否则读 SystemConfig
+    ``upstream_aggregate_claim_poll_sec``（默认 5 秒，读失败回落 5）。
+    单轮异常已在认领内隔离；注入的 ``claim_fn`` 抛异常时本循环
+    记日志后继续，不让认领线程悄悄死掉。
+    """
+    import time
+
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            return
+        try:
+            if claim_fn is not None:
+                claim_fn()
+            else:
+                claim_queued_tasks()
+        except Exception:
+            logger.exception("上游聚合认领循环单轮失败（下一轮继续）")
+        if interval_sec is not None:
+            interval = max(1.0, min(60.0, float(interval_sec)))
+        else:
+            db = _open_session()
+            try:
+                interval = float(claim_poll_sec(db))
+            except Exception:
+                interval = float(CLAIM_POLL_DEFAULT)
+            finally:
+                _close(db)
+        if stop_event is not None:
+            if stop_event.wait(interval):
+                return
+        else:
+            time.sleep(interval)
+
+
+def start_aggregate_worker(stop_event=None, *, claim_fn=None,
+                           interval_sec: Optional[float] = None) -> bool:
+    """启动 worker 认领循环线程（worker.py 调用，照调度器工人写法）。
+
+    无开关门：worker 进程跑起来认领循环就必须在，否则入队的任务
+    无人执行。幂等：已有存活线程时直接返回 True，不双跑。
+    """
+    global _claim_thread
+    with _claim_lock:
+        alive = _claim_thread
+        if alive is not None and alive.is_alive():
+            return True
+        thread = threading.Thread(
+            target=run_claim_loop,
+            args=(stop_event,),
+            kwargs={"claim_fn": claim_fn, "interval_sec": interval_sec},
+            daemon=True, name="upstream-aggregate-worker",
+        )
+        thread.start()
+        _claim_thread = thread
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -628,8 +797,9 @@ def _finish(task_id: str, *, status: str, result: Optional[dict] = None,
 
 def execute_task(task_id: str) -> None:
     """跑一条已入队的任务。认领是条件更新（queued → running）：
-    重复进入 / 已被认领直接返回（跨进程口径，O-03 的 worker 认领
-    走同一路径）。
+    重复进入 / 已被认领直接返回；同源已有 running 任务时本次认领
+    同样返回、行留在 queued 等认领循环下一轮（跨进程口径，O-03
+    的同源串行就靠这条认领条件，手动与调度不再双写映射）。
 
     会话是执行方自己开的，不用请求上的 Session（请求返回后那个
     会话就关了）。聚合走逐库事务：``run_manual_aggregation`` 只在
@@ -639,10 +809,20 @@ def execute_task(task_id: str) -> None:
     """
     db = _open_session()
     try:
+        head = _get_row(db, task_id)
+        if head is None or head.status != "queued":
+            return
+        source_id = head.source_id
         now = datetime.now()
+        other_running = (db.query(em.UpstreamAggregateTask.id)
+                         .filter(em.UpstreamAggregateTask.source_id
+                                 == source_id,
+                                 em.UpstreamAggregateTask.task_id != task_id,
+                                 em.UpstreamAggregateTask.status == "running"))
         claimed = (db.query(em.UpstreamAggregateTask)
                    .filter(em.UpstreamAggregateTask.task_id == task_id,
-                           em.UpstreamAggregateTask.status == "queued")
+                           em.UpstreamAggregateTask.status == "queued",
+                           ~other_running.exists())
                    .update({"status": "running", "started_at": now,
                             "heartbeat_at": now},
                            synchronize_session=False))
@@ -650,7 +830,6 @@ def execute_task(task_id: str) -> None:
         if not claimed:
             return
         row = _get_row(db, task_id)
-        source_id = row.source_id
         page_size = row.page_size
         resume_of = row.resume_of
         skip_ids = []
