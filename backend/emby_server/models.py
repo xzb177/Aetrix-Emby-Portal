@@ -1050,11 +1050,11 @@ UPSTREAM_AUTH_METHODS = ("password", "api_key", "none")
 UPSTREAM_CREDENTIAL_SCOPES = ("source", "user")
 UPSTREAM_HEALTH_STATUSES = ("unknown", "healthy", "unhealthy")
 
-#: BYOS 用户存储绑定（P1）：provider 枚举全仓唯一定义点，首批只列
-#: drive、pan115，其余后加；枚举与约束同源（FMBY reason_code 漂移
-#: 教训），不许在别处手写字符串。drive 的绑定验证随 P2（OAuth）
-#: 上线，P1 的创建口只接受 pan115（见 user_bindings）。
-USER_STORAGE_PROVIDERS = ("drive", "pan115")
+#: BYOS 用户存储绑定（P1）：provider 枚举全仓唯一定义点；枚举与
+#: 约束同源（FMBY reason_code 漂移教训），不许在别处手写字符串。
+#: drive 的绑定验证随 P2（OAuth）上线；quark 于 2026-10-31 一期
+#: 加入（Cookie 型，照 pan115 形态，见 user_bindings）。
+USER_STORAGE_PROVIDERS = ("drive", "pan115", "quark")
 #: 绑定状态：active（验活通过）/ invalid（凭据错或被限）/
 #: expired（登录态过期）。未验活不置 active（设计稿 §3.2）。
 USER_STORAGE_BINDING_STATUSES = ("active", "invalid", "expired")
@@ -1676,7 +1676,7 @@ class UserStorageBinding(Base):
     密封、key_id 信封、状态机都在凭据行——不另起第三套秘密存储
     （挂载稿 §4.2 拼法：绑定行引用凭据行）。
 
-    - provider：USER_STORAGE_PROVIDERS 单点枚举（首批 drive/pan115）；
+    - provider：USER_STORAGE_PROVIDERS 单点枚举（drive/pan115/quark）；
     - account_label：用户自己起的名字，仅展示用；同一用户同一
       provider 下不重复（唯一约束），不同 provider 可重名；
     - status：active 须经验证后才置（绑完先验活，见 user_bindings）；

@@ -220,8 +220,9 @@
            后端口径见 backend/emby_server/portal.py user_emby_router：列表只出自己的行；
            谷歌盘绑定走 Google 授权（新窗口打开授权地址），回调由 Google 直接调后端 callback 口返回绑定行 JSON，
            所以授权完成后回到本页会自动重拉一次绑定列表（没出现再点“刷新列表”）；服务器未配 OAuth 凭据时后端明文 400，前端原样展示。
-           115 绑定走 POST /storage-bindings（provider='pan115'，credential 为 115 Cookie），建时后端同步验活。 -->
-      <section v-if="providersError || (providersLoaded && (hasProvider('drive') || hasProvider('pan115')))" id="my-drive" class="v4-sec" aria-label="我的网盘">
+           115 绑定走 POST /storage-bindings（provider='pan115'，credential 为 115 Cookie），建时后端同步验活。
+           夸克同款：provider='quark'，credential 为夸克 Cookie（一期只做绑定+验活+门禁，转存/点播走夸克是二期）。 -->
+      <section v-if="providersError || (providersLoaded && (hasProvider('drive') || hasProvider('pan115') || hasProvider('quark')))" id="my-drive" class="v4-sec" aria-label="我的网盘">
         <div class="v4-sec-title">我的网盘</div>
         <div v-if="providersError" class="v4-err">{{ providersError }}<br><button class="v4-retry" @click="loadProviders">重试</button></div>
         <template v-else>
@@ -355,6 +356,68 @@
             {{ pan115Creating ? '正在验证…' : '绑定 115' }}
           </button>
           <p class="dev-tip">Cookie 只交给本站后端密封保存，只用来播你自己 115 里的东西，不会拿去干别的；它也不会显示在页面上，提交后输入框会立刻清空。115 的 Cookie 会过期，过期了这里会显示已过期，到时候重新粘一次就行。</p>
+        </div>
+        <div v-if="hasProvider('quark')" class="v4-card">
+          <div class="dev-head">
+            <span class="dev-count">已绑 {{ quarkBindings.length }} 个夸克账号</span>
+            <button type="button" class="v4-mini-btn" title="刷新" :disabled="driveLoading" :aria-busy="driveLoading" @click="loadDriveBindings">
+              <RefreshCw :size="13" /> {{ driveLoading ? '刷新中' : '刷新列表' }}
+            </button>
+          </div>
+          <div class="v4-sec-sub">绑了自己的夸克网盘账号，点播门禁就认这个账号；没绑定只能浏览、不能点播</div>
+          <div v-if="driveLoading && !quarkBindings.length" class="v4-skeleton" style="height:120px"></div>
+          <div v-else-if="quarkError" class="v4-err">{{ quarkError }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
+          <div v-else-if="!quarkBindings.length" class="v4-empty">
+            <p>① 这是什么：把你自己的夸克网盘账号绑到本站，名下有可用绑定才能点播，没绑定只能浏览。把片子转存进夸克、从夸克直接播是下一步功能，先把账号绑好。</p>
+            <p>② 怎么做：去夸克网盘网页版（pan.quark.cn）取登录 Cookie→粘到下面框里点“绑定夸克”→本站只密封存；Cookie 过期了重绑。</p>
+            <p>③ 绑完怎么验：下面列表里状态显示“可用”就是绑好了，再去播任意一集，能播就是门禁已认。</p>
+          </div>
+          <template v-else>
+            <div v-for="b in quarkBindings" :key="b.id" class="dev-row">
+              <div class="dev-main">
+                <span class="dev-name">{{ b.account_label }}</span>
+                <span class="dev-meta">
+                  夸克网盘 · {{ driveStatusText(b.status) }}
+                  <template v-if="b.error_message"> · {{ b.error_message }}</template>
+                </span>
+              </div>
+              <span v-if="b.status === 'active'" class="dev-badge ok">可用</span>
+              <span v-else class="dev-badge off">不可用</span>
+              <button
+                v-if="b.status !== 'active'"
+                type="button"
+                class="dev-remove"
+                :disabled="verifyingBinding === b.id"
+                @click="handleVerifyQuark(b)"
+              >
+                {{ verifyingBinding === b.id ? '验证中' : '重新验证' }}
+              </button>
+              <button
+                type="button"
+                class="dev-remove"
+                :class="{ confirming: pendingUnbind === b.id }"
+                :disabled="unbindingId === b.id"
+                @click="handleUnbindQuark(b)"
+              >
+                {{ unbindingId === b.id ? '解绑中' : (pendingUnbind === b.id ? '确认解绑' : '解绑') }}
+              </button>
+            </div>
+            <p class="dev-tip">绑好了，下一步：去播一集片子试试，点播门禁已经认这个账号；转存到夸克盘的功能上线后，这个账号可以直接用。</p>
+          </template>
+          <div class="acct-field">
+            <label class="acct-label" for="quark-label">给这个夸克账号起个名字</label>
+            <input id="quark-label" v-model="quarkLabel" type="text" placeholder="比如：我的夸克" autocomplete="off" />
+          </div>
+          <div class="acct-field">
+            <label class="acct-label" for="quark-cookie">夸克 Cookie</label>
+            <input id="quark-cookie" v-model="quarkCookie" type="password" placeholder="从夸克网盘网页版登录态里取，粘进来就行" autocomplete="off" />
+          </div>
+          <p class="dev-tip">取法：先在夸克网盘网页版（pan.quark.cn）登录 → 打开浏览器开发者工具 → 应用/存储 → Cookie → 把 pan.quark.cn 那一行的“键=值; 键=值”整段复制到上面；只粘 Cookie 值，不要粘请求头、不要带换行。Cookie 会过期，过期了这里会显示已过期，到时候重新粘一次就行。</p>
+          <p v-if="quarkFormError" class="acct-error" role="alert">{{ quarkFormError }}</p>
+          <button type="button" class="acct-btn primary" :disabled="quarkCreating" @click="handleBindQuark">
+            {{ quarkCreating ? '正在验证…' : '绑定夸克' }}
+          </button>
+          <p class="dev-tip">Cookie 只交给本站后端密封保存，只用于你自己的账号验活与后续转存点播，不会拿去干别的；它也不会显示在页面上，提交后输入框会立刻清空。夸克的 Cookie 会过期，过期了这里会显示已过期，到时候重新粘一次就行。</p>
         </div>
         </template>
       </section>
@@ -800,9 +863,9 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
   return `${Math.floor(hours / 24)} 天前`
 }
 
-// ===== 我的网盘（用户自带谷歌盘与 115 绑定，BYOS） =====
-// 列表口一次拉取，按 provider 分两组展示：drive 走 Google 授权，pan115 走 Cookie 粘贴
-// （POST /storage-bindings，provider='pan115'，建时后端同步验活）。
+// ===== 我的网盘（用户自带谷歌盘、115 与夸克绑定，BYOS） =====
+// 列表口一次拉取，按 provider 分组展示：drive 走 Google 授权，pan115 / quark 走
+// Cookie 粘贴（POST /storage-bindings，建时后端同步验活）。
 // 绑定流程（谷歌盘）：start 口返回 authorization_url（字段名照抄 drive_oauth.start_drive_oauth），
 // 新窗口打开 Google 授权；Google 回调直接调后端 callback 口，不经过本站页面，
 // 所以本页不监听回调，改为窗口重新获得焦点/页面重新可见时自动重拉一次
@@ -831,9 +894,11 @@ async function loadProviders() {
 
 const driveBindings = ref<StorageBinding[]>([])
 const pan115Bindings = ref<StorageBinding[]>([])
+const quarkBindings = ref<StorageBinding[]>([])
 const driveLoading = ref(false)
 const driveError = ref('')
 const pan115Error = ref('')
+const quarkError = ref('')
 const driveLabel = ref('')
 const driveFormError = ref('')
 const driveStarting = ref(false)
@@ -846,6 +911,10 @@ const pan115Label = ref('')
 const pan115Cookie = ref('')
 const pan115FormError = ref('')
 const pan115Creating = ref(false)
+const quarkLabel = ref('')
+const quarkCookie = ref('')
+const quarkFormError = ref('')
+const quarkCreating = ref(false)
 const verifyingBinding = ref<number | null>(null)
 const unbindingId = ref<number | null>(null)
 const pendingUnbind = ref<number | null>(null)
@@ -879,14 +948,17 @@ async function loadDriveBindings() {
   driveLoading.value = true
   driveError.value = ''
   pan115Error.value = ''
+  quarkError.value = ''
   try {
     const res = await storageBindingApi.list()
     driveBindings.value = (res.bindings || []).filter((b) => b.provider === 'drive')
     pan115Bindings.value = (res.bindings || []).filter((b) => b.provider === 'pan115')
+    quarkBindings.value = (res.bindings || []).filter((b) => b.provider === 'quark')
   } catch (e) {
     // 加载失败别装成“没绑盘”，留错误态给用户重试
     driveError.value = humanizeError(e)
     pan115Error.value = humanizeError(e)
+    quarkError.value = humanizeError(e)
   } finally {
     driveLoading.value = false
   }
@@ -1056,6 +1128,79 @@ async function handleVerifyPan115(b: StorageBinding) {
 
 async function handleUnbindPan115(b: StorageBinding) {
   // 两步确认，照抄设备移除 / 谷歌盘解绑的口径（4 秒内未确认自动收回）
+  if (unbindingId.value !== null) return
+  if (pendingUnbind.value !== b.id) {
+    pendingUnbind.value = b.id
+    window.setTimeout(() => {
+      if (pendingUnbind.value === b.id) pendingUnbind.value = null
+    }, 4000)
+    return
+  }
+  pendingUnbind.value = null
+  unbindingId.value = b.id
+  try {
+    await storageBindingApi.remove(b.id)
+    toast.success('已解绑')
+    await loadDriveBindings()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'removeFailed'))
+  } finally {
+    unbindingId.value = null
+  }
+}
+
+async function handleBindQuark() {
+  const label = quarkLabel.value.trim()
+  const cookie = quarkCookie.value.trim()
+  if (!label) {
+    quarkFormError.value = '先给这个夸克账号起个名字'
+    return
+  }
+  if (!cookie) {
+    quarkFormError.value = '先把夸克 Cookie 粘进来'
+    return
+  }
+  // 提交前格式预检（与 115 同款）：Cookie 应是“键=值; 键=值”的一段
+  if (cookie.length < 10 || !cookie.includes('=')) {
+    quarkFormError.value = '这段看起来不像 Cookie：应是“键=值; 键=值”的一段，请从夸克网盘网页版登录态里重新复制'
+    return
+  }
+  quarkFormError.value = ''
+  quarkCreating.value = true
+  try {
+    // Cookie 只送出一次：无论成败，提交后立刻清空输入框（同 115 口径）
+    const created = await storageBindingApi.createQuark(label, cookie)
+    if (created.status === 'active') {
+      toast.success('夸克绑好了，点播门禁已经认这个账号了')
+    } else {
+      quarkFormError.value = created.error_message || '绑定落下了，但验活没过，请检查 Cookie 后重新绑定'
+    }
+    await loadDriveBindings()
+  } catch (e) {
+    quarkFormError.value = humanizeError(e)
+  } finally {
+    quarkCookie.value = ''
+    quarkCreating.value = false
+  }
+}
+
+async function handleVerifyQuark(b: StorageBinding) {
+  // 重验用后端已存的密封 Cookie，不用用户再粘一次；口径照抄 115 重验
+  if (verifyingBinding.value !== null) return
+  verifyingBinding.value = b.id
+  try {
+    const updated = await storageBindingApi.verify(b.id)
+    quarkBindings.value = quarkBindings.value.map((x) => (x.id === b.id ? updated : x))
+    toast.success(updated.status === 'active' ? '验证通过，这个夸克账号可以用了' : (updated.error_message ? `验证后仍不可用：${updated.error_message}` : '验证后仍不可用，请重新绑定'))
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'removeFailed'))
+  } finally {
+    verifyingBinding.value = null
+  }
+}
+
+async function handleUnbindQuark(b: StorageBinding) {
+  // 两步确认，照抄 115 解绑的口径（4 秒内未确认自动收回）
   if (unbindingId.value !== null) return
   if (pendingUnbind.value !== b.id) {
     pendingUnbind.value = b.id
