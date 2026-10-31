@@ -1160,6 +1160,51 @@ def _save_page_token(db, drive_id: str, token: str) -> None:
 # 变化 → 库映射
 # ---------------------------------------------------------------------------
 
+#: 历史 FUSE 挂载点 -> rclone remote（兜底常量，**只许这一份定义**）。
+#: 旧形态库（来源仍写本机 FUSE 路径）的历史部署值；新部署应在对应 rclone
+#: 挂载行的 config 里声明 fuse_mount_point 让映射从数据派生（见
+#: _fuse_remote_map），不要再往代码里加部署相关的字面量。
+_LEGACY_FUSE_REMOTE_MAP = {"/mnt/mp": "MP:", "/mnt/paul": "paul_emby:"}
+
+
+def _fuse_remote_map(db) -> dict[str, str]:
+    """本机 FUSE 挂载点 -> rclone remote 名（带冒号）的单一来源。
+
+    _library_drive_prefixes 与 _library_fs_prefixes 共用，不许再各写一份：
+    1. 先从 StorageMount 行派生——启用的挂载行 config 里声明了
+       fuse_mount_point（该挂载在本机的 FUSE 挂载点）时，以该行的 remote
+       （path 的 rclone: 前缀，其次 config.remote）为准；派生值覆盖同名
+       历史常量，部署数据说了算。
+    2. 派生不出的挂载点回落 _LEGACY_FUSE_REMOTE_MAP。
+    db 不可用 / 派生过程出错时只用历史常量，不抛错（本文件既有容错口径）。
+    """
+    merged = dict(_LEGACY_FUSE_REMOTE_MAP)
+    try:
+        from backend.emby_server import models as em
+        from backend.emby_server import mounts as mount_lib
+        rows = db.query(em.StorageMount).filter(
+            em.StorageMount.is_enabled == True).all()  # noqa: E712
+        for m in rows or []:
+            cfg = mount_lib.parse_config(m)
+            if not isinstance(cfg, dict):
+                continue
+            point = str(cfg.get("fuse_mount_point") or "").strip()
+            if not point:
+                continue
+            remote = ""
+            mpath = (getattr(m, "path", "") or "").strip()
+            if mpath.startswith("rclone:"):
+                remote = mpath[len("rclone:"):].split("/", 1)[0]
+            if not remote:
+                remote = str(cfg.get("remote") or "").strip()
+            remote = remote.strip().rstrip(":")
+            if remote:
+                merged[point.rstrip("/") or "/"] = remote + ":"
+    except Exception:
+        pass
+    return merged
+
+
 def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
     """返回 [(library_id, drive_id, drive子目录前缀)]。
 
@@ -1176,8 +1221,8 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
         for r in remotes:
             remote_drive[r] = drive_id
 
-    # 本机 FUSE 挂载点 -> rclone remote
-    fuse_map = {"/mnt/mp": "MP:", "/mnt/paul": "paul_emby:"}
+    # 本机 FUSE 挂载点 -> rclone remote（单一来源：派生优先、历史常量兜底）
+    fuse_map = _fuse_remote_map(db)
 
     out: list[tuple[int, str, str]] = []
     try:
@@ -1229,14 +1274,23 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
                 except Exception:
                     continue
             else:
-                # 本机 FUSE 路径：/mnt/mp/nastool/剧集
+                # 本机 FUSE 路径：挂载点下的子目录即 Drive 内相对路径
+                matched = False
                 for mp, remote in fuse_map.items():
                     if path == mp or path.startswith(mp + "/"):
+                        matched = True
                         drive_id = remote_drive.get(remote.rstrip(":"))
                         if drive_id:
                             sub = path[len(mp):] or "/"
                             out.append((lib.id, drive_id, sub))
                         break
+                if not matched and path.startswith("/"):
+                    logger.warning(
+                        "Drive Changes: 库 %s 的来源路径 %s 不在任何已知 FUSE "
+                        "挂载点下，无法映射到 Drive remote，该来源的增量变化"
+                        "将不会触发扫描（请在对应 rclone 挂载行的 config 中"
+                        "声明 fuse_mount_point，或改用 mount:// 来源）",
+                        lib.id, path)
     return out
 
 
@@ -1386,7 +1440,7 @@ def _library_fs_prefixes(db) -> dict[tuple[int, str], str]:
     """{(lib_id, drive子目录): 文件系统路径前缀}"""
     from backend.emby_server import models as em
     out: dict[tuple[int, str], str] = {}
-    fuse_map = {"/mnt/mp": "MP:", "/mnt/paul": "paul_emby:"}
+    fuse_map = _fuse_remote_map(db)
     try:
         libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
     except Exception:
@@ -1421,14 +1475,23 @@ def _library_fs_prefixes(db) -> dict[tuple[int, str], str]:
                 except Exception:
                     continue
             else:
+                matched = False
                 for mp in fuse_map:
                     if path == mp or path.startswith(mp + "/"):
+                        matched = True
                         # drive 子目录 = fs 路径去掉挂载点
                         # 需要 drive_id 才能对上；这里先按 (lib_id, sub) 存 fs 路径
                         # 调用方在 map 时用 candidates 的 sub 来查
                         drive_sub = path[len(mp):] or "/"
                         out[(lib.id, drive_sub)] = path
                         break
+                if not matched and path.startswith("/"):
+                    logger.warning(
+                        "Drive Changes: 库 %s 的来源路径 %s 不在任何已知 FUSE "
+                        "挂载点下，无法生成文件系统前缀，该来源的增量变化将"
+                        "不会触发扫描（请在对应 rclone 挂载行的 config 中"
+                        "声明 fuse_mount_point，或改用 mount:// 来源）",
+                        lib.id, path)
     return out
 
 
