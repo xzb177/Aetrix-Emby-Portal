@@ -257,6 +257,28 @@ class UpstreamAggregateRequest(BaseModel):
                     "出厂 500），与调度路径同口径（O-05）")
 
 
+@admin_emby_router.post(
+    "/upstream-sources/{source_id}/verify-playback-samples")
+def verify_upstream_playback_samples(
+    source_id: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """O-09 第 3 层一次性验证（手动触发，绝不常驻）：对该源映射按
+    evidence 分层抽样，先过第 2 层存在性核验，通过的样本再调
+    resolve_upstream_stream 核 302 地址，失败按错误码计数回报。
+
+    每次调用都会让通过样本在上游产生真实起播探活（成本 = 样本量
+    级，百条以内）；播放总闸 UPSTREAM_PLAYBACK_ENABLED 关着时
+    resolve 按 upstream_playback_disabled 失败、照实计入 failed，
+    不假装能播。全程只读映射：不删不改任何映射行。响应不出上游
+    播放地址原文，只回计数。
+    """
+    source = _get_source_or_404(db, source_id)
+    from backend.emby_server import upstream_mapping_patrol as ump
+    return ump.verify_playback_samples(db, source_id=source.id)
+
+
 @admin_emby_router.post("/upstream-sources/{source_id}/aggregate")
 def aggregate_upstream_source(
     source_id: int,

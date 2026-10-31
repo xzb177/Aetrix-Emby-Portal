@@ -210,7 +210,12 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned",
                     "idle_gc_done",
                     # WS4a（r48 遗留⑬）：janitor 自动续订计数（干净时全 0，参与全零断言）
                     "auto_renew_renewed", "auto_renew_failed",
-                    "auto_renew_skipped", "auto_renew_errors"},
+                    "auto_renew_skipped", "auto_renew_errors",
+                    # O-09：上游映射抽样巡检两键（sampled 是计数、干净时 0，
+                    # 参与全零断言；alert 是布尔、干净时 False，而 False==0
+                    # 仍过下面的全零断言，故不进排除名单）
+                    "upstream_mapping_patrol_sampled",
+                    "upstream_mapping_patrol_alert"},
       # 注 2026-10-17：strm_sig_refresh 已随 strm_gen/strm_sign 删除
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()
