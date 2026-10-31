@@ -315,6 +315,26 @@ def _handle_chat_member(db, cfg, cm: dict) -> None:
                         "chat=%s tg=%s", policy.leave_action(cfg),
                         chat_id, tg_id)
             return
+        # A-110：处置前须与对账用同一“在群”口径逐群复核——任一名单群
+        # 仍在即跳过；有群接口失败且无群确认在群时 fail-closed 跳过
+        # 本次处置（事件重放／下次对账再裁决），绝不在“未核验”时取消。
+        # 名单为空时无法枚举他群，沿用事件群本身的判定（既有行为不变）。
+        from backend.tg_bot import reconcile, sender
+
+        groups = sorted(policy.parse_group_ids(cfg.get("bot_group_ids", "")))
+        if groups:
+            status = reconcile._member_status(
+                db, groups, int(tg_id), sender.get_chat_member)
+            if status is True:
+                logger.info(
+                    "group leave skipped (still member in another group): "
+                    "chat=%s tg=%s", chat_id, tg_id)
+                return
+            if status is None:
+                logger.info(
+                    "group leave skipped (member status unverified): "
+                    "chat=%s tg=%s", chat_id, tg_id)
+                return
         _apply_leave_cancel_welfare(db, int(tg_id), chat_id)
     except Exception:
         logger.exception("chat_member handling failed")
