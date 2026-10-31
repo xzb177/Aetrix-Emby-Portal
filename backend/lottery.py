@@ -13,6 +13,7 @@ import html
 import secrets
 import logging
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -830,6 +831,66 @@ def _mask_telegram(telegram_id: int) -> str:
     return "****" + s[-4:]
 
 
+# 开奖公告逐人现取 TG 显示名的总预算（秒）。系统里没有存 TG 显示名
+# （web_users 只有 username + telegram_id、参与记录也不存名字快照），
+# 只能开奖时经 getChatMember 现取；取名单是锦上添花，预算耗尽后
+# 剩余中奖人直接兜底站内用户名，绝不许把开奖公告拖住。
+_WINNER_NAME_FETCH_BUDGET_SEC = 8.0
+
+
+def _tg_display_name(sender, db: Session, chat_id: int, telegram_id: int) -> str | None:
+    """现取 TG 显示名：getChatMember 结果里 user 的 first_name[ last_name]。
+
+    取不到（不在群/已退群/API 失败/抛异常/名字为空）一律返回 None，
+    由调用方兜底站内用户名；本函数绝不抛异常。
+    """
+    try:
+        ok, _err, member = sender.get_chat_member_raw(db, chat_id, telegram_id)
+    except Exception:
+        return None
+    if not ok or not member:
+        return None
+    user = member.get("user") or {}
+    parts = [
+        str(user.get("first_name") or "").strip(),
+        str(user.get("last_name") or "").strip(),
+    ]
+    name = " ".join(p for p in parts if p)
+    return name or None
+
+
+def _winner_display_names(
+    db: Session,
+    sender,
+    round: models.LotteryRound,
+    entries: list,
+    users_by_id: dict,
+) -> dict[int, str]:
+    """{entry_id: 展示名（未转义原文）}：TG 显示名优先，兜底站内用户名，
+    再兜底打码 TG 号（连站内账号都查不到时）。
+
+    按 telegram_id 去重、每人只取一次；总预算
+    _WINNER_NAME_FETCH_BUDGET_SEC，预算内没轮到的与取失败的一律兜底。
+    """
+    names: dict[int, str] = {}
+    tg_cache: dict[int, str | None] = {}
+    deadline = time.monotonic() + _WINNER_NAME_FETCH_BUDGET_SEC
+    for entry in entries:
+        user = users_by_id.get(entry.user_id)
+        fallback = (
+            (str(user.username) if user and user.username else "")
+            or _mask_telegram(entry.telegram_id)
+        )
+        if entry.telegram_id not in tg_cache:
+            if time.monotonic() < deadline:
+                tg_cache[entry.telegram_id] = _tg_display_name(
+                    sender, db, round.chat_id, entry.telegram_id)
+            else:
+                tg_cache[entry.telegram_id] = None
+        names[entry.id] = tg_cache[entry.telegram_id] or fallback
+    return names
+
+
 def notify_draw_results(db: Session, round_id: int, winners: list, distribute_errors: list | None = None) -> dict:
     """开奖后通知：群公告 + 中奖者私聊。
 
@@ -857,6 +918,20 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
         e.id: e
         for e in db.query(models.LotteryRoundEntry).filter(models.LotteryRoundEntry.round_id == round_id).all()
     }
+    users_by_id = {
+        u.id: u
+        for u in db.query(models.WebUser)
+        .filter(models.WebUser.id.in_({e.user_id for e in entries_by_id.values()}))
+        .all()
+    } if entries_by_id else {}
+    # 中奖名单展示名（2026-10-31 用户口径）：TG 显示名优先、兜底站内用户名，
+    # 取名失败/超时绝不影响公告本身（见 _winner_display_names 的预算口径）。
+    # 只为真正中奖的 entry 取名，无人中奖时不打无谓的 TG API。
+    winner_entry_ids = {w.entry_id for w in winners or []}
+    display_names = _winner_display_names(
+        db, sender, round,
+        [e for e in entries_by_id.values() if e.id in winner_entry_ids],
+        users_by_id)
 
     lines: list[str] = []
     dm_targets: list[tuple[int, str]] = []
@@ -865,7 +940,8 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
         entry = entries_by_id.get(w.entry_id)
         if prize is None or entry is None:
             continue
-        lines.append(f"🥇 {html.escape(str(prize.name))}：用户{_mask_telegram(entry.telegram_id)}")
+        shown_name = html.escape(display_names.get(entry.id) or _mask_telegram(entry.telegram_id))
+        lines.append(f"🥇 {shown_name} — {_prize_unit_text(prize)}")
         dm_targets.append((entry.telegram_id, str(prize.name)))
 
     round_title = html.escape(str(round.title or ""))
@@ -922,18 +998,28 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
     return result
 
 
-def _prize_label(p) -> str:
-    """奖品一行文案（公告卡/提醒同源）：份数 × 内容。"""
+def _prize_unit_text(p) -> str:
+    """一份奖品的内容文案（公告卡与中奖名单同源）：名称＋按类型折算的内容。
+
+    中奖名单里每个中奖人中的就是一份，故名单行直接用本函数，
+    不带 _prize_label 的份数后缀；金额一律读该奖品行本身的 value，
+    不假设全场同额。
+    """
     name = html.escape(str(p.name or ""))
-    qty = p.quantity or 1
     ptype = str(p.type or "").lower()
     if ptype == "days":
-        return f"🎁 {name}：公益{p.value}天 ×{qty}"
+        return f"{name}：公益{p.value}天"
     elif ptype == "points":
-        return f"🎁 {name}：{p.value}能量 ×{qty}"
+        return f"{name}：{p.value}能量"
     elif ptype == "whitelist":
-        return f"🎁 {name}：白名单 ×{qty}"
-    return f"🎁 {name} ×{qty}"
+        return f"{name}：白名单"
+    return name
+
+
+def _prize_label(p) -> str:
+    """奖品一行文案（公告卡/提醒同源）：份数 × 内容。"""
+    qty = p.quantity or 1
+    return f"🎁 {_prize_unit_text(p)} ×{qty}"
 
 
 def _prize_lines(db: Session, round: models.LotteryRound) -> str:

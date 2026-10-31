@@ -200,7 +200,10 @@ def test_notify_failure_tolerant(db, monkeypatch):
     assert result["dm_failed"] == 1
 
 
-def test_notify_masks_telegram_id(db, monkeypatch):
+def test_notify_shows_username_when_tg_name_unavailable(db, monkeypatch):
+    """名单新口径（2026-10-31 用户点选，取代旧 test_notify_masks_telegram_id）：
+    公告显示昵称＋金额；TG 显示名取不到时兜底站内用户名；
+    隐私底线不变——完整 tg id 仍不许出现在公告里、也不再用 **** 后四位名单。"""
     import backend.tg_bot.sender as sender_mod
     texts = []
 
@@ -208,14 +211,20 @@ def test_notify_masks_telegram_id(db, monkeypatch):
         texts.append(text)
         return True, None
 
+    def no_member(db_, chat_id, user_id):
+        return False, "user not found", None
+
     monkeypatch.setattr(sender_mod, "send_message", fake_send)
+    monkeypatch.setattr(sender_mod, "get_chat_member_raw", no_member)
     rnd = _make_round(db, draw_at=datetime.now() - timedelta(minutes=5), n_users=1)
     winners = lottery.draw_round(db, rnd.id)
     lottery.notify_draw_results(db, rnd.id, winners)
     group_text = texts[0]
-    # 打码：后四位可见，前缀星号；完整 tg id 不应出现在公告里
     entry = db.query(models.LotteryRoundEntry).filter(models.LotteryRoundEntry.round_id == rnd.id).first()
-    assert "****" in group_text
+    user = db.query(models.WebUser).filter(models.WebUser.id == entry.user_id).first()
+    assert user.username in group_text
+    assert "积分奖：100能量" in group_text
+    assert "****" not in group_text
     assert str(entry.telegram_id) not in group_text
 
 
