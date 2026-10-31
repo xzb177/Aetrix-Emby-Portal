@@ -21,7 +21,9 @@ import {
   disableUpstreamSource,
   enableUpstreamSource,
   fetchUpstreamAggregateTask,
+  fetchUpstreamDetailLineConfig,
   fetchUpstreamSources,
+  updateUpstreamDetailLineConfig,
   updateUpstreamSource,
 } from '@/api/admin'
 import type {
@@ -141,6 +143,34 @@ async function loadSources() {
     ElMessage.error(toAdminError(e))
   } finally {
     loading.value = false
+  }
+}
+
+// 详情页上游线路开关（U-02）：默认开；关后用户端详情/PlaybackInfo
+// 来源列表不再出现「上游 · <源名>」线路，取流口 404。
+const detailLineEnabled = ref(true)
+const detailLineSaving = ref(false)
+
+async function loadDetailLineConfig() {
+  try {
+    const res = await fetchUpstreamDetailLineConfig()
+    detailLineEnabled.value = res.enabled
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+  }
+}
+
+async function onDetailLineToggle(value: boolean) {
+  detailLineSaving.value = true
+  try {
+    const res = await updateUpstreamDetailLineConfig(value)
+    detailLineEnabled.value = res.enabled
+    ElMessage.success(res.enabled ? '详情页上游线路已开启' : '详情页上游线路已关闭')
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+    detailLineEnabled.value = !value
+  } finally {
+    detailLineSaving.value = false
   }
 }
 
@@ -331,7 +361,10 @@ async function removeSource(source: UpstreamSource) {
   }
 }
 
-onMounted(loadSources)
+onMounted(() => {
+  void loadSources()
+  void loadDetailLineConfig()
+})
 onUnmounted(() => {
   aggregatePageToken += 1
 })
@@ -413,6 +446,24 @@ onUnmounted(() => {
 
     <!-- 源列表面板：v-show 常驻，切标签回来表单与列表状态都在 -->
     <div v-show="activeTab === 'sources'">
+    <SectionCard title="用户端展示">
+      <div class="detail-line-row">
+        <div>
+          <div>详情页上游线路</div>
+          <div class="detail-line-hint">
+            开启时，有上游映射的条目会在用户端详情页来源列表里多一条
+            「上游 · 源名」线路，点它走上游起播；关闭后线路不出现。
+          </div>
+        </div>
+        <el-switch
+          :model-value="detailLineEnabled"
+          :loading="detailLineSaving"
+          active-text="开启"
+          inactive-text="关闭"
+          @change="onDetailLineToggle"
+        />
+      </div>
+    </SectionCard>
     <SectionCard title="源列表">
       <template #actions>
         <el-button type="primary" @click="openCreate">新建上游源</el-button>
@@ -619,6 +670,17 @@ onUnmounted(() => {
 }
 .tab-btn.active .tab-hint { color: var(--au-primary); }
 .tab-panel { min-width: 0; }
+.detail-line-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.detail-line-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--au-text-3);
+}
 
 @media (max-width: 640px) {
   .tab-btn { padding: 8px 12px; font-size: 14px; }

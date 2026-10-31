@@ -333,3 +333,41 @@ def resume_upstream_aggregate_task(
         raise HTTPException(status_code=404,
                             detail="聚合任务不存在或不可续跑")
     return view
+
+
+class UpstreamDetailLineConfigIn(BaseModel):
+    """详情页上游线路开关写入体（U-02）。"""
+
+    enabled: bool
+
+
+@admin_emby_router.get("/upstream-detail-line-config")
+def get_upstream_detail_line_config(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读详情页上游线路开关（SystemConfig，无行＝开，见 upstream_playback）。"""
+    from backend.emby_server import upstream_playback as _up
+
+    return {"enabled": _up.detail_line_enabled(db)}
+
+
+@admin_emby_router.put("/upstream-detail-line-config")
+def put_upstream_detail_line_config(
+    payload: UpstreamDetailLineConfigIn,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """写详情页上游线路开关（走 config_service 统一保存通道）。
+
+    关时详情/PlaybackInfo 来源列表不再出现上游线路、取流口 404；
+    开时恢复展示。审计由 /api/admin/emby/* 中间件统一记录。
+    """
+    from backend import config_service
+    from backend.emby_server import upstream_playback as _up
+
+    config_service.save_config(
+        db, {_up.KEY_DETAIL_LINE_ENABLED: payload.enabled},
+        schema="upstream_aggregate")
+    db.commit()
+    return {"enabled": _up.detail_line_enabled(db)}
