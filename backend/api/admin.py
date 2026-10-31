@@ -161,6 +161,12 @@ async def grant_subscription(
         # 会员开在哪个服：显式指定 > 套餐所属的服 > 面板当前服。
         # 决定了这份会员能在哪台 EA 上播放（见 backend/subscriptions.py）。
         realm_id = request.realm_id or plan.realm_id or realms.active_realm_id(db)
+        # 审计 A-108：解析出的服必须真实存在，与 economy_create_plan /
+        # economy_update_plan 同款校验。此前不校验时，显式传野 id 会落出
+        # 一行挂在不存在服上的订阅：用户服卡片看不见、EA 门禁不认、
+        # EM 不过滤门禁反认，两网关表现倒挂。
+        if not realms.get_realm(db, realm_id):
+            raise HTTPException(status_code=400, detail=f"服不存在: #{realm_id}")
         # 走 _grant_subscription：该用户该服已有生效订阅则顺延（不新建第二条 active 行），
         # 否则直接新建会造成双 active 行——提醒任务按行发通知会双发、统计虚高。
         from backend.api.economy import _grant_subscription
