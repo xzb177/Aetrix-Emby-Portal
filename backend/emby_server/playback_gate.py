@@ -103,3 +103,29 @@ def ensure_binding_playback_allowed(
     if user_id is not None and has_active_binding(db, user_id):
         return
     raise HTTPException(status_code=403, detail=GATE_MESSAGE)
+
+
+def raise_for_transfer_gate(gate_result) -> None:
+    """首播转存门禁的拦截映射（与 video_stream 同口径，全站只此一份）。
+
+    ``transfer_variant.ensure_user_copy_gate`` 的 verdict 里，
+    preparing / failed 回 409（detail 优先用门禁给的说明，缺省文案
+    与 video_stream 一致），error 回 503 fail-closed（不走共享）；
+    proceed / serve_115_copy 不在此拦截——放行后的选路（含 115
+    副本现签、Drive 副本 fid）归各端点既有逻辑，本函数不动。
+    """
+    verdict = (gate_result or {}).get("verdict")
+    if verdict == "preparing":
+        raise HTTPException(
+            status_code=409,
+            detail=(gate_result or {}).get("detail") or
+            "转存准备中：正在把文件转存到你的绑定盘，转存完成后可播")
+    if verdict == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=(gate_result or {}).get("detail") or
+            "转存失败，不走共享播放：请稍后重试或联系管理员")
+    if verdict == "error":
+        raise HTTPException(
+            status_code=503,
+            detail="转存门禁暂不可用，稍后重试（未走共享播放）")
