@@ -19,7 +19,7 @@ concurrency:
 jobs:
   frontend:
     name: 前端 · ${{ matrix.dir }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, aetrix-insta]
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -82,7 +82,7 @@ jobs:
 
   smoke:
     name: 后端 · 冒烟测试
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, aetrix-insta]
     # job 级 55 分钟是后备上限：pytest 步骤 45 分钟（2026-10-30 容量一期，
     # 见 pytest 步注释）+ 其余步骤实测约 5 分钟，55 分钟留有余量；
     # 单步仍各有超时，卡死仍会失败报错，不会静默转圈。
@@ -529,7 +529,7 @@ jobs:
     # 方言映射（DATETIME→TIMESTAMP、BOOLEAN DEFAULT 0→FALSE）、JSON/Boolean/
     # DateTime 读写、ilike 搜索。SQLite 门禁拦不住的方言问题由这条拦。
     name: 后端 · PG 兼容冒烟
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, aetrix-insta]
     timeout-minutes: 15
     services:
       postgres:
@@ -577,7 +577,7 @@ jobs:
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, aetrix-insta]
     timeout-minutes: 25
     env:
       DATABASE_TYPE: sqlite

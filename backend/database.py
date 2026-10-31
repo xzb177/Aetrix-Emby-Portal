@@ -1506,7 +1506,7 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
         if col_name not in cols:
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE lottery_rounds ADD COLUMN {col_name} {col_def}"))
-            print(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（公告落库）")
+            logger.info(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（公告落库）")
 
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
