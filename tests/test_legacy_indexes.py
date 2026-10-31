@@ -81,6 +81,8 @@ def test_spec_table_covers_all_seven_in_restored_order():
         # 2026-10-23：补全进度统计 + 抢单去重聚合（压测实锤，生产已手工先行）
         "idx_item_enrich_claimed",
         "idx_item_enrich_claim_cover",
+        # A-115：转存每日预取上限 COUNT 复合索引（models.py 同名声明）
+        "ix_transfer_job_prefetch_daily",
     ]
 
 

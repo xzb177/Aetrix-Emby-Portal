@@ -1603,6 +1603,8 @@ class TransferJob(Base):
         Index("ix_transfer_job_item", "item_id"),
         Index("ix_transfer_job_status", "status"),
         Index("ix_transfer_job_owner", "item_id", "owner_scope", "owner_ref"),
+        Index("ix_transfer_job_prefetch_daily", "owner_scope", "owner_ref",
+              "trigger", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

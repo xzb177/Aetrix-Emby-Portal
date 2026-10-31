@@ -1477,6 +1477,14 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
      "  已迁移: emby_items.idx_item_enrich_claim_cover（抢单去重聚合部分覆盖索引）",
      "deleted_at IS NULL AND merged_into_id IS NULL", None,
      "series_id, date_added, library_id"),
+    # A-115：详情页预取上限 COUNT 按 (owner_scope, owner_ref, trigger,
+    # created_at) 过滤，TransferJob 旧 3 索引首列均为 item_id/status 均
+    # 不可用，无界增长表上全表扫；models.py 已声明同名索引（新库
+    # create_all 自带），这里给升级上来的老库补上。回滚：
+    # DROP INDEX ix_transfer_job_prefetch_daily。
+    ("emby_transfer_jobs", "ix_transfer_job_prefetch_daily",
+     "owner_scope, owner_ref, trigger, created_at", None,
+     "  🔧 A-115: emby_transfer_jobs 每日预取上限 COUNT 复合索引"),
 )
 
 
