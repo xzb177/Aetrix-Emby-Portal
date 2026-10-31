@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """上游聚合自动调度骨架（准备线，开关默认关）。
 
-定位（与 #1352 系手动聚合的分工）：
-- 手动聚合仍是唯一已验证的入口：管理端
-  ``POST /api/admin/emby/upstream-sources/{id}/aggregate`` 入队后，
-  后台线程调 ``upstream_aggregate_run.run_manual_aggregation``
-  （按库拉目录 → 聚合 → 配对 → 开关开时写映射，单库失败隔离）。
-  本调度不走那张任务表，仍在调度线程里直接调同一入口。
-- 本模块只做「到点触发」：按间隔对已启用的 Emby / Jellyfin 型源
-  逐个调用同一手动聚合入口，不另起一套聚合实现、不读播放地址、
-  不碰 video_stream 选路、不改手动聚合的任何语义。
+定位（2026-10-31 优化 O-03 起，与手动聚合共用任务表）：
+- 手动聚合与本调度是同一条链的两个触发口：管理端
+  ``POST /api/admin/emby/upstream-sources/{id}/aggregate`` 与
+  本调度都只往任务表（``upstream_aggregate_tasks``）入队，
+  执行统一归 worker 的认领循环（``upstream_aggregate_jobs``
+  的 claim_and_execute_once → run_manual_aggregation 逐库事务）。
+- 本模块只做「到点入队」：按间隔对已启用的 Emby / Jellyfin 型源
+  逐个入队（trigger=scheduled），不自己执行聚合、不读播放地址、
+  不碰 video_stream 选路。O-03 前本调度在调度线程里直接调聚合
+  入口（与手动两条路、跨进程无互斥，见设计稿 P-04），已废止。
+- 同源互斥：入队前先查该源进行中任务，有则本轮跳过并记
+  skipped（reason=task_active）；手动与调度从此不会同源并发。
 - 苹果 CMS 型源不进本调度（它走自己的 ``applecms_scheduler`` 同步）；
   未启用源不进本调度（手动聚合本身也会 400，本处先跳过并记 skipped）。
 
@@ -22,10 +25,11 @@
   钳制到 60 秒，防止误配过短间隔反复刷上游。
 
 单源失败隔离与调度日志：
-- 每源一个独立 session：单源异常（凭据失效、额度、上游不可用、
-  其他异常）只记该源 failed、rollback 后继续下一源，不毁已写映射。
-- 每轮、每源结果均经 ``logger`` 输出（轮次开始/结束、每源 ok /
-  failed / skipped 与计数），调度日志可查；返回值同样带逐源明细，
+- 入队是轻动作：单源入队异常只记该源 failed、继续下一源，
+  不毁整轮；执行期的失败落在任务行上（status/error），调度
+  本轮结果只表达「入队结果」：queued / skipped / failed。
+- 每轮、每源结果均经 ``logger`` 输出（轮次开始/结束、每源
+  结果与计数），调度日志可查；返回值同样带逐源明细，
   供调用方与测试断言。
 
 启动接线：``backend/worker.py`` 里只加本模块的一段启动块（与苹果 CMS
@@ -85,50 +89,62 @@ def schedule_interval_sec(explicit: Optional[float] = None) -> float:
     return max(MIN_SCHEDULE_INTERVAL_SEC, value)
 
 
-def run_scheduled_aggregation(*, session_factory=None, aggregate_fn=None,
-                              list_sources_fn=None) -> list:
-    """跑一轮定时聚合，返回每源的结果列表（单源异常隔离到该源）。
+def run_scheduled_aggregation(*, session_factory=None, enqueue_fn=None,
+                              list_sources_fn=None, active_fn=None) -> list:
+    """跑一轮定时调度：对已启用的 Emby / Jellyfin 型源逐个入队。
 
-    依赖一律可注入（测试不碰真实 DB、不发真实请求）：
+    只入队不执行（O-03）：执行归 worker 认领循环。依赖一律可注入
+    （测试不碰真实 DB、不发真实请求）：
     - ``list_sources_fn()``：默认列出已启用的 Emby / Jellyfin 型源行；
-    - ``aggregate_fn(db, source)``：默认走生产手动聚合入口
-      （``run_manual_aggregation`` + 调用方 commit；见
-      ``_default_aggregate``），返回聚合结果 dict；
+    - ``active_fn(source_id)``：默认查任务表该源进行中任务
+      （``upstream_aggregate_jobs.active_task_for``）；
+    - ``enqueue_fn(source_id)``：默认解析配置缺省页大小后走
+      ``upstream_aggregate_jobs.enqueue(..., trigger="scheduled")``，
+      返回任务视图 dict；
     - ``session_factory``：默认 ``backend.database.SessionLocal``，
       惰性 import（本模块顶层不碰 DB，单测 import 不建库）。
 
     每源结果形态：``{"source_id", "status", ...}``，status 为
-    ``ok`` / ``failed`` / ``skipped`` 之一；failed 带 ``code`` /
-    ``error``，skipped 带 ``reason``。列源本身失败时返回空列表并
-    记日志，不抛错（调度线程不因此死掉）。
+    ``queued``（带 task_id）/ ``failed``（带 code / error）/
+    ``skipped``（带 reason：source_disabled /
+    source_type_not_supported / task_active）之一。列源本身失败
+    时返回空列表并记日志，不抛错（调度线程不因此死掉）。
     """
-    if aggregate_fn is None or list_sources_fn is None:
+    if enqueue_fn is None or list_sources_fn is None or active_fn is None:
         from backend.database import SessionLocal
+        from backend.emby_server import upstream_aggregate_jobs as uaj
         from backend.emby_server import upstream_aggregate_run as uar
         from backend.emby_server import upstream_sources as ups
 
         if session_factory is None:
             session_factory = SessionLocal
 
-        def _default_list_sources():
-            db = session_factory()
-            try:
-                return [s for s in ups.list_sources(db)
-                        if getattr(s, "source_type", "") != "applecms"
-                        and getattr(s, "enabled", False)]
-            finally:
-                db.close()
-
         if list_sources_fn is None:
+            def _default_list_sources():
+                db = session_factory()
+                try:
+                    return [s for s in ups.list_sources(db)
+                            if getattr(s, "source_type", "") != "applecms"
+                            and getattr(s, "enabled", False)]
+                finally:
+                    db.close()
+
             list_sources_fn = _default_list_sources
 
-        if aggregate_fn is None:
-            def _default_aggregate(db, source):
-                result = uar.run_manual_aggregation(db, source)
-                db.commit()
-                return result
+        if active_fn is None:
+            active_fn = uaj.active_task_for
 
-            aggregate_fn = _default_aggregate
+        if enqueue_fn is None:
+            def _default_enqueue(source_id):
+                db = session_factory()
+                try:
+                    page_size = uar.configured_default_page_size(db)
+                finally:
+                    db.close()
+                return uaj.enqueue(source_id, page_size,
+                                   trigger="scheduled")
+
+            enqueue_fn = _default_enqueue
 
     try:
         sources = list(list_sources_fn() or [])
@@ -149,42 +165,32 @@ def run_scheduled_aggregation(*, session_factory=None, aggregate_fn=None,
             results.append({"source_id": source_id, "status": "skipped",
                             "reason": "source_type_not_supported"})
             continue
-        # 单源隔离（完美审查第四轮）：开会话与取结果都在 try 内——
-        # 开会话失败若在 try 外，本轮直接抛掉、已跑完的源结果一并丢失；
-        # 非 dict 返回若按 ok 记，调度日志会谎称成功（fetched/written 全 None）。
-        db = None
         try:
-            db = session_factory() if session_factory is not None else None
-            outcome = aggregate_fn(db, source)
-            if not isinstance(outcome, dict):
-                raise TypeError("聚合返回非 dict，无法记调度结果")
-            fetched = outcome.get("fetched")
-            written = outcome.get("written")
-            logger.info("上游聚合定时调度单源完成 source_id=%s fetched=%s "
-                        "written=%s", source_id, fetched, written)
-            results.append({"source_id": source_id, "status": "ok",
-                            "fetched": fetched, "written": written})
-        except Exception as exc:  # noqa: BLE001 - 单源隔离：任何异常都不毁整轮
+            if active_fn(source_id) is not None:
+                logger.info("上游聚合定时调度跳过进行中源 source_id=%s",
+                            source_id)
+                results.append({"source_id": source_id, "status": "skipped",
+                                "reason": "task_active"})
+                continue
+            view = enqueue_fn(source_id)
+            if not isinstance(view, dict) or not view.get("task_id"):
+                raise TypeError("入队返回非任务视图，无法记调度结果")
+            logger.info("上游聚合定时调度单源入队 source_id=%s task_id=%s",
+                        source_id, view["task_id"])
+            results.append({"source_id": source_id, "status": "queued",
+                            "task_id": view["task_id"]})
+        except Exception as exc:  # noqa: BLE001 - 单源隔离：入队异常不毁整轮
             code = getattr(exc, "code", None) or exc.__class__.__name__
-            logger.exception("上游聚合定时调度单源失败 source_id=%s code=%s",
-                             source_id, code)
-            try:
-                if db is not None:
-                    db.rollback()
-            except Exception:
-                pass
+            logger.exception("上游聚合定时调度单源入队失败 source_id=%s "
+                             "code=%s", source_id, code)
             results.append({"source_id": source_id, "status": "failed",
                             "code": code, "error": str(exc)})
-        finally:
-            try:
-                if db is not None:
-                    db.close()
-            except Exception:
-                pass
-    ok_count = sum(1 for r in results if r["status"] == "ok")
+    queued_count = sum(1 for r in results if r["status"] == "queued")
+    skipped_count = sum(1 for r in results if r["status"] == "skipped")
     failed_count = sum(1 for r in results if r["status"] == "failed")
-    logger.info("上游聚合定时调度本轮结束 sources=%s ok=%s failed=%s",
-                len(results), ok_count, failed_count)
+    logger.info("上游聚合定时调度本轮结束 sources=%s queued=%s "
+                "skipped=%s failed=%s",
+                len(results), queued_count, skipped_count, failed_count)
     return results
 
 

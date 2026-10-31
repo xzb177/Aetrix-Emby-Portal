@@ -105,9 +105,9 @@ def _summary(source, **overrides):
 
 
 def _hold_submit(monkeypatch):
-    started = []
-    monkeypatch.setattr(jobs, "_submit", lambda task_id: started.append(task_id))
-    return started
+    # O-03 起 enqueue 不再起执行线程（执行归 worker 认领循环），
+    # 本替身退化为无操作；started 恒空，保留旧断言的形状。
+    return []
 
 
 def test_post_returns_queued_before_aggregation_runs(
@@ -135,7 +135,7 @@ def test_post_returns_queued_before_aggregation_runs(
     assert resp["source_id"] == source.id
     assert resp["result"] is None
     assert resp["error"] is None
-    assert started == [resp["task_id"]]
+    assert started == []  # api 进程内不再有执行线程（O-03）
     assert not entered.is_set()
 
     db.close()
@@ -223,7 +223,7 @@ def test_missing_disabled_and_applecms_still_reject_immediately(
 
 def test_worker_preserves_real_run_errors(db, db_factory, monkeypatch):
     """入队后源被停用 / 苹果 CMS：后台仍响亮失败，不静默跑、不改文案。"""
-    monkeypatch.setattr(jobs, "_submit", lambda task_id: None)
+    # O-03：enqueue 只登记，无执行线程需压。
     monkeypatch.setattr(jobs, "_session_factory", db_factory)
 
     off = _source(db, name="off", enabled=False)
@@ -325,7 +325,7 @@ def test_mapping_conflict_and_unexpected_error_are_not_swallowed(
 
 
 def test_get_unknown_task_is_404_and_inflight_is_reused(db_factory, staff, monkeypatch):
-    monkeypatch.setattr(jobs, "_submit", lambda task_id: None)
+    # O-03：enqueue 只登记，无执行线程需压。
     with pytest.raises(HTTPException) as missing:
         admin_ups.get_upstream_aggregate_task(1, "no-such-task", staff=staff)
     assert missing.value.status_code == 404
@@ -351,13 +351,12 @@ def test_get_unknown_task_is_404_and_inflight_is_reused(db_factory, staff, monke
     assert nxt["status"] == "queued"
 
 
-def test_scheduler_still_calls_run_manual_aggregation_directly():
-    """调度不改走任务表。"""
+def test_scheduler_enqueues_via_task_table():
+    """调度改走任务表入队（O-03），不再直调聚合执行。"""
     import inspect
 
     from backend.emby_server import upstream_aggregate_scheduler as sched
 
     src = inspect.getsource(sched.run_scheduled_aggregation)
-    assert "run_manual_aggregation" in src
-    assert "enqueue" not in src
-    assert "upstream_aggregate_jobs" not in src
+    assert "enqueue" in src
+    assert "run_manual_aggregation" not in src
