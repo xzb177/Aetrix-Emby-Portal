@@ -316,7 +316,8 @@ def _stream_setup(monkeypatch, gate_verdict, alive="alive"):
     monkeypatch.setattr(tv, "ensure_user_copy_gate",
                         lambda db, item, user, **kwargs: gate_verdict)
     monkeypatch.setattr(ub, "resolve_user115_copy_url",
-                        lambda db, user_id, pickcode: "https://115.example/dl")
+                        lambda db, user_id, pickcode, ua="":
+                        "https://115.example/dl")
     monkeypatch.setattr(ub, "check_115_download_alive", lambda url: alive)
 
     scope = {"type": "http", "method": "GET", "path": "/Videos/item/stream",
