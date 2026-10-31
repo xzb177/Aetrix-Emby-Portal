@@ -174,8 +174,10 @@ def test_fill_branch_upgrades_imdb_only_item(db, monkeypatch):
     # tmdb_id 落库（apply_fill 从不写身份列，落库只能来自识别段）。
     assert item.tmdb_id == "1089598"
     assert item.imdb_id == "tt28131387"
-    # 补资料照常：字段填上、终态 done。
-    assert item.poster_path == "/tmdb_poster.jpg"
+    # 补资料照常：字段填上、终态 done。海报走远程 URL 口径
+    # （2026-11-01 修复：相对路径原值不许直写 poster_path）。
+    from backend.emby_server.tmdb import image_base
+    assert item.primary_image_url == f"{image_base()}/w500/tmdb_poster.jpg"
     assert item.overview == "详情简介"
     assert item.enrich_status == "done"
     assert item.enrich_claim_token is None
@@ -215,7 +217,8 @@ def test_fill_branch_without_candidate_behaves_as_before(db, monkeypatch):
     enrich_worker._enrich_apply_two_stage(db, item, fetched)
     assert calls == []  # 无候选不触发身份升级
     assert not item.tmdb_id
-    assert item.poster_path == "/tmdb_poster.jpg"
+    from backend.emby_server.tmdb import image_base
+    assert item.primary_image_url == f"{image_base()}/w500/tmdb_poster.jpg"
     assert item.enrich_status == "done"
     record = _stage_record(db, item.id)
     assert record is not None

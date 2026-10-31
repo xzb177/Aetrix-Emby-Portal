@@ -123,8 +123,13 @@ def test_fill_only_missing_fields(db):
     filled = ts.apply_fill(db, item, _fetched())
     assert "overview" not in filled
     assert item.overview == "已有简介"
-    assert item.poster_path == "/tmdb_poster.jpg"
-    assert item.backdrop_path == "/tmdb_backdrop.jpg"
+    # 图片走远程 URL 口径（2026-11-01 修复）：TMDB 相对路径原值不许
+    # 再直写 poster_path（本地路径字段）——断言随口径更新，见
+    # test_enrich_no_image_regression 的事故回归。
+    from backend.emby_server.tmdb import image_base
+    assert item.primary_image_url == f"{image_base()}/w500/tmdb_poster.jpg"
+    assert item.backdrop_image_url == f"{image_base()}/w1280/tmdb_backdrop.jpg"
+    assert not item.poster_path and not item.backdrop_path
     assert item.community_rating == 8.7
     assert _stage_record(db, item.id).stage == "filled"
 
@@ -174,7 +179,8 @@ def test_wrapper_fill_marks_done(db, monkeypatch):
     monkeypatch.setattr(ts, "FILL_STAGE_ENABLED", 1)
     item = _make_item(db, tmdb_id="60300", enrich_claim_token="tok")
     enrich_worker._enrich_apply_two_stage(db, item, _fetched())
-    assert item.poster_path == "/tmdb_poster.jpg"
+    from backend.emby_server.tmdb import image_base
+    assert item.primary_image_url == f"{image_base()}/w500/tmdb_poster.jpg"
     assert item.enrich_status == "done"
     assert item.enrich_attempts == 0
     assert item.enrich_claim_token is None

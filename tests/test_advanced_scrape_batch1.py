@@ -255,8 +255,10 @@ def test_apply_fill_aggregate_fills_gap(db, monkeypatch):
     item = _make_item(db, tmdb_id="60300", imdb_id="tt0903747")
     filled = ts.apply_fill(db, item, {"tmdb_details": {}})
     assert item.overview == "聚合简介"
-    assert item.poster_path == "/聚合海报.jpg"
-    assert "overview" in filled and "poster_path" in filled
+    # 聚合海报同样走远程 URL 口径（2026-11-01 修复）。
+    from backend.emby_server.tmdb import image_base
+    assert item.primary_image_url == f"{image_base()}/w500/聚合海报.jpg"
+    assert "overview" in filled and "primary_image_url" in filled
 
 
 def test_frodo_candidates_ungated_but_breaker_gated(db, monkeypatch):
