@@ -29,6 +29,13 @@
   lottery_governance_proposal_cap_lv4（默认 2，Lv.4+ 提案月限）、
   lottery_governance_direct_cap_lv5（默认 1）、
   lottery_governance_direct_cap_lv6（默认 2）。
+  奖品上限键（A-101，治理层独立上限，不复用管理端无上限口径；直接发起与
+  提案批准共用；管理端创建端点不走本模块校验，不受影响）：
+  lottery_governance_prize_points_max（默认 1000，单奖能量价值上限）、
+  lottery_governance_prize_days_max（默认 30，单奖天数价值上限）、
+  lottery_governance_round_total_value_max（默认 5000，每轮奖品总价值上限，
+  按 sum(value*quantity) 计）。管理端字段是后续跟进项（见 PR body），
+  本单先做到键可读、可调。
 
 审计与 AdminLog 的边界：
 - 用户动作（提案/直接发起）不走 AdminLog：AdminLog.admin_user_id 外键指向
@@ -69,6 +76,14 @@ DEFAULT_PROPOSAL_CAP_BASE = 1
 DEFAULT_PROPOSAL_CAP_LV4 = 2
 DEFAULT_DIRECT_CAP_LV5 = 1
 DEFAULT_DIRECT_CAP_LV6 = 2
+
+# ---- SystemConfig 奖品上限键与默认值（A-101） ----
+KEY_PRIZE_POINTS_MAX = "lottery_governance_prize_points_max"
+KEY_PRIZE_DAYS_MAX = "lottery_governance_prize_days_max"
+KEY_ROUND_TOTAL_VALUE_MAX = "lottery_governance_round_total_value_max"
+DEFAULT_PRIZE_POINTS_MAX = 1000
+DEFAULT_PRIZE_DAYS_MAX = 30
+DEFAULT_ROUND_TOTAL_VALUE_MAX = 5000
 
 
 class LotteryGovernanceError(Exception):
@@ -181,11 +196,19 @@ def _require_lottery_enabled(db: Session) -> None:
         raise LotteryGovernanceError(403, "群抽奖功能未开启")
 
 
-def validate_round_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def validate_round_payload(
+    payload: dict[str, Any],
+    db: Session | None = None,
+    allow_whitelist: bool = True,
+) -> dict[str, Any]:
     """校验轮次载荷，镜像管理端 create_lottery_round 的校验（不改管理端端点）。
 
     镜像来源：backend/api/welfare_admin.py::create_lottery_round。
     报错文案与管理端逐字一致，测试钉死；管理端校验若改，这里须同步改。
+    db 给定时奖品上限读 SystemConfig 配置键，未给时用默认值。
+    allow_whitelist=False 时禁用 whitelist 奖品（直接发起路径：永久资格只许管理员
+    创建/批准）。奖品上限：单奖 points/days 价值上限 + 每轮总价值上限
+    （sum(value*quantity)，A-101）。
     返回规范化后的载荷：title / chat_id / prizes / draw_at（上海 naive datetime 或 None）
     / max_participants（None -> 0）/ lottery_type / password_keyword。
     """
@@ -210,6 +233,8 @@ def validate_round_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
         if ptype == "whitelist" and value < 0:
             raise LotteryGovernanceError(400, "奖品价值不能为负数")
+        if ptype == "whitelist" and not allow_whitelist:
+            raise LotteryGovernanceError(400, "直接发起不能设置永久资格奖品，请改用能量或天数奖品")
         try:
             quantity = int(p.get("quantity"))
         except (TypeError, ValueError):
@@ -224,6 +249,23 @@ def validate_round_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "quantity": quantity,
             }
         )
+    # A-101 治理层奖品上限（直接发起与提案批准共用；管理端创建端点不走本函数）
+    if db is not None:
+        points_max = _config_int(db, KEY_PRIZE_POINTS_MAX, DEFAULT_PRIZE_POINTS_MAX)
+        days_max = _config_int(db, KEY_PRIZE_DAYS_MAX, DEFAULT_PRIZE_DAYS_MAX)
+        total_max = _config_int(db, KEY_ROUND_TOTAL_VALUE_MAX, DEFAULT_ROUND_TOTAL_VALUE_MAX)
+    else:
+        points_max, days_max, total_max = (
+            DEFAULT_PRIZE_POINTS_MAX, DEFAULT_PRIZE_DAYS_MAX, DEFAULT_ROUND_TOTAL_VALUE_MAX)
+    total_value = 0
+    for p in norm_prizes:
+        if p["type"] == "points" and p["value"] > points_max:
+            raise LotteryGovernanceError(400, f"能量奖品单奖价值不得超过 {points_max}")
+        if p["type"] == "days" and p["value"] > days_max:
+            raise LotteryGovernanceError(400, f"天数奖品单奖价值不得超过 {days_max}")
+        total_value += p["value"] * p["quantity"]
+    if total_value > total_max:
+        raise LotteryGovernanceError(400, f"本轮奖品总价值不得超过 {total_max}")
     lottery_type = payload.get("lottery_type") or "button"
     if lottery_type not in ("button", "password"):
         raise LotteryGovernanceError(400, "抽奖类型只能是 button 或 password")
@@ -292,10 +334,17 @@ def _check_no_active_round(db: Session, chat_id: int) -> None:
 def submit_proposal(db: Session, user_id: int, payload: dict[str, Any]) -> models.LotteryActivityProposal:
     """提交活动提案：只写提案行，不建轮次，不产生经验。
 
-    门禁顺序：free realm -> 抽奖开关 -> 停权检查 -> 等级 >= Lv.2 -> 本月提案上限 ->
-    载荷校验 -> 群解析 -> 群白名单。提交时不查同群进行中活动，冲突留到批准时查
+    门禁顺序：锁用户行（须为本事务第一条语句，见下）-> free realm -> 抽奖开关 ->
+    停权检查 -> 等级 >= Lv.2 -> 本月提案上限 -> 载荷校验 -> 群解析 -> 群白名单。
+    提交时不查同群进行中活动，冲突留到批准时查
     （批准时群里可能已有新活动在跑，提交时查了也拦不住）。
     """
+    # A-102：先锁用户行再计数。锁必须是本事务的第一条语句：SQLite 下先读
+    # 再写会沿用旧快照、锁不住；锁持有到提交，计数→写行全程串行化。
+    # 惰性导入（与 devices.py 同口径，避循环导入）。
+    from backend.api.economy import lock_user_row
+
+    lock_user_row(db, user_id)
     _require_free_realm(db)
     _require_lottery_enabled(db)
     if governance.is_governance_frozen(db, user_id):
@@ -306,7 +355,7 @@ def submit_proposal(db: Session, user_id: int, payload: dict[str, Any]) -> model
     cap = proposal_cap_for_level(db, level)
     if proposal_count_this_month(db, user_id, datetime.now()) >= cap:
         raise LotteryGovernanceError(400, f"本月活动提案已达上限（Lv.{level} 每月 {cap} 次）")
-    norm = validate_round_payload(payload)
+    norm = validate_round_payload(payload, db)
     chat_id = resolve_chat_id(db, norm["chat_id"])
     _check_group_allowed(db, chat_id)
     proposal = models.LotteryActivityProposal(
@@ -332,8 +381,10 @@ def approve_proposal(
 ) -> tuple[models.LotteryActivityProposal, models.LotteryRound]:
     """批准提案：建轮次（created_by=提案人），提案置 approved 并关联轮次。
 
-    批准时重校验载荷（提案内容是提交时校验过的快照，重校验防脏数据入轮次）、
-    重查群白名单与同群进行中活动；建轮次失败（部分唯一索引竞态）回滚并报 400。
+    批准时重校验载荷（提案内容是提交时校验过的快照，重校验防脏数据入轮次，
+    且与直接发起共用 A-101 奖品上限）、重查群白名单与同群进行中活动；
+    建轮次失败（部分唯一索引竞态）回滚并报 400。建轮次与提案更新、审计
+    在同一事务内提交（A-102：create_round 不再内部提交）。
     批准不重查提案人等级：审批决定以提案内容为准，不随提案人后续升级/降级回改。
     建轮次后走现有开奖机制（管理员手动开奖 / 自动开奖调度），本模块不另起开奖。
     """
@@ -364,7 +415,8 @@ def approve_proposal(
             # 若传 iso 字符串会被当成 UTC 再转上海，draw_at 漂移 +8 小时。
             "draw_at": proposal.draw_at,
             "max_participants": proposal.max_participants or None,
-        }
+        },
+        db,
     )
     try:
         round_obj = lottery.create_round(
@@ -377,6 +429,7 @@ def approve_proposal(
             created_by=proposal.user_id,
             lottery_type=norm["lottery_type"],
             password_keyword=norm["password_keyword"],
+            commit=False,
         )
     except IntegrityError:
         db.rollback()
@@ -439,10 +492,15 @@ def direct_launch(
 ) -> tuple[models.LotteryRound, models.LotteryDirectLaunch]:
     """直接发起活动：Lv.5+ 不经审批建轮次，并写直接发起记录行（事后审计）。
 
-    门禁顺序：free realm -> 抽奖开关 -> 停权检查 -> 等级 >= Lv.5 -> 本月直接发起上限 ->
-    载荷校验 -> 群解析 -> 群白名单 -> 同群进行中活动 -> 建轮次。
+    门禁顺序：锁用户行（须为本事务第一条语句，见 submit_proposal）-> free realm ->
+    抽奖开关 -> 停权检查 -> 等级 >= Lv.5 -> 本月直接发起上限 -> 载荷校验 ->
+    群解析 -> 群白名单 -> 同群进行中活动 -> 建轮次。建轮次与直接发起记录行在
+    同一事务内提交（A-102：create_round 不再内部提交，否则锁提前释放）。
     滥用时管理员用现有取消端点取消轮次（事后审计有据可查）。
     """
+    from backend.api.economy import lock_user_row
+
+    lock_user_row(db, user_id)
     _require_free_realm(db)
     _require_lottery_enabled(db)
     if governance.is_governance_frozen(db, user_id):
@@ -453,7 +511,7 @@ def direct_launch(
     cap = direct_cap_for_level(db, level)
     if direct_count_this_month(db, user_id, datetime.now()) >= cap:
         raise LotteryGovernanceError(400, f"本月直接发起已达上限（Lv.{level} 每月 {cap} 次）")
-    norm = validate_round_payload(payload)
+    norm = validate_round_payload(payload, db, allow_whitelist=False)
     chat_id = resolve_chat_id(db, norm["chat_id"])
     _check_group_allowed(db, chat_id)
     _check_no_active_round(db, chat_id)
@@ -468,6 +526,7 @@ def direct_launch(
             created_by=user_id,
             lottery_type=norm["lottery_type"],
             password_keyword=norm["password_keyword"],
+            commit=False,
         )
     except IntegrityError:
         db.rollback()
