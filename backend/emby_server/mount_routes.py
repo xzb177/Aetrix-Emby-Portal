@@ -56,6 +56,13 @@ def mounted_item_file(
     # 与 stream_routes.item_file 逐字同口径（360° 审计 A-007：替换版曾静默丢门禁）。
     from backend.emby_server import playback_gate as _gate
     _gate.ensure_binding_playback_allowed(db, user, request)
+    # 首播转存门禁（与 video_stream 同口径）：该片需先转存到用户
+    # 自己绑定盘且尚无 ready 副本时，不许经 File 拿到共享原件字节；
+    # 已下发链接消费不追溯（play_sign 豁免与主路一致）。
+    _play_sign_consume = _gate._request_uses_issued_play_sign(request, db)
+    from backend.emby_server import transfer_variant as _tv
+    _gate.raise_for_transfer_gate(_tv.ensure_user_copy_gate(
+        db, item, user, play_sign_consume=_play_sign_consume))
     # 复用 api 的目标解析与错误映射，保证两条端点对同一份数据行为一致
     target = _play_target(db, item)
     if target.kind == "url":

@@ -58,6 +58,13 @@ def item_file(item_id: str, request: Request, user: models.WebUser = Depends(get
     # 必须过门禁；带有效 play_sign 的请求是在消费已下发的链接，不追溯。
     from backend.emby_server import playback_gate as _gate
     _gate.ensure_binding_playback_allowed(db, user, request)
+    # 首播转存门禁（与 video_stream 同口径）：该片需先转存到用户
+    # 自己绑定盘且尚无 ready 副本时，不许经 File 拿到共享原件字节；
+    # 已下发链接消费不追溯（play_sign 豁免与主路一致）。
+    _play_sign_consume = _gate._request_uses_issued_play_sign(request, db)
+    from backend.emby_server import transfer_variant as _tv
+    _gate.raise_for_transfer_gate(_tv.ensure_user_copy_gate(
+        db, item, user, play_sign_consume=_play_sign_consume))
     if not item.file_path:
         raise HTTPException(status_code=404, detail="File not found")
     try:

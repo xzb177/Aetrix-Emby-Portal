@@ -6115,21 +6115,7 @@ async def video_stream(
             return _observe_traffic(
                 RedirectResponse(_url115, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
-        if _gate_verdict == "preparing":
-            raise HTTPException(
-                status_code=409,
-                detail=(_transfer_gate or {}).get("detail") or
-                "转存准备中：正在把文件转存到你的绑定盘，"
-                "转存完成后可播")
-        if _gate_verdict == "failed":
-            raise HTTPException(
-                status_code=409,
-                detail=(_transfer_gate or {}).get("detail") or
-                "转存失败，不走共享播放：请稍后重试或联系管理员")
-        if _gate_verdict == "error":
-            raise HTTPException(
-                status_code=503,
-                detail="转存门禁暂不可用，稍后重试（未走共享播放）")
+        _gate.raise_for_transfer_gate(_transfer_gate)
         _play_fid, _play_variant = _tv.prefer_user_variant(
             _play_fid, _play_variant, _transfer_gate)
         _on_user_copy = (
