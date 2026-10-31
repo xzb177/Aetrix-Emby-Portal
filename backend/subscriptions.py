@@ -414,11 +414,33 @@ def _auto_renew_one(db: Session, sub_id: int, now: datetime):
             logger.info("自动续订跳过（订阅 %s）：用户不存在或已禁用", sub_id)
             return "skipped"
         if plan is None or not plan.is_active or plan.points_price is None:
-            # 套餐下架 / 未配积分价：人民币自动扣款未开通，无从续订；只记数不打扰
-            # （用户在开启开关时已做过 points_price 校验，这里是兜底）。
+            # 套餐下架 / 未配积分价（审计 A-109）：开启自动续订时校验过
+            # 套餐在售，但套餐可在开启后被下架。此前只记日志静默跳过，
+            # 用户以为开了自动续订就万事大吉；改走 renew_failed 去重提醒
+            # 路径（与余额不足、通道关闭、来源限定三路同口径），明确告知
+            # 自动续订未执行。不扣款、不动 auto_renew 开关。
+            plan_label = plan.name if plan is not None else "原套餐"
+            notice_title = "⚡ 自动续订失败：套餐已下架或不支持能量续订"
+            notice_content = (
+                f"你的「{plan_label}」将于 {sub.end_date.strftime('%Y-%m-%d %H:%M')} 到期，"
+                f"该套餐已下架/不支持能量续订，自动续订未执行、未扣款。"
+                f"请改用其他套餐或方式续费，或关闭自动续订。")
             db.rollback()
-            logger.info("自动续订跳过（订阅 %s）：套餐不可用或无积分价", sub_id)
-            return "skipped"
+            recorded = _reminders._record(
+                db,
+                {"subscription_id": sub.id, "user_id": user.id,
+                 "realm_id": sub.realm_id},
+                RENEW_FAILED_KIND,
+            )
+            db.commit()
+            if not recorded:
+                return "failed"  # 已提醒过，不再打扰
+            return {"notice": {
+                "user_id": user.id,
+                "subscription_id": sub.id,
+                "title": notice_title,
+                "content": notice_content,
+            }}
 
         cost = _auto_renew_cost(db, user, plan)
         paid_points = cost["paid_points"]
