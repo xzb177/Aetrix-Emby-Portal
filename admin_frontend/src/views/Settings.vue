@@ -36,6 +36,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useQueryFilter } from '@/composables/useQueryFilter'
 import { useDangerOps } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
+import { buildEconomyPayload } from '@/utils/buildEconomyPayload'
 import {
   fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
   type HotlinkConfigGet, fetchItemsDedupCacheConfig, updateItemsDedupCacheConfig,
@@ -951,21 +952,8 @@ const savingAll = ref(false)
 
 /** 经济分组保存核心：返回是否成功，失败时拦截器已提示。 */
 async function saveGroupCore(group: Group): Promise<boolean> {
-  const payload: EconomySettings = {}
-  for (const f of group.fields) {
-    if (!isSupported(f.key)) continue
-    const raw = String(settings[f.key] ?? '').trim()
-    if (f.type === 'int') {
-      const n = Number.parseInt(raw === '' ? '0' : raw, 10)
-      payload[f.key] = String(Number.isFinite(n) && n >= 0 ? n : 0)
-    } else if (f.type === 'bool') {
-      // 空/未设置不能落成 'true'：不传该键，读取侧回退各键自己的代码缺省
-      if (raw === '') continue
-      payload[f.key] = raw === 'false' ? 'false' : 'true'
-    } else {
-      payload[f.key] = raw
-    }
-  }
+  // 载荷构造抽到 @/utils/buildEconomyPayload（纯函数，A-066 回归锚点）
+  const payload = buildEconomyPayload(group.fields, settings, isSupported)
   try {
     await updateEconomySettings(payload)
     await refreshEconomy(Object.keys(payload))
