@@ -100,6 +100,7 @@ from sqlalchemy.orm import Session
 
 from backend.emby_server import upstream_sources as us
 from backend.emby_server import upstream_http
+from backend.emby_server import upstream_item_mappings as uim
 
 logger = logging.getLogger(__name__)
 
@@ -548,3 +549,86 @@ def resolve_upstream_stream(db: Session, source_id: int,
     _classify_probe_status(status, source.id, retry_after)
     logger.info("上游播放解析成功 source_id=%s", source.id)
     return url
+
+
+# ---------------------------------------------------------------------------
+# U-02 详情页上游线路（客户端入口）
+#
+# 详情/PlaybackInfo 的来源列表在本地条目有上游映射时多一条「上游」线路，
+# 点它走本站取流口：口子按本地条目 id 现查映射（get_best_mapping）、
+# 复验后才调 resolve_upstream_stream——(source_id, upstream_item_id)
+# 永不下发给前端长期持有。线路开关是 SystemConfig（upstream_aggregate
+# 家族），默认开；关时列表不出现、取流口 404 明示。
+# ---------------------------------------------------------------------------
+
+#: 详情页上游线路开关 SystemConfig 键（upstream_aggregate 家族）。
+KEY_DETAIL_LINE_ENABLED = "upstream_aggregate_detail_line_enabled"
+
+
+def _system_config_bool(db, key, default):
+    """SystemConfig 布尔热读：无行/非法/异常一律回默认。
+
+    与 transfer_variant._system_config_bool 同口径（读失败不许把
+    展示链路打挂，一律回落代码默认）。
+    """
+    if db is None:
+        return default
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, key, "")
+    except Exception:
+        return default
+    text = str(raw or "").strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def detail_line_enabled(db) -> bool:
+    """详情页上游线路开关：默认开（已部署功能开关默认开）。"""
+    return _system_config_bool(db, KEY_DETAIL_LINE_ENABLED, True)
+
+
+def get_displayable_mapping(db, local_item_id):
+    """列表展示口径的映射读取：返回 ``(mapping, source)`` 或 None。
+
+    命中 get_best_mapping 且源存在、已启用才算可展示；映射指向的源
+    已删/已停用时线路不出现（取流口复验同口径，见
+    resolve_mapped_upstream_stream）。
+    """
+    mapping = uim.get_best_mapping(db, local_item_id)
+    if mapping is None:
+        return None
+    source = us.get_source(db, mapping.source_id)
+    if source is None or not source.enabled:
+        return None
+    return mapping, source
+
+
+def resolve_mapped_upstream_stream(db: Session, local_item_id: int, *,
+                                   http_probe=None, http_post=None,
+                                   http_get=None, parse_resolver=None) -> str:
+    """按本地条目 id 解析上游取流地址（详情页上游线路取流口专用）。
+
+    现查映射 + 复验：开关关 → 404 upstream_line_disabled；无映射 →
+    404 upstream_mapping_not_found；源停用按 O-10 读契约
+    （get_best_mapping 默认 validate=True）在现查时即不可见、同
+    无映射口径 404（查与解析之间源被停用的竞态仍由
+    resolve_upstream_stream 抛 409 upstream_source_disabled）；
+    凭据失效等其余结构化错误原样上抛——明示失败，
+    绝不静默回落到任何其它线路。
+    """
+    if not detail_line_enabled(db):
+        raise UpstreamPlaybackError(
+            404, "upstream_line_disabled", "上游线路未开启")
+    mapping = uim.get_best_mapping(db, local_item_id)
+    if mapping is None:
+        raise UpstreamPlaybackError(
+            404, "upstream_mapping_not_found", "该条目暂无上游线路")
+    return resolve_upstream_stream(
+        db, mapping.source_id, mapping.upstream_item_id,
+        episode_index=mapping.episode_index or 1,
+        http_probe=http_probe, http_post=http_post, http_get=http_get,
+        parse_resolver=parse_resolver)

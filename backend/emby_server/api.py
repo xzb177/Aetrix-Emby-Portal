@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import httpx
 import json
@@ -727,6 +728,21 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                 and _gate_mod.has_active_binding(db, user_id))
             dto["MediaSources"][0]["DirectPlayUrl"] = _detail_url
             dto["MediaSources"][0]["DirectStreamUrl"] = _detail_url
+        # 详情页「上游」线路（U-02）：本地条目有可展示的上游映射时，
+        # 来源列表末尾追加一条上游线路（开关关/无映射/源停用则不出现）。
+        # 与主源同一签名口径：签名轨只给已有 active 绑定的用户；
+        # 线路地址只回本服务取流口，(source_id, upstream_item_id)
+        # 不下发，点播时取流口现查映射复验。
+        if (dto["MediaSources"] and item.item_type in ("movie", "episode")
+                and item.file_path):
+            from backend.emby_server import playback_gate as _gate_mod
+            _up_line = _upstream_line_media_source(
+                item, dto["MediaSources"][0], base, user_id, db, api_key,
+                with_sign=bool(user_id)
+                and _gate_mod.has_active_binding(db, user_id))
+            if _up_line is not None:
+                dto["MediaSources"].append(_up_line)
+                dto["MediaSourceCount"] = len(dto["MediaSources"])
         # 片头片尾标记 → Chapters：复用 MediaSource 里已算好的（_chapters_for_item
         # 同一套口径），不重复跑两次 intro 管道
         dto["Chapters"] = (dto["MediaSources"][0].get("Chapters")
@@ -1376,6 +1392,71 @@ def _signed_local_stream_url(item, base: str, user_id, db,
     url = (f"{base}/emby/Videos/{item.guid}/stream{suffix}"
            f"?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}")
     return url, play_exp, play_sig
+
+
+def _signed_upstream_line_url(item, base: str, user_id, db,
+                              api_key: str = "", with_sign: bool = True):
+    """详情页「上游」线路的本站取流地址（U-02，与 _signed_local_stream_url 同口径）。
+
+    地址只带本地条目 guid：/emby/Videos/{guid}/upstream/stream，
+    MediaSourceId={guid}:upstream 与来源列表里的线路 Id 对应。
+    (source_id, upstream_item_id) 永不下发——点播时取流口按本地条目
+    现查映射复验（见 upstream_item_stream）。签名不另起签发点：
+    向唯一构造点 _signed_local_stream_url 借同一 (uid, guid) 的
+    exp/sign（签名只绑用户与条目、与取流路径无关，TTL 同为按时长
+    口径）；with_sign=False 时不带签名轨（未过播放门禁的用户拿无签
+    地址，打取流口由门禁现场 403，见 _signed_local_stream_url 注释）。
+
+    返回 (url, play_exp, play_sig)；with_sign=False 时后两项为 None。
+    """
+    play_exp = play_sig = None
+    signed_qs = ""
+    if with_sign:
+        _borrowed_url, play_exp, play_sig = _signed_local_stream_url(
+            item, base, user_id, db, api_key, with_sign=True)
+        signed_qs = f"&uid={user_id}&exp={play_exp}&sign={play_sig}"
+    key_qs = f"&api_key={api_key}" if api_key else ""
+    url = (f"{base}/emby/Videos/{item.guid}/upstream/stream"
+           f"?MediaSourceId={item.guid}:upstream{key_qs}{signed_qs}")
+    return url, play_exp, play_sig
+
+
+def _upstream_line_media_source(item, base_source: dict, base: str, user_id,
+                                db, api_key: str = "",
+                                with_sign: bool = True):
+    """详情/PlaybackInfo 来源列表的上游线路 MediaSource（U-02）。
+
+    本地条目有可展示的上游映射（开关开、映射命中、源存在且启用，
+    见 upstream_playback.get_displayable_mapping）时返回一条深拷贝
+    基础源改写的线路 dict，否则返回 None。线路排在既有来源之后：
+    Id={guid}:upstream、Name={条目名} · 上游 · {源名}（与既有变体行
+    「名 · 标签」同形）、Protocol=Http/IsRemote=True（字节在上游那侧）、
+    只报直放/直流（上游取流口 302 到上游直链，我方不转码）。
+    """
+    from backend.emby_server import upstream_playback as _up
+    if db is None or not _up.detail_line_enabled(db):
+        return None
+    found = _up.get_displayable_mapping(db, item.id)
+    if found is None:
+        return None
+    _mapping, source = found
+    line = copy.deepcopy(base_source)
+    url, _exp, _sig = _signed_upstream_line_url(
+        item, base, user_id, db, api_key, with_sign=with_sign)
+    line.update({
+        "Id": f"{item.guid}:upstream",
+        "Name": f"{item.name} · 上游 · {source.name}",
+        "Path": None,
+        "Protocol": "Http",
+        "IsRemote": True,
+        "SupportsDirectPlay": True,
+        "SupportsDirectStream": True,
+        "SupportsTranscoding": False,
+        "DirectPlayUrl": url,
+        "DirectStreamUrl": url,
+    })
+    line.pop("TranscodingUrl", None)
+    return line
 
 
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
@@ -5134,6 +5215,24 @@ def _note_upstream_play_start_safe(user_id, resolve_ms) -> None:
         pass
 
 
+def _note_mapped_upstream_play_start_safe(user_id, item_id, resolve_ms) -> None:
+    """详情页上游线路取流口的起播打点安全口（U-02）。
+
+    与显式上游口同一事件口径（provider="upstream"、method="upstream"），
+    区别只有 item_id：本口有本地条目，记本地条目 id（数值列语义正确），
+    variant="upstream" 标明走的是详情页线路。打点永不打断 302。
+    """
+    try:
+        from backend.emby_server import play_events
+
+        play_events.note_play_start(
+            provider="upstream", mount_id=None, user_id=user_id,
+            item_id=item_id, method="upstream", variant="upstream",
+            result="ok", resolve_ms=resolve_ms)
+    except Exception:  # noqa: BLE001 — 打点不许打断起播，见 play_events 铁律
+        pass
+
+
 async def _usercopy_quota_relay_attempt(
         request: Request, db: Session, item: em.MediaItem, user,
         play_fid: str, play_variant, *, media_type: str, pt=None):
@@ -5826,6 +5925,20 @@ async def playback_info(
                             resolve_ms=_verified.get("precheck_ms"))
         except Exception:  # noqa: BLE001 — 本段失败只保留旧地址
             pass
+    # 详情页「上游」线路（U-02）：来源列表末尾追加上游线路（排在本地
+    # 变体之后）。追加点在转存门禁状态与 quota 改道处理之后——上游线路
+    # 是独立来源，不随用户副本门禁变 preparing/failed；quota 明确报错
+    # 的响应（_pi_quota_error）不带线路，保持现行报错口径不变。
+    # PlaybackInfo 入口已过播放门禁，签名按主源同口径恒签。
+    if sources and not _pi_quota_error:
+        try:
+            _up_line = await run_db(
+                _upstream_line_media_source, item, sources[0], base,
+                user.id, db, api_key, True)
+            if _up_line is not None:
+                sources.append(_up_line)
+        except Exception as exc:  # noqa: BLE001 — 线路组装失败不打挂主响应
+            logger.warning("上游线路组装失败 item=%s: %s", item.id, exc)
     _playback_variants = None
     if _variants:
         _requires_transfer = bool(
@@ -7036,6 +7149,46 @@ async def upstream_stream(
     # 事件类型；302 本体一行不动。
     _note_upstream_play_start_safe(
         getattr(user, "id", None),
+        int((time.perf_counter() - _t0) * 1000))
+    return RedirectResponse(_url, status_code=302)
+
+
+@emby_router.get("/emby/Videos/{item_id}/upstream/stream")
+@emby_router.get("/Videos/{item_id}/upstream/stream")
+@release_db_before_response
+async def upstream_item_stream(
+    item_id: str, request: Request,
+    user: models.WebUser = Depends(get_play_user),
+    db: Session = Depends(get_db),
+):
+    """详情页「上游」线路取流口（U-02 客户端入口）。
+
+    详情/PlaybackInfo 来源列表里的上游线路只带本地条目 guid 回本口；
+    本口按本地条目现查映射复验（开关/映射/源状态，见
+    upstream_playback.resolve_mapped_upstream_stream），复验不过回
+    结构化错误明示失败、不回落任何其它线路；通过后走既有上游解析
+    （先探后 302）并记 provider=upstream 起播事件。鉴权与播放门禁
+    与显式上游口 upstream_stream 逐项同款（get_play_user +
+    ensure_playback_allowed + 无条件绑定门禁）；条目可见性走
+    _require_visible_item 护栏。路由注册在 video_hls 通配之前，
+    不会被 {transcode_path} 吞掉。
+    """
+    from backend.emby_server import upstream_playback as _up
+    from backend.emby_server.async_db import run_db
+    await run_db(ensure_playback_allowed, db, user)
+    # 播放门禁（2026-10-26 用户亲定硬规矩）：本次调用即新下发，
+    # 无条件过门禁（与 upstream_stream 同口径）。
+    from backend.emby_server import playback_gate as _gate
+    await run_db(_gate.ensure_binding_playback_allowed, db, user)
+    item = await run_db(_require_visible_item, db, user, item_id)
+    _t0 = time.perf_counter()
+    try:
+        _url = await run_in_threadpool(
+            _up.resolve_mapped_upstream_stream, db, item.id)
+    except _up.UpstreamPlaybackError as exc:
+        return JSONResponse(status_code=exc.status, content=exc.to_body())
+    _note_mapped_upstream_play_start_safe(
+        getattr(user, "id", None), item.id,
         int((time.perf_counter() - _t0) * 1000))
     return RedirectResponse(_url, status_code=302)
 

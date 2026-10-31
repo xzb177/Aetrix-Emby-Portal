@@ -1780,6 +1780,18 @@ export const disableUpstreamSource = (id: number) =>
 export const deleteUpstreamSource = (id: number) =>
   del<{ success: boolean }>(`${E}/upstream-sources/${id}`)
 
+/** 详情页上游线路开关（U-02）：开时有上游映射的条目在用户端详情 /
+ *  PlaybackInfo 来源列表多一条「上游 · <源名>」线路；默认开。 */
+export interface UpstreamDetailLineConfig {
+  enabled: boolean
+}
+
+export const fetchUpstreamDetailLineConfig = () =>
+  get<UpstreamDetailLineConfig>(`${E}/upstream-detail-line-config`)
+
+export const updateUpstreamDetailLineConfig = (enabled: boolean) =>
+  put<UpstreamDetailLineConfig>(`${E}/upstream-detail-line-config`, { enabled })
+
 /** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。
  *  只做手动触发，不做自动调度、不做自动播放兜底。
  *  POST 立刻返回任务（queued），聚合在后台跑；用

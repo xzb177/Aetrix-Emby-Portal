@@ -349,6 +349,11 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     # O-08 系列级配对（series+episode）置信度：默认 0.9（低于
     # imdb 0.95、高于 title+year 0.7），读取侧钳制同此范围。
     "upstream_aggregate_series_episode_confidence": ("float", 0.01, 1),
+    # U-02 详情页上游线路：开时有映射的条目在详情/PlaybackInfo 来源
+    # 列表多一条「上游 · <源名>」线路（点它走上游取流口现查映射起播）；
+    # 关时列表不出现、取流口 404。无行＝开（读取方默认 True，
+    # 见 upstream_playback.detail_line_enabled）。
+    "upstream_aggregate_detail_line_enabled": ("bool",),
 }
 
 
