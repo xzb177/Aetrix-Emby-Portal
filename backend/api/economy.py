@@ -894,7 +894,7 @@ def _points_subscription_price(db: Session, user: models.WebUser,
     """
     from backend import member_level as _ml
 
-    list_points = int(plan.points_price)
+    list_points = int(Decimal(str(plan.points_price)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     member_discount_pct = 0
     member_discount_points = 0
     # plan.realm 在调用方处已 joinedload；realm 为空（老数据）按付费服处理
@@ -1429,7 +1429,7 @@ def create_payment_order(
             ratio = _get_float_config(db, "recharge_ratio", 1.2)
             if ratio <= 0:
                 ratio = 1.2
-            points = int(Decimal(str(req.custom_amount)) * Decimal(str(ratio)))
+            points = int((Decimal(str(req.custom_amount)) * Decimal(str(ratio))).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
             if points < 1:
                 raise HTTPException(status_code=400, detail="金额过小，无法兑换能量")
             item_name = f"能量充值 - 自定义 {req.custom_amount:.2f} 元"

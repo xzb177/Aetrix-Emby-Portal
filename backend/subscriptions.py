@@ -290,7 +290,7 @@ def _auto_renew_cost(db: Session, user: models.WebUser,
     """
     from backend import member_level as _ml
 
-    list_points = int(plan.points_price)
+    list_points = int(Decimal(str(plan.points_price)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     member_discount_pct = 0
     member_discount_points = 0
     _realm = getattr(plan, "realm", None)
