@@ -256,6 +256,8 @@ def library_hit(db: Session, *, tmdb_id: Optional[str] = None,
     「电影《某某》」被同名的剧集顶掉。
     ``year`` 为求片年份（字符串），片名回退时用于避免同名不同年的条目误匹配；
     解析失败则忽略，不按年份过滤。
+    两分支均只认未删除且未隐藏的条目（A-113）；管理端 find_library_match
+    共用本口径，隐藏／已删条目不得被标记为已入库（确需强制时走 force）。
     """
     from backend.emby_server import models as em
 
@@ -263,6 +265,8 @@ def library_hit(db: Session, *, tmdb_id: Optional[str] = None,
         query = (
             db.query(em.MediaItem)
             .filter(em.MediaItem.tmdb_id == str(tmdb_id))
+            .filter(em.MediaItem.deleted_at.is_(None))
+            .filter(em.MediaItem.is_hidden == False)  # noqa: E712
         )
         allowed = _TYPE_MATCH.get(str(item_type or ""))
         if allowed:
@@ -276,6 +280,9 @@ def library_hit(db: Session, *, tmdb_id: Optional[str] = None,
         return None
     query = db.query(em.MediaItem).filter(
         em.MediaItem.name.ilike(f"%{_escape_like(keyword)}%", escape="\\")
+    ).filter(
+        em.MediaItem.deleted_at.is_(None),
+        em.MediaItem.is_hidden == False,  # noqa: E712
     )
     allowed = _TYPE_MATCH.get(str(item_type or ""))
     if allowed:

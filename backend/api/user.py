@@ -15,7 +15,7 @@ import logging
 from sqlalchemy import func
 
 from backend.database import get_db
-from backend import codes, devices, media_seek, models, realms
+from backend import codes, devices, library_scope, media_seek, models, realms
 from backend.emby_server.api import season_poster_url
 from backend.db_retry import commit_with_retry
 from backend.notifications import get_notification_service, AdminEvent
@@ -674,6 +674,9 @@ def lookup_media(
     返回命中的库内条目（含海报与详页 id），用于：
     - 已在库 → 直接引导播放，不占用求片额度
     - 未在库 → 前端提示可提交求片
+
+    A-041：LIKE 通配符转义、只认未删除且未隐藏的条目、只认当前用户
+    可见库（_library_scope 口径），隐藏／已删／不可见库条目不得经此口枚举。
     """
     from backend.emby_server import models as em
 
@@ -682,8 +685,14 @@ def lookup_media(
         return {"in_library": False, "items": []}
 
     items = (
-        db.query(em.MediaItem)
-        .filter(em.MediaItem.name.ilike(f"%{keyword}%"))
+        library_scope.scope_query(
+            db.query(em.MediaItem),
+            library_scope.effective_ids_safe(db, current_user),
+        )
+        .filter(em.MediaItem.name.ilike(
+            f"%{media_seek._escape_like(keyword)}%", escape="\\"))
+        .filter(em.MediaItem.deleted_at.is_(None))
+        .filter(em.MediaItem.is_hidden == False)  # noqa: E712
         .order_by(em.MediaItem.date_added.desc())
         .limit(6)
         .all()
