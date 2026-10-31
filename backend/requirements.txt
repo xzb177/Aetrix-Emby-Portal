@@ -1,44 +1,50 @@
 # Aetrix 统一后端依赖
 # 自建 Emby 服务器 + 用户门户 + 管理后台一体化
+#
+# 锁定口径（审计 A-078）：本文件只定直接依赖的兼容范围；
+# 精确版本与哈希见 backend/requirements.lock（pip-compile 生成），
+# Dockerfile 与 CI 一律装锁文件（--require-hashes），禁止装回本文件，
+# 否则 CI 测的版本集合与部署的会再次脱节。
+# 改动本文件后须同步重编锁并跑 scripts/check_backend_deps_locked.py。
 
 # Web 框架
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
+fastapi>=0.104.0,<1
+uvicorn[standard]>=0.24.0,<1
+python-multipart>=0.0.6,<1
 
 # 数据库
-sqlalchemy>=2.0.23
-psycopg2-binary>=2.9.9
-pymysql>=1.1.0
+sqlalchemy>=2.0.23,<3
+psycopg2-binary>=2.9.9,<3
+pymysql>=1.1.0,<2
 
 # 缓存
-redis>=5.0.0
+redis>=5.0.0,<6
 
 # 认证
-python-jose[cryptography]>=3.3.0
+python-jose[cryptography]>=3.3.0,<4
 # 密码哈希直接用 bcrypt（backend/security.py），不经 passlib
-bcrypt>=4.0.0
+bcrypt>=4.0.0,<5
 
 # 配置与工具
-pydantic>=2.0.0
-python-dotenv>=1.0.0
-httpx>=0.25.0
-Pillow>=10.4.0
-pyvips>=2.2  # 缩略图引擎优先用 libvips（容器内需 apt 装 libvips42）；缺席时静默退回 Pillow
+pydantic>=2.0.0,<3
+python-dotenv>=1.0.0,<2
+httpx>=0.25.0,<1
+Pillow>=10.4.0,<11
+pyvips>=2.2,<3  # 缩略图引擎优先用 libvips（容器内需 apt 装 libvips42）；缺席时静默退回 Pillow
 
 # 探测与抽取（外部二进制，需系统安装 ffmpeg 包：内含 ffprobe 探测、
 # 内封字幕抽取、缩略图抽帧；服务端视频转码已删除，不再用 ffmpeg 编码）
 # ffmpeg 由宿主系统/Docker 镜像提供
 
 # 监控
-prometheus-client>=0.19.0
+prometheus-client>=0.19.0,<1
 
 # 本地媒体目录实时监听（inotify 封装）：新片入库不用等定时扫描。
 # 纯后台能力，装不上/起不来时自动降级为定时扫描，不影响任何主链路。
-watchdog>=4.0.0
+watchdog>=4.0.0,<5
 
 # 中文拼音排序（StrmAssistant #12）：标题生成拼音首字母 sort_name
 pypinyin==0.55.0
 
 # 性能
-orjson>=3.9.0
+orjson>=3.9.0,<4

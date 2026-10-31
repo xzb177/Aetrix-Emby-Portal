@@ -112,6 +112,10 @@ jobs:
       # 标记行曾照单提交、靠 pytest 报 SyntaxError 才发现。CI 这一步是强制门，
       # 命中即红；pre-commit 钩子（.pre-commit-config.yaml）只是本地提前提醒，
       # 没装 pre-commit 也不影响 CI 拦截。扫描整棵检出树（跳过 .git 与 node_modules）。
+      - name: 后端依赖锁定门禁（审计 A-078）
+        timeout-minutes: 5
+        run: python scripts/check_backend_deps_locked.py
+
       - name: 冲突标记检查（残留标记即红）
         timeout-minutes: 5
         run: python scripts/check_no_conflict_markers.py
@@ -120,18 +124,18 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock
 
       - name: 安装后端依赖
         timeout-minutes: 5
-        run: pip install -r backend/requirements.txt
+        run: pip install --require-hashes -r backend/requirements.lock
 
       # 可选依赖 zhconv（繁简互搜）。它**不在** requirements.txt 里——未安装时搜索会自动
       # 降级为不做转换而不是崩掉，这是有意的设计。但门禁要覆盖这个特性，所以 CI 显式装上，
       # 让 smoke_test_media_search 的繁简断言真跑（否则那一条只会 SKIP，等于没测）。
-      - name: 安装可选依赖（繁简互搜）
+      - name: 安装 CI 附加依赖（zhconv＋pytest，见 requirements-ci.lock）
         timeout-minutes: 5
-        run: pip install zhconv
+        run: pip install --require-hashes -r backend/requirements-ci.lock
 
       # 纯文本契约检查，最先跑：把「async 端点改成同步 def、但别处还在 await 它」
       # 这类只有真打到那个请求才炸的改动挡在门口（性能整改会反复做这类改造）。
@@ -392,7 +396,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libvips42t64 || sudo apt-get install -y -qq libvips42
-          pip install -q pyvips
+          # pyvips 不在这里裸装：它已在 backend/requirements.lock 里钉死
+          # 并随生产锁装好；这里再裸装会把它升级到锁外版本。
 
       - name: 单元测试（pytest：媒体路径沙箱与播放地址口径）
         # 容量口径（2026-10-25 L54 兜底）：套件已多次顶到 10 分钟步骤上限
@@ -408,7 +413,7 @@ jobs:
         # 保留，含义改为「二期拆分立项信号」，不再是提上限信号。
         timeout-minutes: 45
         run: |
-          pip install pytest
+          pip install --require-hashes -r backend/requirements-ci.lock
           _t0=$(date +%s)
           set +e
           python -m pytest tests/ -q --durations=30
@@ -543,10 +548,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock
 
       - name: 安装后端依赖
-        run: pip install -r backend/requirements.txt
+        run: pip install --require-hashes -r backend/requirements.lock
 
       - name: PG 兼容冒烟（建表 / 迁移方言 / 类型读写 / ilike）
         run: python scripts/smoke_test_pg_compat.py
@@ -555,7 +560,7 @@ jobs:
       # 下曾不是原子的，两笔并发下单会同时绕过 per_user_limit（已加行锁修复）。
       # DATABASE_URL 由本 job 的 env 指向真 PG；无 PG 时测试自动跳过。
       - name: 安装 pytest
-        run: pip install pytest
+        run: pip install --require-hashes -r backend/requirements-ci.lock
 
       - name: 优惠券并发回归（真 PG 行锁）
         timeout-minutes: 10
@@ -577,10 +582,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements.lock
 
       - name: 安装后端依赖
-        run: pip install -r backend/requirements.txt
+        run: pip install --require-hashes -r backend/requirements.lock
 
       - uses: actions/download-artifact@v8
         with:
