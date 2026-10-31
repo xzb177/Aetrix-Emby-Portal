@@ -41,14 +41,14 @@ def _get_str_config(db: Session, key: str, default: str) -> str:
 
 
 def is_enabled(db: Session) -> bool:
-    """群抽奖总开关：只读 SystemConfig.lottery_enabled，不看环境变量。
+    """群抽奖总开关：走 _get_str_config 的 env 接管口径（A-114）。
 
-    与 welfare_admin 创建轮次的读法一致：没有行视为 "1"。值为 "1" 或 "true"
-    （去空格、忽略大小写）时开启。
+    lottery_enabled 属 PANEL_REMOVED_SWITCHES：env LOTTERY_ENABLED 显式
+    设置且非空即接管，否则读 DB 行，没有行视为 "1"。值为 "1" 或 "true"
+    （去空格、忽略大小写）时开启。TG 门、提案审批门、管理端创建门
+    共用此谓词，不许再各自直读 DB 行。
     """
-    cfg = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == "lottery_enabled").first()
-    val = (cfg.value if cfg is not None and cfg.value is not None else "1")
+    val = _get_str_config(db, "lottery_enabled", "1")
     return str(val).strip().lower() in ("1", "true")
 
 

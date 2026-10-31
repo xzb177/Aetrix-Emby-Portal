@@ -79,17 +79,28 @@ def test_night_only_ignores_env(db):
     assert cfg["from_env"] is False
 
 
-def test_lottery_enabled_ignores_env(db):
+def test_lottery_enabled_env_takeover(db):
+    # env 接管（审计 A-114）：LOTTERY_ENABLED 显式设置即压过 DB 与默认值，
+    # 与 tests/test_audit_a114_lottery_env.py 同口径。
     os.environ["LOTTERY_ENABLED"] = "0"
-    assert is_enabled(db) is True
+    assert is_enabled(db) is False
     db.add(base_models.SystemConfig(key="lottery_enabled", value="1"))
     db.commit()
+    assert is_enabled(db) is False
+
+    # env 未设 → 回落 DB 配置口径；没有行视为开。
+    del os.environ["LOTTERY_ENABLED"]
     assert is_enabled(db) is True
     row = db.query(base_models.SystemConfig).filter_by(key="lottery_enabled").one()
     row.value = "0"
     db.commit()
     os.environ["LOTTERY_ENABLED"] = "1"
+    assert is_enabled(db) is True
+    del os.environ["LOTTERY_ENABLED"]
     assert is_enabled(db) is False
+    db.delete(row)
+    db.commit()
+    assert is_enabled(db) is True
 
 
 def test_omitted_enabled_preserves_stored_value(db):
