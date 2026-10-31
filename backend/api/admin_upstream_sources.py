@@ -249,9 +249,11 @@ def delete_upstream_source(
 
 
 class UpstreamAggregateRequest(BaseModel):
-    page_size: int = Field(
-        default=100, ge=10, le=500,
-        description="Emby Items 单页大小（10–500；默认 100）")
+    page_size: Optional[int] = Field(
+        default=None, ge=10, le=500,
+        description="Emby Items 单页大小（10–500；不传 = 用配置缺省"
+                    "（SystemConfig upstream_aggregate_default_page_size，"
+                    "出厂 500），与调度路径同口径（O-05）")
 
 
 @admin_emby_router.post("/upstream-sources/{source_id}/aggregate")
@@ -279,7 +281,10 @@ def aggregate_upstream_source(
         uar.ensure_aggregatable(source)
     except uar.UpstreamAggregateRunError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc
-    page_size = body.page_size if body is not None else 100
+    if body is not None and body.page_size is not None:
+        page_size = body.page_size
+    else:
+        page_size = uar.configured_default_page_size(db)
     return uaj.enqueue(source.id, page_size)
 
 

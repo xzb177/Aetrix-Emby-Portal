@@ -42,6 +42,13 @@
 本模块照实回 ``written=0`` 与 ``mapping_enabled=false``，
 配对结果照常返回（管理员先看配对质量、再决定开不开写）。
 
+拉取口径（2026-10-31 优化 O-05）：分页 Fields 只留 ProviderIds
+（MediaSources 解析出的 versions 不落库、不参与配对，每页白背
+是纯浪费）；单页默认 500（SystemConfig 可调，见
+``configured_default_page_size``）；单页瞬时失败（断连/超时/
+5xx）有限重试（默认 2 次、退避 2 秒，SystemConfig 可调），
+401/403/429 等确定性错误不重试、映射逐字不变。
+
 有界性：按库分窗聚合，不再整源一把梭，也不再设单库总量上限。
 先经 ``/Library/MediaFolders`` 取上游库清单，再逐库按 ``ParentId``
 拉取、每 ``WINDOW_RECORDS`` 条一窗聚合配对写映射；内存与单次
@@ -61,6 +68,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -92,8 +100,70 @@ MAX_RECORDS_PER_LIBRARY = MAX_RECORDS_PER_RUN
 #: 5000 条约数 MB 内存、50 次分页请求，6 小时调度轮次内绰绰有余。
 WINDOW_RECORDS = 5000
 
-#: 单页默认大小（Emby StartIndex/Limit 分页）。
-DEFAULT_PAGE_SIZE = 100
+#: 单页默认大小（Emby StartIndex/Limit 分页）。2026-10-31 优化
+#: O-05：100 → 500（接口上限），同样数据量请求数降到 1/5；缺省值
+#: 可经 SystemConfig ``upstream_aggregate_default_page_size`` 调
+#: （钳 10–500，见 configured_default_page_size），显式传参仍优先。
+DEFAULT_PAGE_SIZE = 500
+
+#: 单页瞬时失败重试次数 SystemConfig 键（O-05）：默认 2 次；
+#: 只重试断连/超时/5xx 这类瞬时形态，401/403/429 是确定性错误
+#: 不重试。钳 [0, 5]，配 0 即关重试、回旧行为。纯 SystemConfig
+#: 键，不进 env.example（#1527 先例）。
+KEY_PAGE_RETRIES = "upstream_aggregate_page_retries"
+PAGE_RETRIES_DEFAULT = 2
+
+#: 单页重试退避（秒）SystemConfig 键（O-05）：默认 2 秒，钳 [0, 30]。
+KEY_PAGE_RETRY_BACKOFF_SEC = "upstream_aggregate_page_retry_backoff_sec"
+PAGE_RETRY_BACKOFF_DEFAULT = 2
+
+#: 默认页大小 SystemConfig 键（O-05）：钳 [10, 500]，无行/非法
+#: 回落 DEFAULT_PAGE_SIZE。
+KEY_DEFAULT_PAGE_SIZE = "upstream_aggregate_default_page_size"
+
+#: 测试注入：重试退避的睡眠实现（生产用 time.sleep）。
+_sleep = time.sleep
+
+
+def _system_config_int(db, key):
+    """SystemConfig 整数热读：无行/非法/异常一律返回 None（回退）。
+
+    与 transfer_variant._system_config_int 同口径（读失败不许把
+    聚合打停，一律回落代码默认）。
+    """
+    if db is None:
+        return None
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, key, "")
+    except Exception:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    # 与 transfer 版的唯一差别：本家族里 0 是合法值（重试配 0 = 关
+    # 重试、退避配 0 = 不等待），只有负数按未设置处理。
+    return value if value >= 0 else None
+
+
+def configured_default_page_size(db=None) -> int:
+    """聚合缺省页大小：SystemConfig > DEFAULT_PAGE_SIZE，钳 [10, 500]。"""
+    configured = _system_config_int(db, KEY_DEFAULT_PAGE_SIZE)
+    if configured is not None:
+        return max(10, min(500, configured))
+    return DEFAULT_PAGE_SIZE
+
+
+def _page_retry_config(db):
+    """单页重试 (次数, 退避秒)：SystemConfig > 代码默认，钳同注册表。"""
+    retries = _system_config_int(db, KEY_PAGE_RETRIES)
+    if retries is None:
+        retries = PAGE_RETRIES_DEFAULT
+    backoff = _system_config_int(db, KEY_PAGE_RETRY_BACKOFF_SEC)
+    if backoff is None:
+        backoff = PAGE_RETRY_BACKOFF_DEFAULT
+    return max(0, min(5, retries)), max(0, min(30, backoff))
 
 #: 单次请求超时（秒）：目录页带数据，比探活的 10 秒放宽。
 HTTP_TIMEOUT_SEC = 30.0
@@ -266,12 +336,22 @@ def _resolve_api_key(source, *, http_post=None):
     return _api_key_for_source(source, http_post=http_post)
 
 
-def _page_fetcher(source, api_key, get, *, parent_id=None):
+def _page_fetcher(source, api_key, get, *, parent_id=None,
+                  retries: int = PAGE_RETRIES_DEFAULT,
+                  backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT):
     """造一个 Emby Items 取页回调：parent_id 给了就按库拉，不给走整源。
 
     错误映射与旧整源路径同款：401→凭据失效、403 分流（JSON 体→
     凭据失效、无 JSON 体→前门拦截 502）、429→额度、其余→上游
     不可用，绝不把半页数据当成完整目录返回。
+
+    拉取瘦身（O-05）：Fields 只留 ProviderIds——MediaSources 解析出
+    的 versions 从不落库、不参与配对（见上游聚合链优化设计稿
+    P-06），每页白背全量版本信息是纯浪费。
+
+    分页韧性（O-05）：断连/超时（status None）与 5xx 是瞬时形态，
+    按 retries/backoff_sec 有限重试后才判上游不可用；401/403/429
+    是确定性错误，重试只会放大上游压力且改变不了结论，不重试。
     """
 
     base = (source.base_url or "").rstrip("/")
@@ -281,7 +361,7 @@ def _page_fetcher(source, api_key, get, *, parent_id=None):
         params = {
             "Recursive": "true",
             "IncludeItemTypes": "Movie,Series,Episode",
-            "Fields": "ProviderIds,MediaSources",
+            "Fields": "ProviderIds",
             "StartIndex": str(start),
             "Limit": str(limit),
         }
@@ -290,16 +370,28 @@ def _page_fetcher(source, api_key, get, *, parent_id=None):
         if api_key:
             params["api_key"] = api_key
         url = f"{base}/Items?{urllib.parse.urlencode(params)}"
-        status, body = get(url, headers, HTTP_TIMEOUT_SEC)
-        if status == 200 and isinstance(body, dict):
-            return body
-        if status == 401:
-            raise _credential_error()
-        if status == 403:
-            raise _forbidden_error(body)
-        if status == 429:
-            raise _quota_error()
-        raise _unavailable_error()
+        attempt = 0
+        while True:
+            status, body = get(url, headers, HTTP_TIMEOUT_SEC)
+            if status == 200 and isinstance(body, dict):
+                return body
+            if status == 401:
+                raise _credential_error()
+            if status == 403:
+                raise _forbidden_error(body)
+            if status == 429:
+                raise _quota_error()
+            # 其余（None / 5xx / 200 非 dict）按瞬时失败处理。
+            if attempt >= retries:
+                raise _unavailable_error()
+            attempt += 1
+            logger.warning(
+                "上游聚合取页瞬时失败重试 source_id=%s start=%s "
+                "attempt=%s/%s status=%s",
+                getattr(source, "id", None), start, attempt, retries,
+                status)
+            if backoff_sec > 0:
+                _sleep(backoff_sec)
 
     return fetch_page
 
@@ -357,7 +449,9 @@ def fetch_upstream_libraries(source, *, http_get=None,
 
 def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
                            http_post: Optional[Callable] = None,
-                           page_size: int = DEFAULT_PAGE_SIZE
+                           page_size: int = DEFAULT_PAGE_SIZE,
+                           retries: int = PAGE_RETRIES_DEFAULT,
+                           backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT
                            ) -> List[agg.UpstreamCatalogRecord]:
     """拉回某源的全部目录记录（Emby Items 分页，Recursive）。
 
@@ -365,13 +459,16 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
     新的 run_manual_aggregation 不再走这里（走逐库路径），本函数
     保留供显式整源调用与旧测试使用；单库上限语义见模块头。
     取页失败（401/403/429/5xx/断连）按播放口同款短码映射，绝不
-    把半页数据当成完整目录返回。
+    把半页数据当成完整目录返回；瞬时形态先按 retries 有限重试
+    （O-05，本路径无 DB 会话，重试参数用代码默认，逐库路径才
+    从 SystemConfig 解析）。
     """
     if page_size <= 0:
         raise ValueError("page_size must be positive")
     get = _default_http_get if http_get is None else http_get
     api_key = _resolve_api_key(source, http_post=http_post)
-    fetch_page = _page_fetcher(source, api_key, get)
+    fetch_page = _page_fetcher(source, api_key, get,
+                               retries=retries, backoff_sec=backoff_sec)
     records: List[agg.UpstreamCatalogRecord] = []
     for record in agg.iter_emby_pages(fetch_page, source_id=str(source.id),
                                       page_size=page_size):
@@ -388,7 +485,9 @@ def iter_upstream_records_for_parent(
         source, parent_id, *, http_get: Optional[Callable] = None,
         http_post: Optional[Callable] = None,
         page_size: int = DEFAULT_PAGE_SIZE,
-        api_key: Optional[str] = None):
+        api_key: Optional[str] = None,
+        retries: int = PAGE_RETRIES_DEFAULT,
+        backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT):
     """按 ParentId 流式拉回某上游库的目录记录（逐库分窗的核心）。
 
     只产出、不攒 list、不设单库总量上限：总量上限曾把真实大库
@@ -405,7 +504,8 @@ def iter_upstream_records_for_parent(
     get = _default_http_get if http_get is None else http_get
     if api_key is None:
         api_key = _resolve_api_key(source, http_post=http_post)
-    fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id)
+    fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id,
+                               retries=retries, backoff_sec=backoff_sec)
     yield from agg.iter_emby_pages(
         fetch_page, source_id=str(source.id),
         category_id=str(parent_id), page_size=page_size)
@@ -587,7 +687,7 @@ def ensure_aggregatable(source) -> None:
 def run_manual_aggregation(db: Session, source, *,
                            http_get: Optional[Callable] = None,
                            http_post: Optional[Callable] = None,
-                           page_size: int = DEFAULT_PAGE_SIZE) -> dict:
+                           page_size: Optional[int] = None) -> dict:
     """手动聚合一轮：按库分批拉目录 → 逐库聚合 → 逐库配对 → 开关开时写映射。
 
     前置校验（响亮失败，不静默跳过，发生在任何写库之前）：
@@ -607,6 +707,9 @@ def run_manual_aggregation(db: Session, source, *,
     失败库重试；本函数不新增持久检查点表。
     """
     ensure_aggregatable(source)
+    if page_size is None:
+        page_size = configured_default_page_size(db)
+    page_retries, page_backoff = _page_retry_config(db)
     api_key = _resolve_api_key(source, http_post=http_post)
     libraries = fetch_upstream_libraries(
         source, http_get=http_get, http_post=http_post, api_key=api_key)
@@ -630,7 +733,8 @@ def run_manual_aggregation(db: Session, source, *,
         try:
             record_iter = iter_upstream_records_for_parent(
                 source, lib_id, http_get=http_get, http_post=http_post,
-                page_size=page_size, api_key=api_key)
+                page_size=page_size, api_key=api_key,
+                retries=page_retries, backoff_sec=page_backoff)
             for window in iter_record_windows(record_iter, WINDOW_RECORDS):
                 aggregated = agg.aggregate_sources({str(source.id): window})
                 if aggregated and aggregated[0].error:
