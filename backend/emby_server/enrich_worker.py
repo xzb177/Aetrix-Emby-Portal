@@ -646,6 +646,10 @@ CFG_ENRICH_FAILED_RESCHEDULE_DAYS = "enrich_failed_reschedule_days"
 CFG_ENRICH_FAILED_MAX_RESCHEDULES = "enrich_failed_max_reschedules"
 # Step 5 的 feature flag：字段级完成口径开关（面板可写，默认 1=开；关时口径=旧"三者有其二"）
 CFG_ENRICH_FIELD_COMPLETENESS = "enrich_field_completeness"
+# 长尾兜底（2026-10-31）：none 回捞达轮数上限后改走长尾周期，不再永久终态
+CFG_ENRICH_NONE_LONGTAIL_DAYS = "enrich_none_longtail_days"
+# 干净度巡检（2026-10-31）：done 但不干净（无海报/无绑定/绑错）的自动重排
+CFG_ENRICH_DIRTY_DONE_PATROL = "enrich_dirty_done_patrol"
 
 # enrich_tmdb_batch 定义在上方赋值之后，这里并入 env-only。
 # 另外四个布尔开关留在面板，不进这个集合。
@@ -682,6 +686,14 @@ _ENRICH_TUNING_SPECS = [
      "【Step 4】none 条目自动回捞轮数上限：达到上限的行永久保留 done，"
      "不再被 janitor 自动捞回（防搜不中的冷门条目无限空转；6 轮 × 14 天"
      "约覆盖 12 周，TMDB 滞后上架的大多数能赶上）", False),
+(CFG_ENRICH_NONE_LONGTAIL_DAYS, None, "30", "int", 1,
+"none 条目达到回捞轮数上限后的长尾周期（天）：达上限不再"
+"永久终态，过本周期仍由 janitor 回捞（轮数继续累加、周期恒定），"
+"TMDB 滞后数月才上架的条目仍有机会被重新搜到", False),
+(CFG_ENRICH_DIRTY_DONE_PATROL, None, "1", "flag1", None,
+"done 条目干净度巡检开关：1=开（janitor 每日一轮，无海报/"
+"无 tmdb 绑定/绑错的 done 剧/电影自动重排，错绑同时清 tmdb_id；默认），"
+"0=关", False),
     (CFG_ENRICH_NONE_AUTO_RESCHEDULE, None, "1", "flag1", None,
      "【Step 4】none 条目定时自动回捞开关：1=开（超周期的 done+none 剧/电影由 "
      "janitor 按最旧优先、单轮 2000 条翻回 pending；资料不全 5 次后转 done+none "
@@ -1984,7 +1996,90 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                 result.pop("tmdb_hit", None)
                 result.pop("tmdb_details", None)
                 result["tmdb_strict_rejected"] = True
-        # 原语言海报（StrmAssistant #10）：IO 阶段预取语言偏好的海报，
+        # 绑定复核门（2026-10-31「标 done 但不干净」治本）：本轮新绑定的
+        # tmdb_id / 搜索命中在落库前必须过客观复核（tmdb.binding_reject_reason，
+        # 全仓唯一口径）——details 按 kind 查不到、kind 不符、年份差 >1 年，
+        # 一律丢弃绑定、走搜不中/兜底路径，不许带着错绑标 done。生产样本：
+        # 《网球王子》绑同年无关条目、《原子少年》绑的 id 按 tv 查不到。
+        # NFO 给的 id 是本地权威文件、条目已有 id 不是本轮新绑定，都不在
+        # 门内（存量由干净度巡检 dirty_done_patrol 兜底）。名字对账只记
+        # 参考日志不做硬门（译名差异大）。
+        _gate_hit = result.get("tmdb_hit") or {}
+        _gate_cand = result.get("tmdb_id") or (
+            str(_gate_hit["id"]) if _gate_hit.get("id") else None)
+        _existing_tmdb = getattr(item, "tmdb_id", None)
+        _existing_tmdb = _existing_tmdb.strip() if isinstance(
+            _existing_tmdb, str) else _existing_tmdb
+        _nfo_tmdb = (nfo_data or {}).get("tmdb_id")
+        _gate_is_new = bool(_gate_cand) and str(_gate_cand) != str(
+            _existing_tmdb or "")
+        if (_gate_cand and _gate_is_new and kind in ("series", "movie")
+                and not (_nfo_tmdb and str(_nfo_tmdb) == str(_gate_cand))
+                and tmdb_client.configured):
+            from backend.emby_server.tmdb import (
+                TmdbTransientError as _GateTransient,
+                binding_reject_reason as _reject_reason,
+            )
+            # 证据优先级：完整 details（有 id）直接判；details 完全没取到
+            # （None）→ 现拉一次判（拉回空体 = 按 kind 查不到，拒）；details
+            # 是残缺局部字典（本仓多处只填用到的字段、可以没有 id）→ 退回
+            # 搜索 hit 判，局部字典缺 id 不是「查不到」的证据，拿它判拒会
+            # 误杀正常绑定；hit 也没证据就放行（巡检兜底）。
+            _raw_details = result.get("tmdb_details")
+            if isinstance(_raw_details, dict) and _raw_details.get("id"):
+                _gate_evidence = _raw_details
+            elif _raw_details is None:
+                _gate_evidence = None  # 下面现拉
+            else:
+                _gate_evidence = _gate_hit if _gate_hit.get("id") else None
+            _gate_transient = False
+            if _gate_evidence is None and _raw_details is None:
+                try:
+                    _fresh = tmdb_client.details(str(_gate_cand), kind)
+                    if _fresh is not None:
+                        result["tmdb_details"] = _fresh
+                        _gate_evidence = _fresh
+                except _GateTransient:
+                    _gate_transient = True
+            if _gate_transient:
+                # 没查成 ≠ 查不到：整条走瞬态重试，不许据此判无绑定。
+                result["ok"] = False
+                result["error"] = "tmdb transient, retry later"
+            elif _gate_evidence is not None:
+                _reason = _reject_reason(
+                    _gate_evidence, kind,
+                    getattr(item, "production_year", None))
+                if _reason:
+                    logger.warning(
+                        "绑定复核门拒绝 id=%s name=%r tmdb_id=%s reason=%s "
+                        "details_name=%r details_date=%s",
+                        getattr(item, "id", "?"), getattr(item, "name", ""),
+                        _gate_cand, _reason,
+                        (_gate_evidence or {}).get("name")
+                        or (_gate_evidence or {}).get("title"),
+                        (_gate_evidence or {}).get("first_air_date")
+                        or (_gate_evidence or {}).get("release_date"))
+                    result.pop("tmdb_id", None)
+                    result.pop("tmdb_hit", None)
+                    result.pop("tmdb_details", None)
+                    result["tmdb_gate_rejected"] = _reason
+                else:
+                    # 名字对账（参考日志）：归一后无任何交集时留痕供复核，
+                    # 不做硬门（译名/原名差异大，硬卡误伤太多）。
+                    _det = _gate_evidence or {}
+                    _det_names = [str(_det.get(k) or "") for k in
+                                  ("name", "title", "original_name",
+                                   "original_title")]
+                    _item_name = str(getattr(item, "name", "") or "")
+                    if _item_name and any(_det_names) and not any(
+                            _item_name in n or n in _item_name
+                            for n in _det_names if n):
+                        logger.info(
+                            "绑定复核门名字对账无交集（仅记录）id=%s "
+                            "name=%r tmdb_id=%s details_names=%r",
+                            getattr(item, "id", "?"), _item_name,
+                            _gate_cand, _det_names)
+# 原语言海报（StrmAssistant #10）：IO 阶段预取语言偏好的海报，
         # 写库阶段直接用（写事务里不碰网络，见模块注释处方 1）。
         # poster_language() == "system" 时 images_with_language 返回 None，不额外请求。
         try:
@@ -3518,6 +3613,9 @@ _DRIVE_SHARE_PATROL_PER_ROUND = 150
 # 翻回 pending 让 worker 真刮。判别与翻回口径见 fake_done_patrol。
 _FAKE_DONE_PATROL_EVERY_ROUNDS = 30
 _FAKE_DONE_PATROL_PER_ROUND = 1000
+_DIRTY_DONE_PATROL_EVERY_ROUNDS = 1440  # janitor 每 60s 一轮 → 约每日一次
+_DIRTY_DONE_PATROL_PER_ROUND = 200      # 单轮候选上限（details 复核抽样同此上限）
+_DIRTY_DONE_PATROL_MIN_AGE_DAYS = 7     # last_scraped_at 新于 7 天的行不动（防空转）
 _IMAGE_BACKFILL_PER_ROUND = 60  # 图片补下载单轮硬上限（条）：每轮 janitor 都跑，涓流推进
 _IMAGE_BACKFILL_COOLDOWN_SEC = 1800  # 下载失败的条目进程内冷却，半小时内不重复磨
 
@@ -3629,6 +3727,15 @@ def _janitor_loop() -> None:
                     if nfd:
                         logger.info("补全 janitor 假完成巡检翻回 %d 条"
                                     "（done → pending）", nfd)
+                # 干净度巡检（2026-10-31）：默认开、面板开关可关；约每日
+                # 一轮（1440 轮 × 60s），单轮候选上限 200 条，details
+                # 复核抽样同上限。计数日志在 dirty_done_patrol 内打。
+                if patrol_round % _DIRTY_DONE_PATROL_EVERY_ROUNDS == 0:
+                    try:
+                        dirty_done_patrol(db)
+                    except Exception:
+                        logger.warning("补全 janitor 干净度巡检异常",
+                                       exc_info=True)
                 # 图片后台补下载（2026-10-21）：刮削期预热默认关后条目只有
                 # 远程地址，靠这里每轮涓流落盘（新入库优先），用户打开时图
                 # 基本现成；EMBY_IMAGE_BACKFILL=0 可关（退回纯按需）。
@@ -3719,7 +3826,7 @@ def retry_unmatched(db) -> int:
     return n
 
 
-def _none_reschedulable_query(db, cutoff, max_rounds):
+def _none_reschedulable_query(db, cutoff, max_rounds, longtail_cutoff=None):
     """Step 4：超期 none 条目的查询（回捞动作与只读计数共用同一口径）。
 
     口径：enrich_status='done' + 无 tmdb_id + 无海报（poster_path 与
@@ -3743,6 +3850,7 @@ def _none_reschedulable_query(db, cutoff, max_rounds):
     NULL 漏网同类），故用 coalesce 视同 0，翻回更新亦配对 coalesce+1，
     否则 NULL 行翻回后计数仍是 NULL、下轮又被视同 0、无限翻回。
     """
+    from sqlalchemy import and_ as _and
     from sqlalchemy import func as _func
     from sqlalchemy import or_ as _or
     return (db.query(em.MediaItem)
@@ -3763,12 +3871,29 @@ def _none_reschedulable_query(db, cutoff, max_rounds):
                     # isnot(True) 容忍 NULL 旧行）。翻回被锁定的行会使其永久卡
                     # 在 pending（抢单跳过），污染待刮计数，故这里直接剔除。
                     em.MediaItem.metadata_locked.isnot(True),
-                    # 轮数上限：达到上限的行永久保留 done（防无限重搜）；
+                    # 轮数口径（2026-10-31 长尾兜底）：未达上限按常规周期
+                    # （cutoff）判定；达到上限的行不再永久保留 done——过
+                    # 长尾周期（longtail_cutoff，默认 30 天）仍可捞回，
+                    # 只是节奏拉长防高频空转。longtail_cutoff=None 时退回
+                    # 旧口径（达上限永不捞回），供旧调用点/只读计数垫底。
                     # NULL 视同 0（列 nullable 且无 server_default，非 ORM 写行
                     # 可落 NULL；裸 ``<`` 会把 NULL 行静默排除，见上）。
-                    _func.coalesce(em.MediaItem.enrich_none_reschedules, 0) < max_rounds,
-                    _or(em.MediaItem.enrich_next_retry_at.is_(None),
-                        em.MediaItem.enrich_next_retry_at <= cutoff)))
+                    _or(
+                        _and(
+                            _func.coalesce(
+                                em.MediaItem.enrich_none_reschedules,
+                                0) < max_rounds,
+                            _or(em.MediaItem.enrich_next_retry_at.is_(None),
+                                em.MediaItem.enrich_next_retry_at <= cutoff)),
+                        _and(
+                            _func.coalesce(
+                                em.MediaItem.enrich_none_reschedules,
+                                0) >= max_rounds,
+                            longtail_cutoff is not None,
+                            _or(em.MediaItem.enrich_next_retry_at.is_(None),
+                                em.MediaItem.enrich_next_retry_at
+                                <= longtail_cutoff)),
+                    )))
 
 
 def enrich_none_auto_reschedule(db) -> int:
@@ -3782,7 +3907,10 @@ def enrich_none_auto_reschedule(db) -> int:
       终态化记 now；翻回 pending 时记 now（认领不受阻，且下次超期前不再被捞）。
       NULL = 旧存量（Step 4 前终态化的行），视为已超期、本轮优先捞回。
     - 轮数上限：``enrich_none_max_reschedules``（默认 6 轮），翻回时
-      ``enrich_none_reschedules`` +1；达上限的行永久保留 done（防无限重搜）。
+      ``enrich_none_reschedules`` +1；达上限的行改走长尾周期
+      ``enrich_none_longtail_days``（默认 30 天）继续回捞（2026-10-31
+      兜底：生产实证达上限 + next_retry=NULL 的行永久无人再碰、TMDB
+      后来上架也永不重查——不再有永久终态，只是节奏拉长防空转）。
       NULL 轮数视同 0（查询与翻回更新配对 coalesce，防 NULL+1 仍 NULL
       致无限翻回）。
     - 锁定跳过：``metadata_locked=True`` 的行永不被翻回（抢单本就跳过锁定行，
@@ -3803,8 +3931,11 @@ def enrich_none_auto_reschedule(db) -> int:
     days = enrich_tuning_value(CFG_ENRICH_NONE_RESCHEDULE_DAYS, db)
     max_rounds = enrich_tuning_value(CFG_ENRICH_NONE_MAX_RESCHEDULES, db)
     cutoff = datetime.now() - timedelta(days=days)
+    longtail_days = enrich_tuning_value(CFG_ENRICH_NONE_LONGTAIL_DAYS, db)
+    longtail_cutoff = datetime.now() - timedelta(days=longtail_days)
     batch = ENRICH_NONE_AUTO_RESCHEDULE_BATCH
-    cands = (_none_reschedulable_query(db, cutoff, max_rounds)
+    cands = (_none_reschedulable_query(db, cutoff, max_rounds,
+                                       longtail_cutoff=longtail_cutoff)
              .with_entities(em.MediaItem.id, em.MediaItem.name,
                             em.MediaItem.production_year, em.MediaItem.item_type)
              .order_by(em.MediaItem.enrich_next_retry_at.asc().nullsfirst(),
@@ -3825,8 +3956,8 @@ def enrich_none_auto_reschedule(db) -> int:
                   "enrich_priority": ENRICH_PRIORITY_RETRY_UNMATCHED},
                  synchronize_session=False))
     db.commit()
-    logger.info("none 定时回捞：%d 条超期无望条目翻回 pending（priority=50，周期 %d 天，轮数上限 %d）",
-                n, days, max_rounds)
+    logger.info("none 定时回捞：%d 条超期无望条目翻回 pending（priority=50，周期 %d 天，轮数上限 %d，长尾周期 %d 天）",
+                n, days, max_rounds, longtail_days)
     if n:
         try:
             from backend.emby_server import tmdb_cache
@@ -3971,6 +4102,114 @@ def fake_done_patrol(db) -> int:
     return n
 
 
+def dirty_done_patrol(db, *, now=None, details_fetcher=None) -> dict:
+    """干净度巡检：done 但不干净的剧/电影自动重排（janitor 每日一轮）。
+
+    背景（2026-10-31 用户截图亲抓）：一批 done 行其实没刮干净——绑错
+    TMDB 条目（年份撞对、内容无关）、绑的 id 按 kind 查不到、搜不中到
+    轮数上限后永久终态。系统健康口径只看 pending/failed=0，这批在系统
+    眼里全是「已完成」，只能靠巡检按客观证据逐个捞回。
+
+    候选：enrich_status='done' + series/movie + 可见（未软删/未合并）+
+    未锁定 + 有文件指纹 + last_scraped_at 为空或早于
+    _DIRTY_DONE_PATROL_MIN_AGE_DAYS 天——新鲜行不动（刚终态的行先走
+    正常链路；也防「重排→又 done→又被捞」的每日空转）。按
+    last_scraped_at 最旧优先，单轮上限 _DIRTY_DONE_PATROL_PER_ROUND
+    （200，details 复核同此上限，TMDB 请求量有界）。
+
+    命中任一即翻回 pending（attempts 清零、priority=50、next_retry
+    记本轮时间）：
+    - bind_<reason>：有 tmdb_id 且复核门（tmdb.binding_reject_reason）
+      判错绑 → 同时置空 tmdb_id（imdb_id 不清：来源不可考，留重刮时
+      由新绑定判定）；
+    - no_poster：绑定复核通过但无海报（poster_path 与 primary_image_url
+      双空，与全站有图口径一致）→ 保留 tmdb_id 重排补图/补详情；
+    - no_tmdb_no_poster / no_tmdb：无 tmdb 绑定。后者有海报（多为豆瓣
+      兜底行，TMDB 侧仍无身份），按口径重排再试——节流靠 min-age 与
+      none 回捞周期，不会每日空转。
+    details 瞬态失败（TmdbTransientError）→ 本轮跳过该行（没查成 ≠
+    错绑）。开关 enrich_dirty_done_patrol（面板可写，默认 1=开）。
+    返回 {"scanned": n, "requeued": n, "by_reason": {...}} 并打结构化
+    计数日志（scanned/requeued/by_reason）。
+    """
+    stats = {"scanned": 0, "requeued": 0, "by_reason": {}}
+    if not enrich_tuning_value(CFG_ENRICH_DIRTY_DONE_PATROL, db):
+        return stats
+    from sqlalchemy import or_ as _or
+
+    now = now or datetime.now()
+    min_age_cutoff = now - timedelta(days=_DIRTY_DONE_PATROL_MIN_AGE_DAYS)
+    rows = (db.query(em.MediaItem)
+            .filter(em.MediaItem.enrich_status == "done",
+                    em.MediaItem.item_type.in_(["series", "movie"]),
+                    em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None),
+                    em.MediaItem.metadata_locked.isnot(True),
+                    em.MediaItem.file_fingerprint.isnot(None),
+                    _or(em.MediaItem.last_scraped_at.is_(None),
+                        em.MediaItem.last_scraped_at <= min_age_cutoff))
+            .order_by(em.MediaItem.last_scraped_at.asc().nullsfirst(),
+                      em.MediaItem.id.asc())
+            .limit(_DIRTY_DONE_PATROL_PER_ROUND)
+            .all())
+    if not rows:
+        return stats
+    fetcher = details_fetcher
+    if fetcher is None:
+        from backend.emby_server.tmdb import tmdb_client
+        fetcher = tmdb_client.details if tmdb_client.configured else None
+    from backend.emby_server.tmdb import (
+        TmdbTransientError as _PatrolTransient,
+        binding_reject_reason as _reject_reason,
+    )
+    for row in rows:
+        stats["scanned"] += 1
+        kind = row.item_type
+        tmdb_id = row.tmdb_id.strip() if isinstance(row.tmdb_id, str) \
+            else row.tmdb_id
+        no_poster = not (row.poster_path or row.primary_image_url)
+        reason = None
+        clear_tmdb = False
+        if tmdb_id:
+            if fetcher is not None:
+                try:
+                    details = fetcher(str(tmdb_id), kind)
+                except _PatrolTransient:
+                    continue
+                except Exception:  # noqa: BLE001 — 单行复核异常不拖垮整轮
+                    logger.warning("干净度巡检 details 复核异常 id=%s",
+                                   row.id, exc_info=True)
+                    continue
+                r = _reject_reason(details, kind, row.production_year)
+                if r:
+                    reason = "bind_" + r
+                    clear_tmdb = True
+                elif no_poster:
+                    reason = "no_poster"
+            elif no_poster:
+                reason = "no_poster"
+        else:
+            reason = "no_tmdb_no_poster" if no_poster else "no_tmdb"
+        if not reason:
+            continue
+        row.enrich_status = "pending"
+        row.enrich_attempts = 0
+        row.enrich_next_retry_at = now
+        row.enrich_priority = ENRICH_PRIORITY_RETRY_UNMATCHED
+        if clear_tmdb:
+            row.tmdb_id = None
+        stats["requeued"] += 1
+        stats["by_reason"][reason] = stats["by_reason"].get(reason, 0) + 1
+        logger.info("干净度巡检重排 id=%s name=%r reason=%s tmdb_id=%s",
+                    row.id, row.name, reason, tmdb_id)
+    if stats["requeued"]:
+        db.commit()
+    logger.info(
+        "干净度巡检 dirty_done_patrol scanned=%d requeued=%d by_reason=%s",
+        stats["scanned"], stats["requeued"], stats["by_reason"])
+    return stats
+
+
 _IMAGE_BACKFILL_TRIED: dict = {}
 
 
@@ -4091,7 +4330,10 @@ def none_stock_stats(db) -> dict:
     # 假数字修复（2026-10-19 系统清点 F5/T2）：Query.count() 会被包成子查询，
     # 软删钩子看不见（soft_delete.py 明说），改 with_entities(func.count)
     # .scalar() 写法（与 count_visible 同形），否则软删行会被数进去
-    reschedulable = (_none_reschedulable_query(db, cutoff, max_rounds)
+    longtail_days = enrich_tuning_value(CFG_ENRICH_NONE_LONGTAIL_DAYS, db)
+    longtail_cutoff = datetime.now() - timedelta(days=longtail_days)
+    reschedulable = (_none_reschedulable_query(
+        db, cutoff, max_rounds, longtail_cutoff=longtail_cutoff)
                      .with_entities(func.count(em.MediaItem.id))
                      .scalar() or 0)
     from sqlalchemy import or_ as _or
@@ -4116,6 +4358,7 @@ def none_stock_stats(db) -> dict:
         "leak_null_source_noposter": leak_null_source,
         "cycle_days": days,
         "max_rounds": max_rounds,
+        "longtail_days": longtail_days,
         "auto_reschedule_enabled": bool(
             enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db)),
         "batch_limit": ENRICH_NONE_AUTO_RESCHEDULE_BATCH,

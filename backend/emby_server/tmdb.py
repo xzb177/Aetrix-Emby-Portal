@@ -430,6 +430,52 @@ def _year_from_tmdb_date(data):
     return None
 
 
+def details_media_kind(data) -> Optional[str]:
+    """从 TMDB 载荷（详情或搜索命中）判媒体类型，判不出返回 None。
+
+    tv 载荷带 first_air_date / seasons / number_of_seasons；movie 载荷带
+    release_date。两者都没有（如只有标题的残缺载荷）返回 None——判不出
+    就不拿 kind 当拒绝理由（绑定复核门的 kind_mismatch 只在证据确凿时触发）。
+    """
+    if not isinstance(data, dict):
+        return None
+    if (data.get("first_air_date") or "seasons" in data
+            or "number_of_seasons" in data):
+        return "series"
+    if data.get("release_date"):
+        return "movie"
+    return None
+
+
+def binding_reject_reason(data, kind, expected_year) -> Optional[str]:
+    """TMDB 绑定客观复核（全仓唯一口径，2026-10-31「标 done 但不干净」治本）。
+
+    enrich 单段/批量、两段式识别段、scanner 首刮、干净度巡检都经本函数，
+    不许各写一份。返回 None = 可接受绑定；否则返回拒绝原因码：
+    - "details_not_found"：载荷为空/错误体（无 id）——按 kind 查不到，
+      绑的 id 根本不存在或 kind/id 错位（样本《原子少年》）；
+    - "kind_mismatch"：载荷媒体类型与条目 kind 确凿不符；
+    - "year_mismatch"：载荷年份与条目 production_year 相差 >1 年
+      （年份任一侧缺失不判）。
+    名字对账不在本函数做硬门：译名/原名差异太大，只由调用方记参考日志。
+    """
+    if not isinstance(data, dict) or not data.get("id"):
+        return "details_not_found"
+    if kind in ("series", "movie"):
+        mk = details_media_kind(data)
+        if mk is not None and mk != kind:
+            return "kind_mismatch"
+    dy = _year_from_tmdb_date(data)
+    if expected_year and dy:
+        try:
+            ey = int(expected_year)
+        except (TypeError, ValueError):
+            ey = None
+        if ey is not None and abs(dy - ey) > 1:
+            return "year_mismatch"
+    return None
+
+
 def _fold_punct(s: str) -> str:
     """全角标点折半角（见 _PUNCT_FOLD）"""
     return _PUNCT_FOLD_RE.sub(lambda m: _PUNCT_FOLD[m.group(0)], s) if s else s
