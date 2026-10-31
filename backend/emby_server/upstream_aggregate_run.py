@@ -1233,18 +1233,44 @@ def run_manual_aggregation(db: Session, source, *,
                 pairs, unpaired = pair_aggregates(
                     db, items, library_id=target_library_id)
                 written = 0
+                write_invalid = 0
                 for pair in pairs:
                     pair["library_id"] = lib_id
                     pair["library_name"] = lib_name
-                    row = uim.record_mapping(
-                        db, local_item_id=pair["local_item_id"],
-                        source_id=source.id,
-                        upstream_item_id=pair["upstream_item_id"],
-                        confidence=pair["confidence"], evidence=pair["evidence"],
-                        episode_index=pair["episode_index"])
+                    try:
+                        row = uim.record_mapping(
+                            db, local_item_id=pair["local_item_id"],
+                            source_id=source.id,
+                            upstream_item_id=pair["upstream_item_id"],
+                            confidence=pair["confidence"],
+                            evidence=pair["evidence"],
+                            episode_index=pair["episode_index"])
+                    except ValueError:
+                        # 单对兜底：record_mapping 的校验类 ValueError
+                        #（现实触发面是集号非法，如上游给出负数
+                        # IndexNumber）只丢这一对、计未配对并继续，
+                        # 绝不让一颗坏数据打死整窗 / 整库 / 整轮
+                        #（2026-11-01 集号 0 打死整轮的生产教训）。
+                        # record_mapping 的校验全部在 flush 之前，
+                        # 抛出时 session 未被污染，不需要 rollback。
+                        # 兜底只限这一种异常，其余异常照旧上抛。
+                        write_invalid += 1
+                        pair["written"] = False
+                        logger.warning(
+                            "上游聚合单对写映射被校验拒绝，已跳过 "
+                            "source_id=%s library=%s local_item_id=%s "
+                            "upstream_item_id=%s episode_index=%r",
+                            source.id, lib_id, pair["local_item_id"],
+                            pair["upstream_item_id"],
+                            pair["episode_index"])
+                        continue
                     pair["written"] = row is not None
                     if row is not None:
                         written += 1
+                if write_invalid:
+                    unpaired["episode_index_invalid"] = (
+                        unpaired.get("episode_index_invalid", 0)
+                        + write_invalid)
                 lib_fetched += len(window)
                 lib_aggregates += len(items)
                 lib_paired += len(pairs)
