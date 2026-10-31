@@ -21,8 +21,10 @@ import {
   disableUpstreamSource,
   enableUpstreamSource,
   fetchUpstreamAggregateTask,
+  fetchUpstreamCategoryLibraryMap,
   fetchUpstreamDetailLineConfig,
   fetchUpstreamSources,
+  updateUpstreamCategoryLibraryMap,
   updateUpstreamDetailLineConfig,
   updateUpstreamSource,
 } from '@/api/admin'
@@ -171,6 +173,48 @@ async function onDetailLineToggle(value: boolean) {
     detailLineEnabled.value = !value
   } finally {
     detailLineSaving.value = false
+  }
+}
+
+// 分类→本地库改配（备注-分类对位）：源备注「备注-分类」的分类默认
+// 同名对位本地库；这里只改配对不上的个别分类。文本是 JSON 对象，
+// 留空保存 = 清掉改配、全部分类回同名对位。
+const categoryMapText = ref('')
+const categoryMapSaving = ref(false)
+
+async function loadCategoryLibraryMap() {
+  try {
+    const res = await fetchUpstreamCategoryLibraryMap()
+    categoryMapText.value = res.value
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+  }
+}
+
+async function saveCategoryLibraryMap() {
+  const text = categoryMapText.value.trim()
+  if (text) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      ElMessage.error('分类映射必须是 JSON 对象，如 {"国产剧": "华语剧场"}')
+      return
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      ElMessage.error('分类映射必须是 JSON 对象，如 {"国产剧": "华语剧场"}')
+      return
+    }
+  }
+  categoryMapSaving.value = true
+  try {
+    const res = await updateUpstreamCategoryLibraryMap(text)
+    categoryMapText.value = res.value
+    ElMessage.success('分类→本地库映射已保存')
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+  } finally {
+    categoryMapSaving.value = false
   }
 }
 
@@ -364,6 +408,7 @@ async function removeSource(source: UpstreamSource) {
 onMounted(() => {
   void loadSources()
   void loadDetailLineConfig()
+  void loadCategoryLibraryMap()
 })
 onUnmounted(() => {
   aggregatePageToken += 1
@@ -464,6 +509,26 @@ onUnmounted(() => {
         />
       </div>
     </SectionCard>
+    <SectionCard title="聚合对位">
+      <div class="detail-line-hint">
+        聚合按源备注对位：备注写成「备注-分类」（如「乐观-国产剧」），
+        配对只在分类对位的本地库里进行；备注没写分类、或分类对不上
+        任何本地库，该源整源跳过并在聚合结果里报原因。
+        分类默认同名对位本地库；个别分类的库名对不上时，在下面用
+        JSON 对象改配（分类名 → 本地库名），只写要改配的即可。
+      </div>
+      <el-input
+        v-model="categoryMapText"
+        type="textarea"
+        :rows="3"
+        placeholder='如 {"国产剧": "华语剧场"}，留空 = 全部分类同名对位'
+      />
+      <div style="margin-top: 8px">
+        <el-button type="primary" :loading="categoryMapSaving" @click="saveCategoryLibraryMap">
+          保存映射
+        </el-button>
+      </div>
+    </SectionCard>
     <SectionCard title="源列表">
       <template #actions>
         <el-button type="primary" @click="openCreate">新建上游源</el-button>
@@ -519,6 +584,14 @@ onUnmounted(() => {
         </el-table-column>
       </el-table>
       <SectionCard v-if="aggregateResult" title="最近一次聚合结果">
+        <p v-if="aggregateResult.result.skipped">
+          源「{{ aggregateResult.sourceName }}」本轮已跳过：
+          {{ aggregateResult.result.skip_reason?.message }}（{{ aggregateResult.result.skip_reason?.code }}）
+        </p>
+        <p v-else-if="aggregateResult.result.target_library_name">
+          源「{{ aggregateResult.sourceName }}」本轮对位本地库「{{ aggregateResult.result.target_library_name }}」
+          （分类：{{ aggregateResult.result.category }}），配对只在该库内进行。
+        </p>
         <p>
           源「{{ aggregateResult.sourceName }}」：发现 {{ aggregateResult.result.libraries_discovered }} 个库，
           拉取 {{ aggregateResult.result.fetched }} 条，聚合 {{ aggregateResult.result.aggregates }} 条，
@@ -597,7 +670,10 @@ onUnmounted(() => {
           <el-input v-model="form.referer" />
         </el-form-item>
         <el-form-item label="备注">
-          <el-input v-model="form.note" />
+          <el-input
+            v-model="form.note"
+            placeholder="如：乐观-国产剧（聚合按「-」后的分类对位本地同名库，见上方「聚合对位」）"
+          />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="saving" @click="submitForm">保存</el-button>

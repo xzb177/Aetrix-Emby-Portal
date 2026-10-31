@@ -37,12 +37,22 @@ def db(db_factory):
     session.close()
 
 
+@pytest.fixture(autouse=True)
+def _category_route_library(db):
+    """备注-分类对位（2026-10-31）后 run 先按源备注找对位库：
+    本文件的本地行都在 library_id=1，统一备一个同名库「聚合库」，
+    源默认备注「测试-聚合库」对位到它，旧断言口径不变。"""
+    db.add(em.Library(id=1, guid="lib-guid-1", name="聚合库"))
+    db.flush()
+
+
 def _source(db, **kwargs):
     row = em.UpstreamSource(
         name=kwargs.get("name", "src-1"), source_type="emby",
         base_url="https://up.example.com/emby", auth_method="none",
         enabled=kwargs.get("enabled", True), credential_scope="source",
-        health_status="unknown")
+        health_status="unknown",
+        note=kwargs.get("note", "测试-聚合库"))
     db.add(row)
     db.flush()
     return row

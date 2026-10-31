@@ -302,16 +302,22 @@ class _FakeItems:
 
 
 def _source(db):
+    # 备注-分类对位（2026-10-31）：run 先按源备注找对位库，本文件
+    # 本地行都在 library_id=1（见 test_run_* 的 _route_library）。
     row = em.UpstreamSource(
         name="src-1", source_type="emby",
         base_url="https://up.example.com/emby", auth_method="none",
-        enabled=True, credential_scope="source", health_status="unknown")
+        enabled=True, credential_scope="source", health_status="unknown",
+        note="测试-聚合库")
     db.add(row)
     db.flush()
     return row
 
 
 def test_run_writes_series_episode_mappings(db, monkeypatch):
+    # 备注-分类对位：本地行在 library_id=1，备同名对位库「聚合库」。
+    db.add(em.Library(id=1, guid="lib-guid-1", name="聚合库"))
+    db.flush()
     source = _source(db)
     _series_local(db)
     _episode_local(db, item_id=31, episode=1)
