@@ -199,6 +199,14 @@ jobs:
         timeout-minutes: 5
         run: python scripts/check_env_contract.py
 
+      # backend 禁 print 门禁（360° 审计 A-084）：日志脱敏（log_redact）只挂在
+      # logging 链路上，print() 直出 stdout 进 docker logs 全程旁路——今天
+      # backend/ 里的 print 没带凭据，不代表以后顺手写的 print(url) 不漏。
+      # backend/ 生产代码只许脚本白名单内的 print 存在，新增即红，输出改走 logger。
+      - name: backend 禁 print 检查（print 旁路脱敏即红）
+        timeout-minutes: 5
+        run: python scripts/check_no_print_in_backend.py
+
       # 不依赖前端构建产物，所以单独一个 job，改后端时能更快拿到反馈
       - name: 门户认证端到端（注册 → 登录 → me → refresh → 改密）
         timeout-minutes: 5
