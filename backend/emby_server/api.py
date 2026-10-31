@@ -5650,48 +5650,55 @@ async def playback_info(
                 # 到免凭证 usercontent——全权 SA 令牌绝不随清单出门。
                 _alt_is_user_copy = _is_user_drive_copy_variant(_alt_variant)
                 if _alt_is_user_copy:
-                    # 额度探测（2026-10-29；2026-10-30 修订）：只有
-                    # Range 腿判 quota（分段也拉不到）才不下发直链：
-                    # 走本人令牌中继后路保留 /stream，或有本人 115
-                    # 副本时清单指回本站 /stream（video_stream 走 115
-                    # 现签 302）；都没有 → 明确报错。GET 腿探到的额度
-                    # 页/插页只是信号——Range 分段健康就照常下发直链
-                    # （直链优先定版），不清清单。绝不回落共享原件、
-                    # 绝不带 SA 令牌。
+                    # 额度探测（2026-10-29；2026-10-31 修订）：公开
+                    # 链已被探针证明回额度页（detail page=quota，
+                    # Range 腿或 GET 腿探到都算）时不下发直链：走
+                    # 本人令牌中继后路保留 /stream，或有本人 115
+                    # 副本时清单指回本站 /stream（video_stream 走
+                    # 115 现签 302）；都没有 → 明确报错。GET 腿的
+                    # scan / html 插页仍只是信号——照常下发直链、
+                    # 不清清单。绝不回落共享原件、绝不带 SA 令牌。
                     _pi_quota_cached = await run_db(
                         _tv_alt.usercopy_quota_probe_cached,
                         user.id, _alt_fid)
-                    # 改道判定零缓存（2026-10-30 08:29 事故修订）：
-                    # 走 decision 入口（先失效缓存再当场跑新鲜
-                    # Range 探测）——缓存里的 quota 裁决（最长
-                    # 300 秒）可能是间歇额度页的残留，Range 已回
-                    # 206 时不许再按缓存改道。_pi_quota_cached 只
-                    # 喂日志（此前是否有缓存记录），不参与裁决。
+                    # 判定走 decision 入口（判定对缓存的读法在
+                    # transfer_variant 收口：已知 quota 吃缓存、
+                    # 不重复探；非 quota 的缓存先失效再新鲜探测，
+                    # 沿 2026-10-30 08:29 事故口径）。
+                    # _pi_quota_cached 只喂日志（此前是否有缓存
+                    # 记录），不参与裁决。
                     _pi_probe_verdict = await run_db(
                         _tv_alt.probe_user_copy_quota_decision,
                         user.id, _alt_fid)
                     _pi_probe_detail = await run_db(
                         _tv_alt.usercopy_quota_probe_detail,
                         user.id, _alt_fid)
-                    if _pi_probe_verdict in ("quota", "interstitial"):
-                        # 改道只认 Range 腿（2026-10-30 01:40 证据
-                        # 修订，用户「直链优先、中继第二位」定版）：
-                        # GET 腿探到额度页/插页只是信号，Range 分段
-                        # 健康就照常下发直链——不清清单、不保留
-                        # /stream 改道；信号日志 verdict=direct 与
-                        # 改道区分。interstitial 只由 GET 腿产生、
-                        # 按定义不改道；quota 只有 shape=range 才
-                        # 改道（明细缺失时按 Range 腿保守处理）。
+                    _pi_quota_page = (
+                        _pi_probe_detail.get("page") == "quota")
+                    if (_pi_probe_verdict in ("quota", "interstitial")
+                            or _pi_quota_page):
+                        # 改道口径（2026-10-31 修订）：只看 detail
+                        # 的 page——page=quota（Range 腿判死或 GET
+                        # 腿整拉回额度页）一律改道，判定函数
+                        # usercopy_quota_divert 全站一份；裁决
+                        # verdict=quota 时明细缺失也保守改道。
+                        # scan / html 插页只打信号日志（verdict=
+                        # direct）、不改道不清清单。
                         _pi_divert = (
                             _pi_probe_verdict == "quota"
-                            and _pi_probe_detail.get("shape") != "get")
+                            or _tv_alt.usercopy_quota_divert(
+                                _pi_probe_detail))
+                        _pi_signal_verdict = (
+                            "quota" if (_pi_probe_verdict == "quota"
+                                        or _pi_quota_page)
+                            else _pi_probe_verdict)
                         _tv_alt.log_byos(
                             "byos_usercopy_quota"
-                            if _pi_probe_verdict == "quota"
+                            if _pi_signal_verdict == "quota"
                             else "byos_usercopy_interstitial",
                             item=item.id, user=user.id, fid=_alt_fid,
                             cached=_pi_quota_cached,
-                            verdict=(_pi_probe_verdict if _pi_divert
+                            verdict=(_pi_signal_verdict if _pi_divert
                                      else "direct"),
                             shape=_pi_probe_detail.get("shape"),
                             page=_pi_probe_detail.get("page"))
@@ -5725,12 +5732,13 @@ async def playback_info(
                                     _s["RequiredHttpHeaders"] = {}
                                 _pi_quota_error = (
                                     _tv_alt.USERCOPY_QUOTA_DETAIL
-                                    if _pi_probe_verdict == "quota"
+                                    if _pi_signal_verdict == "quota"
                                     else _tv_alt.USERCOPY_INTERSTITIAL_DETAIL)
                     elif _pi_probe_detail.get("shape") == "get" and _pi_probe_detail.get("page"):
-                        # Range 健康但 GET 腿探到页：只打信号、仍发直链
-                        # （probe 返回值已是出法裁决口径，GET 信号只在
-                        # detail 里；事件名按 page 取，verdict 恒为 direct）。
+                        # Range 健康但 GET 腿探到插页（scan / html）：
+                        # 只打信号、仍发直链（page=quota 已在上面
+                        # 改道分支处理，不会落到这里；事件名按 page
+                        # 取，verdict 恒为 direct）。
                         _tv_alt.log_byos(
                             "byos_usercopy_quota"
                             if _pi_probe_detail["page"] == "quota"
@@ -6141,10 +6149,10 @@ async def video_stream(
                 and _is_user_drive_copy_variant(_play_variant)):
             # 先问缓存再探测：顺序不能反，探测跑完缓存里就有了。
             # _quota_cached 只喂日志（此前是否有缓存记录）；裁决
-            # 本身零缓存（2026-10-30 08:29 事故修订）：走 decision
-            # 入口（先失效缓存再当场跑新鲜 Range 探测），缓存
-            # quota 不许再改道——事故里同一 fid 的 Range 已回
-            # 206，缓存却把用户反复推进中继、8 次重连播不出。
+            # 走 decision 入口（判定对缓存的读法在
+            # transfer_variant 收口：已知 quota 吃缓存、不重复
+            # 探；非 quota 的缓存先失效再新鲜探测，沿 2026-10-30
+            # 08:29 事故口径）。
             _quota_cached = await run_db(
                 _tv.usercopy_quota_probe_cached,
                 getattr(user, "id", None), _play_fid)
@@ -6154,41 +6162,45 @@ async def video_stream(
         _probe_detail = await run_db(
             _tv.usercopy_quota_probe_detail,
             getattr(user, "id", None), _play_fid)
-        if _quota_verdict in ("quota", "interstitial"):
+        _quota_page = _probe_detail.get("page") == "quota"
+        if _quota_verdict in ("quota", "interstitial") or _quota_page:
             # 判定打点：应用日志里留一条带 item/user/fid/缓存命中/
             # 探测形态/插页分类的结构化行（quota 与 interstitial
             # 分事件名；改道时走向由下面 relay / 115 / 409 的打点
             # 续记，只打信号时 verdict=direct 标明仍发直链）。
-            # 改道只认 Range 腿（2026-10-30 01:40 证据修订，用户
-            # 「直链优先、中继第二位」定版）：GET 腿探到额度页/插页
-            # 只是信号——Range 分段健康就照常发直链，绝不因整拉
-            # 形态把用户推进经服务器的中继（竞品同盘直链实证可播，
-            # 我方中继改道反而全程黑屏）。interstitial 只由 GET 腿
-            # 产生，按定义不改道；quota 只有 shape=range 才改道
-            # （明细缺失时按 Range 腿保守处理）。
+            # 改道口径（2026-10-31 修订，用户亲点）：只看 detail
+            # 的 page——page=quota（Range 腿判死或 GET 腿整拉回
+            # 额度页）一律改道，判定函数 usercopy_quota_divert
+            # 全站一份；裁决 verdict=quota 时明细缺失也保守
+            # 改道。scan / html 插页只打信号、不改道（沿
+            # 2026-10-30 插页口径）。
             _divert = (_quota_verdict == "quota"
-                      and _probe_detail.get("shape") != "get")
+                       or _tv.usercopy_quota_divert(_probe_detail))
+            _signal_verdict = (
+                "quota" if (_quota_verdict == "quota" or _quota_page)
+                else _quota_verdict)
             _tv.log_byos(
-                "byos_usercopy_quota" if _quota_verdict == "quota"
+                "byos_usercopy_quota" if _signal_verdict == "quota"
                 else "byos_usercopy_interstitial",
                 item=getattr(item, "id", None),
                 user=getattr(user, "id", None), fid=_play_fid,
                 cached=_quota_cached,
-                verdict=_quota_verdict if _divert else "direct",
+                verdict=_signal_verdict if _divert else "direct",
                 shape=_probe_detail.get("shape"),
                 page=_probe_detail.get("page"))
             if _divert:
                 _block_detail = (
-                    _tv.USERCOPY_QUOTA_DETAIL if _quota_verdict == "quota"
+                    _tv.USERCOPY_QUOTA_DETAIL
+                    if _signal_verdict == "quota"
                     else _tv.USERCOPY_INTERSTITIAL_DETAIL)
                 _block_kind = (
-                    "usercopy_quota" if _quota_verdict == "quota"
+                    "usercopy_quota" if _signal_verdict == "quota"
                     else "usercopy_interstitial")
                 # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
                 # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
-                # 本段只有 Range 腿判 quota 才进得来——GET 腿信号
-                # 在上面只打日志、不改道；_block_detail / _block_kind
-                # 按 verdict 取，本段内恒为额度口径。
+                # 本段只有 page=quota（任一腿探到额度页）才进得
+                # 来；_block_detail / _block_kind 按信号裁决取，
+                # 改道时恒为额度口径。
                 # 额度后路（2026-10-29 用户亲令）：先试本人令牌中继取同一
                 # 份副本（API 额度与公开池分开）；中继未启用/无令牌/任何
                 # 失败才回下面的现行口径（115 优先 / 409 明示），分毫不差。
@@ -6252,9 +6264,10 @@ async def video_stream(
                     RedirectResponse(_url115, status_code=302,
                                      headers=_strategy.DIRECT_REDIRECT_HEADERS))
         elif _probe_detail.get("shape") == "get" and _probe_detail.get("page"):
-            # Range 健康但 GET 腿探到页：只打信号、仍发直链（probe
-            # 返回值已是出法裁决口径，GET 信号只在 detail 里；事件名
-            # 按 page 取，verdict 恒为 direct）。
+            # Range 健康但 GET 腿探到插页（scan / html）：只打
+            # 信号、仍发直链（page=quota 已在上面改道分支处理，
+            # 不会落到这里；事件名按 page 取，verdict 恒为
+            # direct）。
             _tv.log_byos(
                 "byos_usercopy_quota"
                 if _probe_detail["page"] == "quota"

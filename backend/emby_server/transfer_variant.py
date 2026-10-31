@@ -1014,15 +1014,17 @@ def probe_user_copy_quota(user_id, fid) -> str:
     判死）。第二腿回 HTML 插页只记信号：额度页记 page=quota，
     其它插页（病毒扫描警告页等）记 page=scan / html。
 
-    注意：返回值是出法裁决口径，只认 Range 腿——Range 腿判 quota
-    才返回 "quota"（判定点据此改道中继 / 115 / 409）；Range 腿健康
-    时恒返回 "ok"，哪怕第二腿探到额度页/插页（2026-10-30 01:40
-    证据修订，用户「直链优先、中继第二位」定版；与 #1490 契约对
-    齐：已下发地址的探测判定恒为 ok）。GET 腿信号只写进 detail
-    （shape=get、page=quota / scan / html），判定点按 detail 打信
-    号日志、不改变出法。专门钉这条规矩的回归测试见
-    tests/test_usercopy_probe_get_shape.py 的
-    test_rule_direct_first_relay_second_*）。
+    注意：返回值本身只认 Range 腿——Range 腿判 quota 才返回
+    "quota"；Range 腿健康时恒返回 "ok"，哪怕第二腿探到额度页/
+    插页（与 #1490 契约对齐：已下发地址的探测判定恒为 ok）。
+    判定点的改道不只看返回值：detail 的 page=quota（任一腿探
+    到额度页）同样改道中继 / 115 / 409（2026-10-31 修订，见
+    usercopy_quota_divert）。GET 腿信号只写进 detail
+    （shape=get、page=quota / scan / html）——probe 自身的返回
+    口径不变；判定点对 detail 的用法（page=quota 改道、scan /
+    html 只打信号）见 usercopy_quota_divert 与 2026-10-31 修订
+    说明，回归测试见 tests/test_usercopy_probe_get_shape.py 的
+    test_rule_known_quota_* 与 test_rule_direct_first_*）。
 
     返回 "ok" / "quota" / "error"（探测本身失败）。
     ok / quota / interstitial 按 (user, fid) 短缓存（默认 300 秒，
@@ -1030,12 +1032,11 @@ def probe_user_copy_quota(user_id, fid) -> str:
     只请求用户本人副本的 usercontent 地址：不带任何令牌、不碰共享
     原件、不碰 SA。永不抛异常。开关关时恒返回 "ok"。
 
-    改道判定（PlaybackInfo / video_stream）不许直接调本函数吃
-    缓存裁决，必须走 probe_user_copy_quota_decision（先失效缓存
-    再探测）：缓存里的 quota 可能是几分钟前谷歌间歇性额度页留
-    下的，同一 fid 此刻 Range 已回 206 真字节——2026-10-30
-    08:29 事故正是缓存 quota（TTL 300 秒）把 user 1 反复改道
-    中继、播放器 8 次重连播不出，而当场 Range 实测 206。
+    改道判定（PlaybackInfo / video_stream）不许直接调本函数，
+    必须走 probe_user_copy_quota_decision：判定对缓存的读法在
+    那里收口（2026-10-31 口径：已知 quota 吃缓存、不重复探；
+    非 quota 的缓存仍先失效再新鲜探测，防 2026-10-30 08:29
+    那种间歇额度页残留裁决）。
     """
     if not usercopy_quota_probe_enabled():
         return "ok"
@@ -1101,26 +1102,64 @@ def probe_user_copy_quota(user_id, fid) -> str:
     return verdict
 
 
+def usercopy_quota_divert(detail) -> bool:
+    """判定点改道口径（2026-10-31 修订，两判定点共用、全站一份）。
+
+    detail 的 page == "quota" 即改道：Range 腿判 quota（裁决
+    verdict=quota、detail=range/quota）与 GET 腿整拉回额度页
+    （裁决 verdict=ok、detail=get/quota）同等对待——公开链已被
+    探针证明会回额度页，播放器任何形态的请求（含 GET 形首
+    请求）吃到的都是额度页，不许再把这条链发出去，一律走改道
+    链（本人令牌中继 → 本人 115 → 409 明示）。scan / html
+    插页仍只是信号、不改道（沿 2026-10-30 插页口径）。裁决
+    verdict 本身为 quota 时判定点另有保守改道（明细缺失也改），
+    不依赖本函数。本函数只服务用户副本判定点；共享原件路径不
+    走这里，#1492 对共享原件的口径不受影响。
+    """
+    return bool(detail) and detail.get("page") == "quota"
+
+
 def probe_user_copy_quota_decision(user_id, fid) -> str:
     """改道判定专用入口（PlaybackInfo / video_stream 两判定点）。
 
-    改道判定零缓存：先失效 (user, fid) 的裁决与明细缓存，再走
-    probe_user_copy_quota——缓存被清后 probe 必然当场跑新鲜两腿，
-    新结果照常回写缓存（非判定调用随后仍可复用）。本函数与 probe
-    的区别只在缓存，不在判定逻辑：出法仍只认 Range 腿（#1492）。
+    对缓存的读法（2026-10-31 修订，用户亲点「起播很慢」定案）：
 
-    为什么判定不许吃缓存：缓存里的 quota 裁决可能是几分钟前
-    谷歌间歇性额度页留下的（TTL 默认 300 秒），同一 fid 此刻
-    Range 已回 206 真字节。2026-10-30 08:29 事故：user 1 播
-    《大唐妖探》本人副本，日志连续 byos_usercopy_quota
-    verdict=quota cached=True 反复改道中继、播放器 8 次重连播
-    不出，同一时段实测该 fid 的 Range 已回 206。
+    - 已知 quota 吃缓存、零探测：缓存裁决为 quota，或缓存裁决
+      为 ok 但明细 page=quota（GET 腿整拉回额度页的信号），都算
+      已知 quota——原样返回缓存裁决、明细保留，判定点据此对
+      任何形态的流请求直接改道中继。生产实证（2026-10-31，
+      item 859178）：该 fid 公开链持续回额度页，旧口径每请求先
+      失效缓存再新鲜两腿，每个分段请求白付约 0.85 秒注定
+      quota 的探测才轮到中继，起播约 45 秒。缓存到期（默认
+      300 秒）后下一请求自然重探一次：谷歌解除额度即恢复直链。
+    - 非 quota 的缓存（ok 且无 quota 信号 / interstitial）仍沿
+      2026-10-30 08:29 事故口径：先失效裁决与明细缓存，再走
+      probe 当场跑新鲜两腿，新结果照常回写缓存。08:29 事故
+      （缓存 quota 把 Range 已回 206 的 fid 反复改道）在 quota
+      方向被本次定案有意让位：已知 quota 时宁可中继到期重探，
+      不许每请求重探；其余方向的新鲜度保护不变。
 
-    失效失败（缓存不可用）不阻断：吞掉异常照常探测——probe 对
-    缓存异常本就按未命中处理，最坏退化为原缓存口径。永不抛异常
-    的口径与 probe 一致（probe 本身永不抛）。
+    失效/读取失败（缓存不可用）不阻断：吞掉异常照常探测——
+    probe 对缓存异常本就按未命中处理。永不抛异常的口径与
+    probe 一致（probe 本身永不抛）。探测开关关时不吃缓存：
+    直接走 probe（恒返回 ok，回到探测前发直链行为）。
     """
     fid = (fid or "").strip()
+    if fid and usercopy_quota_probe_enabled():
+        try:
+            from backend.database import CacheManager
+            _cached = CacheManager.get(
+                _usercopy_quota_cache_key(user_id, fid),
+                domain="playback")
+        except Exception:  # noqa: BLE001 — 缓存读不到按未命中
+            _cached = None
+        if _cached == "quota":
+            return "quota"
+        if _cached == "ok" and usercopy_quota_divert(
+                usercopy_quota_probe_detail(user_id, fid)):
+            # GET 腿额度页信号：裁决仍是 ok，改道由判定点按
+            # 明细判（usercopy_quota_divert）；这里只负责不重探。
+            return "ok"
     if fid:
         try:
             from backend.database import CacheManager
