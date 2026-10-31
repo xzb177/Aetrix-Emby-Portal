@@ -143,3 +143,126 @@ def test_install_is_idempotent_and_covers_root(capsys):
     install_secret_redaction()  # 第二次是空操作，不抛异常
     root = logging.getLogger()
     assert any(isinstance(f, SecretRedactFilter) for f in root.filters)
+
+
+# ---------- A-082：URL 词表补全（sign / refresh_token / code / sig） ----------
+
+
+def test_redact_play_sign_triple():
+    """门户 JWT 播放签名三元组 uid&exp&sign：sign 必须脱敏，uid/exp 保留。"""
+    sign = "0123456789abcdef0123456789abcdef"
+    line = (
+        "GET https://emby.example.com/Videos/955639/stream?uid=590"
+        f"&exp=1893456000&sign={sign} HTTP/1.1"
+    )
+    out = redact_secrets(line)
+    assert sign not in out
+    assert "sign=***" in out
+    assert "uid=590" in out
+    assert "exp=1893456000" in out
+
+
+def test_redact_oauth_code_param():
+    """Drive OAuth 回调 ?code=：授权码脱敏，同串里的其它参数保留。"""
+    code = "4/0AfJohEXAMPLEcodeVALUE123"
+    line = (
+        "GET /api/user/emby/storage-bindings/drive/oauth/callback"
+        f"?state=xyz&code={code}&scope=drive.file HTTP/1.1"
+    )
+    out = redact_secrets(line)
+    assert code not in out
+    assert "code=***" in out
+    assert "state=xyz" in out
+    assert "scope=drive.file" in out
+
+
+def test_redact_refresh_token_param():
+    """refresh_token：URL 形（旧实现被 refresh_ 前缀挡住）与 JSON 形都要脱敏。"""
+    secret = "REFRESHSECRET778899"  # secret-scan: allow 测试用假值，非真实凭据
+    out = redact_secrets(
+        f"POST https://oauth2.example.com/token?refresh_token={secret}&grant_type=refresh_token"
+    )
+    assert secret not in out
+    assert "refresh_token=***" in out
+    out_json = redact_secrets(f'payload: {{"refresh_token": "{secret}"}} done')
+    assert secret not in out_json
+    assert '"refresh_token": "***"' in out_json
+
+
+def test_redact_upstream_sig_param():
+    """上游重定向 Location 里的签名参数（115 的 sign / 通用 sig）。"""
+    sig = "UPSTREAMSIGaabbcc112233"
+    line = f"upstream redirect Location: https://cdn115.example.com/f/abc?sig={sig}&t=999"
+    out = redact_secrets(line)
+    assert sig not in out
+    assert "sig=***" in out
+    assert "t=999" in out
+
+
+def test_no_false_positive_code_words():
+    """误伤口径：普通文本里的 code 一词、status_code 参数、design 字段都不动。
+
+    脱敏只替换「URL 查询串里名为 code/sign 等的参数值」与「JSON 里同名
+    字段的引号值」；参数名/字段名本身、词内子串（design 的 sign、
+    zipcode 的 code）与普通文本一律保留。
+    """
+    plain = "worker exit code 3, http status code 200, design review done"
+    assert redact_secrets(plain) == plain
+    url = "GET /api/items?status_code=200&lang=zh-CN HTTP/1.1"
+    assert redact_secrets(url) == url
+    js = '{"design": "dark", "zipcode": "518000"}'
+    assert redact_secrets(js) == js
+
+
+def test_ea_access_line_form_redacted():
+    """EA 的 uvicorn access 行形态：整行过脱敏后 api_key 与 sign 都不留明文。"""
+    ea_key = "EA_TOKEN_PLAINTEXT_42"
+    sign = "fedcba9876543210fedcba9876543210"
+    line = (
+        '172.19.0.1:51000 - "GET /emby/Videos/123/stream.mkv'
+        f"?api_key={ea_key}&uid=7&exp=1893456000&sign={sign}"
+        ' HTTP/1.1" 206 Partial Content'
+    )
+    out = redact_secrets(line)
+    assert ea_key not in out
+    assert sign not in out
+    assert "api_key=***" in out
+    assert "sign=***" in out
+
+
+# ---------- A-081：EA 入口接线（与 EM/worker 同口径装脱敏） ----------
+
+
+def test_ea_main_installs_secret_redaction():
+    """EA 入口 emby_api.main 导入后，root 与 uvicorn access/error logger
+    都挂上 SecretRedactFilter。
+
+    用子进程跑：导入 EA 会拉起整个应用装配，且 install 有进程级幂等
+    标记，不能在本测试进程内验。
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    probe = (
+        "import logging\n"
+        "import emby_api.main  # noqa: F401\n"
+        "from backend.log_redact import SecretRedactFilter\n"
+        "def has(lg):\n"
+        "    return any(isinstance(f, SecretRedactFilter) for f in lg.filters)\n"
+        "assert has(logging.getLogger()), 'root logger 未装脱敏 filter'\n"
+        "assert has(logging.getLogger('uvicorn.access')), 'uvicorn.access 未装脱敏 filter'\n"
+        "assert has(logging.getLogger('uvicorn.error')), 'uvicorn.error 未装脱敏 filter'\n"
+        "print('EA-REDACT-OK')\n"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=str(repo_root),
+    )
+    assert "EA-REDACT-OK" in r.stdout, (
+        f"EA 脱敏接线缺失:\n{r.stdout}\n{r.stderr[-1500:]}"
+    )
