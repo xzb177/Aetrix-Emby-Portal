@@ -150,7 +150,7 @@ async function loadRcloneConf(serverId: number) {
 /** 挂载也并进服务器：挂到哪台 EA 上，就由它去读（每台 EA 一份 rclone.conf） */
 const serverMounts = ref<StorageMount[]>([])
 const mountsLoading = ref(false)
-const mountForm = reactive({ name: '', type: 'local' as MountTypeValue, path: '' })
+const mountForm = reactive({ name: '', type: 'local' as MountTypeValue, path: '', fuseMountPoint: '' })
 const editingMountId = ref<number | null>(null)
 
 /** 目录浏览（从存储来源页搬过来的组件）与体检 */
@@ -212,6 +212,7 @@ function startEditMount(m: StorageMount) {
   mountForm.type = (['local', '115', 'rclone', 'drive'].includes(m.mount_type)
     ? m.mount_type : 'local') as MountTypeValue
   mountForm.path = m.path
+  mountForm.fuseMountPoint = m.config?.fuse_mount_point || ''
 }
 
 function cancelEditMount() {
@@ -219,6 +220,7 @@ function cancelEditMount() {
   mountForm.name = ''
   mountForm.path = ''
   mountForm.type = 'local'
+  mountForm.fuseMountPoint = ''
 }
 
 async function loadServerMounts() {
@@ -248,6 +250,7 @@ async function addMount() {
     if (editingMountId.value) {
       const res = await updateMount(editingMountId.value, {
         name, path: mountForm.path.trim(),
+        config: { fuse_mount_point: mountForm.fuseMountPoint.trim() },
       })
       if (res.mount_type_changed) {
         ElMessage.warning('来源已切换（旧条目的读取方式随之改变），请重新扫描对应媒体库')
@@ -256,16 +259,19 @@ async function addMount() {
       }
       cancelEditMount()
     } else {
+      const fusePoint = mountForm.fuseMountPoint.trim()
       await createMount({
         name,
         path: mountForm.path.trim(),
         server_id: editingId.value,
         realm_id: row?.realm_id ?? undefined,
+        ...(fusePoint ? { config: { fuse_mount_point: fusePoint } } : {}),
       })
       ElMessage.success('挂载已创建：到「媒体库」页把它绑定到库上即可扫描')
       mountForm.name = ''
       mountForm.path = ''
       mountForm.type = 'local'
+      mountForm.fuseMountPoint = ''
     }
     loadServerMounts()
   } catch (e) {
@@ -1314,6 +1320,16 @@ function opsStateText(state: string): string {
           <div class="add-mount">
             <el-input v-model="mountForm.name" placeholder="挂载名称，例如「主号电影」" />
             <MountSourceEditor v-model="mountForm.path" v-model:type="mountForm.type" />
+            <template v-if="mountForm.type === 'rclone'">
+              <el-input
+                v-model="mountForm.fuseMountPoint"
+                placeholder="FUSE 挂载点（可选），例如 /mnt/gdrive-direct"
+              />
+              <p class="field-help">
+                这个 remote 在本机被 FUSE 挂到的目录。Drive 增量发现靠它把本机路径
+                对回这个挂载；留空 = 不声明，行为不变。
+              </p>
+            </template>
             <div class="add-mount-ops">
               <el-button type="primary" plain @click="addMount">
                 <Plus v-if="!editingMountId" :size="14" style="margin-right: 4px" />
