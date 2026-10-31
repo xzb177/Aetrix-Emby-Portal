@@ -1859,7 +1859,12 @@ export interface UpstreamAggregateResult {
   target_library_name?: string | null
 }
 
-export type UpstreamAggregateTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+export type UpstreamAggregateTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted'
 
 export interface UpstreamAggregateTaskError {
   status: number
@@ -1873,13 +1878,30 @@ export interface UpstreamAggregateTask {
   status: UpstreamAggregateTaskStatus
   result: UpstreamAggregateResult | null
   error: UpstreamAggregateTaskError | null
+  /** 进度计数（O-01 落库、O-03 worker 执行面）：后端任务行直出，
+   *  libraries_done 只计跑完且成功的库；终态之外 result/error 为 null。 */
+  trigger: string
+  resume_of: string | null
+  libraries_total: number
+  libraries_done: number
+  current_library_id: string | null
+  current_library_name: string | null
+  fetched: number
+  paired: number
+  written: number
+  created_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  heartbeat_at: string | null
 }
 
 /** 入队。本地就能判定的错误（源不存在 / 未启用 / 苹果 CMS）仍是 HTTP 4xx。 */
 export const aggregateUpstreamSource = (id: number) =>
   post<UpstreamAggregateTask>(`${E}/upstream-sources/${id}/aggregate`, {})
 
-/** 按任务 id 查聚合进度。进行中 status 为 queued / running；完成时带 result。 */
+/** 按任务 id 查聚合进度。进行中 status 为 queued / running，快照带
+ *  libraries_done / libraries_total 与 fetched / paired / written 计数；
+ *  完成时带 result，失败时带 error，心跳过期被标 interrupted。 */
 export const fetchUpstreamAggregateTask = (id: number, taskId: string) =>
   get<UpstreamAggregateTask>(`${E}/upstream-sources/${id}/aggregate/${taskId}`)
 
