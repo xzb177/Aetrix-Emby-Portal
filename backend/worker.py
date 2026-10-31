@@ -574,6 +574,16 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动公益到期检查调度失败（可忽略）: {e}")
 
+        # 全员赠送能量：批次发放轮询（daemon 线程，失败可忽略）；没有待处理
+        # 批次时只是每 15 秒查一次空表，不产生任何发放。
+        try:
+            from backend import gift_all
+            if gift_all.start_gift_all_worker():
+                started.append("gift_all")
+                logger.info("✅ 全员赠送发放轮询已启动")
+        except Exception as e:
+            logger.warning(f"启动全员赠送发放轮询失败（可忽略）: {e}")
+
         # 红包过期自动退款（daemon 线程，失败可忽略）
         try:
             from backend import welfare_redpacket

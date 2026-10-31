@@ -732,6 +732,68 @@ class PointsLog(Base):
     user = relationship("WebUser")
 
 
+class PointsGiftBatch(Base):
+    """全员赠送能量批次（管理端能力，2026-10-31）
+
+    把「给全体用户送能量」从一次性手工数据操作做成正式能力：管理员建批时
+    只落参数快照（每人金额 amount、人群范围 scope、备注 reason）与预计人数
+    target_count，真正的发放在 worker 里分块执行（见 backend/gift_all.py），
+    端点请求里绝不同步遍历全站发分。
+
+    - scope：all＝现存全部 web_users（WebUser 无软删列，注销即行不存在；
+      is_active 是禁用态、与注销不同口径，不在此排除）；welfare＝当前持有
+      有效公益资格者（is_welfare 且 welfare_expires_at 为空或未到期，
+      与 welfare_expiry 的现行口径一致）。
+    - status：pending 待发放 / running 发放中 / done 已完成 / failed 中途
+      失败（可被 worker 重新认领续跑，已发的不重发，靠 PointsGiftGrant
+      的唯一约束兜底）。
+    """
+    __tablename__ = 'points_gift_batches'
+
+    __table_args__ = (
+        Index('idx_gift_batch_status', 'status'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    amount = Column(Integer, nullable=False)  # 每人赠送量（正整数，建批时校验）
+    scope = Column(String(16), nullable=False, default='all')  # all / welfare
+    reason = Column(String(255), nullable=False, default='')  # 进每笔台账的说明
+    target_count = Column(Integer, nullable=False, default=0)  # 建批时预计人数（快照）
+    granted_count = Column(Integer, nullable=False, default=0)  # 已发人数（执行器维护）
+    status = Column(String(16), nullable=False, default='pending')
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)  # 创建管理员
+    last_error = Column(String(255), nullable=True)  # 最近一次失败原因（failed 时）
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    finished_at = Column(DateTime, nullable=True)
+
+    creator = relationship("WebUser")
+
+
+class PointsGiftGrant(Base):
+    """全员赠送发放明细：一行＝一个用户在一个批次里已到账。
+
+    (batch_id, user_id) 唯一约束是整条链的幂等锚点：执行器先落明细再随同
+    一事务写余额与台账，撞唯一约束即说明已发过、跳过——重跑/续跑/双实例
+    都不会重复发分。
+    """
+    __tablename__ = 'points_gift_grants'
+
+    __table_args__ = (
+        UniqueConstraint('batch_id', 'user_id', name='uq_gift_grant_batch_user'),
+        Index('idx_gift_grant_batch', 'batch_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_id = Column(Integer, ForeignKey('points_gift_batches.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    points_log_id = Column(Integer, ForeignKey('points_logs.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    batch = relationship("PointsGiftBatch")
+    user = relationship("WebUser")
+
+
 class RebateReversalDebt(Base):
     """返利撤回欠账：订单退款时邀请人余额不足、返利撤回失败，留下持久化欠账。
 

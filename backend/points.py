@@ -74,6 +74,7 @@ POINT_TYPE_SELF_EARNED: dict[str, bool] = {
     "recharge": False,
     "refund": False,
     "admin_grant": False,
+    "gift_all": False,
     "lottery_win": False,
     "slots_win": False,
     "slots_jackpot": False,

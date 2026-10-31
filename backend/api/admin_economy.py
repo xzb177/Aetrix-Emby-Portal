@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import gift_all, models
 from backend.member_level import ensure_member_levels_seeded
 from backend.api.admin_core import (
     _audit,
@@ -181,6 +181,97 @@ async def economy_adjust_points(
         from_admin_id=admin_id,
     )
     return {"success": True, "balance": balance}
+
+
+# ---------- 全员赠送能量（批次） ----------
+# 2026-10-31 能力化：2026-10-28 的全站送 50 原是一次性手工数据操作，无端点
+# 无入口。此处只建批＋预览＋查历史：参数（金额/范围/备注）全由管理员建批时
+# 给，发放由 worker 分块执行（backend/gift_all.py），端点不同步发分。
+
+class GiftAllCreateRequest(BaseModel):
+    amount: int = Field(..., gt=0)  # 每人赠送量：正整数，0/负数在模型层拒绝
+    scope: str = "all"  # all=全部现存用户 / welfare=当前持有有效公益资格者
+    reason: str = Field("", max_length=255)  # 进每笔台账的说明
+
+
+def _gift_batch_out(batch: models.PointsGiftBatch, creator_name: str | None = None) -> dict:
+    return {
+        "id": batch.id,
+        "amount": batch.amount,
+        "scope": batch.scope,
+        "reason": batch.reason,
+        "target_count": batch.target_count,
+        "granted_count": batch.granted_count,
+        "status": batch.status,
+        "created_by": batch.created_by,
+        "created_by_name": creator_name,
+        "last_error": batch.last_error,
+        "created_at": batch.created_at.isoformat() if batch.created_at else None,
+        "finished_at": batch.finished_at.isoformat() if batch.finished_at else None,
+    }
+
+
+def _validate_gift_scope(scope: str) -> None:
+    if scope not in gift_all.GIFT_ALL_SCOPES:
+        raise HTTPException(status_code=400, detail=f"赠送范围只能是 {'/'.join(gift_all.GIFT_ALL_SCOPES)}")
+
+
+@admin_router.get("/economy/gift-all/preview")
+def gift_all_preview(
+    amount: int,
+    scope: str = "all",
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """发放前预览：按当前人群口径数命中人数与总发放量（只读、不落库）"""
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="每人赠送量必须为正整数")
+    _validate_gift_scope(scope)
+    count = gift_all.count_eligible_users(db, scope)
+    return {"scope": scope, "amount": amount,
+            "user_count": count, "total_amount": count * amount}
+
+
+@admin_router.post("/economy/gift-all/batches")
+def gift_all_create_batch(
+    request: GiftAllCreateRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """新建赠送批次（只落批次，发放由 worker 分块执行，本请求不发分）"""
+    _validate_gift_scope(request.scope)
+    batch = models.PointsGiftBatch(
+        amount=request.amount,
+        scope=request.scope,
+        reason=(request.reason or "").strip(),
+        target_count=gift_all.count_eligible_users(db, request.scope),
+        granted_count=0,
+        status="pending",
+        created_by=current_admin.id,
+    )
+    db.add(batch)
+    db.flush()
+    _audit(db, current_admin, "economy_gift_all_create", "points_gift_batch", batch.id,
+           {"amount": batch.amount, "scope": batch.scope,
+            "reason": batch.reason, "target_count": batch.target_count})
+    db.commit()
+    db.refresh(batch)
+    return _gift_batch_out(batch, current_admin.username)
+
+
+@admin_router.get("/economy/gift-all/batches")
+def gift_all_list_batches(
+    limit: int = 50,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """赠送批次历史（状态、进度、参数、操作者）"""
+    batches = db.query(models.PointsGiftBatch).order_by(
+        models.PointsGiftBatch.id.desc()).limit(min(limit, 200)).all()
+    creator_ids = {b.created_by for b in batches if b.created_by}
+    names = {u.id: u.username for u in db.query(models.WebUser).filter(
+        models.WebUser.id.in_(creator_ids)).all()} if creator_ids else {}
+    return {"batches": [_gift_batch_out(b, names.get(b.created_by)) for b in batches]}
 
 
 # ---------- 经济系统设置 ----------

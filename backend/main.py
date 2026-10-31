@@ -290,6 +290,14 @@ async def lifespan(app: FastAPI):
             welfare_expiry.start_welfare_expiry_scheduler()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动公益到期检查调度失败（可忽略）: {e}")
+        # 全员赠送能量：批次发放轮询（与 worker.py 共用同一幂等入口；
+        # 生产由 worker 进程接线，这里只给单体模式）。失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend import gift_all
+            gift_all.start_gift_all_worker()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动全员赠送发放轮询失败（可忽略）: {e}")
         # 追新：默认关闭，不打扰任何现有行为。失败不影响启动。
     if not _is_api_role:
         try:
