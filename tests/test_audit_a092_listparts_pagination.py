@@ -79,7 +79,8 @@ def _stub_resume_client(monkeypatch, client, uploaded):
                                    "SecurityToken": "ST"}
 
     def _upload(token, bucket, object_key, upload_id, fileobj, filesize,
-                start_number=1, start_offset=0, on_part=None):
+                start_number=1, start_offset=0, on_part=None,
+                refresher=None):
         uploaded.append((start_number, start_offset))
         return []
 

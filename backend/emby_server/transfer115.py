@@ -114,6 +114,13 @@ _P115_AES_IV = b"i\xbfB/I\x96\x05P\xa0\xadD\xec4F\xcbL"
 #    回调 JSON（与 simple_upload 回调同形态）；
 # 6. 任一步失败 best-effort AbortMultipartUpload（DELETE
 #    ?uploadId=…）再抛错——未 complete 前不声称成功、不登记。
+# 7. 令牌口径（2026-10-31 换代第一刀 step 1）：STS 令牌寿命有
+#    限、长上传中途会过期（生产 part 188 实证：同令牌三试全败），
+#    但会话（UploadId）不随令牌死——part PUT / complete 撞
+#    SecurityTokenExpired 时先刷新令牌再重试该步（每片至多 1
+#    次＋整单总闸），不再拿过期令牌空重试；Expiration 领取时记
+#    日志并进会话状态，先把真实寿命测出来（此前被 upload_token
+#    丢弃、从未有数）。
 # **真实端到端未实测**（与秒传同状态：不许用生产用户 Cookie 做
 # 开发测试），协议正确性靠上述开源实现对照 + mock，上线后靠
 # 真实大文件 job 观察。
@@ -133,6 +140,18 @@ _MULTIPART_MAX_PARTS = 10000
 #: 单片 PUT 有限重试次数（与搬运层有界重试同口径；整单最终成败
 #: 仍由 job 层有界重试兜底）。
 _MULTIPART_PART_ATTEMPTS = 3
+#: 片间令牌刷新的整单总闸（单次 multipart_upload 调用内）：每片
+#: 至多刷新 1 次由 _oss_upload_part_retry 钉死，这里再防 gettoken
+#: 异常形态下跨片无界领令牌。STS 真实寿命未实测，长上传正当需
+#: 要多次刷新，故总闸取得宽，只作兜底不作节流。
+_MULTIPART_TOKEN_REFRESH_MAX = 64
+
+
+def _is_oss_token_expired(exc) -> bool:
+    """OSS 错误是否为 STS 令牌过期：错误体是 XML，含
+    <Code>SecurityTokenExpired</Code>，_http_full 把响应体摘进
+    异常文案，故按错误码字面匹配；其余错误一律不触发刷新。"""
+    return "SecurityTokenExpired" in str(exc)
 
 #: 进 OSS 签名 CanonicalizedResource 的子资源键（p115oss
 #: SUBRESOURCE_KEYS 中与分片上传相关者）。
@@ -1219,8 +1238,12 @@ class Pan115Client:
     def upload_token(self) -> dict:
         """gettoken.php → OSS STS 临时凭据（Cookie 鉴权）。
 
-        返回 {AccessKeyId, AccessKeySecret, SecurityToken}；缺任一
-        抛 Pan115Error。Expiration 不透出（单次上传内用完即弃）。
+        返回 {AccessKeyId, AccessKeySecret, SecurityToken,
+        Expiration}；前三者缺任一抛 Pan115Error。Expiration 一并
+        透出供分片上传记账：令牌领取/到期时刻进会话状态、领取时
+        记一行日志——STS 真实寿命此前从未被记录（可行性报告
+        八.2），刷新策略要先有数。凭据本体仍只在内存里用完即
+        弃，不落盘、不进日志、不外传。
         """
         body = self._call("GET", f"{PAN115_UPLB_BASE}/3.0/gettoken.php")
         data = body.get("data") if isinstance(body.get("data"), dict) else body
@@ -1230,10 +1253,52 @@ class Pan115Client:
             "AccessKeyId": str(data.get("AccessKeyId") or ""),
             "AccessKeySecret": str(data.get("AccessKeySecret") or ""),
             "SecurityToken": str(data.get("SecurityToken") or ""),
+            "Expiration": str(data.get("Expiration") or ""),
         }
-        if not all(token.values()):
+        if not all(token[key] for key in
+                   ("AccessKeyId", "AccessKeySecret", "SecurityToken")):
             raise Pan115Error("115 gettoken 未返回完整 STS 凭据")
+        logger.info("pan115 gettoken ok expiration=%s",
+                    token["Expiration"] or "unknown")
         return token
+
+    @staticmethod
+    def _token_meta(token):
+        """会话里记的令牌记账（不含凭据本体）：领取时刻＋到期时刻。"""
+        return {"fetched_at": int(time.time()),
+                "expiration": str(token.get("Expiration") or "")}
+
+    def _refresh_oss_token(self, token, budget, *, part=None):
+        """片间令牌刷新：原地换掉 token dict 的内容（各 OSS 助手
+        每次调用都现读 dict 字段，原地更新即全链生效）。
+
+        budget 是本次 multipart_upload 调用共享的 {"left": n}
+        计数：耗尽或重新领取失败回 False，调用方按原失败口径
+        走，不无限重试。Cookie 已死（Pan115AuthError）原样上
+        抛——那是绑定级问题，不许伪装成刷新失败把分类吞掉。
+        日志只记片号/结果/新到期时刻，不记凭据值。
+        """
+        if not budget or budget.get("left", 0) <= 0:
+            logger.warning(
+                "pan115 multipart token refresh part=%s "
+                "result=skipped reason=budget_exhausted", part)
+            return False
+        budget["left"] -= 1
+        try:
+            fresh = self.upload_token()
+        except Pan115AuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 刷新失败回原口径
+            logger.warning(
+                "pan115 multipart token refresh part=%s "
+                "result=failed error=%s", part, exc)
+            return False
+        token.clear()
+        token.update(fresh)
+        logger.warning(
+            "pan115 multipart token refresh part=%s result=ok "
+            "expiration=%s", part, fresh.get("Expiration") or "unknown")
+        return True
 
     def multipart_upload(self, fileobj, filename: str, filesize: int,
                          file_sha1: str, pid: str, range_reader=None,
@@ -1259,6 +1324,13 @@ class Pan115Client:
         失败 best-effort abort 后抛；传了 on_progress 时失败不 abort
         （会话留给重试续传，终态清理由调用方经 abort_multipart_
         session 做），绝不半成品冒充完成。
+        令牌口径（2026-10-31 换代第一刀 step 1）：STS 令牌会在长
+        上传中途过期、会话不随令牌死——part PUT 与 complete 撞
+        SecurityTokenExpired 时先刷新令牌再重试该步（每片至多 1
+        次、整单总闸 _MULTIPART_TOKEN_REFRESH_MAX），刷新救不回
+        才按上述失败口径走。session["token"] 记令牌领取/到期时
+        刻（不含凭据本体），经 on_progress 的 init/failed 事件随
+        会话一并由调用方 sidecar 落盘。
         """
         filesize = int(filesize)
         if filesize <= 0:
@@ -1298,7 +1370,16 @@ class Pan115Client:
         token = self.upload_token()
         upload_id = self._oss_multipart_init(token, bucket, object_key)
         session = {"bucket": bucket, "object_key": object_key,
-                   "upload_id": upload_id, "callback": callback, "parts": []}
+                   "upload_id": upload_id, "callback": callback,
+                   "parts": [], "token": self._token_meta(token)}
+        refresh_budget = {"left": _MULTIPART_TOKEN_REFRESH_MAX}
+
+        def _refresher(part=None):
+            if not self._refresh_oss_token(token, refresh_budget,
+                                           part=part):
+                return False
+            session["token"] = self._token_meta(token)
+            return True
 
         def _emit_part(number, etag):
             session["parts"].append({"PartNumber": number, "ETag": etag})
@@ -1312,10 +1393,10 @@ class Pan115Client:
         try:
             parts = self._oss_upload_parts(
                 token, bucket, object_key, upload_id, fileobj, filesize,
-                on_part=_emit_part)
-            body = self._oss_multipart_complete(
+                on_part=_emit_part, refresher=_refresher)
+            body = self._oss_complete_with_refresh(
                 token, bucket, object_key, upload_id, parts, callback,
-                str(file_sha1).strip().upper())
+                str(file_sha1).strip().upper(), refresher=_refresher)
         except Exception:
             if on_progress is None:
                 self._oss_multipart_abort(token, bucket, object_key, upload_id)
@@ -1349,6 +1430,16 @@ class Pan115Client:
             raise
         except Exception as exc:
             raise _ResumeStale(f"ListParts 失败：{exc}") from exc
+        refresh_budget = {"left": _MULTIPART_TOKEN_REFRESH_MAX}
+        token_meta = {"value": self._token_meta(token)}
+
+        def _refresher(part=None):
+            if not self._refresh_oss_token(token, refresh_budget,
+                                           part=part):
+                return False
+            token_meta["value"] = self._token_meta(token)
+            return True
+
         saved = []
         for part in resume_session.get("parts") or []:
             try:
@@ -1380,7 +1471,7 @@ class Pan115Client:
             self._oss_upload_parts(
                 token, bucket, object_key, upload_id, fileobj, filesize,
                 start_number=len(saved) + 1, start_offset=start_offset,
-                on_part=_emit_part)
+                on_part=_emit_part, refresher=_refresher)
         except Exception:
             if on_progress is not None:
                 on_progress({"event": "failed",
@@ -1388,11 +1479,12 @@ class Pan115Client:
                                          "object_key": object_key,
                                          "upload_id": upload_id,
                                          "callback": callback,
-                                         "parts": list(saved)}})
+                                         "parts": list(saved),
+                                         "token": token_meta["value"]}})
             raise
-        body = self._oss_multipart_complete(
+        body = self._oss_complete_with_refresh(
             token, bucket, object_key, upload_id, list(saved), callback,
-            str(file_sha1).strip().upper())
+            str(file_sha1).strip().upper(), refresher=_refresher)
         return _multipart_result_from_complete(body)
 
     def abort_multipart_session(self, session):
@@ -1423,7 +1515,7 @@ class Pan115Client:
 
     def _oss_upload_parts(self, token, bucket, object_key, upload_id,
                           fileobj, filesize, start_number=1, start_offset=0,
-                          on_part=None):
+                          on_part=None, refresher=None):
         """串行逐片 PUT：默认自 fileobj 头部顺序读满整文件。
 
         每片读满 partsize（尾片除外），读短即协议失败；每片校验
@@ -1449,7 +1541,8 @@ class Pan115Client:
                     f"分片上传源读取短读：偏移 {offset} 需 {want} "
                     f"实得 {len(chunk)}")
             etag = self._oss_upload_part_retry(
-                token, bucket, object_key, upload_id, number, chunk)
+                token, bucket, object_key, upload_id, number, chunk,
+                refresher=refresher)
             parts.append({"PartNumber": number, "ETag": etag})
             if on_part is not None:
                 on_part(number, etag)
@@ -1510,17 +1603,31 @@ class Pan115Client:
         return parts
 
     def _oss_upload_part_retry(self, token, bucket, object_key,
-                               upload_id, number, chunk):
+                               upload_id, number, chunk, refresher=None):
+        """单片 PUT 有界重试：常规失败按 _MULTIPART_PART_ATTEMPTS
+        次收尾；撞 STS 令牌过期且 refresher 可用时，本片先刷新
+        令牌再重试（至多 1 次，刷新重试不占常规尝试数）——令牌
+        过期是会话级问题、不是本片字节的问题（2026-10-31 part
+        188 实证：同令牌三试全败）。刷新失败/预算耗尽回落常规
+        口径，绝不无界领令牌。"""
         last_exc = None
-        for attempt in range(1, _MULTIPART_PART_ATTEMPTS + 1):
+        attempts = 0
+        refreshed = False
+        while attempts < _MULTIPART_PART_ATTEMPTS:
             try:
                 return self._oss_upload_part(
                     token, bucket, object_key, upload_id, number, chunk)
             except Pan115Error as exc:
                 last_exc = exc
+                if (not refreshed and refresher is not None
+                        and _is_oss_token_expired(exc)):
+                    refreshed = True
+                    if refresher(number):
+                        continue
+                attempts += 1
                 logger.info(
                     "pan115 multipart part=%s attempt=%s failed: %s",
-                    number, attempt, exc)
+                    number, attempts, exc)
         raise Pan115Error(
             f"OSS 第 {number} 片重试 {_MULTIPART_PART_ATTEMPTS} "
             f"次仍失败：{last_exc}")
@@ -1574,6 +1681,29 @@ class Pan115Client:
             return json.loads(content.decode("utf-8", "replace"))
         except Exception as exc:  # noqa: BLE001 — 回调非 JSON 即失败
             raise Pan115Error(f"115 分片上传回调非 JSON：{exc}") from exc
+
+    def _oss_complete_with_refresh(self, token, bucket, object_key,
+                                   upload_id, parts, callback,
+                                   file_sha1_upper, refresher=None):
+        """complete 的令牌自愈包装：长上传末尾令牌恰过期时刷新
+        一次再重试 complete（会话与已成片都不随令牌死，整单不
+        该在最后一步白败）；其余错误、以及刷新失败，一律原样
+        抛回调用方的失败口径。"""
+        try:
+            return self._oss_multipart_complete(
+                token, bucket, object_key, upload_id, parts, callback,
+                file_sha1_upper)
+        except Pan115Error as exc:
+            if refresher is None or not _is_oss_token_expired(exc):
+                raise
+            if not refresher(None):
+                raise
+            logger.warning(
+                "pan115 multipart complete retry after token refresh "
+                "upload=%s", upload_id)
+            return self._oss_multipart_complete(
+                token, bucket, object_key, upload_id, parts, callback,
+                file_sha1_upper)
 
     def _oss_multipart_abort(self, token, bucket, object_key, upload_id):
         """best-effort 取消分片任务（失败不冒泡：整单已判失败）。"""
