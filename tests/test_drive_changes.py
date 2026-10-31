@@ -557,7 +557,8 @@ def test_changes_token_url_is_start_page_token():
 # page token 只在映射+入队成功后推进（失败不丢 changes）
 # ---------------------------------------------------------------------------
 
-def _poll_with(map_side_effect=None, trigger_ok=True, drives=None):
+def _poll_with(map_side_effect=None, trigger_ok=True, drives=None,
+               mark_side_effect=None):
     db = mock.Mock()
     saved = []
     drives = drives or {"0AAA": ["MP"]}
@@ -570,6 +571,9 @@ def _poll_with(map_side_effect=None, trigger_ok=True, drives=None):
                            side_effect=map_side_effect,
                            return_value={1: {"/mnt/mp/x"}}), \
          mock.patch.object(drive_changes, "_trigger_scan", return_value=trigger_ok), \
+         mock.patch.object(drive_changes, "soft_delete_removed_items",
+                           side_effect=mark_side_effect,
+                           return_value=0), \
          mock.patch.object(drive_changes, "_save_page_token",
                            side_effect=lambda _db, did, t: saved.append((did, t))), \
          mock.patch("backend.emby_server.change_watcher.record_chase_run"), \
@@ -1513,3 +1517,158 @@ def test_list_changes_final_page_at_limit_returns_normally():
         changes, _ = drive_changes.list_changes("pt", "D1")
     assert [c["fileId"] for c in changes] == ["a", "b"]
     assert calls["n"] == 2, calls
+
+
+# ---------------------------------------------------------------------------
+# A-094：Drive 删除事件（removed/trashed）不再静默丢弃
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager
+
+from backend.emby_server import soft_delete
+
+
+def _a094_make_item(db, lib, fid, file_path, item_type="movie", **kw):
+    it = em.MediaItem(guid=_guid(), library_id=lib.id, item_type=item_type,
+                      name="a094_%s" % _guid()[:8], file_path=file_path,
+                      drive_file_id=fid, **kw)
+    db.add(it)
+    db.commit()
+    db.refresh(it)
+    return it
+
+
+def _a094_cleanup(db, lib):
+    # Core 语句不受 ORM 可见性钩子影响，一次清掉含已软删行在内的全部行
+    from sqlalchemy import delete as _sa_delete
+    db.execute(_sa_delete(em.MediaItem).where(
+        em.MediaItem.library_id == lib.id))
+    db.commit()
+    db.delete(lib)
+    db.commit()
+
+
+@contextmanager
+def _a094_map_env(lib):
+    with mock.patch.object(drive_changes, "_library_drive_prefixes",
+                           return_value=[(lib.id, "0AAA", "/剧集")]), \
+         mock.patch.object(drive_changes, "_library_fs_prefixes",
+                           return_value={(lib.id, "/剧集"): "mount://3/剧集"}), \
+         mock.patch.object(drive_changes, "get_token_for_drive",
+                           return_value="tok"):
+        yield
+
+
+def test_a094_removed_event_yields_affected_prefix():
+    db = SessionLocal()
+    lib = _make_lib(db)
+    try:
+        _a094_make_item(db, lib, "DELFID",
+                        "mount://3/剧集/国产剧/xxx.mkv")
+        with _a094_map_env(lib):
+            affected = drive_changes.map_changes_to_libraries(
+                db, "0AAA", [{"fileId": "DELFID", "removed": True}])
+        assert affected == {lib.id: {"mount://3/剧集/国产剧"}}
+    finally:
+        _a094_cleanup(db, lib)
+
+
+def test_a094_trashed_event_yields_affected_prefix():
+    db = SessionLocal()
+    lib = _make_lib(db)
+    try:
+        _a094_make_item(db, lib, "DELFID2",
+                        "mount://3/剧集/国产剧/yyy.mkv")
+        with _a094_map_env(lib):
+            affected = drive_changes.map_changes_to_libraries(
+                db, "0AAA", [{"fileId": "DELFID2",
+                              "file": {"trashed": True, "name": "yyy.mkv"}}])
+        assert affected == {lib.id: {"mount://3/剧集/国产剧"}}
+    finally:
+        _a094_cleanup(db, lib)
+
+
+def test_a094_unknown_file_id_yields_nothing():
+    db = SessionLocal()
+    lib = _make_lib(db)
+    try:
+        with _a094_map_env(lib):
+            affected = drive_changes.map_changes_to_libraries(
+                db, "0AAA", [{"fileId": "NOPE", "removed": True}])
+        assert affected == {}
+    finally:
+        _a094_cleanup(db, lib)
+
+
+def _a094_deleted_at(db, item_id):
+    # Core 单列查询：不受 ORM 可见性钩子与 identity map 刷新影响
+    from sqlalchemy import select as _sa_select
+    row = db.execute(
+        _sa_select(em.MediaItem.deleted_at).where(
+            em.MediaItem.id == item_id)).first()
+    return row[0] if row else "MISSING"
+
+
+def test_a094_soft_delete_marks_file_rows_only():
+    db = SessionLocal()
+    lib = _make_lib(db)
+    other_lib = _make_lib(db)
+    try:
+        movie = _a094_make_item(db, lib, "F1",
+                                "mount://3/剧集/国产剧/a.mkv", "movie")
+        ep = _a094_make_item(db, lib, "F2",
+                             "mount://3/剧集/国产剧/s01e01.mkv", "episode")
+        series = _a094_make_item(db, lib, "F3",
+                                 "mount://3/剧集/国产剧", "series")
+        merged = _a094_make_item(db, lib, "F1",
+                                 "mount://3/剧集/国产剧/a-copy.mkv", "movie",
+                                 merged_into_id=movie.id)
+        foreign = _a094_make_item(db, other_lib, "F4",
+                                  "mount://9/电影/b.mkv", "movie")
+        # 标记会 commit，实例属性随即过期；已软删行的属性重载必失败，
+        # 故先把 id 存成裸 int，后面只用裸 id 查。
+        movie_id, ep_id, series_id, merged_id, foreign_id = (
+            movie.id, ep.id, series.id, merged.id, foreign.id)
+        changes = [{"fileId": "F1", "removed": True},
+                   {"fileId": "F2", "file": {"trashed": True}},
+                   {"fileId": "F3", "removed": True},
+                   {"fileId": "F4", "removed": True}]
+        with mock.patch.object(drive_changes, "_library_drive_prefixes",
+                               return_value=[(lib.id, "0AAA", "/剧集")]):
+            marked = drive_changes.soft_delete_removed_items(
+                db, "0AAA", changes)
+        assert marked == 2
+        # 软删后的行对普通 ORM 查询不可见（含 refresh），须在
+        # include_deleted 内按 id 重查 deleted_at。
+        assert _a094_deleted_at(db, movie_id) is not None
+        assert _a094_deleted_at(db, ep_id) is not None
+        assert _a094_deleted_at(db, series_id) is None
+        assert _a094_deleted_at(db, merged_id) is None
+        assert _a094_deleted_at(db, foreign_id) is None
+    finally:
+        _a094_cleanup(db, lib)
+        _a094_cleanup(db, other_lib)
+
+
+def test_a094_marking_is_idempotent_on_replay():
+    db = SessionLocal()
+    lib = _make_lib(db)
+    try:
+        _a094_make_item(db, lib, "F9",
+                        "mount://3/剧集/国产剧/z.mkv", "movie")
+        changes = [{"fileId": "F9", "removed": True}]
+        with mock.patch.object(drive_changes, "_library_drive_prefixes",
+                               return_value=[(lib.id, "0AAA", "/剧集")]):
+            assert drive_changes.soft_delete_removed_items(
+                db, "0AAA", changes) == 1
+            assert drive_changes.soft_delete_removed_items(
+                db, "0AAA", changes) == 0
+    finally:
+        _a094_cleanup(db, lib)
+
+
+def test_a094_poll_once_marking_failure_blocks_token():
+    saved, stats = _poll_with(
+        mark_side_effect=RuntimeError("mark boom"))
+    assert saved == []
+    assert stats["errors"] == 1

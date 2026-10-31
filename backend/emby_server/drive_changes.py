@@ -1245,6 +1245,77 @@ def _is_video_name(name: str) -> bool:
     return _os.path.splitext(name)[1].lower() in _VIDEO_EXTS
 
 
+def _removed_file_ids(changes: list[dict]) -> list[str]:
+    """从 changes 里抽 removed/trashed 事件的 fileId（去重保序）。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for ch in changes:
+        f = ch.get("file") or {}
+        if ch.get("removed") or f.get("trashed"):
+            fid = ch.get("fileId", "") or ""
+            if fid and fid not in seen:
+                seen.add(fid)
+                out.append(fid)
+    return out
+
+
+def _visible_items_by_drive_file_id(db, drive_file_ids, library_ids):
+    """按 drive_file_id 查可见条目。
+
+    口径：deleted_at IS NULL（ORM 全局钩子本来就会拼，这里显式写出，
+    使标记在 include_deleted 语境下仍幂等）且 merged_into_id IS NULL
+    （合并副本无全局过滤，必须显式剔除，WS1 口径）。
+    """
+    from backend.emby_server import models as em
+    if not drive_file_ids or not library_ids:
+        return []
+    return db.query(em.MediaItem).filter(
+        em.MediaItem.drive_file_id.in_(list(drive_file_ids)),
+        em.MediaItem.library_id.in_(list(library_ids)),
+        em.MediaItem.deleted_at.is_(None),
+        em.MediaItem.merged_into_id.is_(None),
+    ).all()
+
+
+#: 删除事件可直接软删标记的行类型：只有文件行（movie/episode）。
+#: 剧/季行无实体文件——孤儿剧/季仍由整库清理收尾，这里不标。
+_REMOVED_MARKABLE_TYPES = ("movie", "episode")
+
+
+def soft_delete_removed_items(db, drive_id: str, changes: list[dict]) -> int:
+    """把本轮 removed/trashed 变化命中的可见文件条目标记软删除。
+
+    A-094 第二环：定向扫描恒跳清理（scanner.py 定向分支，v2.52.0 起
+    的既定语义：只看了部分目录，不能把未见当删除），单靠触发扫描清
+    不掉已删条目，故删除事件本身直接标记。只写 deleted_at，从属数据
+    （播放进度、收藏、元数据）全留着；文件若回来，扫描复活口径会把
+    deleted_at 清空——与清理阶段同款语义。本函数不做任何硬删；远期
+    物理回收走既有 MEDIA_SOFT_DELETE_PURGE_DAYS 机制，不新开开关。
+    仅限本 drive 映射到的库；标记成功即 commit（与 _save_page_token
+    的提交风格一致），失败时调用方不推进 page token，本批下轮重放，
+    标记按 deleted_at IS NULL 天然幂等。
+    """
+    lib_ids = [lib_id for lib_id, did, _sub in _library_drive_prefixes(db)
+               if did == drive_id]
+    if not lib_ids:
+        return 0
+    removed_ids = _removed_file_ids(changes)
+    if not removed_ids:
+        return 0
+    now = datetime.now(timezone.utc)
+    marked = 0
+    for item in _visible_items_by_drive_file_id(db, removed_ids, lib_ids):
+        if (item.item_type or "") not in _REMOVED_MARKABLE_TYPES:
+            continue
+        item.deleted_at = now
+        marked += 1
+    if marked:
+        logger.info("Drive Changes: 删除事件软删标记 %d 条（drive=%s）",
+                    marked, drive_id)
+        db.commit()
+    return marked
+
+
 def map_changes_to_libraries(db, drive_id: str,
                              changes: list[dict]) -> dict[int, set[str]]:
     """把 changes 映射成 {library_id: {库文件路径前缀}}。
@@ -1297,6 +1368,17 @@ def map_changes_to_libraries(db, drive_id: str,
                     rel = changed_dir[len(sub):].strip("/")
                     full = fs_prefix.rstrip("/") + ("/" + rel if rel else "")
                     affected.setdefault(lib_id, set()).add(full)
+    # A-094：删除事件不再静默丢弃——按 fileId 查库，命中条目的父目录
+    # 计入 affected，触发该目录的定向扫描（目录内其余变化一并刷新；
+    # 条目本身的清理见 soft_delete_removed_items——定向扫描恒跳清理，
+    # 单靠触发扫描等于没修）。无 file_path 的行不产前缀，只走标记。
+    removed_ids = _removed_file_ids(changes)
+    if removed_ids:
+        lib_ids = [lib_id for lib_id, _sub in candidates]
+        for item in _visible_items_by_drive_file_id(db, removed_ids, lib_ids):
+            parent = (item.file_path or "").rsplit("/", 1)[0]
+            if parent:
+                affected.setdefault(item.library_id, set()).add(parent)
     return affected
 
 
@@ -1508,7 +1590,8 @@ def poll_once() -> dict:
     from backend.emby_server import change_watcher as cw  # 延迟导入，避免循环 import
     t0 = time.time()
     started = datetime.now(timezone.utc)
-    stats = {"drives": 0, "changes": 0, "libraries": 0, "errors": 0}
+    stats = {"drives": 0, "changes": 0, "libraries": 0, "errors": 0,
+           "removed_marked": 0}
     if not ENABLED:
         return stats
     drives = discover_drives()
@@ -1656,6 +1739,16 @@ def poll_once() -> dict:
                         stats["libraries"] += 1
                         if not _trigger_scan(db, lib_id, prefixes):
                             ok = False
+                    # A-094：删除事件的清理不能只靠定向扫描（定向恒跳清理），
+                    # 这里直接软删标记；失败则不推进 page token，下轮重放。
+                    try:
+                        stats["removed_marked"] = soft_delete_removed_items(
+                            db, drive_id, changes)
+                    except Exception as exc:
+                        ok = False
+                        logger.warning(
+                            "Drive Changes: drive %s 删除事件软删标记失败（%s），"
+                            "page token 不推进，下轮重放", drive_id, exc)
                 if ok and new_token:
                     _save_page_token(db, drive_id, new_token)
                 elif not ok:
@@ -1702,9 +1795,10 @@ def poll_once() -> dict:
             db.close()
         except Exception:
             pass
-    logger.info("[drive-changes] round done: drives=%d changes=%d libs=%d dur=%ds errors=%d",
+    logger.info("[drive-changes] round done: drives=%d changes=%d libs=%d dur=%ds errors=%d removed=%d",
                 stats["drives"], stats["changes"], stats["libraries"],
-                int(time.time() - t0), stats["errors"])
+                int(time.time() - t0), stats["errors"],
+                stats["removed_marked"])
     return stats
 
 
