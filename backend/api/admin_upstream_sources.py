@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -394,3 +394,50 @@ def put_upstream_detail_line_config(
         schema="upstream_aggregate")
     db.commit()
     return {"enabled": _up.detail_line_enabled(db)}
+
+
+class UpstreamCategoryLibraryMapIn(BaseModel):
+    """分类→本地库映射写入体（备注-分类对位）：JSON 文本或对象。"""
+
+    value: Any = None
+
+
+def _category_library_map_payload(db: Session) -> dict:
+    from backend.integrations import store
+
+    raw = store.get_value(db, uar.KEY_CATEGORY_LIBRARY_MAP, "")
+    return {"value": raw or "", "map": uar.category_library_map(db)}
+
+
+@admin_emby_router.get("/upstream-category-library-map")
+def get_upstream_category_library_map(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读分类→本地库改配表（SystemConfig，无行＝空表＝同名对位）。"""
+    return _category_library_map_payload(db)
+
+
+@admin_emby_router.put("/upstream-category-library-map")
+def put_upstream_category_library_map(
+    payload: UpstreamCategoryLibraryMapIn,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """写分类→本地库改配表（走 config_service 统一保存通道）。
+
+    值是 JSON 对象（分类名 → 本地库名），只列要改配的分类，没列的
+    仍同名对位；形态非法（非对象/键值非字符串/空键空值）→ 400
+    且整批不落库；空串/不传 = 删行回未配置。审计由 /api/admin/emby/*
+    中间件统一记录。
+    """
+    from backend import config_schema, config_service
+
+    try:
+        config_service.save_config(
+            db, {uar.KEY_CATEGORY_LIBRARY_MAP: payload.value},
+            schema="upstream_aggregate")
+    except config_schema.ConfigValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return _category_library_map_payload(db)

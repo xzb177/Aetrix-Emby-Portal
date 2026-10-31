@@ -45,6 +45,18 @@
 - 本地侧只认活行：``merged_into_id IS NULL``（``deleted_at``
   由 ORM 全局钩子自动拼）；同一身份多行时取 id 最小（确定性）。
 
+备注-分类对位（2026-10-31 用户亲定）：配对不再全库乱配——
+源备注（``upstream_sources.note``）按「备注-分类」约定写
+（如「乐观-国产剧」），聚合先从备注解析出分类，再把分类对位
+到一个本地真实库（分类→库名可经 SystemConfig
+``upstream_aggregate_category_library_map`` 改配，没配到的分类
+默认同名对位；分类名单与库名一律来自服主数据，代码不写死），
+本源全部配对只在该库内进行。备注为空/解析不出分类、或分类
+对不上任何本地库时，整源跳过：不解析凭据、不拉上游，结果带
+``skipped`` 与 ``skip_reason``（短码 + 文案 + 分类），日志同
+步记一条——绝不静默回落全库配对。跳过不是失败，任务照常以
+succeeded 落终态、结果里看得到跳过原因。
+
 写路径开关：``UPSTREAM_ITEM_MAPPING_ENABLED``（默认关）只管
 写路径——关时 ``record_mapping`` 返回 None、不写任何东西，
 本模块照实回 ``written=0`` 与 ``mapping_enabled=false``，
@@ -178,6 +190,133 @@ def _page_retry_config(db):
     if backoff is None:
         backoff = PAGE_RETRY_BACKOFF_DEFAULT
     return max(0, min(5, retries)), max(0, min(30, backoff))
+
+
+def _system_config_text(db, key):
+    """SystemConfig 文本热读：与 _system_config_int 同口径
+    （无行/异常一律 None 回退，读失败不许把聚合打停）。"""
+    if db is None:
+        return None
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, key, "")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+#: 分类→本地库名改配 SystemConfig 键（备注-分类对位）：JSON 对象
+#: {"分类名": "本地库名"}，只列要改配的分类；没列的分类默认同名
+#: 对位。保存侧在 config_schema 严格校验（json_str_map），运行时
+#: 读取宽容（见 category_library_map）。纯 SystemConfig 键，不进
+#: env.example（#1527 先例）。
+KEY_CATEGORY_LIBRARY_MAP = "upstream_aggregate_category_library_map"
+
+#: 整源跳过短码：备注为空/解析不出分类；分类对不上任何本地库。
+SKIP_REMARK_MISSING = "category_remark_missing"
+SKIP_LIBRARY_UNMATCHED = "category_library_unmatched"
+
+#: 备注里「备注」与「分类」的分隔符：半角与全角横线都认。
+_REMARK_SEPARATORS = ("-", "－")
+
+
+def parse_remark_category(note) -> Optional[str]:
+    """从源备注解析分类：「备注-分类」取最后一段为分类。
+
+    - 备注为空/全空白 → None；
+    - 含分隔符 → 分隔符后的最后一段（去空白，空段按无分类）；
+    - 不含分隔符 → 整段备注即分类名（服主只写分类也成立）。
+    分类名本身是服主数据，这里只做形态切分、不校验名单。
+    """
+    text = (note or "").strip()
+    if not text:
+        return None
+    cut = -1
+    for sep in _REMARK_SEPARATORS:
+        idx = text.rfind(sep)
+        if idx > cut:
+            cut = idx
+    if cut < 0:
+        return text
+    category = text[cut + 1:].strip()
+    return category or None
+
+
+def category_library_map(db) -> Dict[str, str]:
+    """读分类→库名改配表（运行时宽容口径）。
+
+    存量值解析不出来（人工直改库写坏等）一律当没配——回落同名
+    对位，不许把一轮聚合打停；坏条目（非字符串键值、空键空值）
+    逐条跳过。保存侧的严格校验在 config_schema，运行时不复检。
+    """
+    raw = _system_config_text(db, KEY_CATEGORY_LIBRARY_MAP)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        logger.warning("上游聚合分类改配表解析失败，按未配置处理")
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("上游聚合分类改配表不是 JSON 对象，按未配置处理")
+        return {}
+    out: Dict[str, str] = {}
+    for key, value in parsed.items():
+        if isinstance(key, str) and isinstance(value, str):
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                out[key] = value
+    return out
+
+
+def resolve_target_library(db: Session, source) -> dict:
+    """把源备注的分类对位到本地真实库（备注-分类对位的唯一实现）。
+
+    返回 {"library": Library|None, "category": str|None,
+    "skip": None|{"code", "message", "category"}}：
+    - 备注解析不出分类 → skip=category_remark_missing；
+    - 目标库名 = 改配表命中值，未命中默认分类同名；按名找
+      非虚拟库（虚拟库是平台生成的展示库、没有自己的条目，
+      不是对位目标），同名多行取 id 最小（确定性）；找不到
+      → skip=category_library_unmatched。
+    """
+    category = parse_remark_category(getattr(source, "note", None))
+    if category is None:
+        return {
+            "library": None, "category": None,
+            "skip": {
+                "code": SKIP_REMARK_MISSING,
+                "message": "源备注为空或未写分类（「备注-分类」，"
+                           "如「乐观-国产剧」），已跳过该源聚合",
+                "category": None,
+            },
+        }
+    target_name = category_library_map(db).get(category, category)
+    # 同名多行取 id 最小（确定性）；虚拟判定走全仓同款 Python 侧
+    # bool() 口径（is_virtual 为 NULL 的老行算非虚拟，SQL == False
+    # 会把它们漏掉）。库是「台」数量级，全取回内存筛不放大查询。
+    library = None
+    for row in (db.query(em.Library)
+                .filter(em.Library.name == target_name)
+                .order_by(em.Library.id).all()):
+        if not bool(getattr(row, "is_virtual", False)):
+            library = row
+            break
+    if library is None:
+        return {
+            "library": None, "category": category,
+            "skip": {
+                "code": SKIP_LIBRARY_UNMATCHED,
+                "message": f"源备注分类「{category}」对位本地库"
+                           f"「{target_name}」不存在，已跳过该源聚合",
+                "category": category,
+            },
+        }
+    return {"library": library, "category": category, "skip": None}
 
 
 def _system_config_float(db, key):
@@ -599,13 +738,18 @@ def _local_title_year_key(local) -> Optional[str]:
     return agg.aggregate_key_for(probe)
 
 
-def _alive_local_query(db: Session):
+def _alive_local_query(db: Session, library_id=None):
     """本地活行查询基底：merged_into_id 与 is_hidden 显式过滤
     （deleted_at 由 ORM 全局钩子自动拼，见软删除纪律；与本站
-    浏览口径对齐）。"""
-    return (db.query(em.MediaItem)
-            .filter(em.MediaItem.merged_into_id.is_(None))
-            .filter(em.MediaItem.is_hidden == False))  # noqa: E712
+    浏览口径对齐）。``library_id`` 给了就再按库收窄——备注-分类
+    对位后配对只认对位库内的行，聚合的全部本地查询都从这里出，
+    一处收窄即全链路不跨库。"""
+    query = (db.query(em.MediaItem)
+             .filter(em.MediaItem.merged_into_id.is_(None))
+             .filter(em.MediaItem.is_hidden == False))  # noqa: E712
+    if library_id is not None:
+        query = query.filter(em.MediaItem.library_id == library_id)
+    return query
 
 
 def _type_matches(local, aggregate_item_type: str) -> bool:
@@ -617,12 +761,16 @@ def _type_matches(local, aggregate_item_type: str) -> bool:
     return local_type == (aggregate_item_type or "").lower()
 
 
-def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
+def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem],
+                    *, library_id=None):
     """给聚合作品配本地条目（纯配对，不写库）。
 
     返回 (pairs, unpaired_reasons)：pairs 每项含本地条目 id、
     上游条目 id（逐线路）、置信度、证据、集序号；unpaired_reasons
     按原因码计数（不逐条列未配对明细，响应体保持小）。
+    ``library_id`` 给了时只在该本地库内配对（备注-分类对位，
+    见 resolve_target_library）；不给 = 旧口径全库配对（仅存量
+    直接调用方与旧测试用，新链路一律经 run 的对位解析传库）。
 
     查询策略（批量，不逐聚合查库）：
     - tmdb / imdb 各一次 IN 查询建映射；
@@ -646,12 +794,12 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
     by_tmdb: Dict[str, object] = {}
     by_imdb: Dict[str, object] = {}
     if tmdb_ids:
-        for row in (_alive_local_query(db)
+        for row in (_alive_local_query(db, library_id)
                     .filter(em.MediaItem.tmdb_id.in_(sorted(tmdb_ids)))
                     .order_by(em.MediaItem.id).all()):
             by_tmdb.setdefault(str(row.tmdb_id), row)
     if imdb_ids:
-        for row in (_alive_local_query(db)
+        for row in (_alive_local_query(db, library_id)
                     .filter(em.MediaItem.imdb_id.in_(sorted(imdb_ids)))
                     .order_by(em.MediaItem.id).all()):
             by_imdb.setdefault(str(row.imdb_id), row)
@@ -664,7 +812,7 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
         years = {item.production_year for item in title_year_items
                  if item.production_year is not None}
         for year in sorted(years):
-            candidates = (_alive_local_query(db)
+            candidates = (_alive_local_query(db, library_id)
                           .filter(em.MediaItem.item_type.in_(
                               ["movie", "series"]))
                           .filter((em.MediaItem.scan_year == year)
@@ -733,19 +881,21 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
     if deferred_episodes:
         _pair_deferred_episodes(
             db, deferred_episodes, pairs, bump,
-            resolved_series_by_title, unresolved_series_titles)
+            resolved_series_by_title, unresolved_series_titles,
+            library_id=library_id)
     return pairs, unpaired
 
 
-def _local_series_title_index(db: Session):
+def _local_series_title_index(db: Session, library_id=None):
     """本地活系列按归一标题索引：{标题键: {id: 行}}（O-08 回落用）。
 
     标题取 _local_title_year 口径（scan_title 回落 name），归一用
     聚合模块同款 _normalize_title；同名多行全保留——多候选由
-    调用方按防错红线拒配，这里不替它做主。
+    调用方按防错红线拒配，这里不替它做主。``library_id`` 给了
+    时索引只含对位库内的系列（备注-分类对位，不跨库）。
     """
     index: Dict[str, Dict[int, object]] = {}
-    for row in (_alive_local_query(db)
+    for row in (_alive_local_query(db, library_id)
                 .filter(em.MediaItem.item_type == "series").all()):
         title, _year = _local_title_year(row)
         if not title:
@@ -758,7 +908,8 @@ def _local_series_title_index(db: Session):
 
 def _pair_deferred_episodes(db: Session, episodes, pairs, bump,
                             resolved_series_by_title,
-                            unresolved_series_titles) -> None:
+                            unresolved_series_titles,
+                            *, library_id=None) -> None:
     """O-08 系列级配对（第二遍）：自身无身份的单集先定系列再对齐。
 
     定系列（按可靠度排序）：
@@ -799,7 +950,8 @@ def _pair_deferred_episodes(db: Session, episodes, pairs, bump,
             continue
         else:
             if local_series_by_title is None:
-                local_series_by_title = _local_series_title_index(db)
+                local_series_by_title = _local_series_title_index(
+                    db, library_id)
             rows = local_series_by_title.get(title_key) or {}
             if not rows:
                 bump("episode_no_identity")
@@ -810,7 +962,7 @@ def _pair_deferred_episodes(db: Session, episodes, pairs, bump,
             local_series_id = next(iter(rows))
         if local_series_id not in episodes_by_series:
             episodes_by_series[local_series_id] = (
-                _alive_local_query(db)
+                _alive_local_query(db, library_id)
                 .filter(em.MediaItem.item_type == "episode")
                 .filter(em.MediaItem.series_id == local_series_id)
                 .all())
@@ -891,6 +1043,14 @@ def run_manual_aggregation(db: Session, source, *,
     - 源不存在由调用方先 404（本函数不查源行）；
     - 源未启用 → 400（停用即断聚合）；
     - applecms 型 → 400（走它自己的同步，不按 Emby 协议撞接口）。
+
+    备注-分类对位（2026-10-31）：前置校验后先按源备注解析对位
+    库（见 resolve_target_library）。解析不出分类或分类对不上
+    本地库时整源跳过——不算失败：不解析凭据、不拉上游，直接
+    返回带 ``skipped=True`` 与 ``skip_reason`` 的零计数结果，
+    并记一条 warning 日志；对位命中后全部配对只在对位库内
+    进行，结果带 ``category`` / ``target_library_id`` /
+    ``target_library_name`` 供追溯。
     逐库语义：
     - 先取库清单，再逐库分窗（WINDOW_RECORDS 条一窗）拉取/聚合/
       配对/写映射（flush，调用方事务内提交）；
@@ -936,6 +1096,32 @@ def run_manual_aggregation(db: Session, source, *,
     （upstream_aggregate_tasks），本函数仍不自建检查点表。
     """
     ensure_aggregatable(source)
+    routing = resolve_target_library(db, source)
+    if routing["skip"] is not None:
+        skip = routing["skip"]
+        logger.warning("上游聚合按备注分类跳过整源 source_id=%s "
+                       "code=%s category=%s", source.id, skip["code"],
+                       skip["category"])
+        return {
+            "source_id": source.id,
+            "fetched": 0,
+            "aggregates": 0,
+            "pairs": [],
+            "paired": 0,
+            "written": 0,
+            "mapping_enabled": uim.mapping_enabled(),
+            "unpaired_reasons": {},
+            "libraries": [],
+            "libraries_discovered": 0,
+            "failed_libraries": [],
+            "skipped": True,
+            "skip_reason": skip,
+            "category": routing["category"],
+            "target_library_id": None,
+            "target_library_name": None,
+        }
+    target_library = routing["library"]
+    target_library_id = target_library.id
     if page_size is None:
         page_size = configured_default_page_size(db)
     page_retries, page_backoff = _page_retry_config(db)
@@ -1001,7 +1187,8 @@ def run_manual_aggregation(db: Session, source, *,
                         f"上游库 {lib_name or lib_id} 聚合失败："
                         f"{aggregated[0].error}")
                 items = aggregated[0].items if aggregated else []
-                pairs, unpaired = pair_aggregates(db, items)
+                pairs, unpaired = pair_aggregates(
+                    db, items, library_id=target_library_id)
                 written = 0
                 for pair in pairs:
                     pair["library_id"] = lib_id
@@ -1104,10 +1291,10 @@ def run_manual_aggregation(db: Session, source, *,
                         {"type": "library_done", "summary": summary})
     logger.info("上游按库手动聚合 source_id=%s libraries=%s fetched=%s "
                 "aggregates=%s pairs=%s written=%s failed_libraries=%s "
-                "mapping_enabled=%s",
+                "mapping_enabled=%s category=%s target_library_id=%s",
                 source.id, len(libraries), total_fetched, total_aggregates,
                 total_paired, total_written, len(failed_libraries),
-                mapping_on)
+                mapping_on, routing["category"], target_library_id)
     return {
         "source_id": source.id,
         "fetched": total_fetched,
@@ -1120,4 +1307,9 @@ def run_manual_aggregation(db: Session, source, *,
         "libraries": library_summaries,
         "libraries_discovered": len(libraries),
         "failed_libraries": failed_libraries,
+        "skipped": False,
+        "skip_reason": None,
+        "category": routing["category"],
+        "target_library_id": target_library_id,
+        "target_library_name": target_library.name,
     }

@@ -1792,6 +1792,21 @@ export const fetchUpstreamDetailLineConfig = () =>
 export const updateUpstreamDetailLineConfig = (enabled: boolean) =>
   put<UpstreamDetailLineConfig>(`${E}/upstream-detail-line-config`, { enabled })
 
+/** 分类→本地库改配表（备注-分类对位）：源备注「备注-分类」的分类
+ *  默认同名对位本地库；本表是 JSON 对象（分类名 → 本地库名），只列
+ *  要改配的分类。value 是落库的 canonical JSON 文本（空串 = 未配置），
+ *  map 是解析后的对象。 */
+export interface UpstreamCategoryLibraryMapConfig {
+  value: string
+  map: Record<string, string>
+}
+
+export const fetchUpstreamCategoryLibraryMap = () =>
+  get<UpstreamCategoryLibraryMapConfig>(`${E}/upstream-category-library-map`)
+
+export const updateUpstreamCategoryLibraryMap = (value: string) =>
+  put<UpstreamCategoryLibraryMapConfig>(`${E}/upstream-category-library-map`, { value })
+
 /** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。
  *  只做手动触发，不做自动调度、不做自动播放兜底。
  *  POST 立刻返回任务（queued），聚合在后台跑；用
@@ -1818,6 +1833,12 @@ export interface UpstreamAggregateFailedLibrary {
   message: string
 }
 
+export interface UpstreamAggregateSkipReason {
+  code: string
+  message: string
+  category: string | null
+}
+
 export interface UpstreamAggregateResult {
   source_id: number
   fetched: number
@@ -1829,6 +1850,13 @@ export interface UpstreamAggregateResult {
   libraries: UpstreamAggregateLibrarySummary[]
   libraries_discovered: number
   failed_libraries: UpstreamAggregateFailedLibrary[]
+  /** 备注-分类对位：整源跳过时为 true，skip_reason 带短码与文案；
+   *  对位命中时 category / target_library_* 是本轮配对的本地库。 */
+  skipped?: boolean
+  skip_reason?: UpstreamAggregateSkipReason | null
+  category?: string | null
+  target_library_id?: number | null
+  target_library_name?: string | null
 }
 
 export type UpstreamAggregateTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed'
