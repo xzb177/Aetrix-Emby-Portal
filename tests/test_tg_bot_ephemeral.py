@@ -142,6 +142,62 @@ def test_ephemeral_defaults_and_timer(monkeypatch):
     assert len(timers) == 1
 
 
+def test_ephemeral_timer_uses_delete_callable_captured_at_schedule(monkeypatch):
+    """调度后替换 sender.delete_message，到期仍调调度时快照的旧 callable。
+
+    生产 sender 不热替换删除函数，快照与旧的到期现查等价；快照口径
+    钉死的是测试卫生：迟到定时器不许落到后来测试装的记录器头上
+    （b3 的 3 秒命令自毁串扰 channel_guard 记录器的实锤污染）。
+    """
+    from backend.tg_bot import ephemeral
+
+    timers = []
+
+    class FakeTimer:
+        def __init__(self, interval, function, args=None, kwargs=None):
+            self.interval = interval
+            self.function = function
+            self.args = args or ()
+            self.kwargs = kwargs or {}
+            self.daemon = False
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def fire(self):
+            self.function(*self.args, **self.kwargs)
+
+    class DummySession:
+        def close(self):
+            pass
+
+    old_calls, new_calls = [], []
+
+    def old_delete(db_, chat_id, message_id):
+        old_calls.append((chat_id, message_id))
+        return True, None
+
+    def new_delete(db_, chat_id, message_id):
+        new_calls.append((chat_id, message_id))
+        return True, None
+
+    monkeypatch.setattr(ephemeral, "Timer", FakeTimer)
+    monkeypatch.setattr("backend.database.SessionLocal", lambda: DummySession())
+    monkeypatch.setattr(sender, "delete_message", old_delete)
+
+    assert ephemeral.schedule_delete(-1002, 57, 30) is True
+    assert timers[0].kwargs["delete_message"] is old_delete
+
+    # 调度之后 sender.delete_message 被换掉（模拟后来测试装记录器）
+    monkeypatch.setattr(sender, "delete_message", new_delete)
+    timers[0].fire()
+
+    assert old_calls == [(-1002, 57)]
+    assert new_calls == []
+    assert (-1002, 57) not in ephemeral._timers
+
+
 def test_ephemeral_delay_reads_system_config(db):
     from backend.tg_bot import ephemeral
 

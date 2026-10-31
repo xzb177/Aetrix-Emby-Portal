@@ -59,7 +59,8 @@ def rig(monkeypatch):
     deleted = []
     monkeypatch.setattr(ephemeral, "Timer", FakeTimer)
     monkeypatch.setattr(
-        ephemeral, "_delete_now", lambda c, m: deleted.append((c, m)))
+        ephemeral, "_delete_now",
+        lambda c, m, delete_message=None: deleted.append((c, m)))
     ephemeral._timers.clear()
     yield deleted
     for timer in list(ephemeral._timers.values()):

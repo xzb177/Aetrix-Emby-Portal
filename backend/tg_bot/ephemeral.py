@@ -9,6 +9,10 @@
   这是可接受降级（自毁只是群面整洁手段，丢一两条不影响业务）。
 - 到期触发时新开一个 SessionLocal 会话读 token 并调 deleteMessage，
   失败只记日志、绝不抛给调用方。
+- 调度时把当时的 sender.delete_message 快照进定时器闭包，到期调快照
+  而非现查 sender 模块属性：迟到的定时器不会串到后来被替换的 callable
+  上（测试里 monkeypatch 串扰的根因）。生产 sender 不热替换删除函数，
+  快照与旧的到期现查行为等价。
 - 延时读 SystemConfig（store.get_value 热读口径）：
   bot_msg_autodelete_seconds 默认 30、bot_cmd_autodelete_seconds 默认 3，
   0 表示关闭（不调度）；配置写坏（非数字/负数）时回落默认值，
@@ -62,14 +66,20 @@ def bot_cmd_delay_seconds(db) -> int:
     return _delay_seconds(db, BOT_CMD_CONFIG_KEY, DEFAULT_BOT_CMD_SECONDS)
 
 
-def _delete_now(chat_id: int, message_id: int) -> None:
-    """定时器到期执行体：新开会话调 deleteMessage，失败只记日志。"""
+def _delete_now(chat_id: int, message_id: int, delete_message=None) -> None:
+    """定时器到期执行体：新开会话调 deleteMessage，失败只记日志。
+
+    delete_message 为调度时快照的 sender.delete_message；缺省（直接
+    调用本函数时）才现查 sender 模块属性，保持旧口径。
+    """
     from backend.database import SessionLocal
     from backend.tg_bot import sender
 
+    if delete_message is None:
+        delete_message = sender.delete_message
     db = SessionLocal()
     try:
-        ok, err = sender.delete_message(db, chat_id, message_id)
+        ok, err = delete_message(db, chat_id, message_id)
         if not ok:
             logger.warning(
                 "tg ephemeral delete failed: chat=%s message=%s err=%s",
@@ -85,11 +95,11 @@ def _delete_now(chat_id: int, message_id: int) -> None:
             pass
 
 
-def _fire_delete(chat_id: int, message_id: int) -> None:
-    """定时器到期执行体：先摘登记再删消息，登记表不留死条目。"""
+def _fire_delete(chat_id: int, message_id: int, delete_message=None) -> None:
+    """定时器到期执行体：先摘登记再按调度时快照删消息，不留死条目。"""
     with _registry_lock:
         _timers.pop((chat_id, message_id), None)
-    _delete_now(chat_id, message_id)
+    _delete_now(chat_id, message_id, delete_message=delete_message)
 
 
 def schedule_delete(chat_id: int, message_id: int, delay_seconds: int) -> bool:
@@ -103,7 +113,13 @@ def schedule_delete(chat_id: int, message_id: int, delay_seconds: int) -> bool:
     """
     if not chat_id or not message_id or delay_seconds <= 0:
         return False
-    timer = Timer(delay_seconds, _fire_delete, args=(chat_id, message_id))
+    # 快照调度这一刻的删除函数：到期时只调它，不再现查 sender 属性，
+    # 避免迟到定时器落到后来替换的 callable（见模块 docstring）。
+    from backend.tg_bot import sender
+
+    timer = Timer(
+        delay_seconds, _fire_delete, args=(chat_id, message_id),
+        kwargs={"delete_message": sender.delete_message})
     timer.daemon = True
     timer.start()
     key = (chat_id, message_id)
