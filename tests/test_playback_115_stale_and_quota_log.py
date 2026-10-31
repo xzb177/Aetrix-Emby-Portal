@@ -186,6 +186,9 @@ def test_gate_cross_fresh_115_row_still_served(db, monkeypatch):
 
 def test_rebuild_dead_115_same_provider_budget(db, monkeypatch):
     _enable(monkeypatch)
+    # 场景前提：属主有目标盘 active 绑定（生产调用面均先确立
+    # 绑定上下文；g1 建单前置校验按此判定，见治理单回传）。
+    _binding(db, 7)
     item = _item(db)
     out1 = tv.rebuild_dead_user115_copy(db, item, 7)
     assert out1["verdict"] == "preparing" and out1["reason"] == "job_rebuilt"
@@ -204,6 +207,8 @@ def test_rebuild_dead_115_cross_provider(db, monkeypatch):
     # （provider=源 drive、dest=pan115:user-<uid>），与同 provider
     # 115 重建（上一用例）同一套预算口径。
     _enable(monkeypatch)
+    # 跨 provider 重建落点在用户 115 盘：属主须有 115 绑定。
+    _binding(db, 7, provider="pan115")
     _mount(db, 3, "drive", "drive:drive1")
     item = _item(db, file_path="mount://3/电影/a.mkv")
     out = tv.rebuild_dead_user115_copy(db, item, 7)

@@ -302,3 +302,41 @@ def test_claim_does_not_sweep_source_job(db):
     claimed = tv.claim_due_jobs(db, limit=10)
     assert claimed == [job.id]
     assert _fresh(db, job.id).status == "running"
+
+
+# ---------- 死副本重建口：按属主真实绑定状态判定 ----------
+
+def test_rebuild_dead_drive_copy_with_binding_ok(db):
+    """副本失联重建（#1501 对账自愈链）：属主有目标盘 active
+    绑定 → 预算内照常建单，前置校验不误伤自愈链。"""
+    _mount(db)
+    item = _item(db)
+    _binding(db, 7, provider="drive")
+    out = tv.rebuild_dead_drive_copy(db, item, 7)
+    assert out["verdict"] == "preparing"
+    assert out["reason"] == "job_rebuilt"
+    assert db.query(em.TransferJob).count() == 1
+
+
+def test_rebuild_dead_drive_copy_no_binding_fast_fail(db):
+    """属主已无任何绑定：重建无处可落 → 重建口秒判
+    failed/no_binding、不落任务行（不再建出注定被执行器判
+    no_binding 的单、拖着重试空烧）。"""
+    _mount(db)
+    item = _item(db)
+    out = tv.rebuild_dead_drive_copy(db, item, 7)
+    assert out["verdict"] == "failed"
+    assert out["reason"] == "no_binding"
+    assert db.query(em.TransferJob).count() == 0
+
+
+def test_rebuild_dead_115_cross_no_dest_binding_fast_fail(db):
+    """跨 provider 重建（Drive 源→用户 115 盘）：只有源侧 Drive
+    绑定、目标 115 盘无绑定 → 同款秒判 no_binding、不落行。"""
+    _mount(db)
+    item = _item(db)
+    _binding(db, 7, provider="drive")
+    out = tv.rebuild_dead_user115_copy(db, item, 7)
+    assert out["verdict"] == "failed"
+    assert out["reason"] == "no_binding"
+    assert db.query(em.TransferJob).count() == 0

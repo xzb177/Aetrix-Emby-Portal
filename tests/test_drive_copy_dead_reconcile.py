@@ -171,6 +171,9 @@ def test_gate_cross_fresh_drive_row_still_served(db, monkeypatch):
 def test_rebuild_dead_drive_copy_same_provider_budget(db, monkeypatch):
     _enable(monkeypatch)
     _mount(db)
+    # 场景前提：属主有目标盘 active 绑定（生产调用面均先确立
+    # 绑定上下文；g1 建单前置校验按此判定，见治理单回传）。
+    _binding(db, 7)
     item = _item(db)
     out1 = tv.rebuild_dead_drive_copy(db, item, 7)
     assert out1["verdict"] == "preparing" and out1["reason"] == "job_rebuilt"
@@ -186,6 +189,8 @@ def test_rebuild_dead_drive_copy_same_provider_budget(db, monkeypatch):
 
 def test_rebuild_dead_drive_copy_cross_provider(db, monkeypatch):
     _enable(monkeypatch)
+    # 跨 provider 重建落点在用户 Drive 盘：属主须有 Drive 绑定。
+    _binding(db, 7, provider="drive")
     item = _item(db, file_path="115:/电影/a.mkv")
     out = tv.rebuild_dead_drive_copy(db, item, 7)
     assert out["verdict"] == "preparing"
@@ -231,6 +236,7 @@ def test_reconcile_heals_when_reshare_ok(db, monkeypatch):
 def test_reconcile_dead_file_strikes_and_rebuilds(db, monkeypatch):
     _enable(monkeypatch)
     _mount(db)
+    _binding(db, 7)
     item = _item(db)
     row = _variant(db, item.id, stale=0)
     monkeypatch.setattr(tv, "copy_public_cache_drop",
@@ -250,6 +256,7 @@ def test_reconcile_dead_file_strikes_and_rebuilds(db, monkeypatch):
 def test_reconcile_throttled_when_budget_spent(db, monkeypatch):
     _enable(monkeypatch)
     _mount(db)
+    _binding(db, 7)
     item = _item(db)
     row = _variant(db, item.id, stale=0)
     monkeypatch.setattr(tv, "copy_public_cache_drop",
