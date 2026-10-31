@@ -1268,7 +1268,11 @@ class Pan115Client:
                 return self._multipart_resume(
                     fileobj, filesize, file_sha1, resume_session, on_progress)
             except _ResumeStale:
-                # 旧会话不可用：best-effort abort 后重走全新上传
+                # 旧会话不可用：best-effort abort 后重走全新上传；
+                # 先记 warning，杜绝“续传失败→静默重传”的假象（A-092）。
+                logger.warning(
+                    "pan115 multipart resume stale, aborting old session "
+                    "and restarting upload")
                 try:
                     self.abort_multipart_session(resume_session)
                 except Exception:
@@ -1458,29 +1462,50 @@ class Pan115Client:
 
         返回 [{PartNumber, ETag}]（ETag 去引号大写，按片号升序）；
         会话不存在/已完成时服务端报错，调用方按 _ResumeStale 处理。
+        ListParts 单页默认上限 1000 片：按 part-number-marker 翻页
+        取全量（循环至 IsTruncated 为假），否则 >1000 片的文件续传
+        时持久化清单与当页恒不等、恒判 stale（A-092）。
         """
-        query = {"uploadId": upload_id}
-        headers = _oss_auth_headers(token, "GET", bucket, object_key,
-                                    query)
-        _status, _h, content = _http_full(
-            "GET", _oss_object_url(bucket, object_key, query),
-            headers=headers)
-        try:
-            root = ET.fromstring(content)
-        except Exception as exc:
-            raise Pan115Error(
-                f"115 分片 ListParts 响应非 XML：{exc}") from exc
         parts = []
-        for part in root.findall(".//Part"):
-            number = part.findtext("PartNumber")
-            etag = part.findtext("ETag")
-            if number is None or etag is None:
-                continue
+        marker = None
+        while True:
+            query = {"uploadId": upload_id}
+            if marker is not None:
+                query["part-number-marker"] = str(marker)
+            headers = _oss_auth_headers(token, "GET", bucket, object_key,
+                                        query)
+            _status, _h, content = _http_full(
+                "GET", _oss_object_url(bucket, object_key, query),
+                headers=headers)
             try:
-                parts.append({"PartNumber": int(number),
-                              "ETag": etag.strip().strip('"').upper()})
+                root = ET.fromstring(content)
+            except Exception as exc:
+                raise Pan115Error(
+                    f"115 分片 ListParts 响应非 XML：{exc}") from exc
+            for part in root.findall(".//Part"):
+                number = part.findtext("PartNumber")
+                etag = part.findtext("ETag")
+                if number is None or etag is None:
+                    continue
+                try:
+                    parts.append({"PartNumber": int(number),
+                                  "ETag": etag.strip().strip('"').upper()})
+                except ValueError:
+                    continue
+            truncated = (root.findtext("IsTruncated") or "").strip().lower()
+            if truncated != "true":
+                break
+            try:
+                next_marker = root.findtext("NextPartNumberMarker")
+                next_marker = (None if next_marker is None
+                               else int(next_marker))
             except ValueError:
-                continue
+                next_marker = None
+            if next_marker is None or next_marker == marker:
+                # 服务端称截断却不给可用 marker：只取已有页，不死循环；
+                # 调用方按片清单比对判 stale（与旧行为一致）。
+                break
+            marker = next_marker
         parts.sort(key=lambda p: p["PartNumber"])
         return parts
 
