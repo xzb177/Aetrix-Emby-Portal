@@ -712,6 +712,7 @@ def run_manual_aggregation(db: Session, source, *,
                            http_post: Optional[Callable] = None,
                            page_size: Optional[int] = None,
                            on_event: Optional[Callable] = None,
+                           on_heartbeat: Optional[Callable] = None,
                            commit_each_library: bool = False,
                            skip_library_ids=None,
                            prior_summaries: Optional[Dict[str, dict]] = None
@@ -752,6 +753,13 @@ def run_manual_aggregation(db: Session, source, *,
     - ``library_failed``：该库已 rollback（commit 模式）或已记入
       失败项后发，回调可自行 commit。
     回调异常被吞并记日志（见 _fire_event），不影响聚合本身。
+
+    窗级心跳（``on_heartbeat``，A-118）：与进度回调分离的轻量
+    回调，每窗（``WINDOW_RECORDS`` 条）触发一次，只刷新任务行
+    heartbeat、不碰执行事务。进度事件只在库边界，单库 142533
+    条≈286 页、均页 0.42 秒即超默认 120 秒心跳阈值——没有窗级
+    心跳，长库进行中再点聚合/续跑会被误判死亡、先标 interrupted
+    再放行第二轮。心跳回调异常同样被 _fire_event 吞并记日志。
 
     断点续跑（O-01）：``skip_library_ids`` 里的库不再拉取，其
     ``prior_summaries``（上一轮该库的 summary）原样并入本轮
@@ -849,6 +857,12 @@ def run_manual_aggregation(db: Session, source, *,
                     all_pairs.extend(pairs)
                 for reason, count in unpaired.items():
                     unpaired_total[reason] = unpaired_total.get(reason, 0) + count
+                # 窗级心跳（A-118）：长库内每窗刷一次存活信号，不
+                # 等库边界的进度事件；只刷 heartbeat、不碰执行事务。
+                _fire_event(on_heartbeat, {
+                    "type": "heartbeat", "library_id": lib_id,
+                    "library_name": lib_name,
+                    "window_records": len(window)})
                 total_fetched += len(window)
                 total_aggregates += len(items)
                 total_paired += len(pairs)
