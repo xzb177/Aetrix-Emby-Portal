@@ -5508,9 +5508,13 @@ def _patrol_115_row(db, row, stats, now):
       由用户下次播放/工人处理，巡检不改绑定）；
     - 其它错 → strike，满 2 次 stale；
     - pickcode 为空的老行 → 目录匹配回落补 pickcode；
-    - 绑定已无 → 跳过（不记 strike、不改行）。
+    - 绑定已无 → 跳过（不记 strike、不改行）；
+    - 取链通道大小限制（50028，两通道都撞限时）→ 不记 strike
+      （文件没死，是通道不肯发地址；download_url 已先回落 app
+      通道，能走到这里说明两通道都没取到）。
     """
-    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    from backend.emby_server.transfer115 import (
+        Pan115AuthError, Pan115ChannelLimitError, Pan115Error)
     uid = (row.owner_ref or "").strip()
     try:
         user_id = int(uid)
@@ -5535,6 +5539,9 @@ def _patrol_115_row(db, row, stats, now):
             raise _NotFound("115 副本无 pickcode 且目录匹配未找到")
     except Pan115AuthError:
         return  # 不记 strike
+    except Pan115ChannelLimitError:
+        row.last_checked_at = now
+        return  # 通道大小限制不记 strike（文件没死）
     except ub.BindingError:
         return  # 凭据问题不记 strike（绑定落态已由 helper 处理）
     except (_NotFound, _Forbidden, Pan115Error):

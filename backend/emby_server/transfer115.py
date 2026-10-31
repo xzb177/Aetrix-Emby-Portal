@@ -461,6 +461,16 @@ class Pan115AuthError(Pan115Error):
     """115 登录态失效（Cookie 过期 / 被踢）——调用方应提示重新配置 Cookie"""
 
 
+class Pan115ChannelLimitError(Pan115Error):
+    """取链通道自身的限制（网页端对大文件回 50028「文件大小超出限制」）。
+
+    文件没死、凭据没问题，只是这条通道不肯发地址。调用方不许据此
+    给副本记 stale strike、也不许把绑定落失败态；换 app 通道可解。
+    """
+
+    kind = "size_limit"
+
+
 class _ResumeStale(Pan115Error):
     """分片续传会话不可用（内部信号：调用方 abort 旧会话重走全新上传）"""
 
@@ -626,11 +636,28 @@ def _raise_for_state(body: dict) -> dict:
     """把 115 的 state/errno 表达统一成异常或成功返回"""
     if body.get("state") in (True, 1, "1"):
         return body
-    errno = str(body.get("errno") or body.get("errNo") or "")
-    message = str(body.get("error") or body.get("message") or "115 接口返回失败")
+    errno = str(body.get("errno") or body.get("errNo")
+                or body.get("msg_code") or "")
+    message = str(body.get("error") or body.get("message")
+                  or body.get("msg") or "115 接口返回失败")
     if errno in _AUTH_ERRNOS or "登录" in message or "cookie" in message.lower():
         raise Pan115AuthError(message)
+    if errno == "50028" or "文件大小超出限制" in message:
+        raise Pan115ChannelLimitError(message)
     raise Pan115Error(message)
+
+
+def _parse_user_id(auth_value: str) -> int:
+    """从 115 凭据串的 UID 段解析数字 user_id（app 通道参数用）。
+
+    UID 形如 ``123456_A1_1700000000``；解析不到返回 0（不带此参数）。
+    """
+    for part in (auth_value or "").split(";"):
+        part = part.strip()
+        if part.startswith("UID="):
+            head = part[4:].split("_")[0]
+            return int(head) if head.isdigit() else 0
+    return 0
 
 
 class Pan115Client:
@@ -734,8 +761,35 @@ class Pan115Client:
 
     # ---- 下载 ----
 
-    def download_url(self, pickcode: str) -> str:
-        """取单个文件下载地址（供外部下载器 / 直链使用）"""
+    def download_url(self, pickcode: str, *, app_first: bool = False) -> str:
+        """取单个文件下载地址（供外部下载器 / 直链使用）。
+
+        两条通道（2026-10-31 生产探针实证）：
+        - 网页端 webapi /files/download：大文件回 50028「文件大小超出
+          限制」不给地址（843MB 变体实测中招，157MB 正常）；
+        - app 端 proapi /app/chrome/downurl（RSA 加密通道）：无此
+          大小限制，843MB 实测取到地址且 Range 拉到真字节（206）。
+
+        默认网页端优先、撞大小限制回落 app 端；``app_first=True``
+        时 app 端优先——播放器直链场景用：115 的签名地址绑签名时
+        的 UA，网页端用播放器 UA 签出的地址拉流会被 CDN 拒
+        （实测 403「no cookie」），app 通道用播放器 UA 签名 +
+        同 UA 拉流实测 206。认证错误两条通道同命，不回落直接抛。
+        """
+        if app_first:
+            try:
+                return self._download_url_app(pickcode)
+            except Pan115AuthError:
+                raise
+            except Pan115Error:
+                return self._download_url_web(pickcode)
+        try:
+            return self._download_url_web(pickcode)
+        except Pan115ChannelLimitError:
+            return self._download_url_app(pickcode)
+
+    def _download_url_web(self, pickcode: str) -> str:
+        """网页端取链（webapi /files/download，大文件有大小限制）。"""
         body = self._call(
             "GET", f"{PAN115_WEBAPI_BASE}/files/download", params={"pickcode": pickcode},
         )
@@ -744,6 +798,46 @@ class Pan115Client:
         if not url:
             raise Pan115Error("115 未返回下载地址")
         return str(url)
+
+    def _download_url_app(self, pickcode: str) -> str:
+        """app 端取链（proapi /app/chrome/downurl，RSA 加密通道）。
+
+        请求体 ``{"data": rsa_encrypt(JSON)}``，JSON 含 pickcode 与
+        user_id（从凭据 UID 段解析，解析不到就不带——服务端可由
+        会话推导，2026-10-31 探针两形态均成功）；响应 data 字段
+        同算法加密，解开后是 ``{文件 id: {"url": {"url": 地址}}}``。
+        签名用的 UA 就是本客户端的 UA（地址绑 UA，见 download_url）。
+        """
+        from backend.emby_server import pan115_cipher
+
+        payload: dict = {"pickcode": pickcode}
+        user_id = _parse_user_id(self.cookie)
+        if user_id:
+            payload["user_id"] = user_id
+        body = self._call(
+            "POST", f"{PAN115_PROAPI_BASE}/app/chrome/downurl",
+            data={"data": pan115_cipher.rsa_encrypt(
+                json.dumps(payload).encode("utf-8"))},
+        )
+        _raise_for_state(body)
+        data = body.get("data")
+        if isinstance(data, str) and data:
+            try:
+                data = json.loads(pan115_cipher.rsa_decrypt(data))
+            except Exception as exc:  # noqa: BLE001 — 解密失败即通道失败
+                raise Pan115Error("115 app 通道响应解密失败") from exc
+        if isinstance(data, dict):
+            for entry in data.values():
+                if not isinstance(entry, dict):
+                    continue
+                url_field = entry.get("url")
+                if isinstance(url_field, dict):
+                    url = url_field.get("url") or url_field.get("address")
+                else:
+                    url = url_field
+                if url:
+                    return str(url)
+        raise Pan115Error("115 app 通道未返回下载地址")
 
     # ---- 转存（同 provider 内 copy，不搬字节） ----
 

@@ -67,6 +67,10 @@ ERROR_KIND_TO_STATUS = {
     "pan115_vip_required": "invalid",
 }
 
+#: 取链通道大小限制的用户端文案（不落绑定状态，故不进失效三档）。
+_SIZE_LIMIT_MESSAGE = (
+    "该文件较大，115 取链通道暂时受限，请稍后重试。")
+
 #: 失效三档 → 用户端文案（照抄定稿 BYOS-4 暂定三句，非 FMBY 原文）。
 BINDING_ERROR_MESSAGES = {
     "auth_error": "账号凭据不对，请重新绑定。",
@@ -595,7 +599,7 @@ def list_bindings(db: Session, user_id: int) -> list[dict]:
 
 
 def resolve_user115_direct_url(db: Session, user_id: int,
-                               item: em.MediaItem) -> str:
+                               item: em.MediaItem, ua: str = "") -> str:
     """绑定用户播 115 型条目：按该绑定自己的凭据现签直链（P1 播放口）。
 
     - 条目须为 mount:// 路径且挂载类型为 115，否则 BindingError
@@ -645,12 +649,19 @@ def resolve_user115_direct_url(db: Session, user_id: int,
             raise mount_lib.MountError(f"115 未返回该文件的 pickcode: {rel}")
         # 现签现取：不用 _get_cached_115_url（键只有 pickcode，跨用户
         # 复用即把 A 的签名地址发给 B；且直链本身有时效，现取最稳）。
-        url = transfer115.Pan115Client(cookie).download_url(pickcode)
+        # 带播放器 UA 时用该 UA 签名并走 app 通道优先（签名地址绑
+        # UA、网页端对大文件有大小限制，2026-10-31 生产探针实证）。
+        client115 = (transfer115.Pan115Client(cookie, ua=ua) if ua
+                     else transfer115.Pan115Client(cookie))
+        url = client115.download_url(pickcode, app_first=bool(ua))
     except mount_lib.MountAuthError as exc:
         _mark_failed(db, binding, "expired")
         db.commit()
         raise BindingError(
             "expired", BINDING_ERROR_MESSAGES["expired"]) from exc
+    except transfer115.Pan115ChannelLimitError as exc:
+        # 通道大小限制：文件与凭据都没问题，不落绑定失败态。
+        raise BindingError("size_limit", _SIZE_LIMIT_MESSAGE) from exc
     except Exception as exc:  # noqa: BLE001 — 分类后决定落态或不改
         classified = _classify_pan115_error(exc)
         if classified is not None:
@@ -665,7 +676,7 @@ def resolve_user115_direct_url(db: Session, user_id: int,
 
 
 def resolve_user115_copy_url(db: Session, user_id: int,
-                             pickcode: str) -> str:
+                             pickcode: str, ua: str = "") -> str:
     """用户盘 115 副本直链：按该用户自己的 Cookie 现签（转存播放口）。
 
     与 resolve_user115_direct_url 同一套凭据口径（最早 active 绑定、
@@ -674,6 +685,10 @@ def resolve_user115_copy_url(db: Session, user_id: int,
     自己的盘里，不在共享挂载路径上，定位不到）。
     凭据失效 → BindingError（expired/auth_error），调用方按 409 处理，
     不静默回落共享中继；一过性失败 → transient。
+    ``ua`` 为播放器 UA 时用该 UA 签名并走 app 通道优先：115 签名
+    地址绑签名 UA，且网页端对大文件有大小限制（50028）——副本播
+    不出的根因（2026-10-31 生产实证）；两通道都撞限制时抛
+    kind=size_limit，不落绑定失败态（文件与凭据都没问题）。
     """
     binding = get_active_binding(db, user_id, PROVIDER_PAN115)
     if binding is None:
@@ -692,12 +707,17 @@ def resolve_user115_copy_url(db: Session, user_id: int,
         raise BindingError(
             "auth_error", BINDING_ERROR_MESSAGES["auth_error"])
     try:
-        url = transfer115.Pan115Client(cookie).download_url(pickcode)
+        client115 = (transfer115.Pan115Client(cookie, ua=ua) if ua
+                     else transfer115.Pan115Client(cookie))
+        url = client115.download_url(pickcode, app_first=bool(ua))
     except transfer115.Pan115AuthError as exc:
         _mark_failed(db, binding, "expired")
         db.commit()
         raise BindingError(
             "expired", BINDING_ERROR_MESSAGES["expired"]) from exc
+    except transfer115.Pan115ChannelLimitError as exc:
+        # 通道大小限制：文件与凭据都没问题，不落绑定失败态。
+        raise BindingError("size_limit", _SIZE_LIMIT_MESSAGE) from exc
     except Exception as exc:  # noqa: BLE001 — 分类后决定落态或不改
         classified = _classify_pan115_error(exc)
         if classified is not None:

@@ -219,7 +219,7 @@ def test_stream_quota_relay_success_streams(db, monkeypatch):
     monkeypatch.setattr(tv, "ready_user115_variant",
                         lambda db_, iid, uid: _v115())
 
-    def _no_115(db_, uid, pc):
+    def _no_115(db_, uid, pc, ua=""):
         raise AssertionError("中继成功时不该再走 115")
 
     monkeypatch.setattr(user_bindings, "resolve_user115_copy_url", _no_115)
@@ -239,7 +239,7 @@ def test_stream_quota_relay_403_falls_back_to_115(db, monkeypatch):
     monkeypatch.setattr(tv, "ready_user115_variant",
                         lambda db_, iid, uid: _v115())
     monkeypatch.setattr(user_bindings, "resolve_user115_copy_url",
-                        lambda db_, uid, pc: f"https://cdn.115.test/{pc}")
+                        lambda db_, uid, pc, ua="": f"https://cdn.115.test/{pc}")
     _token_ok(monkeypatch)
     record = {}
     monkeypatch.setattr(api, "serve_drive_relay_async", _relay_fake(

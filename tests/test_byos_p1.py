@@ -68,7 +68,7 @@ class _Stub115Client:
             raise transfer115.Pan115AuthError("Cookie 已失效")
         return [{"name": "f.mkv", "pc": "PC1", "is_dir": False}]
 
-    def download_url(self, pickcode):
+    def download_url(self, pickcode, **kwargs):
         _Stub115Client.calls["download_url"] += 1
         if self.behavior == "auth_error":
             raise transfer115.Pan115AuthError("Cookie 已失效")

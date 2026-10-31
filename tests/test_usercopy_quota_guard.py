@@ -325,7 +325,7 @@ def test_stream_quota_with_115_copy_redirects_115(db, monkeypatch):
     monkeypatch.setattr(tv, "ready_user115_variant",
                         lambda db_, iid, uid: _v115())
     monkeypatch.setattr(user_bindings, "resolve_user115_copy_url",
-                        lambda db_, uid, pc: f"https://cdn.115.test/{pc}")
+                        lambda db_, uid, pc, ua="": f"https://cdn.115.test/{pc}")
     resp = _stream(monkeypatch, db)
     assert resp.status_code == 302
     assert resp.headers["location"] == "https://cdn.115.test/pc115"
@@ -356,7 +356,7 @@ def test_stream_quota_115_sign_fails_is_409(db, monkeypatch):
     monkeypatch.setattr(tv, "ready_user115_variant",
                         lambda db_, iid, uid: _v115())
 
-    def fail(db_, uid, pc):
+    def fail(db_, uid, pc, ua=""):
         raise user_bindings.BindingError("expired", "115 登录已失效")
 
     monkeypatch.setattr(user_bindings, "resolve_user115_copy_url", fail)

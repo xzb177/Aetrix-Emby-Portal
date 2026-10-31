@@ -6069,7 +6069,8 @@ async def video_stream(
             try:
                 _url115 = await run_db(
                     _ub115.resolve_user115_copy_url, db,
-                    getattr(user, "id", None), _pickcode115)
+                    getattr(user, "id", None), _pickcode115,
+                    request.headers.get("user-agent") or "")
             except _ub115.BindingError as exc:
                 _note_play_start_safe(
                     item, user_id=getattr(user, "id", None),
@@ -6078,7 +6079,7 @@ async def video_stream(
                     result="error", error_kind=exc.kind,
                     resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
                 _detail = exc.message if exc.kind in (
-                    "auth_error", "expired", "throttled") else \
+                    "auth_error", "expired", "throttled", "size_limit") else \
                     "播放变体当前不可用：transfer115_copy"
                 raise HTTPException(status_code=409, detail=_detail) from exc
             _note_play_start_safe(
@@ -6213,7 +6214,8 @@ async def video_stream(
                 try:
                     _url115 = await run_db(
                         _ub115q.resolve_user115_copy_url, db,
-                        getattr(user, "id", None), _pc115q)
+                        getattr(user, "id", None), _pc115q,
+                        request.headers.get("user-agent") or "")
                 except _ub115q.BindingError as exc:
                     _note_play_start_safe(
                         item, user_id=getattr(user, "id", None),
@@ -6829,7 +6831,8 @@ async def video_stream(
         try:
             _byos_url = await run_db(
                 _ub.resolve_user115_direct_url, db,
-                getattr(user, "id", None), item)
+                getattr(user, "id", None), item,
+                request.headers.get("user-agent") or "")
         except _ub.BindingError as exc:
             # 凭据失效三档：resolver 已落失败态，这里只报 409 + 文案，
             # 不静默回落共享中继；一过性/无绑定按通用句报 409。
@@ -6840,7 +6843,7 @@ async def video_stream(
                 result="error", error_kind=exc.kind,
                 resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
             _detail = exc.message if exc.kind in (
-                "auth_error", "expired", "throttled") else \
+                "auth_error", "expired", "throttled", "size_limit") else \
                 "播放变体当前不可用：byos115_direct"
             raise HTTPException(status_code=409, detail=_detail) from exc
         _pt.mark("byos115_direct")
