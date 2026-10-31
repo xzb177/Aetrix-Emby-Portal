@@ -756,6 +756,13 @@ def change_password(
     current_user.emby_password = hash_password(req.new_password)
     # P3 修复（审查）：改密码后旧 token 全部作废（防盗号后持续登录）
     current_user.token_version = int(current_user.token_version or 0) + 1
+    # A-085（360° 审计第二遍 R25-01）：改密/重置必须同时吊销该用户全部 Emby 客户端令牌——
+    # 只 bump 门户 JWT 的话，被盗的播放器令牌（历史令牌 expires_at 为空、永不过期）
+    # 改密后仍可播放。复用 share_guard._disable_user 的现成写法，与 JWT bump 同一事务提交。
+    from backend.emby_server import models as emby_models
+    db.query(emby_models.EmbyApiToken).filter(
+        emby_models.EmbyApiToken.user_id == current_user.id
+    ).update({emby_models.EmbyApiToken.is_revoked: True}, synchronize_session=False)
     db.commit()
     return {"success": True, "message": "密码已更新"}
 

@@ -25,13 +25,20 @@ class ConnectionManager:
         self.channel_subscribers: Dict[str, Set[int]] = {}
         # Redis 发布订阅
         self.redis_pubsub = None
+        # 建连时的 token 快照 {websocket: (jti, token_version)}，供投递前复验（A-086）；
+        # 无快照的老连接不在此表，投递时只查用户存活
+        self.connection_auth: Dict[WebSocket, tuple] = {}
 
-    async def connect(self, websocket: WebSocket, user_id: int):
-        """接受新连接"""
+    async def connect(self, websocket: WebSocket, user_id: int,
+                      token_jti: Optional[str] = None,
+                      token_version: Optional[int] = None):
+        """接受新连接；带 token 快照时投递前复验（A-086），无快照保持旧行为"""
         await websocket.accept()
         if user_id not in self.active_connections:
             self.active_connections[user_id] = set()
         self.active_connections[user_id].add(websocket)
+        if token_jti is not None or token_version is not None:
+            self.connection_auth[websocket] = (token_jti, token_version)
         logger.info(f"用户 {user_id} WebSocket 连接成功")
 
     def disconnect(self, websocket: WebSocket, user_id: int):
@@ -46,6 +53,7 @@ class ConnectionManager:
                         if channel in self.channel_subscribers:
                             self.channel_subscribers[channel].discard(user_id)
                     del self.user_channels[user_id]
+        self.connection_auth.pop(websocket, None)
         logger.info(f"用户 {user_id} WebSocket 断开连接")
 
     async def subscribe(self, user_id: int, channels: list):
@@ -68,11 +76,54 @@ class ConnectionManager:
                     self.channel_subscribers[channel].discard(user_id)
         logger.info(f"用户 {user_id} 取消订阅频道: {channels}")
 
+    def _delivery_stale(self, db, user_id: int, connection) -> bool:
+        """投递复验：True = 该连接已失效，必须停投并关闭（A-086）。
+
+        查用户存活（停用即停投）；有快照时再查 token_version 与 jti 吊销
+        （改密/登出即停投）。复验本身出错时 fail-closed 返回 True。
+        """
+        from backend import models as portal_models
+        from backend.security import is_jti_revoked
+
+        try:
+            user = db.query(portal_models.WebUser).filter(
+                portal_models.WebUser.id == user_id).first()
+            if not user or not user.is_active:
+                return True
+            snapshot = self.connection_auth.get(connection)
+            if snapshot is None:
+                return False
+            jti, token_version = snapshot
+            if int(getattr(user, "token_version", 0) or 0) != int(token_version or 0):
+                return True
+            if jti and is_jti_revoked(db, jti):
+                return True
+            return False
+        except Exception as exc:  # noqa: BLE001 — 复验失败 fail-closed
+            logger.error(f"WebSocket 投递复验失败 user={user_id}: {exc}")
+            return True
+
     async def send_personal(self, message: dict, user_id: int):
-        """发送个人消息"""
-        if user_id in self.active_connections:
+        """发送个人消息（A-086：投递前复验连接的 token 快照）
+
+        建连后改密/登出/停用必须立即停投：逐连接复验，命中任一即以 1008
+        关闭该连接并跳过投递；健康长连不受影响。
+        """
+        if user_id not in self.active_connections:
+            return
+        from backend.database import SessionLocal
+
+        db = SessionLocal()
+        try:
             disconnected = set()
-            for connection in self.active_connections[user_id]:
+            for connection in list(self.active_connections[user_id]):
+                if self._delivery_stale(db, user_id, connection):
+                    try:
+                        await connection.close(code=WS_UNAUTHORIZED_CODE)
+                    except Exception:
+                        pass
+                    disconnected.add(connection)
+                    continue
                 try:
                     await connection.send_json(message)
                 except Exception as e:
@@ -81,6 +132,9 @@ class ConnectionManager:
             # 清理断开的连接
             for conn in disconnected:
                 self.active_connections[user_id].discard(conn)
+                self.connection_auth.pop(conn, None)
+        finally:
+            db.close()
 
     async def broadcast_to_channel(self, channel: str, message: dict):
         """向频道广播消息"""
@@ -185,8 +239,8 @@ websocket_router = APIRouter(tags=["WebSocket"])
 WS_UNAUTHORIZED_CODE = 1008
 
 
-def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
-    """校验 WebSocket 凭证，返回可信 user_id；无效/被禁用/无凭证返回 None
+def _authenticate_ws(raw: Optional[str]):
+    """校验 WebSocket 凭证，返回 (user_id, jti, token_version)；无效/被禁用/无凭证返回 None
 
     只接受本项目签发的 JWT access token。早期版本允许「纯数字即 user_id」的
     兜底，任何匿名请求都能冒充任意用户接收推送，已彻底移除。
@@ -219,12 +273,23 @@ def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
             enforce_token_freshness(db, payload, user)
         except HTTPException:
             return None
-        return user.id
+        return (user.id, payload.get("jti"), int(getattr(user, "token_version", 0) or 0))
     except Exception as e:  # noqa: BLE001 — 鉴权失败一律视为未通过
         logger.error(f"WebSocket 鉴权查询失败: {e}")
         return None
     finally:
         db.close()
+
+
+def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
+    """建连鉴权（r54 口径保持不变）：只返回可信 user_id。"""
+    result = _authenticate_ws(raw)
+    return result[0] if result else None
+
+
+def authenticate_ws_token_with_snapshot(raw: Optional[str]):
+    """建连鉴权＋token 快照：返回 (user_id, jti, token_version)，供投递复验用（A-086）。"""
+    return _authenticate_ws(raw)
 
 
 @websocket_router.websocket("/ws/{user_id}")
@@ -241,16 +306,16 @@ async def websocket_endpoint(
     两者不一致直接以 1008 关闭，防止匿名订阅他人的推送。
     """
     raw = token or websocket.headers.get("authorization", "").replace("Bearer", "").strip()
-    auth_user_id = authenticate_ws_token(raw)
-    if auth_user_id is None or auth_user_id != user_id:
+    auth = authenticate_ws_token_with_snapshot(raw)
+    if auth is None or auth[0] != user_id:
         logger.warning(
             f"WebSocket 鉴权失败：声明 user_id={user_id}，来源 {websocket.client}"
         )
         await websocket.close(code=WS_UNAUTHORIZED_CODE)
         return
 
-    user_id = auth_user_id
-    await manager.connect(websocket, user_id)
+    user_id = auth[0]
+    await manager.connect(websocket, user_id, token_jti=auth[1], token_version=auth[2])
 
     try:
         # 发送连接成功消息
@@ -399,6 +464,7 @@ __all__ = [
     "websocket_router",
     "notification_router",
     "authenticate_ws_token",
+    "authenticate_ws_token_with_snapshot",
     "require_staff_user",
     "send_notification",
     "broadcast_notification",

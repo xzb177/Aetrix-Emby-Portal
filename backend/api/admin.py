@@ -488,6 +488,13 @@ def reset_user_password(
     # A-001（360° 审计 R1）：与自助改密同口径 bump token_version——重置是处置
     # 盗号的主路径，不失效旧会话的话被盗 refresh（30 天）仍可继续换新 access。
     user.token_version = int(user.token_version or 0) + 1
+    # A-085（360° 审计第二遍 R25-01）：改密/重置必须同时吊销该用户全部 Emby 客户端令牌——
+    # 只 bump 门户 JWT 的话，被盗的播放器令牌（历史令牌 expires_at 为空、永不过期）
+    # 改密后仍可播放。复用 share_guard._disable_user 的现成写法，与 JWT bump 同一事务提交。
+    from backend.emby_server import models as emby_models
+    db.query(emby_models.EmbyApiToken).filter(
+        emby_models.EmbyApiToken.user_id == user.id
+    ).update({emby_models.EmbyApiToken.is_revoked: True}, synchronize_session=False)
     db.commit()
 
     # 同步 Emby 播放密码哈希。不自动生成接线用户名。
