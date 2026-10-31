@@ -69,11 +69,26 @@ const loadError = ref(false)
 const saving = ref(false)
 const aggregatingIds = ref<number[]>([])
 const aggregateResult = ref<{ sourceName: string; result: UpstreamAggregateResult } | null>(null)
+/** 进行中任务的最新快照（O-02 进度条）：轮询每拍刷新，终态即清。 */
+const aggregateProgress = ref<{ sourceName: string; task: UpstreamAggregateTask } | null>(null)
+/** 进度按已完成库占总库数算；总库数还没发现出来（0）时按 0 显示，
+ *  文案会说明还在发现库，不假装有百分比。 */
+const aggregateProgressPercent = computed(() => {
+  const task = aggregateProgress.value?.task
+  if (!task || task.libraries_total <= 0) return 0
+  return Math.min(100, Math.round((task.libraries_done / task.libraries_total) * 100))
+})
 
 /** 离开页面就停轮询，不再弹已经看不见的结果。 */
 let aggregatePageToken = 0
-const AGGREGATE_POLL_MS = 1500
+/** 聚合一轮要跑数分钟，进度 3 秒一拍足够看，不密打查询口。 */
+const AGGREGATE_POLL_MS = 3000
 const AGGREGATE_POLL_RETRIES = 3
+
+/** 终态：成功 / 失败 / 心跳过期被标中断——都停轮询，不再空转。 */
+function isAggregateTerminal(status: UpstreamAggregateTask['status']): boolean {
+  return status === 'succeeded' || status === 'failed' || status === 'interrupted'
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -95,6 +110,7 @@ async function pollAggregateTask(
   sourceId: number,
   taskId: string,
   token: number,
+  onSnapshot?: (snap: UpstreamAggregateTask) => void,
 ): Promise<UpstreamAggregateTask> {
   let transient = 0
   for (;;) {
@@ -103,7 +119,8 @@ async function pollAggregateTask(
     }
     try {
       const snap = await fetchUpstreamAggregateTask(sourceId, taskId)
-      if (snap.status === 'succeeded' || snap.status === 'failed') return snap
+      onSnapshot?.(snap)
+      if (isAggregateTerminal(snap.status)) return snap
       transient = 0
     } catch (e) {
       transient += 1
@@ -345,10 +362,20 @@ async function runAggregate(source: UpstreamSource) {
       return
     }
     let task = await aggregateUpstreamSource(source.id)
-    if (task.status !== 'succeeded' && task.status !== 'failed') {
-      task = await pollAggregateTask(source.id, task.task_id, token)
+    aggregateProgress.value = { sourceName: source.name, task }
+    if (!isAggregateTerminal(task.status)) {
+      task = await pollAggregateTask(source.id, task.task_id, token, (snap) => {
+        if (token === aggregatePageToken) {
+          aggregateProgress.value = { sourceName: source.name, task: snap }
+        }
+      })
     }
     if (token !== aggregatePageToken) return
+    if (task.status === 'interrupted') {
+      throw new Error(
+        '聚合被中断（执行面重启或心跳超时），已完成库的映射已保留，重新点聚合即可续跑未完成的库',
+      )
+    }
     if (task.status === 'failed' || !task.result) {
       throw aggregateTaskError(task)
     }
@@ -363,6 +390,7 @@ async function runAggregate(source: UpstreamSource) {
   } finally {
     if (token === aggregatePageToken) {
       aggregatingIds.value = aggregatingIds.value.filter((id) => id !== source.id)
+      aggregateProgress.value = null
     }
   }
 }
@@ -412,6 +440,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   aggregatePageToken += 1
+  aggregateProgress.value = null
 })
 </script>
 
@@ -583,6 +612,26 @@ onUnmounted(() => {
           </template>
         </el-table-column>
       </el-table>
+      <SectionCard v-if="aggregateProgress" title="聚合进行中">
+        <p>
+          源「{{ aggregateProgress.sourceName }}」：
+          <span v-if="aggregateProgress.task.status === 'queued'">排队中，等执行面认领…</span>
+          <span v-else-if="aggregateProgress.task.current_library_name">
+            已处理到库「{{ aggregateProgress.task.current_library_name }}」
+          </span>
+          <span v-else>正在拉取上游库清单…</span>
+        </p>
+        <el-progress :percentage="aggregateProgressPercent" />
+        <p>
+          已完成库 {{ aggregateProgress.task.libraries_done }}<template
+            v-if="aggregateProgress.task.libraries_total > 0"
+          >
+            / {{ aggregateProgress.task.libraries_total }}</template
+          >
+          个，已拉取 {{ aggregateProgress.task.fetched }} 条，配对
+          {{ aggregateProgress.task.paired }} 条，写入 {{ aggregateProgress.task.written }} 条。
+        </p>
+      </SectionCard>
       <SectionCard v-if="aggregateResult" title="最近一次聚合结果">
         <p v-if="aggregateResult.result.skipped">
           源「{{ aggregateResult.sourceName }}」本轮已跳过：
