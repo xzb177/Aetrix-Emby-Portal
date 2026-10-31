@@ -191,6 +191,12 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "lottery_require_group_member": ("bool", "digit"),
     "lottery_min_account_age_days": ("int", 0, _BIG),
     "lottery_max_joins_per_day": ("int", 0, _BIG),
+    # 公告根治（2026-10-31）：置顶开关 digit 风格（读侧 lottery.py 宽容口径，
+    # 默认开）；提醒台阶/提前分钟/编辑节流为非负整数，0=关（读侧同口径钳制）。
+    "lottery_announce_pin_enabled": ("bool", "digit"),
+    "lottery_reminder_step": ("int", 0, _BIG),
+    "lottery_final_call_minutes": ("int", 0, _BIG),
+    "lottery_announce_edit_min_interval_sec": ("int", 0, 3600),
     # 能量老虎机（backend/slots.py 读取，2026-10-30 用户亲批默认值）：
     # 总开关 word 风格 ("bool",)（同 register_gift_* 口径，读侧
     # economy._get_bool_config 只认 "true"）；注额档位逗号列表走 int_list

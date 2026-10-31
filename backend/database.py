@@ -1489,6 +1489,22 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
             conn.execute(text("ALTER TABLE lottery_rounds ADD COLUMN drawing_at TIMESTAMP"))
         print("  🔧 已迁移: lottery_rounds 加列 drawing_at（僵尸 drawing 回收）")
 
+    # 公告落库（2026-10-31 根治）：lottery_rounds 补公告/提醒列（老库）
+    cols = {c["name"] for c in inspector.get_columns("lottery_rounds")}
+    for col_name, col_def in (
+        ("announce_message_id", "BIGINT"),
+        ("announce_status", "VARCHAR(20)"),
+        ("announce_error", "VARCHAR(500)"),
+        ("announce_pinned", "BOOLEAN DEFAULT FALSE"),
+        ("announce_last_edit_at", "TIMESTAMP"),
+        ("reminder_milestone", "INTEGER DEFAULT 0"),
+        ("final_call_sent", "BOOLEAN DEFAULT FALSE"),
+    ):
+        if col_name not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE lottery_rounds ADD COLUMN {col_name} {col_def}"))
+            print(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（公告落库）")
+
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
                   required_column: Optional[str], message: str,

@@ -750,6 +750,78 @@ def draw_interval_sec(db: Session) -> int:
     return max(_get_int_config(db, "lottery_draw_interval_sec", DRAW_INTERVAL_DEFAULT_SEC), DRAW_INTERVAL_MIN_SEC)
 
 
+# ==================== 公告根治配置（2026-10-31） ====================
+
+def announce_pin_enabled(db: Session) -> bool:
+    """公告自动置顶开关：lottery_announce_pin_enabled，默认开。"""
+    val = _get_str_config(db, "lottery_announce_pin_enabled", "1")
+    return str(val or "1").strip().lower() in ("1", "true")
+
+
+def reminder_step(db: Session) -> int:
+    """人数提醒台阶步长：lottery_reminder_step，默认 25；0=关里程碑提醒。"""
+    return max(0, _get_int_config(db, "lottery_reminder_step", 25))
+
+
+def final_call_minutes(db: Session) -> int:
+    """开奖前最后一叫提前分钟数：lottery_final_call_minutes，默认 30；0=关。"""
+    return max(0, _get_int_config(db, "lottery_final_call_minutes", 30))
+
+
+def announce_edit_min_interval_sec(db: Session) -> int:
+    """公告卡人数编辑最小间隔（秒）：lottery_announce_edit_min_interval_sec，默认 20。"""
+    return max(0, _get_int_config(db, "lottery_announce_edit_min_interval_sec", 20))
+
+
+def participant_count(db: Session, round_id: int) -> int:
+    """当前参与人数（公告卡/反馈/提醒统一口径）。"""
+    return (
+        db.query(models.LotteryRoundEntry)
+        .filter(models.LotteryRoundEntry.round_id == round_id)
+        .count()
+    )
+
+
+def check_bot_can_post(db: Session, chat_id: int) -> dict[str, Any]:
+    """创建前校验：机器人是否能在目标群发言。
+
+    返回 {"ok": True} 或 {"ok": False, "reason", "detail"}：
+    - "not_member"：机器人不在群里（left/kicked 或 chat not found）——确定性否定
+    - "no_permission"：在群里但发言权限被关（管理员 can_post_messages=False 等）
+    - "unknown"：TG API 不可达等无法判定——调用方放行创建但须在响应里明示
+
+    lottery 模块不静态依赖 tg_bot，sender 走函数内懒导入（与 notify 同口径）。
+    """
+    try:
+        from backend.tg_bot import sender
+    except Exception:
+        return {"ok": False, "reason": "unknown", "detail": "机器人模块不可用"}
+    try:
+        ok, err, me = sender.get_me(db)
+    except Exception:
+        logger.exception("群抽奖机器人校验：getMe 异常")
+        return {"ok": False, "reason": "unknown", "detail": "机器人状态查询失败"}
+    if not ok or not me or not me.get("id"):
+        return {"ok": False, "reason": "unknown", "detail": f"机器人状态查询失败：{err}"}
+    try:
+        ok, err, member = sender.get_chat_member_raw(db, chat_id, int(me["id"]))
+    except Exception:
+        logger.exception("群抽奖机器人校验：getChatMember 异常 chat_id=%s", chat_id)
+        return {"ok": False, "reason": "unknown", "detail": "机器人群成员查询失败"}
+    if not ok or member is None:
+        if err and "not found" in str(err).lower():
+            return {"ok": False, "reason": "not_member", "detail": "机器人不在该群（群不存在或未入群）"}
+        return {"ok": False, "reason": "unknown", "detail": f"机器人群成员查询失败：{err}"}
+    status = str(member.get("status") or "")
+    if status in ("left", "kicked"):
+        return {"ok": False, "reason": "not_member", "detail": "机器人不在该群"}
+    if status == "administrator" and member.get("can_post_messages") is False:
+        return {"ok": False, "reason": "no_permission", "detail": "机器人在该群没有发言权限"}
+    if status == "restricted" and member.get("can_send_messages") is False:
+        return {"ok": False, "reason": "no_permission", "detail": "机器人在该群被限制发言"}
+    return {"ok": True}
+
+
 def _mask_telegram(telegram_id: int) -> str:
     """TG id 打码：只保留后四位。"""
     s = str(telegram_id)
@@ -815,6 +887,21 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
     except Exception:
         logger.exception("群抽奖开奖群公告发送异常 round_id=%s", round_id)
 
+    # 开奖后顺手收掉新活动公告的置顶（结果公告已发，置顶位让给最新消息）；
+    # 失败只记日志，不影响开奖通知结果。
+    if round.announce_message_id and round.announce_pinned:
+        try:
+            ok, err = sender.unpin_message(db, round.chat_id, round.announce_message_id)
+            if ok:
+                round.announce_pinned = False
+                db.commit()
+                result["announce_unpinned"] = True
+            else:
+                logger.warning("群抽奖开奖取消公告置顶失败 round_id=%s: %s", round_id, err)
+        except Exception:
+            db.rollback()
+            logger.exception("群抽奖开奖取消公告置顶异常 round_id=%s", round_id)
+
     for telegram_id, prize_name in dm_targets:
         try:
             ok, err = sender.send_message(
@@ -835,13 +922,117 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
     return result
 
 
-def notify_new_round(db: Session, round_id: int) -> dict:
-    """新抽奖活动创建后通知：群公告 + 参加按钮。
+def _prize_label(p) -> str:
+    """奖品一行文案（公告卡/提醒同源）：份数 × 内容。"""
+    name = html.escape(str(p.name or ""))
+    qty = p.quantity or 1
+    ptype = str(p.type or "").lower()
+    if ptype == "days":
+        return f"🎁 {name}：公益{p.value}天 ×{qty}"
+    elif ptype == "points":
+        return f"🎁 {name}：{p.value}能量 ×{qty}"
+    elif ptype == "whitelist":
+        return f"🎁 {name}：白名单 ×{qty}"
+    return f"🎁 {name} ×{qty}"
 
-    管理后台创建抽奖活动后调用，让群成员知道有新抽奖可参加。
-    TG 发送走函数内懒导入（避免循环依赖），任何发送失败只记日志不抛异常。
+
+def _prize_lines(db: Session, round: models.LotteryRound) -> str:
+    prizes = (
+        db.query(models.LotteryRoundPrize)
+        .filter(models.LotteryRoundPrize.round_id == round.id)
+        .order_by(models.LotteryRoundPrize.sort.asc())
+        .all()
+    )
+    return "\n".join(_prize_label(p) for p in prizes) if prizes else "🎁 神秘奖品"
+
+
+def _draw_text(round: models.LotteryRound) -> str:
+    if round.draw_at:
+        return round.draw_at.strftime("%Y-%m-%d %H:%M")
+    return "手动开奖"
+
+
+def _join_instruction(round: models.LotteryRound) -> str:
+    """参与方式一行：口令型给口令，按钮型引导点按钮。"""
+    if (round.lottery_type or "button") == "password":
+        return f"🔑 在群里发送口令「{html.escape(str(round.password_keyword or ''))}」即可参加"
+    return "👇 点击下方按钮参加"
+
+
+def build_announce_text(db: Session, round: models.LotteryRound, count: int) -> str:
+    """公告卡正文（notify 与编辑刷新同源生成，人数是唯一变量）。"""
+    round_title = html.escape(str(round.title or ""))
+    count_line = f"👥 已参与：{count} 人"
+    if round.max_participants and round.max_participants > 0:
+        count_line += f"（满 {round.max_participants} 人开奖）"
+    return (
+        f"🎲 <b>新抽奖来啦！</b>\n\n「{round_title}」\n\n"
+        f"{_prize_lines(db, round)}\n\n"
+        f"{count_line}\n"
+        f"⏰ 开奖时间：{_draw_text(round)}\n\n"
+        f"{_join_instruction(round)}"
+    )
+
+
+def build_announce_markup(round: models.LotteryRound, count: int) -> dict:
+    """公告卡按钮（带实时人数）：按钮型=参加回调；口令型=复制口令。"""
+    if (round.lottery_type or "button") == "password":
+        return {
+            "inline_keyboard": [
+                [{
+                    "text": f"📋 点我复制口令（{count} 人已参与）",
+                    "copy_text": {"text": str(round.password_keyword or "")},
+                }]
+            ]
+        }
+    return {
+        "inline_keyboard": [
+            [{"text": f"🎲 参加抽奖（{count} 人已参与）",
+              "callback_data": f"lottery_join:{round.id}"}]
+        ]
+    }
+
+
+def build_reminder_text(db: Session, round: models.LotteryRound, count: int, kind: str) -> str:
+    """人数提醒消息正文：与公告卡同源（奖品/口令/开奖时间共用生成口）。"""
+    round_title = html.escape(str(round.title or ""))
+    if kind == "final":
+        header = "⏰ <b>抽奖提醒：马上开奖啦！</b>"
+    else:
+        header = "🔔 <b>抽奖提醒：参与人数更新</b>"
+    return (
+        f"{header}\n\n「{round_title}」\n\n"
+        f"{_prize_lines(db, round)}\n\n"
+        f"👥 当前：{count} 人参与\n"
+        f"⏰ 开奖时间：{_draw_text(round)}\n\n"
+        f"{_join_instruction(round)}"
+    )
+
+
+def _record_announce_failure(db: Session, round: models.LotteryRound, err: str) -> None:
+    """公告失败落库（管理员可见、可补发），落库本身失败只记日志。"""
+    try:
+        round.announce_status = "failed"
+        round.announce_error = str(err or "发送失败")[:500]
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("群抽奖公告失败状态落库失败 round_id=%s", round.id)
+
+
+def notify_new_round(db: Session, round_id: int, *, force: bool = False) -> dict:
+    """新抽奖活动创建后通知：群公告（落库编号）+ 自动置顶。
+
+    2026-10-31 根治：发送走 send_message_ex 拿 message_id 落库
+    （announce_message_id/announce_status），公告自此可置顶、可编辑人数、
+    失败可补发；置顶失败只记日志＋状态，不回滚创建。
+    force=True 为管理员补发：重发一张新卡并改存新编号（旧卡尽力取消置顶）。
+    返回 dict 含 sent/group/message_id/status/error/pinned。
     """
-    result: dict[str, Any] = {"sent": False, "group": False}
+    result: dict[str, Any] = {
+        "sent": False, "group": False, "message_id": None,
+        "status": None, "error": None, "pinned": False,
+    }
     if not is_enabled(db):
         return result
     try:
@@ -853,51 +1044,225 @@ def notify_new_round(db: Session, round_id: int) -> dict:
     round = db.query(models.LotteryRound).filter(models.LotteryRound.id == round_id).first()
     if not round:
         return result
-    prizes = (
-        db.query(models.LotteryRoundPrize)
-        .filter(models.LotteryRoundPrize.round_id == round_id)
-        .order_by(models.LotteryRoundPrize.sort.asc())
-        .all()
-    )
+    if round.announce_message_id and round.announce_status == "sent" and not force:
+        # 已有在册公告且未要求补发：不重复发卡
+        result.update({
+            "sent": True, "group": True,
+            "message_id": round.announce_message_id,
+            "status": "sent", "pinned": bool(round.announce_pinned),
+        })
+        return result
 
-    def _prize_label(p) -> str:
-        name = html.escape(str(p.name or ""))
-        qty = p.quantity or 1
-        ptype = str(p.type or "").lower()
-        if ptype == "days":
-            return f"🎁 {name}：公益{p.value}天 ×{qty}"
-        elif ptype == "points":
-            return f"🎁 {name}：{p.value}能量 ×{qty}"
-        elif ptype == "whitelist":
-            return f"🎁 {name}：白名单 ×{qty}"
-        return f"🎁 {name} ×{qty}"
-
-    round_title = html.escape(str(round.title or ""))
-    prize_lines = "\n".join(_prize_label(p) for p in prizes) if prizes else "🎁 神秘奖品"
-    if round.draw_at:
-        draw_text = html.escape(str(round.draw_at))
-    else:
-        draw_text = "手动开奖"
-    group_text = (
-        f"🎲 <b>新抽奖来啦！</b>\n\n「{round_title}」\n\n"
-        f"{prize_lines}\n\n"
-        f"⏰ 开奖时间：{draw_text}\n\n"
-        f"👇 点击下方按钮参加"
-    )
-    reply_markup = {
-        "inline_keyboard": [
-            [{"text": "🎲 参加抽奖", "callback_data": f"lottery_join:{round_id}"}]
-        ]
-    }
+    count = participant_count(db, round_id)
+    text = build_announce_text(db, round, count)
+    markup = build_announce_markup(round, count)
     try:
-        ok, err = sender.send_message(db, round.chat_id, group_text, reply_markup=reply_markup)
-        result["group"] = bool(ok)
-        if not ok:
-            logger.warning("群抽奖新活动群公告发送失败 round_id=%s: %s", round_id, err)
+        ok, err, message_id = sender.send_message_ex(
+            db, round.chat_id, text, reply_markup=markup)
     except Exception:
         logger.exception("群抽奖新活动群公告发送异常 round_id=%s", round_id)
-
+        _record_announce_failure(db, round, "发送异常")
+        result.update({"sent": True, "status": "failed", "error": "发送异常"})
+        return result
     result["sent"] = True
+    if not ok or not message_id:
+        logger.warning("群抽奖新活动群公告发送失败 round_id=%s: %s", round_id, err)
+        _record_announce_failure(db, round, err or "发送失败")
+        result.update({"status": "failed", "error": err})
+        return result
+
+    old_message_id = round.announce_message_id
+    old_pinned = bool(round.announce_pinned)
+    round.announce_message_id = message_id
+    round.announce_status = "sent"
+    round.announce_error = None
+    round.announce_pinned = False
+    round.announce_last_edit_at = datetime.now()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("群抽奖公告编号落库失败 round_id=%s", round_id)
+    result.update({"group": True, "message_id": message_id, "status": "sent"})
+
+    if force and old_message_id and old_pinned and old_message_id != message_id:
+        try:
+            sender.unpin_message(db, round.chat_id, old_message_id)
+        except Exception:
+            logger.warning("群抽奖补发取消旧置顶失败 round_id=%s", round_id, exc_info=True)
+
+    if announce_pin_enabled(db):
+        try:
+            pin_ok, pin_err = sender.pin_message(db, round.chat_id, message_id)
+        except Exception:
+            pin_ok, pin_err = False, "置顶异常"
+            logger.exception("群抽奖公告置顶异常 round_id=%s", round_id)
+        if pin_ok:
+            round.announce_pinned = True
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("群抽奖公告置顶状态落库失败 round_id=%s", round_id)
+            result["pinned"] = True
+        else:
+            logger.warning("群抽奖公告置顶失败 round_id=%s: %s", round_id, pin_err)
+    return result
+
+
+def refresh_announce_card(db: Session, round_id: int, *, force: bool = False) -> dict:
+    """参加人数变化后节流编辑公告卡（正文＋按钮人数同源重建）。
+
+    无公告编号/活动已结束/节流未到时静默跳过；编辑失败只记日志。
+    公告卡是常驻信息卡，永不走机器人消息自毁。
+    """
+    result: dict[str, Any] = {"edited": False}
+    round = db.query(models.LotteryRound).filter(models.LotteryRound.id == round_id).first()
+    if not round or not round.announce_message_id or round.status != "open":
+        return result
+    if not force and round.announce_last_edit_at:
+        interval = announce_edit_min_interval_sec(db)
+        if interval > 0 and (datetime.now() - round.announce_last_edit_at).total_seconds() < interval:
+            result["reason"] = "throttled"
+            return result
+    try:
+        from backend.tg_bot import sender
+    except Exception:
+        logger.exception("群抽奖公告编辑：导入 tg_bot.sender 失败")
+        return result
+    count = participant_count(db, round_id)
+    text = build_announce_text(db, round, count)
+    markup = build_announce_markup(round, count)
+    try:
+        ok, err = sender.edit_message_text(
+            db, round.chat_id, round.announce_message_id, text, reply_markup=markup)
+    except Exception:
+        logger.exception("群抽奖公告编辑异常 round_id=%s", round_id)
+        return result
+    if ok or (err and "not modified" in str(err).lower()):
+        round.announce_last_edit_at = datetime.now()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("群抽奖公告编辑时间落库失败 round_id=%s", round_id)
+        result["edited"] = True
+        result["count"] = count
+    else:
+        logger.warning("群抽奖公告编辑失败 round_id=%s: %s", round_id, err)
+    return result
+
+
+def run_announce_reminders(db: Session, summary: dict | None = None) -> dict:
+    """人数提醒消息（用户 2026-10-31 亲定「直接发信息提醒」）。
+
+    并入自动开奖轮询：对每个 open 轮次——
+    - 里程碑：参与数跨过 lottery_reminder_step 的整数台阶时发一条
+      （reminder_milestone 落库防重，每场每个台阶只发一次）；
+    - 开奖前最后一叫：draw_at 前 lottery_final_call_minutes 分钟内发一条
+      （final_call_sent 落库防重）。
+    发送失败不落标记，下一 tick 重试；单轮失败不中断整批。
+    """
+    out: dict[str, Any] = {"milestone": [], "final": []}
+    if not is_enabled(db):
+        if summary is not None:
+            summary["announce_reminders"] = out
+        return out
+    try:
+        from backend.tg_bot import sender
+    except Exception:
+        logger.exception("群抽奖人数提醒：导入 tg_bot.sender 失败")
+        if summary is not None:
+            summary["announce_reminders"] = out
+        return out
+    step = reminder_step(db)
+    final_minutes = final_call_minutes(db)
+    now = shanghai_now_naive()
+    rounds = (
+        db.query(models.LotteryRound)
+        .filter(models.LotteryRound.status == "open")
+        .order_by(models.LotteryRound.id.asc())
+        .all()
+    )
+    for round in rounds:
+        # 公告已明确发送失败的轮次跳过：提醒同路必失败，避免每 tick 重试刷日志；
+        # 管理员补发公告成功后（status=sent）自动恢复提醒。
+        if round.announce_status == "failed":
+            continue
+        try:
+            count = participant_count(db, round.id)
+            if step > 0:
+                milestone = (count // step) * step
+                if milestone > 0 and milestone > (round.reminder_milestone or 0):
+                    ok, err = sender.send_message(
+                        db, round.chat_id,
+                        build_reminder_text(db, round, count, "milestone"))
+                    if ok:
+                        round.reminder_milestone = milestone
+                        db.commit()
+                        out["milestone"].append(round.id)
+                    else:
+                        logger.warning(
+                            "群抽奖里程碑提醒发送失败 round_id=%s: %s", round.id, err)
+            if (
+                final_minutes > 0
+                and round.draw_at
+                and not round.final_call_sent
+                and timedelta(0) <= (round.draw_at - now) <= timedelta(minutes=final_minutes)
+            ):
+                ok, err = sender.send_message(
+                    db, round.chat_id,
+                    build_reminder_text(db, round, count, "final"))
+                if ok:
+                    round.final_call_sent = True
+                    db.commit()
+                    out["final"].append(round.id)
+                else:
+                    logger.warning(
+                        "群抽奖开奖前提醒发送失败 round_id=%s: %s", round.id, err)
+        except Exception:
+            db.rollback()
+            logger.exception("群抽奖人数提醒处理失败 round_id=%s", round.id)
+    if summary is not None:
+        summary["announce_reminders"] = out
+    return out
+
+
+def notify_round_cancelled(db: Session, round_id: int) -> dict:
+    """活动取消后处理：取消公告置顶 + 群里发一条取消通知（与开奖通知同口径）。
+
+    发送失败只记日志不抛异常；调用方在取消落库后调用。
+    """
+    result: dict[str, Any] = {"sent": False, "unpinned": False}
+    try:
+        from backend.tg_bot import sender
+    except Exception:
+        logger.exception("群抽奖取消通知：导入 tg_bot.sender 失败")
+        return result
+    round = db.query(models.LotteryRound).filter(models.LotteryRound.id == round_id).first()
+    if not round:
+        return result
+    if round.announce_message_id and round.announce_pinned:
+        try:
+            ok, err = sender.unpin_message(db, round.chat_id, round.announce_message_id)
+            if ok:
+                round.announce_pinned = False
+                db.commit()
+                result["unpinned"] = True
+            else:
+                logger.warning("群抽奖取消公告置顶失败 round_id=%s: %s", round_id, err)
+        except Exception:
+            logger.exception("群抽奖取消公告置顶异常 round_id=%s", round_id)
+    round_title = html.escape(str(round.title or ""))
+    try:
+        ok, err = sender.send_message(
+            db, round.chat_id,
+            f"🚫 <b>本轮抽奖已取消</b>\n\n「{round_title}」已由管理员取消，感谢参与。")
+        result["sent"] = bool(ok)
+        if not ok:
+            logger.warning("群抽奖取消通知发送失败 round_id=%s: %s", round_id, err)
+    except Exception:
+        logger.exception("群抽奖取消通知发送异常 round_id=%s", round_id)
     return result
 
 
@@ -966,6 +1331,11 @@ def run_due_draws(db: Session) -> dict:
     单个轮次失败回滚并记入 errors，不中断整批。
     """
     summary: dict[str, Any] = {"checked": 0, "drawn": [], "errors": []}
+    # 人数提醒（里程碑/开奖前最后一叫）：与是否自动开奖无关，先跑。
+    try:
+        run_announce_reminders(db, summary)
+    except Exception:
+        logger.exception("群抽奖人数提醒轮询失败（不影响开奖）")
     # 先回收僵尸 drawing（崩溃遗留），再扫到期轮次：回收后打回 open 的自动轮次
     # 本 tick 即可被重新认领开奖；手动轮次打回 open 后管理后台可重试。
     # 回收不依赖自动开奖总开关——解卡死与是否自动开奖无关。

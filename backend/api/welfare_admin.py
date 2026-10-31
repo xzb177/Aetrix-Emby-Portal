@@ -320,6 +320,12 @@ WELFARE_CONFIG_KEYS = {
     "lottery_require_group_member": "1",
     "lottery_min_account_age_days": "0",
     "lottery_max_joins_per_day": "0",
+    # 公告根治（2026-10-31）：公告自动置顶默认开；人数提醒台阶默认 25 人一条，
+    # 开奖前 30 分钟最后一叫；公告卡人数编辑节流 20 秒（0=关/不节流走读侧口径）
+    "lottery_announce_pin_enabled": "1",
+    "lottery_reminder_step": "25",
+    "lottery_final_call_minutes": "30",
+    "lottery_announce_edit_min_interval_sec": "20",
     # 能量老虎机（2026-10-30 用户亲批）：总开关默认开；注额三档；赔付倍数；
     # 头奖池抽水 5%＋种子 100（池余额存 slots_pool 表，不在此处）；
     # 每日下注封顶 200 / 每日赢分封顶 1000（基础赔付计，池奖不计）
@@ -445,6 +451,7 @@ def list_lottery_rounds(
         text(
             """
             SELECT r.id, r.title, r.chat_id, r.status, r.lottery_type, r.draw_at, r.created_at,
+                   r.announce_status, r.announce_message_id, r.announce_error,
                    (SELECT COUNT(*) FROM lottery_round_entries e WHERE e.round_id = r.id) AS participant_count,
                    (SELECT COUNT(*) FROM lottery_round_prizes p WHERE p.round_id = r.id) AS prize_count
             FROM lottery_rounds r
@@ -469,6 +476,10 @@ def list_lottery_rounds(
                 "prize_count": d.get("prize_count"),
                 "draw_at": d.get("draw_at"),
                 "created_at": d.get("created_at"),
+                # 公告落库状态（2026-10-31）：sent/failed/None，失败带原因、可补发
+                "announce_status": d.get("announce_status"),
+                "announce_message_id": d.get("announce_message_id"),
+                "announce_error": d.get("announce_error"),
             }
         )
     return {"total": total, "items": items}
@@ -547,6 +558,20 @@ def create_lottery_round(
     active = lottery_module.get_active_round(db, effective_chat_id)
     if active:
         raise HTTPException(status_code=400, detail="该群已有进行中的抽奖活动")
+    # 创建前校验机器人能在目标群发言（2026-10-31 根治）：不在群/无权限时
+    # 当场拦住明示，不许静默建出一场永远发不出公告的活动；TG API 不可达
+    # 等无法判定情形放行创建，但在响应里带 bot_check 警示（公告结果另落库）。
+    bot_check = None
+    try:
+        bot_check = lottery_module.check_bot_can_post(db, effective_chat_id)
+    except Exception:
+        bot_check = None
+        logger.exception("群抽奖创建前机器人校验异常 chat_id=%s（放行创建）", effective_chat_id)
+    if bot_check and not bot_check.get("ok") and bot_check.get("reason") in ("not_member", "no_permission"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"机器人无法在该群发送抽奖公告：{bot_check.get('detail') or '机器人不在该群或没有发言权限'}，请先把机器人拉进群并给予发言权限",
+        )
     try:
         result = lottery_module.create_round(
             db=db,
@@ -584,6 +609,8 @@ def create_lottery_round(
         "draw_at": result.draw_at.isoformat() if result.draw_at else None,
         "created_at": result.created_at.isoformat() if result.created_at else None,
         "notify": notify_result,
+        # 机器人发言能力无法判定（TG API 不可达）时明示警示；确定性通过时为 None
+        "bot_check": bot_check if (bot_check and not bot_check.get("ok")) else None,
     }
 
 
@@ -753,6 +780,12 @@ def cancel_lottery_round(
     if result.rowcount == 1:
         _audit(db, current_admin.id, "lottery_round_cancel", "lottery_round", round_id, {})
         db.commit()
+        # 取消后处理：收掉公告置顶 + 群里发取消通知（与开奖通知同口径，
+        # 失败只记日志，不影响取消结果）。
+        try:
+            _get_lottery().notify_round_cancelled(db, round_id)
+        except Exception:
+            logger.exception("群抽奖取消通知失败 round_id=%s（不影响取消结果）", round_id)
         return {"success": True}
     db.rollback()
     row = db.execute(
@@ -761,6 +794,41 @@ def cancel_lottery_round(
     if row is None:
         raise HTTPException(status_code=404, detail="抽奖活动不存在")
     raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，无法取消")
+
+
+@admin_router.post("/welfare/lottery/rounds/{round_id}/announce/resend")
+def resend_lottery_announce(
+    round_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """补发群公告（2026-10-31 根治）：公告发送失败/未落库时管理员手动重发。
+
+    重发一张新卡并改存新 message_id（旧卡尽力取消置顶）；结果落库，
+    响应里带 status/error，失败明示不静默。仅进行中的活动可补发。
+    """
+    lottery_module = _get_lottery()
+    round_obj = lottery_module.get_round(db, round_id)
+    if round_obj is None:
+        raise HTTPException(status_code=404, detail="抽奖活动不存在")
+    if round_obj.status != "open":
+        raise HTTPException(status_code=409, detail="活动已结束，不能补发公告")
+    try:
+        notify_result = lottery_module.notify_new_round(db, round_id, force=True)
+    except Exception:
+        logger.exception("群抽奖公告补发异常 round_id=%s", round_id)
+        raise HTTPException(status_code=500, detail="公告补发失败，请稍后重试")
+    _audit(db, current_admin.id, "lottery_announce_resend", "lottery_round", round_id,
+           {"status": notify_result.get("status") if isinstance(notify_result, dict) else None})
+    db.commit()
+    db.refresh(round_obj)
+    return {
+        "success": notify_result.get("status") == "sent",
+        "notify": notify_result,
+        "announce_status": round_obj.announce_status,
+        "announce_message_id": round_obj.announce_message_id,
+        "announce_error": round_obj.announce_error,
+    }
 
 
 # ==================== 等级治理 Step 3：活动提案审批 ====================
@@ -797,6 +865,24 @@ def approve_lottery_proposal(
 ):
     """批准活动提案：建轮次并关联提案，轮次走正常开奖流程。"""
     admin_id = current_admin.id
+    # 批准前同样校验机器人能在目标群发言（与管理端创建同口径）：不行就
+    # 不批准（提案保持 pending 可重试），不许建出一场发不出公告的活动。
+    proposal_row = (
+        db.query(models.LotteryActivityProposal)
+        .filter(models.LotteryActivityProposal.id == proposal_id)
+        .first()
+    )
+    if proposal_row is not None and proposal_row.status == "pending":
+        try:
+            bot_check = _get_lottery().check_bot_can_post(db, proposal_row.chat_id)
+        except Exception:
+            bot_check = None
+            logger.exception("群抽奖提案批准前机器人校验异常 proposal_id=%s（放行）", proposal_id)
+        if bot_check and not bot_check.get("ok") and bot_check.get("reason") in ("not_member", "no_permission"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"机器人无法在该群发送抽奖公告：{bot_check.get('detail') or '机器人不在该群或没有发言权限'}，请先把机器人拉进群并给予发言权限",
+            )
     try:
         proposal, round_obj = lottery_governance.approve_proposal(
             db, admin_id, proposal_id, note=req.note

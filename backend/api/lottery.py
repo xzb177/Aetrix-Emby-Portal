@@ -132,6 +132,20 @@ def direct_launch_round(
     返回体与管理端创建端点同形（含 seed_hash 承诺与 notify 结果）；
     滥用时管理员可用现有取消端点取消轮次。
     """
+    # 建轮次前校验机器人能在目标群发言（与管理端创建同口径）：不在群/
+    # 无权限当场拦住明示；chat_id 未传（走配置自动解析）或 TG 不可达时
+    # 放行，公告结果另有落库与补发兜底。
+    if req.chat_id is not None:
+        try:
+            bot_check = lottery_core.check_bot_can_post(db, req.chat_id)
+        except Exception:  # noqa: BLE001
+            bot_check = None
+            logger.exception("直接发起前机器人校验异常 chat_id=%s（放行）", req.chat_id)
+        if bot_check and not bot_check.get("ok") and bot_check.get("reason") in ("not_member", "no_permission"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"机器人无法在该群发送抽奖公告：{bot_check.get('detail') or '机器人不在该群或没有发言权限'}，请先把机器人拉进群并给予发言权限",
+            )
     try:
         round_obj, _record = lottery_governance.direct_launch(
             db, current_user.id, req.model_dump()

@@ -1620,6 +1620,16 @@ class LotteryRound(Base):
     # 三重门·公信门：drand 公开随机信标（开奖时抓取，与 seed 混合成最终种子）
     drand_round = Column(BigInteger, nullable=True)      # drand 信标轮次
     drand_randomness = Column(String(128), nullable=True)  # drand 信标随机值（hex）
+    # 公告落库（2026-10-31 根治）：公告消息编号/发送状态/失败原因/是否置顶，
+    # 没有编号就无法置顶、无法编辑人数、失败也无从补发（round 4 实证）。
+    announce_message_id = Column(BigInteger, nullable=True)  # 群公告 message_id
+    announce_status = Column(String(20), nullable=True)      # sent/failed；NULL=未发送
+    announce_error = Column(String(500), nullable=True)      # 最近一次发送失败原因
+    announce_pinned = Column(Boolean, nullable=False, default=False, server_default='0')
+    announce_last_edit_at = Column(DateTime, nullable=True)  # 人数编辑节流时间戳
+    # 人数提醒防重（worker 轮询）：已提醒到的最高里程碑人数 / 开奖前提醒已发
+    reminder_milestone = Column(Integer, nullable=False, default=0, server_default='0')
+    final_call_sent = Column(Boolean, nullable=False, default=False, server_default='0')
     created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 

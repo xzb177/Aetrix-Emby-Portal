@@ -181,9 +181,13 @@ def test_handle_lottery_password_success(db):
     )
     user = _make_user(db, "u1", 111)
 
+    # 2026-10-31 根治：成功反馈走 send_message_ex（带人数＋自毁），不再是
+    # 无编号的 send_message（旧反馈发送失败被吞、用户亲报群里没反馈）。
     with patch.object(callbacks, "resolve", return_value=user), \
          patch("backend.tg_bot.sender.get_chat_member", return_value=(True, "member")), \
-         patch("backend.tg_bot.sender.send_message") as mock_send:
+         patch("backend.tg_bot.sender.send_message_ex",
+               return_value=(True, None, 555)) as mock_send, \
+         patch("backend.tg_bot.ephemeral.schedule_delete", return_value=True):
         consumed = callbacks.handle_lottery_password(
             db, 100, {"id": 111, "first_name": "张三"}, "抽我"
         )
@@ -206,7 +210,12 @@ def test_handle_lottery_password_no_match(db):
     assert consumed is False
 
 
-def test_handle_lottery_password_duplicate_silent(db):
+def test_handle_lottery_password_duplicate_feedback(db):
+    """重复口令：只算一次参加，但必须回一条「已参加」自毁反馈。
+
+    2026-10-31 行为变更（用户亲定）：旧版重复口令静默吞掉，用户亲报
+    「发了口令群里没反馈」；新版发带人数的自毁反馈（不常驻刷屏）。
+    """
     from backend.tg_bot import callbacks
 
     _set_config(db, "lottery_enabled", "1")
@@ -219,12 +228,18 @@ def test_handle_lottery_password_duplicate_silent(db):
 
     with patch.object(callbacks, "resolve", return_value=user), \
          patch("backend.tg_bot.sender.get_chat_member", return_value=(True, "member")), \
-         patch("backend.tg_bot.sender.send_message") as mock_send:
+         patch("backend.tg_bot.sender.send_message_ex",
+               return_value=(True, None, 556)) as mock_send, \
+         patch("backend.tg_bot.ephemeral.schedule_delete", return_value=True):
         consumed = callbacks.handle_lottery_password(
             db, 100, {"id": 111, "first_name": "张三"}, "抽我"
         )
     assert consumed is True
-    mock_send.assert_not_called()  # 重复口令静默，不刷屏
+    mock_send.assert_called_once()
+    assert "已参加" in mock_send.call_args[0][2]
+    # 仍然只算一次参加
+    assert db.query(models.LotteryRoundEntry).filter(
+        models.LotteryRoundEntry.round_id == r.id).count() == 1
 
 
 def test_handle_lottery_password_not_member_silent(db):

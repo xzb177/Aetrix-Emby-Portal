@@ -545,3 +545,38 @@ def answer_inline_query(
         payload["switch_pm_text"] = switch_pm_text
         payload["switch_pm_parameter"] = switch_pm_parameter or "start"
     return _call(db, "answerInlineQuery", payload)
+
+
+def pin_message(db, chat_id: int, message_id: int) -> tuple[bool, str | None]:
+    """置顶指定消息（pinChatMessage，静默置顶不额外通知全员）。
+
+    抽奖公告落库后置顶用；失败只以 (False, err) 返回，调用方记日志不回滚。
+    """
+    return _call(db, "pinChatMessage", {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "disable_notification": True,
+    })
+
+
+def unpin_message(db, chat_id: int, message_id: int) -> tuple[bool, str | None]:
+    """取消置顶指定消息（unpinChatMessage）。开奖/取消时收掉公告置顶用。"""
+    return _call(db, "unpinChatMessage", {
+        "chat_id": chat_id,
+        "message_id": message_id,
+    })
+
+
+def get_me(db) -> tuple[bool, str | None, dict | None]:
+    """查询机器人自身信息（getMe）；成功时第三项为 result（含 id）。"""
+    return _call_ex(db, "getMe", {})
+
+
+def get_chat_member_raw(db, chat_id: int, user_id: int) -> tuple[bool, str | None, dict | None]:
+    """查询成员原始信息（getChatMember）；成功时第三项为完整 result。
+
+    get_chat_member 只回 (是否成员, status)，判断机器人发言权限还需要
+    administrator 的 can_post_messages 等字段，故另开原始口；既有
+    get_chat_member 本体与调用方一字不动。
+    """
+    return _call_ex(db, "getChatMember", {"chat_id": chat_id, "user_id": user_id})

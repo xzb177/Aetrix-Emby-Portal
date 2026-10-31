@@ -13,6 +13,7 @@ import {
   fetchLotteryRound,
   cancelLotteryRound,
   drawLotteryRound,
+  resendLotteryAnnounce,
   fetchWelfareConfig,
   saveWelfareConfig,
   type LotteryRoundRow,
@@ -43,6 +44,7 @@ const columns = computed<DataColumn[]>(() => [
   { key: 'lottery_type_label', label: '类型', width: 100 },
   { key: 'status', label: '状态', width: 100 },
   { key: 'participant_count', label: '参与人数', width: 100 },
+  { key: 'announce_status', label: '群公告', width: 100 },
   { key: 'prize_count', label: '奖品数', width: 90 },
   { key: 'draw_at', label: '开奖时间', width: 170 },
   { key: 'actions', label: '操作', width: 220, fixed: 'right', align: 'right' }
@@ -174,6 +176,20 @@ const handleDraw = async (row: { id: number; title: string }) => {
     /* 写操作失败由请求拦截器统一弹错，这里不再重复提示 */
   }
 }
+// 公告补发（公告落库后才有此能力：失败/未发时重发一张新卡）
+const handleResendAnnounce = async (row: { id: number; title: string }) => {
+  try {
+    await ElMessageBox.confirm(`给活动「${row.title}」补发群公告？`, '确认', { type: 'warning' })
+  } catch { return }
+  try {
+    const res = await resendLotteryAnnounce(row.id)
+    if (res.success) ElMessage.success('公告已补发')
+    else ElMessage.error(`公告补发失败：${res.announce_error ?? '未知原因'}`)
+    load()
+  } catch {
+    /* 写操作失败由请求拦截器统一弹错，这里不再重复提示 */
+  }
+}
 const handleCancel = async (row: { id: number; title: string }) => {
   try {
     await ElMessageBox.confirm(`取消活动「${row.title}」？`, '确认', { type: 'warning' })
@@ -189,11 +205,16 @@ const handleCancel = async (row: { id: number; title: string }) => {
 }
 
 // 抽奖配置（总开关/自动开奖/开奖通知已于 2026-10-21 摘面板，改由服务端配置控制）
-const config = ref({ lottery_group_ids: '', lottery_draw_interval_sec: '60', lottery_require_group_member: '1', lottery_min_account_age_days: '0', lottery_max_joins_per_day: '0' })
+const config = ref({ lottery_group_ids: '', lottery_draw_interval_sec: '60', lottery_require_group_member: '1', lottery_min_account_age_days: '0', lottery_max_joins_per_day: '0', lottery_announce_pin_enabled: '1', lottery_reminder_step: '25', lottery_final_call_minutes: '30', lottery_announce_edit_min_interval_sec: '20' })
 // 三重门·参赛资格：参赛者必须在 TG 群里
 const requireGroupMember = computed({
   get: () => config.value.lottery_require_group_member !== '0',
   set: (v: boolean) => { config.value.lottery_require_group_member = v ? '1' : '0' }
+})
+// 公告自动置顶开关（digit 风格与后端一致）
+const announcePin = computed({
+  get: () => config.value.lottery_announce_pin_enabled !== '0',
+  set: (v: boolean) => { config.value.lottery_announce_pin_enabled = v ? '1' : '0' }
 })
 const loadConfig = async () => {
   try {
@@ -204,7 +225,11 @@ const loadConfig = async () => {
       lottery_draw_interval_sec: data.lottery_draw_interval_sec ?? '60',
       lottery_require_group_member: data.lottery_require_group_member === '0' ? '0' : '1',
       lottery_min_account_age_days: data.lottery_min_account_age_days ?? '0',
-      lottery_max_joins_per_day: data.lottery_max_joins_per_day ?? '0'
+      lottery_max_joins_per_day: data.lottery_max_joins_per_day ?? '0',
+      lottery_announce_pin_enabled: data.lottery_announce_pin_enabled === '0' ? '0' : '1',
+      lottery_reminder_step: data.lottery_reminder_step ?? '25',
+      lottery_final_call_minutes: data.lottery_final_call_minutes ?? '30',
+      lottery_announce_edit_min_interval_sec: data.lottery_announce_edit_min_interval_sec ?? '20'
     }
   } catch (e) {
     ElMessage.error(errDetail(e))
@@ -219,6 +244,12 @@ const saveConfig = async () => {
   if (!Number.isInteger(minAge) || minAge < 0) { ElMessage.warning('新号限制天数必须 >= 0 的整数'); return }
   const maxJoins = Number(config.value.lottery_max_joins_per_day)
   if (!Number.isInteger(maxJoins) || maxJoins < 0) { ElMessage.warning('每日参加上限必须 >= 0 的整数'); return }
+  const reminderStep = Number(config.value.lottery_reminder_step)
+  if (!Number.isInteger(reminderStep) || reminderStep < 0) { ElMessage.warning('人数提醒台阶必须 >= 0 的整数'); return }
+  const finalCall = Number(config.value.lottery_final_call_minutes)
+  if (!Number.isInteger(finalCall) || finalCall < 0) { ElMessage.warning('开奖前提醒必须 >= 0 的整数（分钟）'); return }
+  const editInterval = Number(config.value.lottery_announce_edit_min_interval_sec)
+  if (!Number.isInteger(editInterval) || editInterval < 0) { ElMessage.warning('公告编辑节流必须 >= 0 的整数（秒）'); return }
   savingConfig.value = true
   try {
     await saveWelfareConfig({
@@ -226,7 +257,11 @@ const saveConfig = async () => {
       lottery_draw_interval_sec: String(interval),
       lottery_require_group_member: config.value.lottery_require_group_member,
       lottery_min_account_age_days: String(minAge),
-      lottery_max_joins_per_day: String(maxJoins)
+      lottery_max_joins_per_day: String(maxJoins),
+      lottery_announce_pin_enabled: config.value.lottery_announce_pin_enabled,
+      lottery_reminder_step: String(reminderStep),
+      lottery_final_call_minutes: String(finalCall),
+      lottery_announce_edit_min_interval_sec: String(editInterval)
     })
     ElMessage.success('已保存')
   } catch {
@@ -267,8 +302,14 @@ onMounted(() => {
           <el-tag :type="statusTagType(row.status)" size="small">{{ statusMap[row.status] ?? row.status }}</el-tag>
         </template>
         <template #cell-draw_at="{ row }">{{ fmtTime(row.draw_at) }}</template>
+        <template #cell-announce_status="{ row }">
+          <el-tag v-if="row.announce_status === 'sent'" type="success" size="small">已发送</el-tag>
+          <el-tag v-else-if="row.announce_status === 'failed'" type="danger" size="small" :title="row.announce_error ?? ''">发送失败</el-tag>
+          <el-tag v-else type="info" size="small">未发送</el-tag>
+        </template>
         <template #cell-actions="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+          <el-button v-if="row.status === 'open' && row.announce_status !== 'sent'" link type="primary" @click="handleResendAnnounce(row)">补发公告</el-button>
           <el-button v-if="row.status === 'open'" link type="warning" @click="handleDraw(row)">开奖</el-button>
           <el-button v-if="row.status === 'open'" link type="danger" @click="handleCancel(row)">取消</el-button>
         </template>
@@ -298,6 +339,25 @@ onMounted(() => {
           <el-input v-model="config.lottery_max_joins_per_day" class="field-sm" />
           <span class="field-suffix">次</span>
           <span class="field-hint">每人每天最多参加次数，0=不限制</span>
+        </el-form-item>
+        <el-form-item label="公告自动置顶">
+          <el-switch v-model="announcePin" />
+          <span class="field-hint">新活动公告发出后自动置顶到群里，开奖/取消时自动收掉</span>
+        </el-form-item>
+        <el-form-item label="人数提醒台阶">
+          <el-input v-model="config.lottery_reminder_step" class="field-sm" />
+          <span class="field-suffix">人</span>
+          <span class="field-hint">参与人数每跨过一个台阶就在群里发一条提醒，默认 25，0=关</span>
+        </el-form-item>
+        <el-form-item label="开奖前提醒">
+          <el-input v-model="config.lottery_final_call_minutes" class="field-sm" />
+          <span class="field-suffix">分钟</span>
+          <span class="field-hint">开奖前多少分钟发最后一叫（带当时人数），默认 30，0=关</span>
+        </el-form-item>
+        <el-form-item label="公告编辑节流">
+          <el-input v-model="config.lottery_announce_edit_min_interval_sec" class="field-sm" />
+          <span class="field-suffix">秒</span>
+          <span class="field-hint">公告卡上参与人数最短多久刷新一次，默认 20</span>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="savingConfig" @click="saveConfig">保存</el-button>

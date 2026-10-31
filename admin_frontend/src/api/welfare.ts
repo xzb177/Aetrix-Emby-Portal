@@ -37,6 +37,10 @@ export interface LotteryRoundRow {
   prize_count: number
   draw_at: string | null
   created_at: string | null
+  // 公告落库状态（2026-10-31）：sent=已发 / failed=发送失败（带原因，可补发）/ null=未发送
+  announce_status?: string | null
+  announce_message_id?: number | null
+  announce_error?: string | null
 }
 
 export interface LotteryRoundPrizeRow {
@@ -101,6 +105,9 @@ export const drawLotteryRound = (id: number) =>
 
 export const cancelLotteryRound = (id: number) =>
   post<{ success: boolean }>(`${E}/lottery/rounds/${id}/cancel`, {})
+
+export const resendLotteryAnnounce = (id: number) =>
+  post<{ success: boolean; announce_status: string | null; announce_error: string | null }>(`${E}/lottery/rounds/${id}/announce/resend`, {})
 
 // ==================== 活动提案审批（等级治理 Step 3） ====================
 // 用户端 Lv.2+ 提交提案（POST /api/lottery/proposals），管理员在这里审批：
