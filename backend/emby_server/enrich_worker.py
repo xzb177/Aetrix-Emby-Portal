@@ -4853,6 +4853,9 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
       身份；识别异常时回滚并回落现行写库（不改变失败语义）。
     - 补资料段开且已绑定：只填空缺（+ Frodo 缺口），成功后走 done 收尾；
       补资料异常时回滚并把本条打回 pending（身份已落库，只重试补资料）。
+      例外（imdb-only 盲区治本）：已绑定但无 tmdb_id 且本轮证据带 TMDB
+      候选时，先跑一次识别段做身份升级并独立提交、再补资料——只有
+      imdb 的条目进不了识别队列，不在此升级就永远落不了 tmdb_id。
     - 补资料段开但未绑定：不进补资料段，回落现行写库（审查 / none 终态
       由现行路径接管，不在此伪造）。
     - 识别段开、补资料段关：身份落库后本条回 pending，等补资料段认领。
@@ -4925,6 +4928,31 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
         if not bound:
             _enrich_apply(db, item, fetched)
             return
+        if not _bound_value(getattr(item, "tmdb_id", None)):
+            # 身份升级（imdb-only 盲区治本，2026-10-31 诊断定案）：只有
+            # imdb_id 的条目永远进不了识别队列（identify_filter 只认
+            # 双空），补资料段此前又从不写身份列——TMDB 搜索命中每轮
+            # 都到手（fetched["tmdb_hit"]），身份却落不了库，条目在
+            # done（干净度巡检以 no_tmdb 翻回 pending）与补资料段之
+            # 间无限空转。本轮证据带 TMDB 候选（fetched["tmdb_id"]
+            # 或 tmdb_hit）时，先跑一次识别段把身份升级落库并独立提
+            # 交（与识别段同口径：补资料失败不回滚身份），再补资料。
+            # 候选在 IO 阶段已过封禁降级从严门与绑定复核门（被拒的
+            # 已被 pop 出 fetched），apply_identity 落库前还有自己的
+            # 复核门——消费它不绕任何门。无候选时不调，行为与此前
+            # 逐字一致；升级异常只记日志回滚、补资料照常（不改变补
+            # 资料段的失败语义）。
+            _hit = fetched.get("tmdb_hit")
+            _hit_id = _hit.get("id") if isinstance(_hit, dict) else None
+            if _bound_value(fetched.get("tmdb_id")) or _bound_value(_hit_id):
+                try:
+                    ts.apply_identity(db, item, fetched)
+                    db.commit()  # 身份升级独立提交
+                except Exception as exc:  # noqa: BLE001 — 升级失败不拖垮补资料
+                    logger.warning(
+                        "补资料段身份升级失败，继续补资料 id=%s: %s",
+                        item.id, exc)
+                    db.rollback()
         try:
             ts.apply_fill(db, item, fetched)
         except Exception as exc:  # noqa: BLE001 — 补资料失败只重试补资料
