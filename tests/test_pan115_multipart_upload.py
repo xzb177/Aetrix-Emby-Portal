@@ -716,3 +716,236 @@ def test_multipart_client_missing_callback_fails_before_parts(monkeypatch):
         client.multipart_upload(io.BytesIO(_PAYLOAD), "a.mkv",
                                 len(_PAYLOAD), _PAYLOAD_SHA1, "900")
     assert oss.by_method("PUT") == []  # 没白传一片
+
+
+# ---------- 片间令牌刷新＋会话令牌记账（换代第一刀 step 1） ----------
+# 背景（可行性报告一.2/八.2）：upload_token 此前丢弃 STS Expiration，
+# 一次 multipart 全程只领一枚令牌用到底——2026-10-31 生产一单在
+# part 188 撞 SecurityTokenExpired、三试同令牌全败（会话本身不随
+# 令牌死）。本节钉：part PUT / complete 撞令牌过期先刷新再重试该步；
+# 每片至多刷新 1 次、整单有总闸；非过期错误不触发刷新；刷新也救
+# 不回时按原口径失败 abort。会话 dict 带令牌领取/到期时刻，经既有
+# on_progress 通道由调用方 sidecar 落盘（本模块不另起存储）。
+
+_EXPIRED_MSG = (
+    "115 OSS 返回 HTTP 403：b'<Error><Code>SecurityTokenExpired</Code>"
+    "<Message>The security token has expired</Message></Error>'")
+
+
+class _FakeOSSExpiring(_FakeOSS):
+    """OSS 桩扩展：指定片/complete 的前 N 次请求撞令牌过期。
+
+    expire_plan 键 ("part", 片号) / ("complete", 0)，值是过期次数；
+    命中时抛与 _http_full 生产文案同形的 Pan115Error。seen_tokens
+    记每次 PUT/complete 实际所带 x-oss-security-token，供断言刷新
+    后确实换了新令牌在传。
+    """
+
+    def __init__(self, payload_sha1, expire_plan=None, **kw):
+        super().__init__(payload_sha1, **kw)
+        self.expire_plan = dict(expire_plan or {})
+        self.seen_tokens = []
+
+    def __call__(self, method, url, headers=None, data=None, **kw):
+        query = dict(parse_qsl(urlsplit(url).query))
+        key = None
+        if method == "PUT":
+            key = ("part", int(query["partNumber"]))
+        elif method == "POST" and "uploadId" in query:
+            key = ("complete", 0)
+        if key is not None:
+            self.seen_tokens.append(
+                (key, (headers or {}).get("x-oss-security-token")))
+            left = self.expire_plan.get(key, 0)
+            if left > 0:
+                self.expire_plan[key] = left - 1
+                raise transfer115.Pan115Error(_EXPIRED_MSG)
+        return super().__call__(method, url, headers=headers,
+                               data=data, **kw)
+
+
+class _FakeOSSResume(_FakeOSSExpiring):
+    """过期桩之上加 ListParts：按 saved_parts 回 XML 已成片清单。"""
+
+    def __init__(self, payload_sha1, saved_parts, **kw):
+        super().__init__(payload_sha1, **kw)
+        self.saved_parts = saved_parts  # [(片号, ETag)]
+
+    def __call__(self, method, url, headers=None, data=None, **kw):
+        if method == "GET":
+            items = "".join(
+                f"<Part><PartNumber>{n}</PartNumber>"
+                f"<ETag>{e}</ETag></Part>"
+                for n, e in self.saved_parts)
+            body = (f"<ListPartsResult>{items}"
+                    "<IsTruncated>false</IsTruncated>"
+                    "</ListPartsResult>").encode()
+            return 200, {}, body
+        return super().__call__(method, url, headers=headers,
+                               data=data, **kw)
+
+
+def _patch_client_http_tokens(monkeypatch, init_responses, oss,
+                              expirations=()):
+    """同 _patch_client_http，但 gettoken 每次回不同凭据
+    （AKID-n/STOKEN-n）与 expirations 队列里的到期时刻，以便断言
+    刷新次数与刷新后所带令牌。"""
+    json_calls = []
+    state = {"n": 0}
+    exps = list(expirations)
+
+    def _fake_json(method, url, params=None, data=None, **kw):
+        json_calls.append(url)
+        if "gettoken" in url:
+            state["n"] += 1
+            n = state["n"]
+            return {"AccessKeyId": f"AKID-{n}",
+                    "AccessKeySecret": f"SECRET-{n}",
+                    "SecurityToken": f"STOKEN-{n}",
+                    "Expiration": exps.pop(0) if exps
+                    else "2099-01-01T00:00:00Z"}
+        return {"user_id": "12345", "userkey": "uk-test"}
+
+    monkeypatch.setattr(transfer115, "_http_json", _fake_json)
+    queue = list(init_responses)
+
+    def _fake_bytes(method, url, params=None, data=None, **kw):
+        return _test_encrypt_response(queue.pop(0))
+
+    monkeypatch.setattr(transfer115, "_http_bytes", _fake_bytes)
+    monkeypatch.setattr(transfer115, "_http_full", oss)
+    return SimpleNamespace(
+        json_calls=json_calls, gettoken_count=lambda: state["n"])
+
+
+def test_upload_token_returns_expiration(monkeypatch):
+    oss = _FakeOSS(payload_sha1=_PAYLOAD_SHA1)
+    _patch_client_http_tokens(monkeypatch, [], oss,
+                              ["2031-05-06T07:08:09Z"])
+    client = transfer115.Pan115Client("COOKIE")
+    token = client.upload_token()
+    assert token["AccessKeyId"] == "AKID-1"
+    assert token["SecurityToken"] == "STOKEN-1"
+    assert token["Expiration"] == "2031-05-06T07:08:09Z"
+
+
+def test_multipart_part_token_expired_refreshes_and_succeeds(monkeypatch):
+    monkeypatch.setattr(transfer115, "_MULTIPART_MIN_PART_SIZE", 1024)
+    payload = bytes(range(256)) * 12  # 3 片
+    sha1 = hashlib.sha1(payload).hexdigest()
+    oss = _FakeOSSExpiring(payload_sha1=sha1, expire_plan={("part", 2): 1})
+    http = _patch_client_http_tokens(
+        monkeypatch, [_INIT_OK], oss,
+        ["2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z"])
+    client = transfer115.Pan115Client("COOKIE")
+    out = client.multipart_upload(io.BytesIO(payload), "a.mkv",
+                                  len(payload), sha1, "900")
+    assert out["outcome"] == "uploaded"
+    assert http.gettoken_count() == 2  # 初始 1 + 片间刷新 1
+    part2_tokens = [t for (k, t) in oss.seen_tokens if k == ("part", 2)]
+    # 第 2 片先撞过期、刷新后带新令牌重传成功
+    assert part2_tokens == ["STOKEN-1", "STOKEN-2"]
+    assert oss.by_method("DELETE") == []  # 自愈成功不 abort
+
+
+def test_multipart_part_token_still_expired_after_refresh_bounded(monkeypatch):
+    # 刷新后仍过期：每片只刷新 1 次，其后按原 3 次尝试口径失败并
+    # abort——不许无界领令牌、不许无界重试。
+    monkeypatch.setattr(transfer115, "_MULTIPART_MIN_PART_SIZE", 1024)
+    payload = bytes(range(256)) * 12
+    sha1 = hashlib.sha1(payload).hexdigest()
+    oss = _FakeOSSExpiring(payload_sha1=sha1, expire_plan={("part", 2): 99})
+    http = _patch_client_http_tokens(monkeypatch, [_INIT_OK], oss)
+    client = transfer115.Pan115Client("COOKIE")
+    with pytest.raises(transfer115.Pan115Error):
+        client.multipart_upload(io.BytesIO(payload), "a.mkv",
+                                len(payload), sha1, "900")
+    assert http.gettoken_count() == 2  # 初始 + 本片唯一一次刷新
+    part2_tokens = [t for (k, t) in oss.seen_tokens if k == ("part", 2)]
+    # 刷新前 1 次尝试 + 刷新后按常规尝试上限收尾
+    assert len(part2_tokens) == 1 + transfer115._MULTIPART_PART_ATTEMPTS
+    assert part2_tokens[0] == "STOKEN-1"
+    assert set(part2_tokens[1:]) == {"STOKEN-2"}
+    assert len(oss.by_method("DELETE")) == 1  # 按原口径 abort
+
+
+def test_multipart_part_plain_error_never_refreshes(monkeypatch):
+    monkeypatch.setattr(transfer115, "_MULTIPART_MIN_PART_SIZE", 1024)
+    payload = bytes(range(256)) * 12
+    sha1 = hashlib.sha1(payload).hexdigest()
+    oss = _FakeOSS(payload_sha1=sha1, fail_part=2)
+    http = _patch_client_http_tokens(monkeypatch, [_INIT_OK], oss)
+    client = transfer115.Pan115Client("COOKIE")
+    with pytest.raises(transfer115.Pan115Error):
+        client.multipart_upload(io.BytesIO(payload), "a.mkv",
+                                len(payload), sha1, "900")
+    assert http.gettoken_count() == 1  # 非过期错误不触发刷新
+
+
+def test_multipart_complete_token_expired_refreshes(monkeypatch):
+    monkeypatch.setattr(transfer115, "_MULTIPART_MIN_PART_SIZE", 1024)
+    payload = bytes(range(256)) * 4
+    sha1 = hashlib.sha1(payload).hexdigest()
+    oss = _FakeOSSExpiring(payload_sha1=sha1,
+                           expire_plan={("complete", 0): 1})
+    http = _patch_client_http_tokens(monkeypatch, [_INIT_OK], oss)
+    client = transfer115.Pan115Client("COOKIE")
+    out = client.multipart_upload(io.BytesIO(payload), "a.mkv",
+                                  len(payload), sha1, "900")
+    assert out["outcome"] == "uploaded"
+    assert http.gettoken_count() == 2
+    comp_tokens = [t for (k, t) in oss.seen_tokens
+                   if k == ("complete", 0)]
+    assert comp_tokens == ["STOKEN-1", "STOKEN-2"]
+    assert oss.by_method("DELETE") == []
+
+
+def test_multipart_resume_part_token_expired_refreshes(monkeypatch):
+    monkeypatch.setattr(transfer115, "_MULTIPART_MIN_PART_SIZE", 1024)
+    payload = bytes(range(256)) * 12  # 3 片，续传时第 1 片已成
+    sha1 = hashlib.sha1(payload).hexdigest()
+    md5_1 = hashlib.md5(payload[:1024]).hexdigest().upper()
+    oss = _FakeOSSResume(payload_sha1=sha1, saved_parts=[(1, f'"{md5_1}"')],
+                         expire_plan={("part", 2): 1})
+    http = _patch_client_http_tokens(monkeypatch, [], oss)
+    session = {"bucket": "fhnfile", "object_key": "obj/key.bin",
+               "upload_id": "UPLOAD-42", "callback": _CALLBACK,
+               "parts": [{"PartNumber": 1, "ETag": f'"{md5_1}"'}]}
+    client = transfer115.Pan115Client("COOKIE")
+    out = client.multipart_upload(io.BytesIO(payload), "a.mkv",
+                                  len(payload), sha1, "900",
+                                  resume_session=session)
+    assert out["outcome"] == "uploaded"
+    assert http.gettoken_count() == 2  # 续传取凭据 1 + 刷新 1
+    put_numbers = [k[1] for (k, _t) in oss.seen_tokens if k[0] == "part"]
+    assert put_numbers == [2, 2, 3]  # 第 2 片过期一次后重传，再传第 3 片
+
+
+def test_multipart_session_carries_token_metadata(monkeypatch):
+    # 交付状态落盘（本模块侧）：会话 dict 带令牌领取时刻与到期时刻，
+    # 经既有 on_progress 通道落进调用方 sidecar；刷新后 failed 事件
+    # 里的会话须带刷新后那枚的到期时刻，init 事件仍是初始那枚。
+    monkeypatch.setattr(transfer115, "_MULTIPART_MIN_PART_SIZE", 1024)
+    payload = bytes(range(256)) * 12  # 3 片
+    sha1 = hashlib.sha1(payload).hexdigest()
+    oss = _FakeOSSExpiring(payload_sha1=sha1, fail_part=3,
+                           expire_plan={("part", 2): 1})
+    _patch_client_http_tokens(
+        monkeypatch, [_INIT_OK], oss,
+        ["2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z"])
+    events = []
+    client = transfer115.Pan115Client("COOKIE")
+    with pytest.raises(transfer115.Pan115Error):
+        client.multipart_upload(io.BytesIO(payload), "a.mkv",
+                                len(payload), sha1, "900",
+                                on_progress=events.append)
+    init_ev = [e for e in events if e.get("event") == "init"][0]
+    assert init_ev["session"]["token"]["expiration"] == \
+        "2030-01-01T00:00:00Z"
+    assert isinstance(init_ev["session"]["token"]["fetched_at"], int)
+    failed_ev = [e for e in events if e.get("event") == "failed"][0]
+    assert failed_ev["session"]["token"]["expiration"] == \
+        "2030-01-02T00:00:00Z"
+    assert [p["PartNumber"]
+            for p in failed_ev["session"]["parts"]] == [1, 2]
+    assert oss.by_method("DELETE") == []  # 有 on_progress 时不 abort（既有口径）
