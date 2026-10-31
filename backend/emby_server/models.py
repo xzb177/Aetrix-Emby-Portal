@@ -1151,8 +1151,11 @@ class UpstreamItemMapping(Base):
       （如 tmdb / imdb / title+year），只记“凭什么配上”，不记标题
       原文与任何凭据；
     - 同一三元组重复写不重复建行（唯一约束 + upsert 更新置信度与证据）；
-    - episode_index：播放组内 1 起序号（剧集在同组内的集次），电影为 NULL；
-      upsert 时仅当传入非 None 才更新它，None 不覆盖已有值；
+    - episode_index：集号，电影为 NULL；upsert 时仅当传入非 None
+      才更新它，None 不覆盖已有值。口径按写入方分：Emby 聚合写
+      上游集号（IndexNumber，0 = 第 0 集 / 特别篇、合法），苹果
+      CMS 同步写组内 1 起序号；共同底线是不许负数（校验在
+      upstream_item_mappings.record_mapping）；
     - 不加外键（照 UpstreamSource 先例）：源删了、本地条目删了，
       映射行留着供追溯；读到死映射时未来兜底口按源不存在 / 条目
       不存在结构化处理，不在本表联动清理；
@@ -1174,7 +1177,7 @@ class UpstreamItemMapping(Base):
     local_item_id = Column(Integer, nullable=False)  # emby_items.id，无外键（见上）
     source_id = Column(Integer, nullable=False)  # upstream_sources.id，无外键（见上）
     upstream_item_id = Column(String(100), nullable=False)  # 对方 Emby Item Id
-    # 播放组内 1 起序号；电影为 NULL（见本类 docstring）。
+    # 集号（口径见本类 docstring）；电影为 NULL。
     episode_index = Column(Integer, nullable=True)
     confidence = Column(Float, nullable=False, default=0.0)
     evidence = Column(String(200), nullable=False, default="")  # 配对依据短码

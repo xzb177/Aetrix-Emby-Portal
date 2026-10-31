@@ -157,6 +157,26 @@ def test_invalid_input_rejected(db):
     assert _count(db) == 0
 
 
+def test_episode_index_zero_accepted(db):
+    # 集号口径：episode_index 载荷是上游集号（Emby IndexNumber），
+    # 0 = 第 0 集 / 特别篇，合法（本地 episode_number 同口径）；
+    # 此前按正整数拒 0，曾把一整轮聚合打死（2026-11-01 生产实证）。
+    row = uim.record_mapping(db, local_item_id=10, source_id=3,
+                             upstream_item_id="ep0", confidence=0.9,
+                             evidence="tmdb", episode_index=0)
+    assert row is not None
+    assert row.episode_index == 0
+    assert uim.get_best_mapping(db, 10).episode_index == 0
+
+
+def test_episode_index_negative_rejected(db):
+    with pytest.raises(ValueError):
+        uim.record_mapping(db, local_item_id=10, source_id=3,
+                           upstream_item_id="ep-neg", confidence=0.9,
+                           episode_index=-1)
+    assert _count(db) == 0
+
+
 def test_other_local_item_isolated(db):
     uim.record_mapping(db, local_item_id=10, source_id=3,
                        upstream_item_id="abc123", confidence=0.9)

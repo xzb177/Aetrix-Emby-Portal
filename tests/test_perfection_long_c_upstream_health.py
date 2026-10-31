@@ -156,9 +156,13 @@ def test_redis_store_valid_value_still_parses():
 
 
 # ---------- ③ episode_index 域校验 ----------
+# 口径变更（2026-11-01）：集号 0 合法（第 0 集 / 特别篇，上游
+# IndexNumber 与本地 episode_number 同口径），只拒负数。此前
+# 「非正一律拒」把上游 IndexNumber=0 的单集抛 ValueError、且
+# run 层没兜底，一颗坏数据打死整轮聚合（生产实证），已改。
 
-@pytest.mark.parametrize("bad_episode", [0, -1, -3])
-def test_record_mapping_rejects_non_positive_episode(db, bad_episode):
+@pytest.mark.parametrize("bad_episode", [-1, -3])
+def test_record_mapping_rejects_negative_episode(db, bad_episode):
     with pytest.raises(ValueError):
         uim.record_mapping(db, local_item_id=10, source_id=3,
                            upstream_item_id="ep-bad", confidence=0.9,
@@ -171,6 +175,10 @@ def test_record_mapping_accepts_positive_episode_and_none_keeps_old(db):
                              upstream_item_id="ep-ok", confidence=0.9,
                              episode_index=2)
     assert row.episode_index == 2
+    zero = uim.record_mapping(db, local_item_id=11, source_id=3,
+                              upstream_item_id="ep-zero", confidence=0.9,
+                              episode_index=0)
+    assert zero.episode_index == 0
     row2 = uim.record_mapping(db, local_item_id=10, source_id=3,
                               upstream_item_id="ep-ok", confidence=0.8,
                               episode_index=None)

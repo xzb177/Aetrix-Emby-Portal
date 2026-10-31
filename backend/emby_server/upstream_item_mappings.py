@@ -75,6 +75,17 @@ def _as_pos_int(value: object, name: str) -> int:
     return number
 
 
+def _as_nonneg_int(value: object, name: str) -> int:
+    """非负整数校验（集号口径）：0 合法，负数 / 非法一律 ValueError。"""
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} 必须为非负整数") from None
+    if number < 0:
+        raise ValueError(f"{name} 必须为非负整数")
+    return number
+
+
 def record_mapping(db: Session, *, local_item_id: int, source_id: int,
                    upstream_item_id: str, confidence: float,
                    evidence: str = "",
@@ -84,9 +95,15 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
     - 开关关时不写任何东西，返回 None；
     - 同一（本地条目，源，上游条目）三元组重复写只更新置信度 / 证据 /
       更新时间，不建新行（唯一约束兜底）；
-    - episode_index：播放组内 1 起序号，电影为 None；插入时写入，
-      upsert 更新时仅当传入非 None 才更新它（None 不覆盖已有值）；
-      非 None 且非正（0 / 负数）一律 ValueError，不静默入库；
+    - episode_index：集号，电影为 None；插入时写入，upsert 更新
+      时仅当传入非 None 才更新它（None 不覆盖已有值）。口径按
+      写入方分：Emby 聚合写入的是上游集号（IndexNumber），0 =
+      第 0 集 / 特别篇、合法（与本地 MediaItem.episode_number
+      同口径：无正数约束、扫描 S00E00 原样落 0）；苹果 CMS 同步
+      写入的是组内 1 起序号（按构造恒 ≥ 1）。两口径共同的底线
+      只有「不许负数」：非 None 且为负一律 ValueError，不静默
+      入库。此前按一律正整数拒 0，上游一个 IndexNumber=0 的
+      单集就把整轮聚合打死（2026-11-01 生产实证），已改非负；
     - 本函数只 flush 不 commit，调用方事务内执行（照
       ``upstream_sources.create_source`` 口径）；
     - 证据是短码（如 tmdb / imdb / title+year），只记“凭什么配上”，
@@ -100,9 +117,12 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
     local_id = _as_pos_int(local_item_id, "local_item_id")
     src_id = _as_pos_int(source_id, "source_id")
     if episode_index is not None:
-        # 剧集序号 1 起、电影为 None：0 / 负数此前直接入库，违背
-        # 模块与模型 docstring 的域定义，且未来兜底口按 1 起取集。
-        episode_index = _as_pos_int(episode_index, "episode_index")
+        # 集号口径见 docstring：0 合法（第 0 集 / 特别篇），只拒
+        # 负数。消费方（resolve_mapped_upstream_stream 等）对
+        # Emby 型源不使用本值（上游条目 id 直寻址），对苹果 CMS
+        # 型源映射由同步工人按 1 起写入、不会出现 0；其
+        # ``episode_index or 1`` 兜底下 0 与 None 行为一致。
+        episode_index = _as_nonneg_int(episode_index, "episode_index")
     row = db.query(em.UpstreamItemMapping).filter(
         em.UpstreamItemMapping.local_item_id == local_id,
         em.UpstreamItemMapping.source_id == src_id,
