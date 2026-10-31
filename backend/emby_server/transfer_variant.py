@@ -412,6 +412,24 @@ def pan115_multipart_upload_enabled(db=None):
     return _system_config_bool(db, KEY_PAN115_MULTIPART_UPLOAD_ENABLED, True)
 
 
+#: 换代线地基记账开关 SystemConfig 键（2026-11-01，蓝图 v2 附二
+#: 换代线 step 1 余项＋step 2）：开 = Drive→115 分片路的交付状态
+#: 落 transfer_deliveries（sidecar 的持久化镜像）＋搬运程内块
+#: 哈希清单入 transfer_content_manifests。纯记账/透传：不改变
+#: 交付、重试、成败判定任何语义，记账全程 fail-open。默认开
+#: （站里没用户口径）；关 = 执行面不接线（不读不写两表、不恢复
+#: 会话），行为与本开关上线前逐字一致。纯 SystemConfig 键，
+#: 不进 env.example（#1527 先例）。
+KEY_TRANSFER_MANIFEST_ACCOUNTING_ENABLED = (
+    "transfer_manifest_accounting_enabled")
+
+
+def manifest_accounting_enabled(db=None):
+    """换代线地基记账开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(
+        db, KEY_TRANSFER_MANIFEST_ACCOUNTING_ENABLED, True)
+
+
 # ---------------------------------------------------------------------------
 # 形态 B 云下载配置（2026-10-30 用户亲批立项：让 115 自己拉）
 #
@@ -532,6 +550,8 @@ def transfer_config_payload(db):
         "pan115_rapid_upload_enabled": pan115_rapid_upload_enabled(db),
         "pan115_multipart_upload_enabled": (
             pan115_multipart_upload_enabled(db)),
+        "transfer_manifest_accounting_enabled": (
+            manifest_accounting_enabled(db)),
         "transfer_rebind_waiver_window_days": rebind_waiver_window_days(db),
         "transfer_rebind_waiver_max_uses": rebind_waiver_max_uses(db),
         "transfer_cross_cloudpull_enabled": cross_cloudpull_enabled(db),
@@ -548,6 +568,7 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_per_owner_inflight=None,
                           pan115_rapid_upload_enabled=None,
                           pan115_multipart_upload_enabled=None,
+                          transfer_manifest_accounting_enabled=None,
                           transfer_rebind_waiver_window_days=None,
                           transfer_rebind_waiver_max_uses=None,
                           transfer_cross_cloudpull_enabled=None,
@@ -568,6 +589,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if pan115_multipart_upload_enabled is not None:
         values[KEY_PAN115_MULTIPART_UPLOAD_ENABLED] = (
             "true" if pan115_multipart_upload_enabled else "false")
+    if transfer_manifest_accounting_enabled is not None:
+        values[KEY_TRANSFER_MANIFEST_ACCOUNTING_ENABLED] = (
+            "true" if transfer_manifest_accounting_enabled else "false")
     if transfer_cross_lane_concurrency is not None:
         values[KEY_TRANSFER_CROSS_LANE_CONCURRENCY] = str(
             transfer_cross_lane_concurrency)
@@ -6121,6 +6145,22 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     # outcome=hit|miss|error|skip 观测（跨用户真实命中率上线后
     # 靠它读）；pan115_rapid 是协议层日志，并行保留。
     stored_sha1 = _trusted_item_sha1(item, size)
+    # 换代线地基记账（2026-11-01，step 1 余项＋step 2）：交付状态
+    # 落盘＋块哈希清单的记账句柄。只在本执行器（Drive→115 搬字
+    # 节路）接线，纯记账/透传、fail-open（transfer_manifest 模块
+    # 头注）：开关关或建句柄失败时 _recorder/_tman 恒为 None，
+    # 下面所有接线点据此短路，行为与此前逐字一致。
+    _tman = None
+    _recorder = None
+    if manifest_accounting_enabled(db):
+        try:
+            from backend.emby_server import transfer_manifest as _tman
+            _recorder = _tman.begin_recorder(db, _content_key, size)
+            if _recorder is None:
+                _tman = None
+        except Exception:  # noqa: BLE001 — 记账接线失败不打挂搬运
+            _tman = None
+            _recorder = None
     if (not stored_sha1 and size > _115_SIMPLE_UPLOAD_LIMIT
             and pan115_multipart_upload_enabled(db)):
         # initupload（秒传与分片共用）以整文件 sha1 为必填入参：
@@ -6129,6 +6169,11 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
         # 遍源字节算 sha1 并沉淀（字节只过 worker 内存、不落盘），
         # 算完照常先试秒传、未命中再走分片。开关关时不白算。
         hash_reader = _HashingReader(_SegmentReader(size, _fetch), size)
+        if _recorder is not None:
+            # 块哈希清单透传：哈希遍整文件顺序流经，顺手攒块
+            # SHA-256 与整文件 MD5（同一程、零额外源读）。
+            hash_reader = _tman.TrackingReader(
+                hash_reader, _recorder.tracker)
         try:
             while hash_reader.read(_CROSS_SEGMENT):
                 pass
@@ -6145,6 +6190,10 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
             stored_sha1 = computed_sha1
             logger.info("pan115_multipart hash_pass item=%s job=%s "
                         "size=%s", item.id, job.id, size)
+            if _recorder is not None:
+                # 清单入册：本程块已攒满（哈希遍整文件流经），
+                # 整文件 sha1 以刚算出并沉淀的透传值为锚。
+                _recorder.flush(db, whole_sha1=computed_sha1)
     rapid_enabled = pan115_rapid_upload_enabled(db)
     if not stored_sha1:
         logger.info("transfer_relay outcome=skip item=%s job=%s "
@@ -6225,6 +6274,11 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         "outcome": _schedule_retry(db, job, exc)}
         reader = _HashingReader(_SegmentReader(size, _fetch), size)
         via_multipart = size > _115_SIMPLE_UPLOAD_LIMIT
+        if via_multipart and _recorder is not None:
+            # 块哈希清单透传（分片路）：上传读程顺手攒块——哈希
+            # 遍没跑（已有可信 sha1）时靠这一程从 0 攒满；续传
+            # 时只补本程顺序读过的块，攒不齐的块保持未入册。
+            reader = _tman.TrackingReader(reader, _recorder.tracker)
         try:
             if via_multipart:
                 if not stored_sha1:
@@ -6235,10 +6289,39 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         "不静默回落")
                 mp_session = _load_multipart_session(
                     job.id, _content_key, size, dest_cid)
+                if mp_session is None and _recorder is not None:
+                    # 交付状态落盘恢复（换代线 step 1 余项）：
+                    # sidecar 缺失（容器重建把 /tmp 清掉）时凭
+                    # transfer_deliveries 行恢复会话，并回写
+                    # sidecar——之后续传判定仍归 transfer115 的
+                    # ListParts 对账，本处只是多一个找回来源，
+                    # 三项校验（content_key＋size＋目标目录）与
+                    # sidecar 同口径。恢复不到按无会话走全新
+                    # 上传（与 sidecar 丢失的现行语义一致）。
+                    mp_session = _tman.restore_delivery_session(
+                        db, job.id, _content_key, size, dest_cid)
+                    if mp_session is not None:
+                        _save_multipart_session(
+                            job.id, _content_key, size, dest_cid,
+                            mp_session)
+                        logger.info(
+                            "pan115 分片会话已由交付落盘恢复 job=%s "
+                            "item=%s（sidecar 缺失）", job.id, item.id)
 
                 # 会话状态放闭包里递进（不依赖 sidecar 回读：回读的
                 # 校验会把 callback 为空等中间态判掉，导致续传丢会话）。
                 _mp_state = {"session": mp_session}
+
+                def _persist_delivery():
+                    if _recorder is None:
+                        return
+                    _tman.persist_delivery(
+                        db, job_id=job.id, content_key=_content_key,
+                        dest_provider="pan115",
+                        dest_binding_id=getattr(binding, "id", None),
+                        dest_ref=dest_cid,
+                        session=_mp_state.get("session") or {},
+                        size=size, state="active")
 
                 def _mp_progress(ev):
                     if ev.get("event") == "init":
@@ -6246,6 +6329,7 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         _save_multipart_session(
                             job.id, _content_key, size, dest_cid,
                             _mp_state["session"])
+                        _persist_delivery()
                     elif ev.get("event") == "part":
                         sess = _mp_state["session"] or {}
                         parts = list(sess.get("parts") or [])
@@ -6254,6 +6338,15 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         sess["parts"] = parts
                         _save_multipart_session(
                             job.id, _content_key, size, dest_cid, sess)
+                        _persist_delivery()
+                    elif ev.get("event") == "failed":
+                        # 失败事件带权威会话（含刚刷新的 token
+                        # 记账）：sidecar 维持既有口径不回写，
+                        # 落盘行同步到这一版，供重建后恢复时
+                        # 与服务端对账的起点不比 sidecar 旧。
+                        if ev.get("session"):
+                            _mp_state["session"] = ev["session"]
+                        _persist_delivery()
 
                 try:
                     result = client.multipart_upload(
@@ -6271,8 +6364,12 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         except Exception:
                             pass
                         _drop_multipart_session(job.id)
+                        if _recorder is not None:
+                            _tman.finish_delivery(db, job.id, "aborted")
                     return {"job_id": job.id, "outcome": outcome}
                 _drop_multipart_session(job.id)
+                if _recorder is not None:
+                    _tman.finish_delivery(db, job.id, "completed")
                 if (result or {}).get("outcome") == "hit":
                     # 秒传开关关时分片初始化可直接判存量命中：与
                     # 秒传命中同收尾（目录核对 + 登记），不算全量路。
@@ -6332,6 +6429,13 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
             if chosen_sha1:
                 _persist_item_sha1(db, item, chosen_sha1,
                                    origin="drive_to_115_upload")
+            if _recorder is not None:
+                # 清单入册（complete 时整文件锚交叉核对已由上
+                # 面现行口径完成）：整文件 sha1 以交叉核对后
+                # 的 chosen_sha1（分片路与可信源/流式任一不符
+                # 已在上方判失败、走不到这里）为锚并册；块未
+                # 攒齐或锚缺失时清单保持 partial，后续搬运续填。
+                _recorder.flush(db, whole_sha1=chosen_sha1 or None)
     else:
         resp_fid = rapid_fid
     try:

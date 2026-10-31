@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -1661,6 +1662,103 @@ class TransferThrottleWaiver(Base):
     #: 本次放行建出的任务行 id（对账用）。
     job_id = Column(Integer)
     created_at = Column(DateTime, default=datetime.now)
+
+
+class TransferContentManifest(Base):
+    """内容块哈希清单（换代线「分块清单同步」地基，2026-11-01）。
+
+    一份内容一行：``content_key`` 与跨 provider 源字节暂存同算法
+    （sha256(provider|源盘|源 fid|size)，见 transfer_variant
+    ._stage_key），是清单的引导键——任何内容第一次被搬运就开始
+    长清单，不依赖条目存量哈希。块口径钉死源侧固定 8 MiB
+    （``chunk_size`` 留字段防将来改），块哈希 SHA-256 在搬运程内
+    顺手算（transfer_manifest.ChunkTracker），零额外源读。
+
+    - ``chunk_hashes``：chunk_count × 32B 定长打包（第 i 块占
+      [i*32, (i+1)*32)，未入册块零填充）；
+    - ``chunk_bitmap``：每块 1 bit，标记该块哈希已入册（零填充
+      与真实哈希靠 bitmap 区分，不靠"哈希恰好全零"这种侥幸）；
+    - ``whole_sha1`` / ``whole_md5``：整文件认亲锚，与块哈希分
+      列存放、绝不混用（115 秒传只认 sha1，块 sha256 只做块
+      身份）；sha1 入册前已经过现行交付链的交叉核对（回调 vs
+      透传 vs 可信源），md5 为搬运程内顺手算、与 sha1 同程；
+    - ``manifest_state``：``partial``（边传边长，整文件锚未齐）
+      / ``complete``（块齐 + 整文件 sha1 已入册）。partial 清单
+      只许本内容后续搬运续填，**不许**拿去给别的 job 认亲供
+      字节（可行性报告八.5）。
+
+    纯记账：本表写失败绝不影响转存成败（记账层全程 fail-open，
+    见 transfer_manifest）。新表由 create_all 建出。
+    """
+
+    __tablename__ = "transfer_content_manifests"
+
+    __table_args__ = (
+        Index("ix_transfer_manifest_sha1", "whole_sha1"),
+    )
+
+    content_key = Column(String(64), primary_key=True)
+    whole_sha1 = Column(String(40))
+    whole_md5 = Column(String(32))
+    size = Column(BigInteger, nullable=False)
+    chunk_size = Column(Integer, nullable=False)
+    chunk_count = Column(Integer, nullable=False)
+    chunk_hashes = Column(LargeBinary)
+    chunk_bitmap = Column(LargeBinary)
+    manifest_state = Column(String(20), nullable=False, default="partial")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class TransferDelivery(Base):
+    """转存交付状态落盘（换代线 step 1 余项，2026-11-01）。
+
+    一行 = 一张转存单在某个目标侧的一次交付会话（当前只接
+    Drive→115 分片路）。此前分片会话只活在 worker 本地 sidecar
+    （mp-<job>.json，/tmp，容器重建即失）；本表是同一会话的
+    持久化镜像：sidecar 缺失时凭本行恢复（content_key＋size＋
+    目标目录三项校验与 sidecar 同口径），在飞单不因部署/重建
+    丢续传状态。sidecar 仍是执行面当场读写的第一落点，本表在
+    init/part/failed 事件点旁路同步（fail-open，写失败只记
+    日志、绝不让转存单因此失败）。
+
+    - ``session``：JSON，与 sidecar 会话同构（bucket /
+      object_key / upload_id / callback / token 记账），parts
+      每项额外记 ``chunk_from`` / ``chunk_to``——该 part 由哪
+      几块清单块组装（part 按 _determine_partsize 组装、块钉
+      8 MiB，两层分离，映射入册后不再靠"偏移＝片数×片大小"
+      乘法反推）。token 记账只含领取/到期时刻、不含凭据本体
+      （#1641 口径）。
+    - ``committed_chunks``：已成片前缀完整覆盖的清单块数；
+      ``committed_offset``：已成片前缀字节数。
+    - ``state``：``active``（可续传）| ``completed``（交付
+      完成）| ``aborted``（终态清理已 abort 旧会话）。
+
+    新表由 create_all 建出。
+    """
+
+    __tablename__ = "transfer_deliveries"
+
+    __table_args__ = (
+        Index("ix_transfer_delivery_job", "job_id"),
+        Index("ix_transfer_delivery_content", "content_key"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, nullable=False)
+    content_key = Column(String(64), nullable=False)
+    dest_provider = Column(String(20), nullable=False, default="")
+    dest_binding_id = Column(Integer)
+    #: 目标落点参照（115 为转存目录 cid）：与 sidecar 的 dest_cid
+    #: 校验同口径，恢复时三项全对才认。
+    dest_ref = Column(String(256))
+    size = Column(BigInteger, nullable=False, default=0)
+    session = Column(Text)  # JSON：见类注释
+    committed_chunks = Column(Integer, nullable=False, default=0)
+    committed_offset = Column(BigInteger, nullable=False, default=0)
+    state = Column(String(20), nullable=False, default="active")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class SeriesFollow(Base):

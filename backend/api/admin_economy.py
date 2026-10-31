@@ -624,6 +624,10 @@ class TransferConfigRequest(BaseModel):
     transfer_cross_cloudpull_enabled: bool = False
     transfer_cross_cloudpull_ttl_sec: int = 43200
     transfer_cross_cloudpull_timeout_sec: int = 3600
+    # 换代线地基记账（2026-11-01）：交付状态落盘＋块哈希清单，
+    # 纯记账 fail-open，默认开；校验在 config_schema 的
+    # transfer 家族里。
+    transfer_manifest_accounting_enabled: bool = True
 
 
 @admin_router.get("/transfer-config")
@@ -672,6 +676,8 @@ def transfer_update_config(
                 request.transfer_cross_cloudpull_ttl_sec),
             transfer_cross_cloudpull_timeout_sec=(
                 request.transfer_cross_cloudpull_timeout_sec),
+            transfer_manifest_accounting_enabled=(
+                request.transfer_manifest_accounting_enabled),
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
