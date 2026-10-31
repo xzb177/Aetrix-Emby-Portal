@@ -40,6 +40,8 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     # r36：防盗链（play_sign）家族迁入（用户 2026-10-17 18:29 拍板恢复排期）
     "hotlink": config_schema.HOTLINK_CONFIG_SCHEMA,
     "mount_serving": config_schema.MOUNT_SERVING_CONFIG_SCHEMA,
+    # 播放交付编排器（换代线 step 5，2026-11-01）：开关 + 计划 TTL
+    "delivery_plan": config_schema.DELIVERY_PLAN_CONFIG_SCHEMA,
     # 列表去重缓存（2026-10-18）：开关 + TTL + 条目上限
     "items_cache": config_schema.ITEMS_CACHE_CONFIG_SCHEMA,
     # 转存调度（2026-10-30）：跨 provider 开关 + 三个并发上限
