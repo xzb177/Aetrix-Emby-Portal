@@ -329,7 +329,19 @@ const reg = reactive({
   ratelimitMax: 5,
   ratelimitWindow: 3600,
 })
-const regFormRef = ref<FormInstance>()
+const regFormRef = ref<FormInstance | FormInstance[]>()
+
+/**
+ * 注册表单位于 SECTIONS 的 v-for 模板内，模板 ref 会被收集成数组，
+ * regFormRef.value 不一定是表单实例，取用前必须先解包。
+ * （曾直接 regFormRef.value?.validate() 对数组调不存在的方法抛
+ * TypeError，又被 catch 静默吞掉，注册策略保存每次必现失败。）
+ */
+function regFormInstance(): FormInstance | undefined {
+  const value = regFormRef.value
+  return Array.isArray(value) ? value[0] : value
+}
+
 /**
  * 注册策略的"干净"快照：load() 成功后同步，用于全局脏检查。
  * legacyCode 是展示态（DB 残留 code 的提示），不参与脏比较。
@@ -974,8 +986,15 @@ const paymentReady = computed(() => {
 /** 注册策略保存核心：返回是否成功，校验失败/接口失败时已提示。 */
 async function saveRegistrationCore(): Promise<boolean> {
   try {
-    await regFormRef.value?.validate()
-  } catch {
+    await regFormInstance()?.validate()
+  } catch (e) {
+    if (e instanceof Error) {
+      // 程序错误（如 ref 形状异常）：不能和校验不通过一起静默吞掉
+      console.error('注册策略表单校验异常', e)
+      ElMessage.error('表单校验异常，请刷新页面后重试')
+    }
+    // 校验不通过时 Element Plus 的拒绝值是 invalidFields 普通对象：
+    // 字段旁已有红字提示，保持静默返回（汇总横幅由 saveAll 给出）
     return false
   }
   // 注册限流前端校验（C5）——保留作为双保险
