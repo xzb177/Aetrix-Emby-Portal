@@ -409,8 +409,17 @@ def welfare_code_monthly_quota(db: Session) -> int:
 
 
 def welfare_codes_created_this_month(db: Session, admin_id: int) -> int:
-    """某管理员本自然月已生成的资格码张数（配额计数口径）"""
-    month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    """某管理员本自然月已生成的资格码张数（配额计数口径）
+
+    月界按 Asia/Shanghai 自然月，与全站口径统一（r34 收口）：复用
+    economy._month_start_utc_naive——把上海月界换算成 UTC-naive，
+    与 RegistrationCode.created_at 的入库帧对齐（default=datetime.now，
+    生产容器时钟 UTC）。此前用服务器本地月界，生产 UTC 下每月 1 日
+    08:00（北京时间）才重置，晚 8 小时。懒导入与本文件既有
+    _add_points 导入、media_seek 的复用方式一致（避循环导入）。
+    """
+    from backend.api.economy import _month_start_utc_naive
+    month_start = _month_start_utc_naive()
     return (
         db.query(models.RegistrationCode)
         .filter(
