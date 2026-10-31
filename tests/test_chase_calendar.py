@@ -17,8 +17,9 @@
 全部用隔离的内存 SQLite，不碰网络、不碰生产库。
 """
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
@@ -86,6 +87,49 @@ def _call(db, user, **params):
 
 def _dates(payload):
     return [d["date"] for d in payload["days"]]
+
+
+# ==================== 「当前月」口径 ====================
+# 产品口径（r35）：「当月」按 Asia/Shanghai 自然月算（_calendar_month_bounds）。
+# 测试机本地时区不可信——CI 是 UTC，每月 1 日 00:00–08:00 CST 这个窗口里，
+# 本地 now 与上海 now 不在同一个月；拿裸 datetime.now() 推期望必然月界翻车
+# （2026-10-31 CI 实红：UTC 16:06 时代码回 2026-11-01、测试期望 2026-10-01）。
+# 本文件凡涉及「现在 / 本月」的推导一律走上海帧。
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _shanghai_now() -> datetime:
+    """上海帧的当前时刻（naive，与 _calendar_month_bounds 的 _now 同形）"""
+    return datetime.now(SHANGHAI).replace(tzinfo=None)
+
+
+def _shanghai_month_noon_utc(months_back: int = 0) -> datetime:
+    """当月（上海）1 号中午对应的 UTC-naive 时刻——放「本月条目」用。
+
+    ``date_added`` 是 UTC-naive 入库：上海 1 号 12:00 ＝ UTC 1 号 04:00。
+    ``months_back > 0`` 时回到过去第 N 个月的 1 号中午（仍是 UTC-naive）。
+    """
+    now = _shanghai_now()
+    month_index = now.year * 12 + (now.month - 1) - months_back
+    year, month0 = divmod(month_index, 12)
+    return datetime(year, month0 + 1, 1, 12, 0) - timedelta(hours=8)
+
+
+def _freeze_portal_now(monkeypatch, frozen_sh: datetime) -> None:
+    """把 portal 模块看到的 now 钉在给定的上海时刻（沿用 r34 冻结手法）。
+
+    ``frozen_sh`` 须带 Asia/Shanghai tzinfo；``now()`` 不带 tz 时回同一
+    瞬间的 UTC-naive，与模块内其它 naive 口径对得上。
+    """
+    frozen_utc_naive = frozen_sh.astimezone(timezone.utc).replace(tzinfo=None)
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_sh if tz is not None else frozen_utc_naive
+
+    monkeypatch.setattr(portal, "datetime", _FrozenDateTime)
 
 
 # ==================== 1. 分组口径 ====================
@@ -196,26 +240,88 @@ def test_range_is_capped(db):
 def test_defaults_to_current_month(db):
     lib = _library(db, "电影")
     user = _user(db)
-    today = datetime.now()
-    _item(db, lib, "本月", added=today.replace(day=1, hour=10, minute=0, second=0, microsecond=0))
-    _item(db, lib, "半年前", added=today.replace(month=1, day=1, hour=10, minute=0, second=0, microsecond=0))
+    _item(db, lib, "本月", added=_shanghai_month_noon_utc())
+    _item(db, lib, "半年前", added=_shanghai_month_noon_utc(months_back=6))
 
     payload = _call(db, user)
 
-    assert payload["start"] == today.replace(day=1).date().isoformat()
+    assert payload["start"] == _shanghai_now().replace(day=1).date().isoformat()
     assert payload["total"] == 1
 
 
 def test_malformed_dates_fall_back_to_defaults(db):
     lib = _library(db, "电影")
     user = _user(db)
-    today = datetime.now()
-    _item(db, lib, "本月", added=today.replace(day=1, hour=10, minute=0, second=0, microsecond=0))
+    _item(db, lib, "本月", added=_shanghai_month_noon_utc())
 
+    expected = _shanghai_now().replace(day=1).date().isoformat()
     for bad in ("not-a-date", "", "2026-13-45"):
         payload = _call(db, user, start=bad, end=bad)
-        assert payload["start"] == today.replace(day=1).date().isoformat()
+        assert payload["start"] == expected
         assert payload["total"] == 1
+
+
+# ==================== 2b. 月界回归（2026-10-31 CI 实红兜底） ====================
+
+
+def test_default_month_just_before_shanghai_month_end(db, monkeypatch):
+    """上海 10-31 23:59:59：还差一秒才跨月，默认区间必须是 10 月整月"""
+    _freeze_portal_now(monkeypatch, datetime(2026, 10, 31, 23, 59, 59, tzinfo=SHANGHAI))
+    lib = _library(db, "电影")
+    user = _user(db)
+    # 上海 10-15 中午入库（UTC-naive ＝ 当日 04:00）
+    _item(db, lib, "十月片", added=datetime(2026, 10, 15, 4, 0))
+    # 上海 11-01 00:30 入库（UTC-naive ＝ 10-31 16:30）：属于 11 月，不许漏进来
+    _item(db, lib, "十一月片", added=datetime(2026, 10, 31, 16, 30))
+
+    payload = _call(db, user)
+
+    assert payload["start"] == "2026-10-01"
+    assert payload["end"] == "2026-10-31"
+    assert payload["total"] == 1
+
+
+def test_default_month_just_after_shanghai_month_start(db, monkeypatch):
+    """上海 11-01 00:06——正是 2026-10-31 CI 红的那一刻（UTC 还停在 10-31 16:06）。
+
+    UTC 帧下这是 10 月、上海帧下已经是 11 月；产品口径认上海，默认区间
+    必须是 11 月。同一冻结时刻下顺带钉住畸形参数回退默认值的路径。
+    """
+    _freeze_portal_now(monkeypatch, datetime(2026, 11, 1, 0, 6, tzinfo=SHANGHAI))
+    lib = _library(db, "电影")
+    user = _user(db)
+    _item(db, lib, "十一月片", added=datetime(2026, 10, 31, 16, 30))
+    _item(db, lib, "十月片", added=datetime(2026, 10, 15, 4, 0))
+
+    payload = _call(db, user)
+
+    assert payload["start"] == "2026-11-01"
+    assert payload["end"] == "2026-11-30"
+    assert payload["total"] == 1
+
+    fallback = _call(db, user, start="not-a-date", end="not-a-date")
+    assert fallback["start"] == "2026-11-01"
+    assert fallback["total"] == 1
+
+
+def test_default_month_across_year_boundary(db, monkeypatch):
+    """跨年两侧：上海 12-31 23:59 还在 12 月，01-01 00:30 已是新年 1 月
+    （钉住 _calendar_month_bounds 里 12 月→次年 1 月的进位分支）"""
+    lib = _library(db, "电影")
+    user = _user(db)
+    _item(db, lib, "元旦片", added=datetime(2026, 12, 31, 16, 30))  # 上海 2027-01-01 00:30
+
+    _freeze_portal_now(monkeypatch, datetime(2026, 12, 31, 23, 59, tzinfo=SHANGHAI))
+    payload = _call(db, user)
+    assert payload["start"] == "2026-12-01"
+    assert payload["end"] == "2026-12-31"
+    assert payload["total"] == 0
+
+    _freeze_portal_now(monkeypatch, datetime(2027, 1, 1, 0, 30, tzinfo=SHANGHAI))
+    payload = _call(db, user)
+    assert payload["start"] == "2027-01-01"
+    assert payload["end"] == "2027-01-31"
+    assert payload["total"] == 1
 
 
 # ==================== 3. 筛选：类型 ====================
