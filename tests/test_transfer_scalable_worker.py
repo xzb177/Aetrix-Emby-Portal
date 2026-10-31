@@ -341,3 +341,80 @@ def test_run_transfer_job_once_attempts_guard_fails_terminal(db_factory, db):
     assert fresh.status == "failed"
     assert fresh.attempts == 3
     assert fresh.error_kind == "retriable"
+
+
+def test_start_transfer_daemon_reclaims_expired_lease_on_startup(
+        db_factory, db, monkeypatch):
+    """启动即回收：守护启动返回前，死工人留下的过期租约单已被打回
+    pending，不等主循环转一轮（2026-10-31 生产实证：部署重建窗口
+    三单被旧进程认领后进程消失，租约过期后 12 分钟无人回收，用户
+    点播恒 409；手工重启工人后约 1 分钟即恢复——差的就是启动这步
+    与独立周期兜底）。主循环本体以模块属性补丁换成空转，只验启动
+    回收；旧代码无启动回收，本测试红。"""
+    now = datetime.now()
+    job = _job(db, item_id=61, trigger="auto", status="running",
+               owner_ref="u1")
+    job.lease_expires_at = now - timedelta(seconds=1)
+    db.commit()
+    live = _job(db, item_id=63, trigger="auto", status="running",
+                owner_ref="u2")
+    live.lease_expires_at = now + timedelta(seconds=300)
+    db.commit()
+    job_id, live_id = job.id, live.id
+    db.close()
+    monkeypatch.setattr(tv, "_daemon_main_loop", lambda *a, **k: None)
+    tv.start_transfer_daemon(session_factory=db_factory,
+                             drive_api_factory=lambda: SimpleNamespace())
+    fresh = _read_job(db_factory, job_id)
+    assert fresh.status == "pending"
+    assert fresh.lease_expires_at is None
+    assert fresh.claimed_by is None
+    live_fresh = _read_job(db_factory, live_id)
+    assert live_fresh.status == "running"
+
+
+def test_lease_reclaim_loop_recycles_without_wakeup(db_factory, db):
+    """周期兜底独立于唤醒与认领：没有任何唤醒消息、没有任何认领
+    调用，看门狗一个周期内就把过期租约单打回 pending，且打回后能
+    被原认领路径重新认领（回收不许再搭认领/主循环迭代的车——主
+    循环一轮可被长单执行或每日巡检占住十几分钟，2026-10-31 实证
+    僵单正是死在这条耦合上）。"""
+    import threading
+    import time
+    now = datetime.now()
+    job = _job(db, item_id=62, trigger="auto", status="running",
+               owner_ref="u1")
+    job.lease_expires_at = now - timedelta(seconds=1)
+    db.commit()
+    job_id = job.id
+    db.close()
+    stop = threading.Event()
+    thread = threading.Thread(target=tv._lease_reclaim_loop,
+                              args=(stop, db_factory), daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        status = None
+        while time.monotonic() < deadline:
+            status = _read_job(db_factory, job_id).status
+            if status == "pending":
+                break
+            time.sleep(0.05)
+        assert status == "pending"
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    s = db_factory()
+    try:
+        claimed = tv.claim_due_jobs(s, worker_id="w-after-reclaim")
+        assert job_id in claimed
+    finally:
+        s.close()
+
+
+def test_reclaim_leases_once_swallows_errors():
+    """回收兜底自身绝不许炸：会话工厂抛错时只记日志、返回 0，
+    启动路径与看门狗循环都不因此中断（工人其它兜底同口径）。"""
+    def _boom():
+        raise RuntimeError("db down")
+    assert tv._reclaim_leases_once(_boom, source="test") == 0
