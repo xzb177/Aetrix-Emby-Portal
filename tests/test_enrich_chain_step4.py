@@ -370,18 +370,22 @@ def test_auto_reschedule_skips_locked(db):
 
 
 def test_auto_reschedule_round_cap(db):
-    """轮数上限：达上限的不动；未达上限的翻回且计数 +1"""
+    """轮数上限：达上限且未过长尾周期（默认 30 天）的不动；未达上限的
+    翻回且计数 +1。达上限过长尾后被捞回的新口径见
+    test_enrich_dirty_done_gate 的长尾用例（2026-10-31 起无永久终态）"""
     _flag_on()
     _set_max_rounds("1")
     old = datetime.now() - timedelta(days=31)
-    capped = _none_row(db, "已满轮剧", enrich_next_retry_at=old,
-                       enrich_none_reschedules=1)
+    capped = _none_row(
+        db, "已满轮剧",
+        enrich_next_retry_at=datetime.now() - timedelta(days=20),
+        enrich_none_reschedules=1)
     fresh = _none_row(db, "还有轮次剧", enrich_next_retry_at=old,
                       enrich_none_reschedules=0)
     n = ew.enrich_none_auto_reschedule(db)
     assert n == 1
     db.refresh(capped)
-    assert capped.enrich_status == "done", "达上限永久保留 done"
+    assert capped.enrich_status == "done", "达上限未过长尾周期保留 done"
     assert capped.enrich_none_reschedules == 1
     db.refresh(fresh)
     assert fresh.enrich_status == "pending"
@@ -465,19 +469,21 @@ def test_auto_reschedule_skips_has_poster(db):
 
 
 def test_auto_reschedule_null_source_round_cap(db):
-    """NULL 漏网同样有界：达轮数上限的永久保留 done，不空转；
-    未达上限的翻回且计数 +1"""
+    """NULL 漏网同样有界：达轮数上限且未过长尾周期的保留 done，不空转；
+    未达上限的翻回且计数 +1（长尾口径同 test_auto_reschedule_round_cap）"""
     _flag_on()
     _set_max_rounds("1")
     old = datetime.now() - timedelta(days=31)
-    capped = _null_leak_row(db, "已满轮漏网", enrich_next_retry_at=old,
-                            enrich_none_reschedules=1)
+    capped = _null_leak_row(
+        db, "已满轮漏网",
+        enrich_next_retry_at=datetime.now() - timedelta(days=20),
+        enrich_none_reschedules=1)
     fresh = _null_leak_row(db, "还有轮次漏网", enrich_next_retry_at=old,
                            enrich_none_reschedules=0)
     n = ew.enrich_none_auto_reschedule(db)
     assert n == 1
     db.refresh(capped)
-    assert capped.enrich_status == "done", "达上限永久保留 done"
+    assert capped.enrich_status == "done", "达上限未过长尾周期保留 done"
     assert capped.enrich_none_reschedules == 1
     db.refresh(fresh)
     assert fresh.enrich_status == "pending"

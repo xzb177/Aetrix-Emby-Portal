@@ -6938,9 +6938,18 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     if tmdb_res and not series.tmdb_id:
                         series_hit, series_details = tmdb_res
                         if series_hit:
-                            _tmdb.tmdb_client.apply(series, series_hit, "series")
-                            stats["scraped"] += 1
-                            series_tmdb_applied = True
+                            _rej = _tmdb.binding_reject_reason(
+                                series_details or series_hit, "series",
+                                getattr(series, "production_year", None))
+                            if _rej:
+                                logger.warning(
+                                    "扫描首刮绑定复核拒绝 name=%r hit=%s reason=%s",
+                                    getattr(series, "name", ""),
+                                    series_hit.get("id"), _rej)
+                            else:
+                                _tmdb.tmdb_client.apply(series, series_hit, "series")
+                                stats["scraped"] += 1
+                                series_tmdb_applied = True
                         if series_details:
                             _tmdb.tmdb_client.apply_details(series, series_details)
                     if (series_guid in ctx.series_tmdb_searched
@@ -7007,8 +7016,18 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             # 搜索结果在批次开头就取回了（写事务里不发网络请求）
                             hit = _pending.tmdb_hit
                             if hit:
-                                _tmdb.tmdb_client.apply(item, hit, kind)
-                                stats["scraped"] += 1
+                                _rej = _tmdb.binding_reject_reason(
+                                    hit, kind,
+                                    getattr(item, "production_year", None))
+                                if _rej:
+                                    logger.warning(
+                                        "扫描首刮绑定复核拒绝 name=%r hit=%s reason=%s",
+                                        getattr(item, "name", ""),
+                                        hit.get("id"), _rej)
+                                    hit = None
+                                else:
+                                    _tmdb.tmdb_client.apply(item, hit, kind)
+                                    stats["scraped"] += 1
                             if nfo_data:
                                 # 有 NFO 但无 tmdb_id：TMDB 打底，NFO 文本优先
                                 nfo_lib.apply_nfo(item, nfo_data, kind)

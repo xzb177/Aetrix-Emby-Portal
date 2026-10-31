@@ -482,6 +482,40 @@ def apply_identity(db, item, fetched: dict, tmdb_details_fetcher=None) -> Option
         binding = inherit_binding_from_remote_identity(db, item)
     if binding is None:
         return None
+    # 绑定复核门（2026-10-31）：与 enrich 单段路径共用同一复核口径
+    # （tmdb.binding_reject_reason），识别段落绑前先复核、查实错绑
+    # （kind 不符/年份差 >1 年）→ 返回 None 走未定身份的现行终态，
+    # 不许落库。证据只用 fetched 里现成的 details/hit（IO 阶段已取、
+    # 已过取数后复核门）：不许抢 tmdb_details_fetcher——那是
+    # resolve_imdb_id 的专用通道（有调用次数契约），且它现拉回的
+    # 局部字典缺 id/日期是常态，拿它判「查不到」会误杀。fetched 的
+    # details 同理是局部字典，缺 id 不算查不到（details_not_found
+    # 只对完整详情载荷成立，现成证据里判不出就放行）。
+    if binding.get("tmdb_id"):
+        _kind = {"series": "series", "movie": "movie"}.get(
+            getattr(item, "item_type", "") or "")
+        if _kind:
+            _det = None
+            _fd = fetched.get("tmdb_details")
+            _fh = fetched.get("tmdb_hit")
+            if isinstance(_fd, dict) and _fd:
+                _det = _fd
+            elif isinstance(_fh, dict) and _fh.get("id"):
+                _det = _fh
+            if _det is not None:
+                from backend.emby_server.tmdb import (
+                    binding_reject_reason as _reject_reason,
+                )
+                _reason = _reject_reason(
+                    _det, _kind, getattr(item, "production_year", None))
+                if _reason == "details_not_found":
+                    _reason = None  # 局部证据缺 id 不是查不到，见上方注释
+                if _reason:
+                    logger.warning(
+                        "识别段绑定复核拒绝 id=%s tmdb_id=%s reason=%s",
+                        getattr(item, "id", "?"), binding["tmdb_id"],
+                        _reason)
+                    return None
     from backend.emby_server import ai_policy as _aip
 
     if _aip.ai_policy_enabled():
