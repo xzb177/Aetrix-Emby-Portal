@@ -229,7 +229,18 @@ const messages = ref<TicketMessage[]>([])
 const messagesLoading = ref(false)
 /** 对话消息拉取失败：和「真的没有对话内容」分开显示 */
 const messagesError = ref('')
-const messagesEl = ref<HTMLElement | null>(null)
+const messagesEl = ref<HTMLElement | HTMLElement[] | null>(null)
+
+/**
+ * 对话列表位于工单卡片的 v-for 模板内，模板 ref 会被收集成数组，
+ * messagesEl.value 不一定是元素本体，取用前必须先解包。
+ * （曾直接把数组当元素赋 scrollTop，不抛错、静默无效，
+ * 新消息自动滚到底部从不生效。）
+ */
+function messagesElement(): HTMLElement | null {
+  const value = messagesEl.value
+  return Array.isArray(value) ? (value[0] ?? null) : value
+}
 /** R53A-35：组件卸载标记 —— 卸载后迟到的列表响应不再写回状态 */
 let ticketsViewAlive = true
 
@@ -399,7 +410,7 @@ async function fetchMessages(ticketId: number) {
 /** 新消息滚到底部 */
 async function scrollMessagesToBottom() {
   await nextTick()
-  const el = messagesEl.value
+  const el = messagesElement()
   if (el) el.scrollTop = el.scrollHeight
 }
 
