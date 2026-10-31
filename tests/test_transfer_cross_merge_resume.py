@@ -484,3 +484,90 @@ def test_multipart_no_progress_keeps_abort_on_failure(monkeypatch):
         client.multipart_upload(io.BytesIO(payload), "a.mkv", len(payload),
                                 sha1, "900")
     assert oss.aborts == 1
+
+
+# ---------- A-091：分片续传回调 vs 可信源 sha1 必比对 ----------
+
+class _FakeUser115ResumeCallback(_FakeUser115):
+    """续传第二尝模拟真实 OSS 续传：seek 到已成片后读剩余，再回指定回调 sha1。
+
+    首尝发 init+part 事件后失败（会话经 on_progress 持久化）；续传时
+    像真实 _oss_upload_parts 一样 seek 到已成片偏移再读剩余——全新
+    _HashingReader 因此哈希链断裂、stream_sha1 为空，正是 A-091 的
+    缺陷形态：旧码的流式核对恒假，只能靠可信源 sha1 比对拦下错回调。
+    """
+
+    def __init__(self, resume_sha1, part_size=512):
+        super().__init__()
+        self.resume_sha1 = resume_sha1
+        self.part_size = part_size
+
+    def multipart_upload(self, fileobj, filename, filesize, file_sha1, pid,
+                         range_reader=None, resume_session=None,
+                         on_progress=None):
+        self.multipart_calls.append((resume_session, on_progress is not None))
+        if resume_session is None:
+            if on_progress is not None:
+                on_progress({"event": "init",
+                             "session": {"bucket": "bkt", "object_key": "obj",
+                                         "upload_id": "UP-1",
+                                         "callback": {"callback": "Yg==",
+                                                      "callback_var": "dmI="},
+                                         "parts": []}})
+                on_progress({"event": "part", "number": 1, "etag": "E1"})
+            raise transfer115.Pan115Error("模拟分片上传中途失败")
+        fileobj.seek(self.part_size)
+        fileobj.read()
+        self._place(filename, "mpfid", "pcmp", filesize, self.resume_sha1)
+        return {"outcome": "uploaded", "fid": "mpfid", "pickcode": "pcmp",
+                "sha1": self.resume_sha1, "raw": {}}
+
+
+def _run_resume_job(db, monkeypatch, fake115, stage_env):
+    monkeypatch.setattr(tv, "_115_SIMPLE_UPLOAD_LIMIT", 1024)
+    item = _item(db, content_hash_algo="sha1", content_hash=_PAYLOAD_SHA1)
+    _binding(db, 7)
+    _patch_cross(monkeypatch, fake115)
+    sa = _FakeSA()
+    job = _cross_job(db, item.id, user_id=7)
+    res1 = tv.run_transfer_job_once(db, job, sa)
+    assert res1["outcome"] == "retried"
+    assert fake115.multipart_calls[0][0] is None  # 首尝无会话
+    res2 = tv.run_transfer_job_once(db, job, sa)
+    assert fake115.multipart_calls[1][0] is not None  # 第二尝带续传会话
+    return item, job, res2
+
+
+def test_multipart_resume_wrong_callback_fails_remote_error(
+        db, monkeypatch, stage_env):
+    """A-091：续传回调 sha1 ≠ 可信源 sha1 时判 remote_error，不登记、不覆盖。"""
+    wrong_sha1 = hashlib.sha1(b"not-the-source-bytes").hexdigest()
+    assert wrong_sha1 != _PAYLOAD_SHA1
+    fake115 = _FakeUser115ResumeCallback(wrong_sha1)
+    item, job, res2 = _run_resume_job(db, monkeypatch, fake115, stage_env)
+    assert res2["outcome"] == "failed"
+    db.refresh(job)
+    assert job.status == "failed" and job.error_kind == "remote_error"
+    assert _variant_rows(db) == []
+    db.refresh(item)
+    assert item.content_hash == _PAYLOAD_SHA1
+
+
+def test_multipart_resume_correct_callback_registers(
+        db, monkeypatch, stage_env, caplog):
+    """A-091 对照：续传回调 sha1 == 可信源 sha1 时正常登记。
+
+    透传哈希确实不可用（续传断裂形态被真实 exercise 到），而非测试走偏：
+    旧码的流式核对在此形态下恒假，本例靠回调 == 可信源才放行。
+    """
+    fake115 = _FakeUser115ResumeCallback(_PAYLOAD_SHA1)
+    with caplog.at_level("WARNING", logger="backend.emby_server.transfer_variant"):
+        item, job, res2 = _run_resume_job(db, monkeypatch, fake115, stage_env)
+    assert res2["outcome"] == "done"
+    db.refresh(job)
+    assert job.status == "done"
+    rows = _variant_rows(db)
+    assert len(rows) == 1 and rows[0].status == "ready"
+    db.refresh(item)
+    assert item.content_hash == _PAYLOAD_SHA1
+    assert any("透传哈希不可用" in r.message for r in caplog.records)

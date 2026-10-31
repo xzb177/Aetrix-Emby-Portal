@@ -5068,7 +5068,9 @@ def _run_drive_user_job(db, job, item, drive_api):
                 f"剩余 {_space['free_bytes']} 字节，还差 "
                 f"{_space['shortfall']} 字节（已腾 "
                 f"{len(_space['evicted'])} 条、"
-                f"{_space['bytes_freed']} 字节），未静默回落共享")
+                f"{_space['bytes_freed']} 字节），未静默回落共享"
+                f"（另清 stale {_space.get('stale_deleted', 0)} 条、"
+                f"{_space.get('stale_freed', 0)} 字节）")
         copied = _attempt_user_copy(
             db, user_client, user_drive, orig_fid, folder_id, name,
             _space_factory, user_id, item.id, _file_size, _quota_state)
@@ -6191,8 +6193,24 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
             # 两者不一致打警告并以回调为准（见函数头注释）。
             # 例外：分片路（字节经 OSS 多段拼接）不一致 = 落盘
             # 字节与源不是同一份，判失败不登记（函数头注释）。
+            # A-091：分片路回调必须先与可信源 sha1 比对——续传时
+            # 全新 _HashingReader 哈希链断裂致 stream_sha1 恒空，
+            # 下面的流式核对恒假，绝不能只凭回调自证即登记；
+            # stored_sha1 是 multipart 必填的独立源真相。
             callback_sha1 = ((result or {}).get("sha1") or "").strip().lower()
             stream_sha1 = reader.sha1_hexdigest() or ""
+            if (via_multipart and callback_sha1 and stored_sha1
+                    and callback_sha1 != stored_sha1):
+                return _fail_job(
+                    db, job, "remote_error",
+                    "115 分片上传 sha1 与可信源 sha1 不一致（回调 "
+                    f"{callback_sha1[:12]}… ≠ 可信 {stored_sha1[:12]}…），"
+                    "落盘字节与源不一致，不登记变体")
+            if via_multipart and not stream_sha1:
+                logger.warning(
+                    "pan115 分片上传透传哈希不可用 item=%s job=%s"
+                    "（续传致哈希链断裂或未读满），流式核对跳过、"
+                    "仅以可信源 sha1 核对回调", item.id, job.id)
             if (via_multipart and callback_sha1 and stream_sha1
                     and callback_sha1 != stream_sha1):
                 return _fail_job(
@@ -6225,9 +6243,18 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
             f"回执 fid={resp_fid or '无'}，目标目录 cid={dest_cid}，"
             f"请人工核对，不自动重试）")
     if rapid_fid is None and not chosen_sha1 and entry_sha1:
-        # 全量路回调与透传都没给 sha1 时，用目录项 sha1 兜底沉淀。
-        _persist_item_sha1(db, item, entry_sha1,
-                           origin="drive_to_115_dir")
+        # 全量路回调与透传都没给 sha1 时，用目录项 sha1 兜底沉淀；
+        # 但目录项也是 115 侧自证：与可信源 sha1 不一致时不沉淀
+        # （A-091 同族缺口的保守处理：不把 115 侧哈希写进条目
+        # 可信列；目录核对通过的登记本身不在本次改动范围，见
+        # PR 未知项）。
+        if stored_sha1 and entry_sha1.strip().lower() != stored_sha1:
+            logger.warning(
+                "pan115 目录项 sha1 与可信源不一致 item=%s，不沉淀",
+                item.id)
+        else:
+            _persist_item_sha1(db, item, entry_sha1,
+                               origin="drive_to_115_dir")
     row = _register_ready_variant(db, job, item, new_fid,
                                   f"pan115:user-{uid}",
                                   pickcode=pickcode or None, size=size)
