@@ -952,8 +952,9 @@ const savingAll = ref(false)
 
 /** 经济分组保存核心：返回是否成功，失败时拦截器已提示。 */
 async function saveGroupCore(group: Group): Promise<boolean> {
-  // 载荷构造抽到 @/utils/buildEconomyPayload（纯函数，A-066 回归锚点）
-  const payload = buildEconomyPayload(group.fields, settings, isSupported)
+  // 载荷构造抽到 @/utils/buildEconomyPayload（纯函数，A-066/A-123 回归锚点）；
+  // originals 用于区分「已配值被清空」（发空串删行回默认）与「从未配过」（省略）
+  const payload = buildEconomyPayload(group.fields, settings, isSupported, original.value)
   try {
     await updateEconomySettings(payload)
     await refreshEconomy(Object.keys(payload))

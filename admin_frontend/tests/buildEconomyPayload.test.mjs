@@ -69,4 +69,65 @@ check('unsupported skipped', buildEconomyPayload(
   { x: '3', y: '4' }, (key) => key === 'x',
 ), { x: '3' })
 
+// ---- A-123：已配值被清空 = 发空串触发后端删行回默认；从未配过则仍省略 ----
+
+// int 已配（original 有值）后清空 → payload 带空串键
+check('cleared configured int sends empty string', buildEconomyPayload(
+  [{ key: 'checkin_base_min', type: 'int' }],
+  { checkin_base_min: '' }, always,
+  { checkin_base_min: '5' },
+), { checkin_base_min: '' })
+
+// int 从未配过（original 也为空）留空 → 仍省略（A-066 口径不倒退）
+check('never-configured int left empty still omitted', buildEconomyPayload(
+  [{ key: 'checkin_base_min', type: 'int' }],
+  { checkin_base_min: '' }, always,
+  { checkin_base_min: '' },
+), {})
+
+// 不传 originals（旧调用形态）→ 清空一律省略，与历史行为一致
+check('no originals keeps legacy omission', buildEconomyPayload(
+  [{ key: 'checkin_base_min', type: 'int' }],
+  { checkin_base_min: '' }, always,
+), {})
+
+// 混合组：清空的已配 int 发空串、未配 int 省略、有值 int 正常钳制
+check('group save mixes cleared, unset and set ints', buildEconomyPayload(
+  [
+    { key: 'checkin_base_min', type: 'int' },
+    { key: 'checkin_base_max', type: 'int' },
+    { key: 'checkin_streak_bonus', type: 'int' },
+  ],
+  { checkin_base_min: '', checkin_base_max: '', checkin_streak_bonus: '2' }, always,
+  { checkin_base_min: '3', checkin_base_max: '', checkin_streak_bonus: '1' },
+), { checkin_base_min: '', checkin_streak_bonus: '2' })
+
+// 已配 int 改成别的值：与 originals 无关，走原钳制路径
+check('configured int changed value unaffected by originals', buildEconomyPayload(
+  [{ key: 'checkin_base_min', type: 'int' }],
+  { checkin_base_min: '7' }, always,
+  { checkin_base_min: '5' },
+), { checkin_base_min: '7' })
+
+// bool 已配后清空（表单空值形态为 ''）→ payload 带空串键删行回默认
+check('cleared configured bool sends empty string', buildEconomyPayload(
+  [{ key: 'checkin_enabled', type: 'bool' }],
+  { checkin_enabled: '' }, always,
+  { checkin_enabled: 'false' },
+), { checkin_enabled: '' })
+
+// bool 从未配过留空 → 仍省略
+check('never-configured bool left empty still omitted', buildEconomyPayload(
+  [{ key: 'checkin_enabled', type: 'bool' }],
+  { checkin_enabled: '' }, always,
+  { checkin_enabled: '' },
+), {})
+
+// bool 已配正常切换：originals 不影响原有 true/false 口径
+check('configured bool toggle unaffected by originals', buildEconomyPayload(
+  [{ key: 'checkin_enabled', type: 'bool' }],
+  { checkin_enabled: 'false' }, always,
+  { checkin_enabled: 'true' },
+), { checkin_enabled: 'false' })
+
 console.log(`ALL ${passed} PASSED`)
