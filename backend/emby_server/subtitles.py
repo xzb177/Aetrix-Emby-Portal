@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from typing import Optional
 
 from fastapi import HTTPException, Response
@@ -196,7 +197,11 @@ def extract_embedded(media_path: str, item_guid: str, stream_index: int, subtitl
     if not shutil.which(FFMPEG):
         raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法抽取内封字幕")
     os.makedirs(SUB_CACHE_DIR, exist_ok=True)
-    tmp = cached + ".part"
+    # A-121：tmp 名必须每路唯一（pid+uuid）。固定名下同轨并发首抽时，
+    # 先完成者 os.replace 后共享 tmp 路径消失，后完成者误报 404；且败者
+    # 持有已发布 inode 的写 fd 可续写已发布缓存。进程内锁不够
+    # （多进程部署下仍撞），故唯一后缀是必选项。
+    tmp = cached + f".{os.getpid()}.{uuid.uuid4().hex}.part"
     head: list = []
     if input_headers:
         head = ["-headers", "".join(f"{k}: {v}\r\n" for k, v in input_headers.items())]
@@ -208,11 +213,25 @@ def extract_embedded(media_path: str, item_guid: str, stream_index: int, subtitl
         proc = subprocess.run(cmd, capture_output=True, timeout=180)
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="字幕抽取超时")
+    def _peer_published() -> bool:
+        try:
+            return os.path.isfile(cached) and os.path.getsize(cached) > 0
+        except OSError:
+            return False
+
     if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
         if os.path.isfile(tmp):
             os.remove(tmp)
+        # 同轨并发下另一路可能已发布缓存：回缓存，不再误报 404。
+        if _peer_published():
+            return cached
         raise HTTPException(status_code=404, detail="该字幕轨无法抽取为文本字幕")
-    os.replace(tmp, cached)
+    try:
+        os.replace(tmp, cached)
+    except OSError:
+        if _peer_published():
+            return cached
+        raise HTTPException(status_code=404, detail="该字幕轨无法抽取为文本字幕")
     logger.info("内封字幕已抽取 %s 轨道 %s", item_guid, stream_index)
     return cached
 
