@@ -49,6 +49,11 @@ services:
     image: aetrix-backend:latest
     ports:
     - 8000:8000
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     volumes:
     - aetrix_data:/data
@@ -109,6 +114,11 @@ services:
     image: aetrix-backend:latest
     ports:
     - 127.0.0.1:${EA_INTERNAL_PORT:-8002}:8001
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     volumes:
     - aetrix_data:/data
@@ -166,6 +176,11 @@ services:
         h=r.get('aetrix:worker:heartbeat'); assert h and (time.time()-json.loads(h)['updated_at'])<90
       timeout: 10s
     image: aetrix-backend:latest
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     volumes:
     - aetrix_data:/data
@@ -192,6 +207,11 @@ services:
       timeout: 5s
     image: postgres:16-alpine
     command: postgres -c max_connections=200 -c shared_buffers=${PG_SHARED_BUFFERS:-1GB} -c shared_preload_libraries=pg_stat_statements -c work_mem=${PG_WORK_MEM:-16MB}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     volumes:
     - postgres_data:/var/lib/postgresql/data
@@ -210,6 +230,11 @@ services:
       - ping
       timeout: 3s
     image: redis:7-alpine
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     volumes:
     - redis_data:/data

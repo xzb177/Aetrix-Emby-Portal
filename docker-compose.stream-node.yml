@@ -24,6 +24,11 @@ services:
     # 与主服务同一镜像、同一 tag（前后端版本必须配套）
     image: ghcr.io/xzb177/aetrix-api:${AETRIX_IMAGE_TAG:-latest}
     container_name: aetrix-stream
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     # 流角色：run_all.py 只起 EA 出流进程，不起 API/worker/后台任务
     command: ["python", "backend/run_all.py"]

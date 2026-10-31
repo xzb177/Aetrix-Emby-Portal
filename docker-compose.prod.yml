@@ -19,6 +19,11 @@ services:
     # AETRIX_IMAGE_TAG 默认 latest；要固定版本就在 .env 里写死（如 2.42.9），便于回滚。
     image: ghcr.io/xzb177/aetrix-api:${AETRIX_IMAGE_TAG:-latest}
     container_name: aetrix-api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     command: ["python", "backend/run_all.py"]
     env_file:
@@ -74,6 +79,11 @@ services:
   aetrix-web:
     image: ghcr.io/xzb177/aetrix-web:${AETRIX_IMAGE_TAG:-latest}
     container_name: aetrix-web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     ports:
       - "${AETRIX_PORT:-8000}:80"
@@ -90,6 +100,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aetrix-redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -108,6 +123,11 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: aetrix-postgres
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-aetrix}
@@ -137,6 +157,11 @@ services:
     profiles: ["rclone"]
     image: rclone/rclone:1.71.1
     container_name: aetrix-rclone
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     command:
       - rcd
@@ -170,6 +195,11 @@ services:
     profiles: ["rclone"]
     image: rclone/rclone:1.71.1
     container_name: aetrix-rclone-serve
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
     # remote 名硬编码为 MP：面板里那个 rclone 挂载用的就是它。
     command:
