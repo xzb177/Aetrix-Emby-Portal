@@ -97,6 +97,14 @@ if not logging.getLogger().handlers:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
+# 日志脱敏：密钥/令牌不得进日志（与 EM backend/main.py、worker 同口径）。
+# EA 此前漏装（A-081）：uvicorn access 日志把客户端请求查询串里的
+# api_key（Emby 会话令牌，默认 30 天有效）明文留存，装上后 root 与
+# uvicorn access/error 两个 logger 一并被 filter 覆盖。
+from backend.log_redact import install_secret_redaction  # noqa: E402
+
+install_secret_redaction()
+
 # EM 初始化后才会存在的表：缺任何一个都说明 EM 还没在这套库上跑过
 _REQUIRED_EM_TABLES = ("web_users", "emby_libraries", "emby_api_tokens")
 

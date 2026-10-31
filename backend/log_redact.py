@@ -16,8 +16,11 @@ MoviePilot 的 ``?token=``、Telegram Bot API 的 ``/bot<token>/`` 路径。
    堆栈是在 formatter 里从 traceback 对象渲染的）。
 
 脱敏规则（见 ``_PATTERNS``）：
-- URL 查询参数 ``api_key / apikey / token / access_token / client_secret /
-  secret / password`` 的值 → ``***``
+- URL 查询参数 ``api_key / apikey / token / access_token / refresh_token /
+  client_secret / secret / password / sign / sig / code`` 的值 → ``***``
+  （A-082 补 sign/sig/code/refresh_token：播放签名三元组 ``uid&exp&sign``、
+  OAuth 回调 ``?code=``、上游重定向 Location 的签名参数都走 access 日志；
+  ``code`` 只替换 URL/JSON 里的值，参数名保留，普通文本里的 code 一词不动）
 - JSON / dict 风格 ``"api_key": "xxx"`` → ``"api_key": "***"``
 - Telegram Bot API 路径 ``/bot<token>/`` → ``/bot***/``
 
@@ -36,7 +39,8 @@ import re
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     (
         re.compile(
-            r"([?&](?:api_key|apikey|access_token|client_secret|secret|password|auth_token|token)=)"
+            r"([?&](?:api_key|apikey|access_token|refresh_token|client_secret|secret|password"
+            r"|auth_token|token|sign|sig|code)=)"
             r"([^&\s\"'<>]*)",
             re.IGNORECASE,
         ),
@@ -45,7 +49,8 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
     # "api_key": "SECRET" / 'token'='SECRET'（JSON、dict repr、日志 k=v 片段）
     (
         re.compile(
-            r"(['\"]?(?:api_key|apikey|access_token|client_secret|secret|password|auth_token|token)['\"]?"
+            r"((?<![A-Za-z0-9_])['\"]?(?:api_key|apikey|access_token|refresh_token|client_secret"
+            r"|secret|password|auth_token|token|sign|sig|code)['\"]?"
             r"\s*[:=]\s*['\"])"
             r"([^'\",}\s]+)"
             r"(['\"])",
@@ -61,7 +66,7 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 # 快筛：没有这些词就直接跳过正则（每条日志都过一遍，省 CPU）
-_TRIGGER_WORDS = ("api_key", "apikey", "token", "/bot", "secret", "password")
+_TRIGGER_WORDS = ("api_key", "apikey", "token", "/bot", "secret", "password", "sign", "sig", "code")
 
 
 def redact_secrets(text):
