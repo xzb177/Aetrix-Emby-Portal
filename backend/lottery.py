@@ -155,6 +155,7 @@ def check_eligibility(
     - "rate_limited"：今日参加次数超限
     - "already"：已参加过本轮
     - "full"：名额已满
+    - "creator"：发起人不能参加自己发起的活动
 
     注意：身份门（getChatMember）需要 TG API，由调用方在调此函数前完成，
     因为 lottery 模块不依赖 tg_bot（避免循环依赖）。
@@ -163,6 +164,10 @@ def check_eligibility(
         return {"ok": False, "reason": "disabled"}
     if round.status != "open":
         return {"ok": False, "reason": "closed"}
+    # 发起人禁参赛（A-101）：created_by 为空的老轮次不受影响；管理端创建
+    # 的轮次 created_by 为管理员，普通用户参加链不受影响。
+    if getattr(round, "created_by", None) is not None and round.created_by == user.id:
+        return {"ok": False, "reason": "creator"}
     # 资格门第1层：黑名单
     if is_blacklisted(db, user.id):
         return {"ok": False, "reason": "blacklisted"}
@@ -273,6 +278,7 @@ def create_round(
     created_by: int | None = None,
     lottery_type: str = "button",
     password_keyword: str | None = None,
+    commit: bool = True,
 ) -> models.LotteryRound:
     """创建抽奖轮次及其奖品列表。
 
@@ -324,7 +330,9 @@ def create_round(
                 sort=sort,
             )
         )
-    db.commit()
+    # commit=False 时由调用方统一提交（A-102：内部提交会提前释放用户行锁）。
+    if commit:
+        db.commit()
     db.refresh(round)
     return round
 
@@ -385,6 +393,7 @@ def join_round(
       | "blacklisted"（黑名单）| "too_new"（账号太新）
       | "rate_limited"（今日参加超限）| "not_member"（不在 TG 群里）
       | "already"（已参加过）| "full"（名额已满）
+      | "creator"（发起人不能参加自己发起的活动）
 
     注意："not_member"（身份门）由调用方在调本函数前完成 getChatMember 校验
     后传入，本函数只做资格门检查——lottery 模块不依赖 tg_bot，避免循环依赖。

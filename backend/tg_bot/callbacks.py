@@ -472,6 +472,8 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
             _answer_callback(db, cb_id, "你已参加过本轮抽奖")
         elif reason == "full":
             _answer_callback(db, cb_id, "名额已满，下次再来")
+        elif reason == "creator":
+            _answer_callback(db, cb_id, "发起人不能参加自己发起的活动", show_alert=True)
         elif reason in ("closed", "disabled"):
             _answer_callback(db, cb_id, "本轮抽奖已结束")
         elif reason == "blacklisted":
@@ -589,7 +591,7 @@ def handle_lottery_password(db, chat_id: int, tg_user: dict, text: str) -> bool:
         _send_lottery_feedback(db, chat_id, f"名额已满，{display_name} 下次再来")
     elif reason in ("closed", "disabled"):
         pass  # 活动已结束：静默
-    elif reason in ("blacklisted", "too_new", "rate_limited"):
+    elif reason in ("blacklisted", "too_new", "rate_limited", "creator"):
         pass  # 资格不符：静默，不打草惊蛇
     else:
         logger.warning("lottery password join unexpected reason=%s", reason)
