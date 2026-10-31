@@ -354,6 +354,14 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 关时列表不出现、取流口 404。无行＝开（读取方默认 True，
     # 见 upstream_playback.detail_line_enabled）。
     "upstream_aggregate_detail_line_enabled": ("bool",),
+    # O-09 映射抽样巡检（第 1、2 层常驻 janitor）：默认开、默认
+    # 每 7 天一轮、每 evidence 层默认抽 30 条；不一致率超默认
+    # 5% 响亮报红。读取唯一实现在 upstream_mapping_patrol，范围
+    # 与读取侧钳制同口径。纯 SystemConfig 键，不进 env.example。
+    "upstream_aggregate_mapping_patrol_enabled": ("bool",),
+    "upstream_aggregate_mapping_patrol_interval_days": ("int", 1, 30),
+    "upstream_aggregate_mapping_patrol_sample_size": ("int", 1, 200),
+    "upstream_aggregate_mapping_patrol_alert_pct": ("int", 0, 100),
 }
 
 

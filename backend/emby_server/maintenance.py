@@ -528,6 +528,8 @@ def janitor_tick(heavy: bool = True) -> dict:
               "images_pruned": 0,
               "images_freed_bytes": 0, "ai_usage_pruned": 0,
               "thumbs_backfilled": 0, "thumbs_backfill_done": False,
+              "upstream_mapping_patrol_sampled": 0,
+              "upstream_mapping_patrol_alert": False,
               "query_plans_optimized": False}
     db = SessionLocal()
     try:
@@ -689,6 +691,25 @@ def janitor_tick(heavy: bool = True) -> dict:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("自动续订失败通知异常（订阅 %s）: %s",
                                _n.get("subscription_id"), exc)
+
+        # 上游映射抽样巡检（O-09 第 1、2 层）：默认开、默认每周
+        # 一轮（周期门在巡检模块内，未到周期直接跳过）；按 evidence
+        # 分层抽样核本地活行/源状态 + 带凭据核上游存在性，不一致率
+        # 超阈值在巡检模块内响亮报红。全程只读映射、只报数不删改；
+        # 第 3 层播放抽样只许管理端手动触发，不挂这里。
+        db = SessionLocal()
+        try:
+            from backend.emby_server import upstream_mapping_patrol as _ump
+            _patrol = _ump.maybe_run_mapping_patrol(db)
+            if _patrol is not None:
+                result["upstream_mapping_patrol_sampled"] = \
+                    _patrol["sampled"]
+                result["upstream_mapping_patrol_alert"] = _patrol["alert"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("上游映射抽样巡检失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
         # 查询计划：库长到几十万行之后，SQLite 可能还在按老统计信息估行数（选错索引就是
         # 全表扫描）。官方建议周期性跑 `PRAGMA optimize`，成本几乎为零，见 optimize_query_plans。
