@@ -485,7 +485,8 @@ def _user_drive_client(db, user_id, drive_client_factory):
     return drive_client_factory(db, user_id)
 
 
-def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
+def cleanup_stale_variants(db, drive_client_factory, *, limit=None,
+                            user_id=None, exclude_variant_ids=()):
     """首轮清理：只删 stale 行，不碰 ready（硬性范围）。
 
     返回 stats：{checked, deleted, already_gone, skipped_unsupported,
@@ -500,6 +501,9 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
     - 每行删前都记日志（用户、条目、文件 id、大小）。
     本函数不调度、不定时：首轮生产运行须由运维在部署后手动触发
     并复核日志，绝不由巡检默认带跑（见 PR 描述的触发口径）。
+    user_id 给出时只清该用户的 stale 行（ensure_space_for_transfer
+    的腾地方前置 pass 用，不跨用户删）；exclude_variant_ids 命中的
+    行（正在播等）一律跳过、行不动。
     """
     stats = {"checked": 0, "deleted": 0, "already_gone": 0,
              "skipped_unsupported": 0, "skipped_unsafe": 0,
@@ -508,6 +512,12 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
     q = (db.query(em.TransferVariant)
          .filter(em.TransferVariant.status == "stale")
          .order_by(em.TransferVariant.id))
+    if user_id is not None:
+        q = q.filter(em.TransferVariant.owner_scope == "user",
+                     em.TransferVariant.owner_ref == str(user_id))
+    if exclude_variant_ids:
+        excluded = set(exclude_variant_ids)
+        q = q.filter(~em.TransferVariant.id.in_(excluded))
     rows = q.all()
     if limit is not None:
         rows = rows[:max(0, int(limit))]
@@ -692,11 +702,17 @@ def ensure_space_for_transfer(db, drive_client_factory, user_id, *,
     guard + exclude（正在播 + exclude_item_ids 对应的本条）双
     重兜底；个人文件、115 行、stale/deleted 行一律不在候选里
     （候选查询本身只取 status=ready 的用户行）。
+    但腾 ready 之前先对本用户跑一轮 stale 清理（A-090）：stale 死
+    副本先清、字节先计入估算，stale 够了就不再动 ready 行；stale
+    清理本身 best-effort，异常只记 warning、不阻断后续腾 ready。
+    返回里 stale_deleted / stale_freed 为本轮 stale pass 的计数与
+    字节（bytes_freed 仍只计 ready 腾地方，evicted 仍只含 ready
+    行 id）；估算剩余 = free + stale_freed + bytes_freed。
     """
     now = now or datetime.now()
     result = {"reason": "sufficient", "proceed": True, "file_size": file_size,
               "free_bytes": None, "shortfall": None, "evicted": [],
-              "bytes_freed": 0}
+              "bytes_freed": 0, "stale_deleted": 0, "stale_freed": 0}
     size = None
     try:
         size = int(file_size) if file_size is not None else None
@@ -764,13 +780,27 @@ def ensure_space_for_transfer(db, drive_client_factory, user_id, *,
     soft = set(protected) - excluded
     result["protected"] = sorted(soft)
     result["evicted_protected"] = []
+    # A-090：先清本用户 stale 死副本（正在播硬排除），字节先计入
+    # 估算；stale 够了就不再动 ready 行。stale pass 本身失败不阻断。
+    try:
+        stale_stats = cleanup_stale_variants(
+            db, drive_client_factory, user_id=user_id,
+            exclude_variant_ids=sorted(excluded))
+    except Exception as exc:  # noqa: BLE001 — stale 清理失败不阻断腾地方
+        logger.warning(
+            "[transfer-cleanup] stale 前置清理失败，改走 ready 腾地方 "
+            "user=%s err=%s", user_id, exc)
+        stale_stats = {"deleted": 0, "bytes_freed": 0}
+    result["stale_deleted"] = stale_stats["deleted"]
+    result["stale_freed"] = stale_stats["bytes_freed"]
+    remaining_need = max(0, need - result["stale_freed"])
     evicted_result = evict_lru_variants(
-        db, drive_client_factory, user_id, need_bytes=need,
+        db, drive_client_factory, user_id, need_bytes=remaining_need,
         session_progress=session_progress,
         exclude_variant_ids=sorted(excluded | soft))
     result["evicted"] = list(evicted_result["evicted"])
     result["bytes_freed"] = evicted_result["bytes_freed"]
-    estimate = free + result["bytes_freed"]
+    estimate = free + result["stale_freed"] + result["bytes_freed"]
     if estimate < size and soft:
         # 第二轮：非受保护行第一轮已按 LRU 全过一遍（删掉的已非
         # ready，删失败的不重试），这里只在受保护行里按原 LRU 顺序
