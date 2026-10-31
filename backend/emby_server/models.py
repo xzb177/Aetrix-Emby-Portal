@@ -1183,6 +1183,80 @@ class UpstreamItemMapping(Base):
                         nullable=False)
 
 
+#: 上游聚合任务状态全集（upstream_aggregate_tasks.status 的 CHECK 用）。
+UPSTREAM_AGGREGATE_TASK_STATUSES = (
+    "queued", "running", "succeeded", "failed", "interrupted")
+
+#: 上游聚合任务触发方式全集。
+UPSTREAM_AGGREGATE_TASK_TRIGGERS = ("manual", "scheduled")
+
+
+class UpstreamAggregateTask(Base):
+    """上游聚合任务（2026-10-31 优化 O-01：任务持久化）。
+
+    一行 = 一轮 Emby/Jellyfin 上游目录聚合（手动触发或定时调度，
+    见 trigger）。此前任务只活在 api 进程内存里（upstream_aggregate_
+    jobs 的进程内 dict），部署重启 api 即整轮蒸发、状态无处可查
+    （2026-10-31 实证：15:33 手动聚合被 15:47 部署重启冲掉）。
+    本表把任务状态、逐库进度与终态摘要落库：
+
+    - status：queued → running → succeeded / failed；进程消亡导致
+      心跳过期（heartbeat_at 超阈值）的 running 由清扫标 interrupted
+      （可 resume 续跑：跳过 libraries_json 里已 done 的库）；
+    - 进度计数（libraries_total / libraries_done / fetched / paired /
+      written）随库更新，管理端查询直接读行，不再靠轮询内存；
+    - libraries_json：逐库明细数组（每库 status/fetched/paired/
+      written/error），是 resume 的跳过依据；
+    - result_json：终态摘要（与聚合返回同形但**不含全量 pairs**——
+      明细走 upstream_item_mappings 分页查，见设计稿 P-12）；
+    - error_json：失败时的 {"status","code","detail"}（沿用同步口
+      的状态码与中文文案，凭据等敏感原文不入）；
+    - 不加外键（照 UpstreamSource 先例）：源删了任务行留着供追溯。
+    - 由 create_all 自动建表，老库无需 ALTER。
+    """
+
+    __tablename__ = "upstream_aggregate_tasks"
+
+    __table_args__ = (
+        CheckConstraint(
+            _in_sql("status", UPSTREAM_AGGREGATE_TASK_STATUSES),
+            name="ck_upstream_aggregate_task_status"),
+        CheckConstraint(
+            _in_sql("trigger", UPSTREAM_AGGREGATE_TASK_TRIGGERS),
+            name="ck_upstream_aggregate_task_trigger"),
+        Index("ix_upstream_aggregate_tasks_source_status",
+              "source_id", "status"),
+        Index("ix_upstream_aggregate_tasks_status_created",
+              "status", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(64), unique=True, nullable=False, index=True)
+    source_id = Column(Integer, nullable=False)  # upstream_sources.id，无外键
+    trigger = Column(String(20), nullable=False, default="manual")
+    status = Column(String(20), nullable=False, default="queued")
+    page_size = Column(Integer, nullable=False, default=500)
+    # 续跑来源任务 id（resume 时指向被续跑的那条），普通任务为空。
+    resume_of = Column(String(64))
+    # 续跑跳过的库 id JSON 数组（已在 resume_of 那轮完成的库）。
+    skip_libraries_json = Column(Text)
+    libraries_total = Column(Integer, nullable=False, default=0)
+    libraries_done = Column(Integer, nullable=False, default=0)
+    current_library_id = Column(String(100))
+    current_library_name = Column(String(300))
+    fetched = Column(Integer, nullable=False, default=0)
+    paired = Column(Integer, nullable=False, default=0)
+    written = Column(Integer, nullable=False, default=0)
+    unpaired_reasons_json = Column(Text)
+    libraries_json = Column(Text)
+    result_json = Column(Text)
+    error_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    heartbeat_at = Column(DateTime)
+
+
 class SourceCategoryBinding(Base):
     """上游源分类绑定（苹果 CMS W1：类型与持久化）。
 

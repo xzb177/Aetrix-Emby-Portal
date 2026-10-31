@@ -9,6 +9,11 @@
 - 源未启用、苹果 CMS、凭据失效、上游不可用、额度、映射冲突都还在，
   状态码和中文 detail 不改写、不吞掉；
 - 苹果 CMS 仍不走这条聚合口。
+
+O-01（2026-10-31）后任务落库（upstream_aggregate_tasks）：本文件
+的夹具把 jobs 的会话工厂注入测试引擎；result 只存摘要、不带
+全量 pairs；提交口径从「整轮一次提交」改为认领/逐库/终态分开
+提交（见 test_upstream_aggregate_persist.py 的逐库隔离实证）。
 """
 
 import threading
@@ -52,10 +57,14 @@ def staff():
 
 
 @pytest.fixture(autouse=True)
-def _clean_jobs():
+def _clean_jobs(db_factory):
+    from backend.integrations import store as config_store
+    config_store._ttl_cache.clear()
     jobs.reset_for_tests()
+    jobs._session_factory = db_factory
     yield
     jobs.reset_for_tests()
+    config_store._ttl_cache.clear()
 
 
 def _source(db, *, enabled=True, source_type="emby", name="src-1"):
@@ -108,7 +117,7 @@ def test_post_returns_queued_before_aggregation_runs(
     entered = threading.Event()
     release = threading.Event()
 
-    def slow(db_session, src, page_size=100):
+    def slow(db_session, src, page_size=100, **kwargs):
         entered.set()
         assert release.wait(5)
         return _summary(src)
@@ -156,31 +165,22 @@ def test_post_returns_queued_before_aggregation_runs(
     assert result["mapping_enabled"] is False
     assert result["failed_libraries"][0]["library_id"] == "lib-2"
     assert result["libraries"][0]["status"] == "ok"
-    assert result["pairs"][0]["upstream_item_id"] == "u1"
+    # O-01：result 只存摘要，全量 pairs 不再回传（明细走映射表查）。
+    assert "pairs" not in result
 
 
-def test_success_commits_worker_session_once(db, db_factory, staff, monkeypatch):
+def test_success_persists_task_row_and_passes_page_size(
+        db, db_factory, staff, monkeypatch):
     source = _source(db, enabled=True)
-    commits = {"n": 0}
-
-    def factory():
-        session = db_factory()
-        real_commit = session.commit
-
-        def wrapped(*args, **kwargs):
-            commits["n"] += 1
-            return real_commit(*args, **kwargs)
-
-        session.commit = wrapped
-        return session
-
+    calls = {"n": 0}
     seen = {}
 
-    def record(db_session, src, page_size=100):
+    def record(db_session, src, page_size=100, **kwargs):
+        calls["n"] += 1
         seen["page_size"] = page_size
         return _summary(src)
 
-    monkeypatch.setattr(jobs, "_session_factory", factory)
+    monkeypatch.setattr(jobs, "_session_factory", db_factory)
     monkeypatch.setattr(jobs, "_aggregate_fn", record)
     _hold_submit(monkeypatch)
     resp = admin_ups.aggregate_upstream_source(
@@ -188,9 +188,14 @@ def test_success_commits_worker_session_once(db, db_factory, staff, monkeypatch)
         staff=staff, db=db)
     db.close()
     jobs.execute_task(resp["task_id"])
-    jobs.execute_task(resp["task_id"])
+    jobs.execute_task(resp["task_id"])  # 重复进入是空转，不重跑聚合
+    assert calls["n"] == 1
     assert seen["page_size"] == 50
-    assert commits["n"] == 1
+    row = (db_factory().query(em.UpstreamAggregateTask)
+           .filter(em.UpstreamAggregateTask.task_id == resp["task_id"])
+           .one())
+    assert row.status == "succeeded"
+    assert row.page_size == 50
 
 
 def test_missing_disabled_and_applecms_still_reject_immediately(
@@ -266,7 +271,7 @@ def test_upstream_errors_stay_on_the_task(
         db, db_factory, staff, monkeypatch, status, code, detail):
     source = _source(db, enabled=True, name=f"src-{code}")
 
-    def boom(db_session, src, page_size=100):
+    def boom(db_session, src, page_size=100, **kwargs):
         raise uar.UpstreamAggregateRunError(status, code, detail)
 
     monkeypatch.setattr(jobs, "_session_factory", db_factory)
@@ -289,7 +294,7 @@ def test_mapping_conflict_and_unexpected_error_are_not_swallowed(
     monkeypatch.setattr(jobs, "_session_factory", db_factory)
     _hold_submit(monkeypatch)
 
-    def conflict(db_session, src, page_size=100):
+    def conflict(db_session, src, page_size=100, **kwargs):
         raise IntegrityError("INSERT", {}, Exception("dup"))
 
     monkeypatch.setattr(jobs, "_aggregate_fn", conflict)
@@ -304,7 +309,7 @@ def test_mapping_conflict_and_unexpected_error_are_not_swallowed(
         "detail": "映射写入冲突，请重试",
     }
 
-    def explode(db_session, src, page_size=100):
+    def explode(db_session, src, page_size=100, **kwargs):
         raise RuntimeError("token=s3cret-pw")
 
     monkeypatch.setattr(jobs, "_aggregate_fn", explode)
