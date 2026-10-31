@@ -81,7 +81,8 @@ def require_store_member(db: Session, user: models.WebUser) -> None:
 def find_library_item(db: Session, tmdb_id: str) -> em.MediaItem | None:
     """R0：tmdb 是否映射到现有 emby_items。
 
-    下架行不算。优先电影 / 剧集主条，没有再退到任意未下架行
+    下架行与隐藏行不算（A-113：隐藏条目不得经在库判定探查）。
+    优先电影 / 剧集主条，没有再退到任意未下架行
     （避免只剩一集时把「库里有」判丢）。不创建、不修改任何行。
     """
     key = (tmdb_id or "").strip()
@@ -93,6 +94,7 @@ def find_library_item(db: Session, tmdb_id: str) -> em.MediaItem | None:
         return db.query(em.MediaItem).filter(
             em.MediaItem.tmdb_id == key,
             em.MediaItem.deleted_at.is_(None),
+            em.MediaItem.is_hidden == False,  # noqa: E712
         )
 
     primary = (
