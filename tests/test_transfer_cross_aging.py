@@ -91,6 +91,19 @@ def _finish(db, row):
     db.commit()
 
 
+def _binding(db, user_id, provider="pan115", status="active"):
+    cred = em.MountCredential(scope="user", owner_user_id=user_id,
+                              status="active")
+    db.add(cred)
+    db.commit()
+    row = em.UserStorageBinding(user_id=user_id, provider=provider,
+                                account_label="test",
+                                credential_id=cred.id, status=status)
+    db.add(row)
+    db.commit()
+    return row
+
+
 def _set_sysconfig(db, key, value):
     row = (db.query(base_models.SystemConfig)
            .filter(base_models.SystemConfig.key == key).first())
@@ -119,6 +132,8 @@ def test_aged_prefetch_cross_wins_freed_slot(db, monkeypatch, caplog):
     公平键不变：两 owner 均 0 在途，超龄单 owner 的最老等待更久）；
     旧码 fast 组只有 playback，先领新 playback 单。"""
     monkeypatch.setattr(tv, "TRANSFER_WORKER_PER_USER_MAX", 2)
+    _binding(db, 985)
+    _binding(db, 1001)
     run1, run2 = _two_cross_slots_busy(db)
     aged = _job(db, item_id=13, trigger="prefetch", owner_ref="985",
                 cross=True, created_ago_sec=3600)
@@ -145,6 +160,8 @@ def test_aged_prefetch_cross_wins_freed_slot(db, monkeypatch, caplog):
 
 def test_unaged_prefetch_cross_still_after_playback(db, monkeypatch):
     monkeypatch.setattr(tv, "TRANSFER_WORKER_PER_USER_MAX", 2)
+    _binding(db, 985)
+    _binding(db, 1001)
     run1, _run2 = _two_cross_slots_busy(db)
     _job(db, item_id=15, trigger="prefetch", owner_ref="985",
          cross=True, created_ago_sec=60)
@@ -172,6 +189,8 @@ def test_aged_prefetch_same_provider_not_promoted(db, monkeypatch):
 def test_huge_threshold_disables_aging(db, monkeypatch):
     monkeypatch.setattr(tv, "TRANSFER_WORKER_PER_USER_MAX", 2)
     _set_sysconfig(db, "transfer_cross_aging_sec", "86400")
+    _binding(db, 985)
+    _binding(db, 1001)
     run1, _run2 = _two_cross_slots_busy(db)
     _job(db, item_id=19, trigger="prefetch", owner_ref="985",
          cross=True, created_ago_sec=3600)

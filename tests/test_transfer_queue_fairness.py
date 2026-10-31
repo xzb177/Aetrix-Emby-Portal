@@ -94,6 +94,19 @@ def _finish(db, row):
     db.commit()
 
 
+def _binding(db, user_id, provider="pan115", status="active"):
+    cred = em.MountCredential(scope="user", owner_user_id=user_id,
+                              status="active")
+    db.add(cred)
+    db.commit()
+    row = em.UserStorageBinding(user_id=user_id, provider=provider,
+                                account_label="test",
+                                credential_id=cred.id, status=status)
+    db.add(row)
+    db.commit()
+    return row
+
+
 # ---------- 生产案复刻：空出的跨道槽归在途为 0 的 owner ----------
 
 def test_freed_cross_slot_goes_to_zero_running_owner(db, monkeypatch):
@@ -101,6 +114,8 @@ def test_freed_cross_slot_goes_to_zero_running_owner(db, monkeypatch):
     B（ref=985）0 在途＋一单 pending。跨道满时谁都领不到；A 一单
     完成后空出一个跨道槽，补认领必须归 B，不是 A 的第三单。"""
     monkeypatch.setattr(tv, "TRANSFER_WORKER_PER_USER_MAX", 2)
+    _binding(db, 1064)
+    _binding(db, 985)
     a_run1 = _job(db, item_id=11, owner_ref="1064", status="running",
                   cross=True, lease_sec=300)
     a_run2 = _job(db, item_id=12, owner_ref="1064", status="running",
