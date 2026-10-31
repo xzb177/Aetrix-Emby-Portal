@@ -643,7 +643,8 @@ def _file_fingerprint(scan_file: "ScanFile") -> str:
     """文件指纹：秒跳未变更文件的唯一依据。
 
     本机文件用 path|size|mtime_ns（一次 os.stat，多一个系统调用）；
-    远程挂载拿不到 mtime（多一次 API 太贵），用 path|size。
+    拿不到 mtime_ns 的挂载（远程 / 本机可读挂载）用 path|size|remote_mod_ts，
+    remote_mod_ts 为 0 时回落 path|size（A-096：本地挂载分支同样补 mod_ts）。
     大小变了一定命中不了；同名替换但大小时间都一样是玄学，接受。
     """
     if scan_file.mtime_ns is not None:
@@ -2381,6 +2382,9 @@ def _mount_files(src, provider, failed_roots: list,
                 # v2.55.x A'：本机可读挂载的 .strm，挂载层没给 ID 时从直链解析兜底
                 file_id=getattr(mount_file, "file_id", "") or _drive_file_id_from_url(target.value),
                 source_row_id=getattr(src, "source_row_id", None),
+                # A-096：本机分支同样把 MountFile.mod_ts 进指纹（与远程分支
+                # 同口径），否则同尺寸原地替换退化为 path|size、永久秒跳。
+                remote_mod_ts=getattr(mount_file, "mod_ts", 0.0) or 0.0,
                 # #13 PR-2：本机可读挂载的 MountFile 一般无哈希，默认空串即可。
                 content_hash=getattr(mount_file, "content_hash", "") or "",
                 content_hash_algo=getattr(mount_file, "content_hash_algo", "") or "",
@@ -6647,6 +6651,39 @@ def _apply_scan_identity(item, scan_file) -> None:
         item.identity_json = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
 
 
+def _apply_implicit_series_tmdb(ctx, series, series_guid, stats) -> tuple:
+    """隐式 series 的 TMDB 搜索命中落库，返回 (applied, rejected)。
+
+    A-097：绑定复核拒绝时 apply() 与 apply_details() 一律不执行——
+    被拒绝命中的详情（imdb_id / 简介 / 评分 / 类型 / 别名 /
+    metadata_source）不得污染 series 行。调用方据 rejected 决定：
+    拒绝时不记 last_scraped_at，NFO 补图也不用这份详情。
+    """
+    tmdb_res = ctx.series_tmdb_results.get(series_guid)
+    if not tmdb_res or series.tmdb_id:
+        return (False, False)
+    series_hit, series_details = tmdb_res
+    if not series_hit:
+        # 理论上到不了：series_tmdb_results 只在命中非空时才登记；
+        # 沿旧口径，有详情无命中时仍补详情，不视为拒绝。
+        if series_details:
+            _tmdb.tmdb_client.apply_details(series, series_details)
+        return (False, False)
+    rej = _tmdb.binding_reject_reason(
+        series_details or series_hit, "series",
+        getattr(series, "production_year", None))
+    if rej:
+        logger.warning(
+            "扫描首刮绑定复核拒绝 name=%r hit=%s reason=%s",
+            getattr(series, "name", ""), series_hit.get("id"), rej)
+        return (False, True)
+    _tmdb.tmdb_client.apply(series, series_hit, "series")
+    stats["scraped"] += 1
+    if series_details:
+        _tmdb.tmdb_client.apply_details(series, series_details)
+    return (True, False)
+
+
 def _scan_library_body(db: Session, library: emby_models.Library,
                        snap: LibrarySnapshot,
                        source_override: Optional[list] = None) -> dict:
@@ -6933,29 +6970,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item.series_id = series.id
                     # B 方案补全：本批为隐式 series 预取的 TMDB 搜索命中先落库
                     # （补 tmdb_id/简介/海报/评分/别名；NFO 文本随后覆盖，保证 NFO 优先）
-                    series_tmdb_applied = False
-                    tmdb_res = ctx.series_tmdb_results.get(series_guid)
-                    if tmdb_res and not series.tmdb_id:
-                        series_hit, series_details = tmdb_res
-                        if series_hit:
-                            _rej = _tmdb.binding_reject_reason(
-                                series_details or series_hit, "series",
-                                getattr(series, "production_year", None))
-                            if _rej:
-                                logger.warning(
-                                    "扫描首刮绑定复核拒绝 name=%r hit=%s reason=%s",
-                                    getattr(series, "name", ""),
-                                    series_hit.get("id"), _rej)
-                            else:
-                                _tmdb.tmdb_client.apply(series, series_hit, "series")
-                                stats["scraped"] += 1
-                                series_tmdb_applied = True
-                        if series_details:
-                            _tmdb.tmdb_client.apply_details(series, series_details)
+                    series_tmdb_applied, _series_rej = _apply_implicit_series_tmdb(
+                        ctx, series, series_guid, stats)
                     if (series_guid in ctx.series_tmdb_searched
-                            and not series.tmdb_id and not series.last_scraped_at):
+                            and not series.tmdb_id and not series.last_scraped_at
+                            and not _series_rej):
                         # 本轮干净地搜过但没命中：记一笔尝试，免得以后每轮重扫
-                        # 都把这一集完整处理一遍（v2.31.0）
+                        # 都把这一集完整处理一遍（v2.31.0）；被复核拒绝的不算
+                        # “干净地搜过”，下一轮仍会重新搜索（A-097）。
                         series.last_scraped_at = datetime.now()
                     series_nfo = _pending.series_nfo_data
                     if series_nfo and (not series.tmdb_id or not series.overview
@@ -6966,7 +6988,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             series.poster_path or series.primary_image_url
                         ):
                             details = ctx.nfo_series_details.get(series_guid)
-                            if details is not None:
+                            if details is not None and not _series_rej:
                                 _tmdb.tmdb_client.apply_images(series, details)
                         nfo_lib.apply_nfo(series, series_nfo, "series")
                         stats["nfo"] = stats.get("nfo", 0) + 1
