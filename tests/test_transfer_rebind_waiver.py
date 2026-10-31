@@ -154,6 +154,7 @@ def test_create_cross_job_waiver_direct(db):
     _mount(db)
     item = _drive_item(db)
     _user_job(db, item.id, 7, dest="userdrive:7", status="failed")
+    _binding(db, 7, provider="pan115")
     job = tv.create_cross_provider_job(db, item, 7, "drive",
                                        trigger="playback")
     assert job.dest_drive_id == "pan115:user-7"
@@ -194,6 +195,7 @@ def test_waiver_recovers_after_window(db):
     item_b = _drive_item(db)
     _user_job(db, item_a.id, 7, dest="userdrive:7", status="done")
     _user_job(db, item_b.id, 7, dest="userdrive:7", status="done")
+    _binding(db, 7, provider="pan115")
     tv.create_cross_provider_job(db, item_a, 7, "drive",
                                  trigger="playback")
     assert len(_waiver_rows(db)) == 1
@@ -244,6 +246,7 @@ def test_mixed_recent_jobs_throttle_without_waiver(db):
 def test_plain_create_without_recent_job_records_no_waiver(db):
     _mount(db)
     item = _drive_item(db)
+    _binding(db, 7, provider="drive")
     job = tv.create_user_job(db, item, 7, "drive", trigger="playback")
     assert job.dest_drive_id == "userdrive:7"
     assert _waiver_rows(db) == []
@@ -280,6 +283,7 @@ def test_waiver_config_defaults_and_override(db):
     item_c = _drive_item(db)
     for it in (item_a, item_b, item_c):
         _user_job(db, it.id, 7, dest="userdrive:7", status="done")
+    _binding(db, 7, provider="pan115")
     tv.create_cross_provider_job(db, item_a, 7, "drive",
                                  trigger="playback")
     tv.create_cross_provider_job(db, item_b, 7, "drive",

@@ -1767,6 +1767,10 @@ def test_claim_cross_lane_cap_keeps_same_provider_flowing(db):
     # provider，慢单不许堵住整轮。
     _set_sysconfig(db, "transfer_cross_lane_concurrency", "1")
     item = _item(db)
+    _binding(db, 7, provider="pan115")
+    _binding(db, 8, provider="pan115")
+    _binding(db, 9, provider="drive")
+    _binding(db, 10, provider="drive")
     c1 = _cross_job(db, item.id, 7, "drive", "pan115:user-7",
                     drive_id="shared1")
     c2 = _cross_job(db, item.id, 8, "drive", "pan115:user-8",

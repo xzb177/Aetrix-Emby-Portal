@@ -1488,6 +1488,19 @@ def create_user_job(db, item, user_id, provider, trigger="playback",
     source_drive_id = _source_drive_id(db, item, provider)
     if provider == "drive" and not source_drive_id:
         raise TransferError("no_drive", "Drive 条目取不到源盘标识")
+    # no_binding 建单前置校验（2026-10-31 蓝图 v2 第一层治理一单）：
+    # 目标盘无 active 绑定时建单必死——复核实证存量 no_binding 单
+    # 平均拖 129 分钟、最高重试 4 次才落终态。落行前秒判：不落任务
+    # 行，调用方（门禁/想看/追剧/quota）一律已按 TransferError.kind
+    # 映射成 failed/skipped，口径自洽。放在节流与源校验之后：既有
+    # 错误优先级（throttled/no_source_fid/no_drive）不变，本校验是
+    # 落行前最后一道。认领侧还有第二道复核（claim_due_jobs），防
+    # 建单后解绑的在途单。
+    if _active_binding(db, user_id, provider) is None:
+        raise TransferError(
+            "no_binding",
+            f"用户无生效中的{_provider_label(provider)}绑定，"
+            "不建转存任务（不重试；重绑后可重新触发）")
     job = em.TransferJob(item_id=item_id, trigger=trigger,
                          drive_id=source_drive_id or None,
                          provider=provider, owner_scope="user",
@@ -1612,6 +1625,16 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     source_drive_id = _source_drive_id(db, item, source_provider)
     if source_provider == "drive" and not source_drive_id:
         raise TransferError("no_drive", "Drive 条目取不到源盘标识")
+    # no_binding 建单前置校验（与 create_user_job 同口径，查目标盘
+    # 绑定而非源盘）：跨单的落点在 dest 侧，只有源侧绑定、目标侧
+    # 没绑时建单必死（复核样本原型），落行前秒判不落行；放在节流
+    # 与源校验之后，既有错误优先级不变。
+    dest_provider = "pan115" if source_provider == "drive" else "drive"
+    if _active_binding(db, user_id, dest_provider) is None:
+        raise TransferError(
+            "no_binding",
+            f"用户无生效中的{_provider_label(dest_provider)}绑定，"
+            "不建跨 provider 转存任务（不重试；重绑后可重新触发）")
     job = em.TransferJob(item_id=item_id, trigger=trigger,
                          drive_id=source_drive_id or None,
                          provider=source_provider, owner_scope="user",
@@ -4904,9 +4927,51 @@ def _copy_name_for_item(item):
     return base
 
 
+#: 确定性错误指纹 → 终态 kind（2026-10-31 蓝图 v2 第一层治理一单，
+#: 依据失败分类抽样复核报告）：下列错误靠重试永远修不好——
+#: - 列/建转存目录 401：凭据已死（_request 内部已刷新重试过一次，
+#:   浮出到这里的 401 是刷新后仍死），复核实证该组挂 retriable
+#:   平均空烧 436 分钟；落 auth_error（凭据失效终态，与 115
+#:   Cookie 失效同口径）。重绑复活不受影响：drive_oauth
+#:   reset_mkdir_failed_jobs 按 error_detail 前缀捞行，不认 kind。
+#: - 建转存目录 403：只读令牌无写权限（缺 drive.file 范围），
+#:   同为凭据/授权问题 → auth_error；同上靠 detail 前缀可被
+#:   重绑复活。
+#: - 115 initupload 响应解析失败：协议/客户端确定性错误（响应
+#:   解密/解帧失败），重试只会撞同一堵墙 → unsupported（工人
+#:   协议侧不支持此响应形态，修法在代码不在重试）。
+#: 指纹只认这三类实证过的文本；429/5xx/网络等真瞬态一律不命中，
+#: 保持现行有界重试。判定口径与错误产生点保持一致（ensure_folder
+#: 与 transfer115 的原样文案），不另起第二套错误分类体系。
+_DETERMINISTIC_RETRY_FINGERPRINTS = (
+    ("列转存目录失败：401", "auth_error"),
+    ("建转存目录失败：401", "auth_error"),
+    ("建转存目录失败：403", "auth_error"),
+    ("115 initupload 响应解析失败", "unsupported"),
+)
+
+
+def _deterministic_terminal_kind(exc):
+    """异常文本命中确定性错误指纹时返回终态 kind，否则 None。"""
+    text = str(exc) or ""
+    for needle, kind in _DETERMINISTIC_RETRY_FINGERPRINTS:
+        if needle in text:
+            return kind
+    return None
+
+
 def _schedule_retry(db, job, exc):
     """有界重试：3 次内 pending + 指数退避（60/120/240 秒），满 3 次
-    failed/retriable。返回 outcome 字符串（供统计）。"""
+    failed/retriable。返回 outcome 字符串（供统计）。
+
+    调度前先过确定性错误指纹熔断（见
+    _DETERMINISTIC_RETRY_FINGERPRINTS）：命中即首次失败直接终态，
+    不进退避——这类错误 1 次与 3 次没有区别，只差空烧时长。
+    """
+    terminal_kind = _deterministic_terminal_kind(exc)
+    if terminal_kind is not None:
+        _fail_job(db, job, terminal_kind, str(exc))
+        return "failed"
     if job.attempts >= MAX_ATTEMPTS:
         job.status = "failed"
         job.error_kind = "retriable"
@@ -6965,6 +7030,46 @@ def _log_claim_pick(worker_id, picked, claimed_ids, running_counts, now):
                 worker_id, " ".join(parts))
 
 
+def _fail_user_jobs_without_binding(db, jobs):
+    """认领前 no_binding 复核（2026-10-31 蓝图 v2 第一层治理一单）。
+
+    建单时有绑定、排队期间被解绑的 user 单：执行器头虽有同款
+    校验，但要等认领+attempts 计数后才判，复核实证存量单平均
+    拖 129 分钟、最高重试 4 次。在认领前先扫一遍 due 列表：
+    按 dest_drive_id 定目标 provider，查不到 active 绑定即当场
+    failed/no_binding 秒判，不进认领、不计 attempts。dest 前缀
+    认不出（存量怪行）或 owner_ref 非数字时不拦，留给执行器
+    既有校验兜底。返回仍可认领的任务列表。
+    """
+    kept = []
+    for job in jobs:
+        if (getattr(job, "owner_scope", "") or "") != "user":
+            kept.append(job)
+            continue
+        dest = (getattr(job, "dest_drive_id", "") or "").strip()
+        provider = None
+        if dest.startswith("userdrive:"):
+            provider = "drive"
+        elif dest.startswith("pan115:"):
+            provider = "pan115"
+        if provider is None:
+            kept.append(job)
+            continue
+        try:
+            user_id = int((getattr(job, "owner_ref", "") or "").strip())
+        except (TypeError, ValueError):
+            kept.append(job)
+            continue
+        if _active_binding(db, user_id, provider) is None:
+            _fail_job(
+                db, job, "no_binding",
+                f"用户{_provider_label(provider)}绑定已失效或不存在"
+                "（认领前复核，不重试；重绑后下次播放节流窗外可重建）")
+            continue
+        kept.append(job)
+    return kept
+
+
 def claim_due_jobs(db, now=None, limit=None, worker_id=None):
     """认领到期任务：租约回收 → 公平挑单 → 原子认领，返回 job id 列表。
 
@@ -6990,6 +7095,11 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
            .order_by(em.TransferJob.id)
            .limit(200)
            .all())
+    if not due:
+        return []
+    # 认领前 no_binding 复核：建单后解绑的 user 单在此秒判终态，
+    # 不占认领名额、不进执行（见 _fail_user_jobs_without_binding）。
+    due = _fail_user_jobs_without_binding(db, due)
     if not due:
         return []
     cap = per_owner_inflight(db)

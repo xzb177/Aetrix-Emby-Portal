@@ -251,9 +251,23 @@ def test_retry_not_due_not_claimed_and_not_blocking(db):
 
 # ---------- 跨 provider 建单（2026-10-30 重开） ----------
 
+def _binding(db, user_id, provider="drive", status="active"):
+    cred = em.MountCredential(scope="user", owner_user_id=user_id,
+                              status="active")
+    db.add(cred)
+    db.commit()
+    row = em.UserStorageBinding(user_id=user_id, provider=provider,
+                                account_label="test",
+                                credential_id=cred.id, status=status)
+    db.add(row)
+    db.commit()
+    return row
+
+
 def test_create_cross_provider_job_creates_when_enabled(db, monkeypatch):
     """总开关默认开：跨 provider 建单正常落行（115 源→用户 Drive 盘）。"""
     monkeypatch.setenv("TRANSFER_VARIANT_ENABLED", "1")
+    _binding(db, 7, provider="drive")
     item = SimpleNamespace(id=42, drive_file_id="fid1",
                            file_path="115:/电影/a.mkv")
     job = tv.create_cross_provider_job(db, item, 7, "pan115")
