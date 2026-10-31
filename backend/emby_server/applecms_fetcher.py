@@ -47,6 +47,8 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Optional
 
+from backend.emby_server import upstream_http
+
 #: provide 协议路径（协议本身，不是资源站地址；站地址只来自 base_url）。
 PROVIDE_PATH = "/api.php/provide/vod/"
 
@@ -77,16 +79,24 @@ class AppleCMSError(Exception):
 
 
 def _default_cms_http_get(url: str, headers: dict, timeout: float):
-    """默认 HTTP GET 层（urllib）：只在调用方不注入时用。
+    """默认 HTTP GET 层（SSRF 守卫版）：只在调用方不注入时用。
+
+    走 ``upstream_http.safe_urlopen``（审计 A-119，与 A-053 三路同款）：
+    发请求前解析复验目标主机（私网/回环一律拦截）、重定向一律不跟随。
+    守卫拦截（``OutboundBlockedError``）属 ``Exception``，走超时/断连
+    同款 ``(None, None)`` 口径。
+
+    行为变化（与 A-053 同款，须在 PR 说明里明示）：原来依赖 CMS
+    302 跳转的源，今后不再跟随跳转，改为失败口径。
 
     返回 ``(status, payload)``：HTTPError 带状态码与体（体解析失败
-    为 None）；超时/断连返回 ``(None, None)``。注意：本函数不打日志，
-    URL 绝不进任何日志或异常。
+    为 None）；超时/断连/守卫拦截返回 ``(None, None)``。注意：本函数
+    不打日志，URL 绝不进任何日志或异常。
     """
     req = urllib.request.Request(url, headers=dict(headers or {}),
                                  method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with upstream_http.safe_urlopen(req, timeout=timeout) as resp:
             try:
                 payload = json.loads(resp.read().decode("utf-8", "replace"))
             except (ValueError, UnicodeDecodeError):
