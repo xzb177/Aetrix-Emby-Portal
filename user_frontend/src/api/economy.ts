@@ -380,7 +380,7 @@ export interface DriveOAuthStartResponse {
 }
 
 // 后台实际启用的挂载类型映射后的 provider 名单（GET /storage-bindings/providers）：
-// 只含 provider 名串（如 drive / pan115），不含挂载路径、凭据、账号等敏感字段。
+// 只含 provider 名串（如 drive / pan115 / quark），不含挂载路径、凭据、账号等敏感字段。
 // 前端“我的网盘”按这份名单渲染对应块，名单里没有的块整个不渲染。
 export interface StorageBindingProvidersResponse {
   providers: string[]
@@ -405,6 +405,11 @@ export const storageBindingApi = {
     api.post<never, StorageBinding>(
       '/api/user/emby/storage-bindings',
       { provider: 'pan115', account_label: accountLabel, credential: cookie },
+    ),
+  createQuark: (accountLabel: string, cookie: string) =>
+    api.post<never, StorageBinding>(
+      '/api/user/emby/storage-bindings',
+      { provider: 'quark', account_label: accountLabel, credential: cookie },
     ),
   verify: (bindingId: number) =>
     api.post<never, StorageBinding>(

@@ -1182,6 +1182,7 @@ def _auto_migrate():
     _migrate_redpacket_claim_unique(existing_tables)
     _migrate_redpacket_idempotency_unique(existing_tables)
     _migrate_upstream_source_checks(existing_tables)
+    _migrate_user_storage_binding_provider_check(existing_tables)
     _migrate_scan_run_single_running(existing_tables)
     _migrate_panel_unseal_fk(existing_tables)
     _migrate_exchange_discount_credit_fk(existing_tables)
@@ -1239,6 +1240,50 @@ def _migrate_upstream_source_checks(existing_tables: set) -> None:
                   f"补 '{new_value}'")
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"  ⚠️ upstream_sources CHECK 约束迁移跳过: {exc}")
+
+
+def _migrate_user_storage_binding_provider_check(existing_tables: set) -> None:
+    """user_storage_bindings 的 provider CHECK 约束补 'quark'（幂等）。
+
+    仅 PostgreSQL 生效：其它方言直接跳过（create_all 已覆盖新库，
+    SQLite 的 CHECK 在建表时由模型定义带出）。
+    枚举在 models 单点定义（USER_STORAGE_PROVIDERS），老库的
+    ck_user_storage_binding_provider 只含 ('drive','pan115') 时，
+    插 quark 行会被约束拒；启动迁移按原名重建为枚举全集。约束
+    已含 'quark' 时跳过。best-effort：任何失败只记 warning、不崩
+    启动（照 _migrate_upstream_source_checks 同口径）。
+    """
+    from sqlalchemy import inspect, text
+
+    if engine.dialect.name != "postgresql":
+        return
+    if "user_storage_bindings" not in existing_tables:
+        return
+    try:
+        from backend.emby_server import models as emby_models
+
+        inspector = inspect(engine)
+        checks = {c["name"]: (c.get("sqltext") or "")
+                  for c in inspector.get_check_constraints(
+                      "user_storage_bindings")}
+        if "'quark'" in checks.get("ck_user_storage_binding_provider", ""):
+            return
+        in_list = ", ".join(
+            f"'{v}'" for v in emby_models.USER_STORAGE_PROVIDERS)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE user_storage_bindings DROP CONSTRAINT "
+                "IF EXISTS ck_user_storage_binding_provider"
+            ))
+            conn.execute(text(
+                "ALTER TABLE user_storage_bindings ADD CONSTRAINT "
+                "ck_user_storage_binding_provider "
+                f"CHECK (provider IN ({in_list}))"
+            ))
+        logger.info("  🔧 已迁移: user_storage_bindings CHECK "
+                    "ck_user_storage_binding_provider 补 'quark'")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"  ⚠️ user_storage_bindings CHECK 约束迁移跳过: {exc}")
 
 
 def _backfill_filename_meta() -> None:

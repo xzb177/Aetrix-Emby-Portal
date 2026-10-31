@@ -28,6 +28,16 @@
 失效）；查不清（网络/上游 5xx/响应形状对不上）不拦、照常走。
 开关 pan115_bind_vip_check_enabled（SystemConfig，默认开）。
 
+夸克一期（2026-10-31）：provider="quark" 照 pan115 的 Cookie 型
+形态接入——建绑即验活（/config + 列根目录，见 quarkdrive）、失效
+三档同口径、过期文案点名夸克；上游轮换的 __puus 在验活后回写
+密封凭据，只存初始值会慢性失效。入口开关 quark_bind_enabled
+（SystemConfig，默认开）。一期只做绑定：转存/副本点播走夸克盘
+是二期，本模块不实现。 会员校验同日追加（用户亲点，照 115 对齐）：
+验活通过后调 /member 判会员三态，确凿非会员落 invalid +
+quark_vip_required，开关 quark_bind_vip_check_enabled
+（SystemConfig，默认开），查不清（unknown/异常）不拦。
+
 凭据纪律：本模块是唯一经手绑定凭据明文的地方（创建时接收入参、
 验证时解密封后立即用、用完不存变量外泄）；日志与返回值永远不出
 凭据原文、不出密封值（只出 has_credential 布尔值）。
@@ -42,6 +52,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
+from backend.emby_server import quarkdrive
 from backend.emby_server import transfer115
 from backend.emby_server.env_util import env_int
 from backend.emby_server.upstream_sources import (
@@ -65,6 +76,7 @@ ERROR_KIND_TO_STATUS = {
     "expired": "expired",
     "throttled": "invalid",
     "pan115_vip_required": "invalid",
+    "quark_vip_required": "invalid",
 }
 
 #: 取链通道大小限制的用户端文案（不落绑定状态，故不进失效三档）。
@@ -77,18 +89,20 @@ BINDING_ERROR_MESSAGES = {
     "expired": "115 登录已过期，请重新绑定。",
     "throttled": "账号被限制，请稍后再试或更换账号绑定。",
     "pan115_vip_required": "该 115 账号不是 VIP，115 绑定需要 VIP 账号，请开通后重新绑定。",
+    "quark_vip_required": "该夸克账号不是会员，夸克绑定需要会员账号（免费账号下载限速、容量有限，无法正常使用），请开通会员后重新绑定。",
 }
 
 #: 115 直链变体名（见 play_variants.BYOS115_DIRECT）。
 PROVIDER_PAN115 = "pan115"
 PROVIDER_DRIVE = "drive"
+PROVIDER_QUARK = "quark"
 
 
 class BindingError(RuntimeError):
     """绑定操作失败（带可分类的 kind，供调用方定状态码与文案）。
 
     kind 取值：auth_error / expired / throttled（落状态三档）、
-    pan115_vip_required（非 VIP 账号，落 invalid）、
+    pan115_vip_required / quark_vip_required（非会员账号，落 invalid）、
     validation（入参/上限/重名，400）、unsupported（P1 不支持的
     provider，如 drive，400）、not_found（非本人或不存在，404）、
     transient（一过性失败，不落状态，调用方按 502 处理）。
@@ -127,24 +141,83 @@ def pan115_bind_vip_check_enabled(db: Session) -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def error_message(kind: str | None) -> str:
+#: 夸克绑定开关（SystemConfig 键，非 env；仅此一处定义，
+#: 管理端/运维改 system_configs 行即生效）。
+KEY_QUARK_BIND_ENABLED = "quark_bind_enabled"
+
+
+def quark_bind_enabled(db: Session) -> bool:
+    """夸克绑定入口开关（默认开）。
+
+    读法与 pan115_bind_vip_check_enabled 同款（store 热读 +
+    fail-safe）：读失败回默认开并记日志——开关是入口控制不是
+    安全门禁，读不到配置不该悄悄关掉已上线的绑定入口。
+    """
+    try:
+        raw = (store.get_value(
+            db, KEY_QUARK_BIND_ENABLED, "true") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning(
+            "quark_bind_enabled 读取失败，回默认开", exc_info=True)
+        return True
+    return raw not in ("0", "false", "no", "off")
+
+
+#: 夸克绑定会员校验开关（SystemConfig 键，非 env；仅此一处定义，
+#: 管理端/运维改 system_configs 行即生效）。照 115 的
+#: pan115_bind_vip_check_enabled 同款，仅键名与日志文案不同。
+KEY_QUARK_BIND_VIP_CHECK = "quark_bind_vip_check_enabled"
+
+
+def quark_bind_vip_check_enabled(db: Session) -> bool:
+    """夸克绑定会员校验开关（默认开）。
+
+    读法与 pan115_bind_vip_check_enabled 同款（store 热读 +
+    fail-safe）：读失败回默认开并记日志——校验是防呆不是门禁
+    本体，读不到配置不该悄悄关掉。关的口径一致：0/false/no/off
+    视为关。
+    """
+    try:
+        raw = (store.get_value(
+            db, KEY_QUARK_BIND_VIP_CHECK, "true") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning(
+            "quark_bind_vip_check_enabled 读取失败，回默认开", exc_info=True)
+        return True
+    return raw not in ("0", "false", "no", "off")
+
+
+#: provider 专属文案覆盖（只覆盖与 provider 强相关的句子，如
+#: expired 里点名了 115 的那句；其余档位各 provider 共用
+#: BINDING_ERROR_MESSAGES，不另编新档位）。
+_PROVIDER_ERROR_MESSAGE_OVERRIDES = {
+    "quark": {"expired": "夸克登录已过期，请重新绑定。"},
+}
+
+
+def error_message(kind: str | None, provider: str | None = None) -> str:
     """失效档位 → 用户端文案；未知档位回落通用句（不编新档位）"""
+    if provider:
+        override = _PROVIDER_ERROR_MESSAGE_OVERRIDES.get(provider, {})
+        if kind in override:
+            return override[kind]
     if kind in BINDING_ERROR_MESSAGES:
         return BINDING_ERROR_MESSAGES[kind]
     return "绑定不可用，请重新绑定。"
 
 
 #: 挂载类型 → 用户端绑定 provider（GET /storage-bindings/providers 用）。
-#: 只映射 BYOS 有绑定入口的两类：drive（含 gdrive / google 系别名）与 115 系；
+#: 只映射 BYOS 有绑定入口的三类：drive（含 gdrive / google 系别名）、115 系与 quark；
 #: 其余类型（local / rclone / yun139 等）没有绑定入口，不映射、不返回。
 _MOUNT_TYPE_TO_BINDING_PROVIDER = {
     "drive": "drive", "gdrive": "drive", "google": "drive",
     "googledrive": "drive", "google_drive": "drive",
     "115": "pan115", "pan115": "pan115",
+    "quark": "quark",
 }
 
 
-#: 额外开放的绑定入口（逗号分隔，取值 drive / pan115）。用于"后台没有该类
+#: 额外开放的绑定入口（逗号分隔，取值 drive / pan115 / quark）。用于"后台没有该类
 #: 型挂载、但要让用户先绑上"的场景，例如 Drive 源条目经跨盘转存给 115
 #: 用户播放：源走 SA 读，用户只需 115 绑定，后台无需 115 挂载。
 #: 默认空 = 行为不变（只按启用挂载映射）。非法值忽略。
@@ -154,7 +227,7 @@ EXTRA_PROVIDERS_ENV = "BYOS_EXTRA_BINDING_PROVIDERS"
 def _extra_binding_providers() -> set[str]:
     raw = os.getenv(EXTRA_PROVIDERS_ENV, "") or ""
     vals = {v.strip().lower() for v in raw.split(",") if v.strip()}
-    return {v for v in vals if v in ("drive", "pan115")}
+    return {v for v in vals if v in ("drive", "pan115", "quark")}
 
 
 def list_binding_providers(db: Session) -> list[str]:
@@ -175,8 +248,11 @@ def list_binding_providers(db: Session) -> list[str]:
         if mapped:
             found.add(mapped)
     found |= _extra_binding_providers()
+    if not quark_bind_enabled(db):
+        # 夸克绑定开关关：名单里也不出（与 create_binding 拒绝同口径）
+        found.discard(PROVIDER_QUARK)
     # 固定顺序输出；前端只做 includes 判断，不依赖顺序
-    return [p for p in ("drive", "pan115") if p in found]
+    return [p for p in ("drive", "pan115", "quark") if p in found]
 
 
 def serialize_binding(binding: em.UserStorageBinding) -> dict:
@@ -206,7 +282,7 @@ def serialize_binding(binding: em.UserStorageBinding) -> dict:
         ),
         "last_error_kind": binding.last_error_kind,
         "error_message": (
-            error_message(binding.last_error_kind)
+            error_message(binding.last_error_kind, binding.provider)
             if binding.last_error_kind else None
         ),
         "has_credential": True,
@@ -331,6 +407,38 @@ def _verify_pan115_cookie(cookie: str) -> None:
     client.list_dir("0")
 
 
+def _classify_quark_error(exc: Exception) -> tuple[str, str] | None:
+    """夸克失败 → (error_kind, 文案)，一过性失败返回 None（不落状态）。
+
+    - QuarkAuthError（HTTP 401/403、信封鉴权类错误）→ expired
+      （登录态过期，与 115 的 401/403 定性同口径）；
+    - 含限流信号的 QuarkError → throttled；
+    - 其余 QuarkError / 网络异常 → None（一过性，不落状态）。
+    """
+    if isinstance(exc, quarkdrive.QuarkAuthError):
+        return "expired", error_message("expired", PROVIDER_QUARK)
+    if isinstance(exc, quarkdrive.QuarkError):
+        text = str(exc)
+        if ("429" in text or "频繁" in text or "限流" in text
+                or "too many" in text.lower()):
+            return "throttled", error_message("throttled", PROVIDER_QUARK)
+        return None
+    return None
+
+
+def _verify_quark_cookie(cookie: str) -> str:
+    """夸克验活：check + 列根目录（与 115 两步验活同款口径）。
+
+    返回验活后的 Cookie：上游会轮换 __puus，client.cookie 已同步
+    为最新值，调用方须把与入参不同的返回值重新密封落库，否则
+    绑定慢性失效。异常按 _classify_quark_error 分类后由调用方定状态。
+    """
+    client = quarkdrive.QuarkClient(cookie)
+    client.check()
+    client.list_root()
+    return client.cookie
+
+
 def _pan115_vip_status(cookie: str) -> str:
     """115 账号 VIP 三态（vip / not_vip / unknown）；永不抛。
 
@@ -361,6 +469,36 @@ def _pan115_vip_blocked(db: Session, cookie: str) -> bool:
     return status == "not_vip"
 
 
+def _quark_vip_status(cookie: str) -> str:
+    """夸克账号会员三态（vip / not_vip / unknown）；永不抛。
+
+    任何异常（网络、上游失败、客户端构造失败）都收敛成 unknown：
+    查不清不拦绑定，只记日志，不误杀（与 _pan115_vip_status 同款）。
+    """
+    try:
+        return quarkdrive.QuarkClient(cookie).vip_status()
+    except Exception:  # noqa: BLE001 — 查不清不拦，见上
+        logger.warning("夸克会员校验未得出结论，按查不清放行", exc_info=True)
+        return "unknown"
+
+
+def _quark_vip_blocked(db: Session, cookie: str) -> bool:
+    """绑定/重验的会员门：开关开且确凿非会员才拦（照 115 同款）。
+
+    unknown（查不清）只记一行日志、按现行流程放行；是会员或开关
+    关时同样放行。调用点在 Cookie 验活通过之后——会员资格与凭据
+    死活是两件事，不许混（非会员不许说成 Cookie 失效）。
+    入参应传验活后的 Cookie（__puus 已轮换回写的那份）。
+    """
+    if not quark_bind_vip_check_enabled(db):
+        return False
+    status = _quark_vip_status(cookie)
+    if status == "unknown":
+        logger.info("夸克会员校验查不清（unknown），绑定按现行流程放行")
+        return False
+    return status == "not_vip"
+
+
 def create_binding(db: Session, user_id: int, provider: str,
                    account_label: str, credential: str,
                    ) -> em.UserStorageBinding:
@@ -387,7 +525,9 @@ def create_binding(db: Session, user_id: int, provider: str,
         raise BindingError(
             "unsupported",
             "Drive 绑定请走 OAuth 授权：POST /storage-bindings/drive/oauth/start，"
-            "本口只接受 115 绑定。")
+            "本口只接受 115 / 夸克绑定。")
+    if provider == PROVIDER_QUARK and not quark_bind_enabled(db):
+        raise BindingError("unsupported", "夸克绑定暂未开启。")
     label = (account_label or "").strip()
     if not label or len(label) > 100:
         raise BindingError("validation", "account_label 需为 1–100 字。")
@@ -429,10 +569,16 @@ def create_binding(db: Session, user_id: int, provider: str,
     db.add(binding)
     db.flush()
 
+    verified_cookie = cookie
     try:
-        _verify_pan115_cookie(cookie)
+        if provider == PROVIDER_QUARK:
+            verified_cookie = _verify_quark_cookie(cookie)
+        else:
+            _verify_pan115_cookie(cookie)
     except Exception as exc:  # noqa: BLE001 — 分类后决定落态或回滚
-        classified = _classify_pan115_error(exc)
+        classified = (
+            _classify_quark_error(exc) if provider == PROVIDER_QUARK
+            else _classify_pan115_error(exc))
         if classified is None:
             db.rollback()
             raise BindingError(
@@ -442,11 +588,21 @@ def create_binding(db: Session, user_id: int, provider: str,
         db.commit()
         return binding
 
-    if _pan115_vip_blocked(db, cookie):
+    if provider == PROVIDER_PAN115 and _pan115_vip_blocked(db, cookie):
         _mark_failed(db, binding, "pan115_vip_required")
         db.commit()
         return binding
 
+    if (provider == PROVIDER_QUARK
+            and _quark_vip_blocked(db, verified_cookie)):
+        _mark_failed(db, binding, "quark_vip_required")
+        db.commit()
+        return binding
+
+    if verified_cookie != cookie:
+        # 夸克验活时上游轮换了 __puus：回写新值再密封，只存
+        # 初始值绑定会慢性失效（见 _verify_quark_cookie）。
+        cred.sealed_credential = seal_secret(verified_cookie)
     now = datetime.now()
     binding.status = "active"
     binding.last_verified_at = now
@@ -476,14 +632,16 @@ def verify_binding(db: Session, user_id: int,
     )
     if binding is None:
         raise BindingError("not_found", "绑定不存在或不属于当前用户。")
-    if binding.provider != PROVIDER_PAN115:
-        if binding.provider == PROVIDER_DRIVE:
-            # P2：Drive 重验 = 强制刷新 + 验活（drive_oauth，局部导入
-            # 防循环：drive_oauth 顶层导入本模块）。
-            from backend.emby_server import drive_oauth
+    if binding.provider == PROVIDER_DRIVE:
+        # P2：Drive 重验 = 强制刷新 + 验活（drive_oauth，局部导入
+        # 防循环：drive_oauth 顶层导入本模块）。
+        from backend.emby_server import drive_oauth
 
-            return drive_oauth.refresh_drive_binding(db, user_id, binding_id)
+        return drive_oauth.refresh_drive_binding(db, user_id, binding_id)
+    if binding.provider not in (PROVIDER_PAN115, PROVIDER_QUARK):
         raise BindingError("unsupported", "该 provider 不支持重验。")
+    if binding.provider == PROVIDER_QUARK and not quark_bind_enabled(db):
+        raise BindingError("unsupported", "夸克绑定暂未开启。")
     cred = _credential_of(db, binding)
     try:
         cookie = unseal_secret(cred.sealed_credential or "")
@@ -494,10 +652,17 @@ def verify_binding(db: Session, user_id: int,
         _mark_failed(db, binding, "auth_error")
         db.commit()
         return binding
+    verified_cookie = cookie
     try:
-        _verify_pan115_cookie(cookie)
+        if binding.provider == PROVIDER_QUARK:
+            verified_cookie = _verify_quark_cookie(cookie)
+        else:
+            _verify_pan115_cookie(cookie)
     except Exception as exc:  # noqa: BLE001 — 分类后决定落态或不改
-        classified = _classify_pan115_error(exc)
+        classified = (
+            _classify_quark_error(exc)
+            if binding.provider == PROVIDER_QUARK
+            else _classify_pan115_error(exc))
         if classified is None:
             raise BindingError(
                 "transient", f"重验时上游失败（状态未改，可重试）：{exc}") from exc
@@ -505,10 +670,21 @@ def verify_binding(db: Session, user_id: int,
         _mark_failed(db, binding, kind)
         db.commit()
         return binding
-    if _pan115_vip_blocked(db, cookie):
+    if (binding.provider == PROVIDER_PAN115
+            and _pan115_vip_blocked(db, cookie)):
         _mark_failed(db, binding, "pan115_vip_required")
         db.commit()
         return binding
+
+    if (binding.provider == PROVIDER_QUARK
+            and _quark_vip_blocked(db, verified_cookie)):
+        _mark_failed(db, binding, "quark_vip_required")
+        db.commit()
+        return binding
+    if verified_cookie != cookie:
+        # 夸克验活时上游轮换了 __puus：回写新值再密封（同
+        # create_binding 口径，见 _verify_quark_cookie）。
+        cred.sealed_credential = seal_secret(verified_cookie)
     now = datetime.now()
     binding.status = "active"
     binding.last_verified_at = now
