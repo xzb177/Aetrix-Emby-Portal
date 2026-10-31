@@ -546,12 +546,14 @@ async def serve_mount_relay_async(
       ``Content-Range``/``Accept-Ranges`` 等头原样透回。
     - ``pt``（可选）：播放链路计时器，只加日志不改逻辑。
     - ``sniff_quota_page``（转存变体应急自动触发用）：只 Drive 中继传
-      True；115 挂载中继不受影响。开启时，整段请求（无 Range）且上游
-      回 200 text/html 时预读首块——命中 Quota 标记则关响应关客户端、
-      抛 transfer_variant.QuotaPageError（调用方记信号 + 入队，本次
-      播放回落现行链）；未命中则首块原样补回流中，字节一分不少。
-      小段 Range 请求不嗅探（莫语者实证：小段 Range 仍放行、探测
-      正常、播放死，嗅探整段才有意义）。
+      True；115 挂载中继不受影响。开启时，上游回 200 text/html 即预读
+      首块（无论是否带 Range；A-089：带 Range 撞上 200 额度页时旧口径
+      把 HTML 原样当视频流下发、播放器解码失败且服务端无归因）——命中
+      Quota 标记则关响应关客户端、抛 transfer_variant.QuotaPageError
+      （调用方记信号 + 入队，本次播放回落现行链）；未命中则首块原样
+      补回流中，字节一分不少。带 Range 的 200 非 HTML（上游忽略 Range
+      回全文件）同样经 prelude 原样续流；206 本就不满足 status==200，
+      不受嗅探影响。
     """
     import httpx
 
@@ -615,7 +617,7 @@ async def serve_mount_relay_async(
                 detail=f"源站返回 {status}")
 
         # 转存变体 Quota 嗅探（仅 Drive 中继传 True；115 挂载中继不受影响）。
-        # 整段请求（无 Range）且上游回 200 时预读首块：命中 Quota 标记
+        # 上游回 200 时预读首块（带 Range 同样嗅探，A-089）：命中 Quota 标记
         # → 关响应关客户端、抛 QuotaPageError（video_stream 接住记信号 +
         # 入队，本次播放回落现行链）；未命中 → 首块记为 prelude，
         # iter_mount 先吐首块再续流，字节一分不少、透传头不动。
@@ -623,7 +625,7 @@ async def serve_mount_relay_async(
         # 注意：QuotaPageError 在本块内关完响应才抛——外层 except 只认
         # HTTPException，QuotaPageError 会原样穿到调用方，不会漏关连接。
         _prelude = None
-        if sniff_quota_page and resp.status_code == 200 and not range_header:
+        if sniff_quota_page and resp.status_code == 200:
             from backend.emby_server import transfer_variant as _tv
             try:
                 _aiter = resp.aiter_bytes(READ_CHUNK)
@@ -636,7 +638,7 @@ async def serve_mount_relay_async(
                         _first):
                     await resp.aclose()
                     resp = None
-                    raise _tv.QuotaPageError("上游整段响应为 Quota 额度页")
+                    raise _tv.QuotaPageError("上游响应为 Quota 额度页")
                 _prelude = (_aiter, _first)
             except _tv.QuotaPageError:
                 raise
@@ -746,21 +748,6 @@ def _note_relay_sa_cooldown(url: str, token: str, status: int) -> None:
                        status, exc)
 
 
-def _relay_sa_email_for_log(token: str) -> str:
-    """best-effort 按令牌反查 SA 邮箱（failover 日志的 sa= 字段用）。
-
-    走 drive_auth.sa_email_for_token（其按 SA 分账号缓存）；api/EA
-    启动时 premint 已把全部 SA 令牌预铸进该缓存，生产常态可命中。
-    查不到返回 "-"，不影响 failover 本身。
-    """
-    try:
-        from backend.emby_server import drive_auth
-
-        return drive_auth.sa_email_for_token(token) or "-"
-    except Exception:  # noqa: BLE001 - 日志字段尽力而为
-        return "-"
-
-
 async def serve_drive_relay_async(
     request: Request,
     drive_id: str,
@@ -792,10 +779,12 @@ async def serve_drive_relay_async(
       drive_relay_sa_failover 日志（sa= 字段与 drive_token_mint 同
       形态）。404 与其余状态码不换号、按挂载中继口径抛错（404
       透传、5xx 在下层已转 502）。
-    - 整段请求撞上 Quota 额度页（上游回 200 HTML 额度页）→ 默认与
-      403 同口径：轮换凭据重试（与状态码 failover 共用尝试预算）；
-      预算耗尽才原样抛 QuotaPageError。额度页分支同样先按值失效该 SA
-      凭据再重试（A-009）；轮换抽中已试 SA 时有界重抽（上限 3 次），
+    - 请求撞上 Quota 额度页（上游回 200 HTML 额度页，无论是否带
+      Range，A-089）→ 默认与 403 同口径：轮换凭据重试（与状态码
+      failover 共用尝试预算）；预算耗尽才原样抛 QuotaPageError。
+      额度页分支同样按值失效该 SA 凭据再重试（A-009）；已试 SA 在
+      失效前记录（A-088：失效清缓存，事后反查记不上）；轮换抽中已试
+      SA 时有界重抽（上限 3 次），
       耗尽则接受最后一次抽到的令牌。``rotate_on_quota=False``
       （绑定用户正在啃共享原件）时第一次额度页就抛，不换下一个 SA。
       调用方记信号；绑定用户不改播共享原件。BYOS 用户令牌腿不
@@ -835,6 +824,7 @@ async def serve_drive_relay_async(
         email = _dc_sa_email_for_token(tok)
         if email:
             tried_sa_emails.add(email)
+        return email
     for attempt in range(total):
         last = attempt == total - 1
         try:
@@ -867,23 +857,28 @@ async def serve_drive_relay_async(
             if last or not rotate_on_quota:
                 raise
             # A-009：额度页分支此前只记日志、不失效——同 SA 重抽会命中
-            # 令牌缓存、必然复现同一张额度页；先按值失效再重试（额度页
+            # 令牌缓存、必然复现同一张额度页；按值失效再重试（额度页
             # 本身没有状态码，429 走 invalidate 路径）。
+            # A-088：先记录已试 SA 再冷却——冷却会同时清掉内外两层
+            # 缓存条目，事后反查恒得 None、已试集记不上；日志 sa=
+            # 直接用这次记下的邮箱，不再事后反查。
+            sa_email = _remember_tried(token)
             _note_relay_sa_cooldown(url, token, 429)
-            _remember_tried(token)
             logger.warning(
                 "drive_relay_sa_failover sa=%s failover_attempt=%d/%d "
                 "status=quota_page file_id=%s",
-                _relay_sa_email_for_log(token), attempt + 1, total, file_id)
+                sa_email or "-", attempt + 1, total, file_id)
         except HTTPException as exc:
             if exc.status_code not in _RELAY_SA_FAILOVER_STATUSES or last:
                 raise
+            # A-088：先记录已试 SA 再冷却（同额度页分支；401 经
+            # note_drive_unauthorized 同样走 invalidate，顺序要求相同）。
+            sa_email = _remember_tried(token)
             _note_relay_sa_cooldown(url, token, exc.status_code)
-            _remember_tried(token)
             logger.warning(
                 "drive_relay_sa_failover sa=%s failover_attempt=%d/%d "
                 "status=%d file_id=%s",
-                _relay_sa_email_for_log(token), attempt + 1, total,
+                sa_email or "-", attempt + 1, total,
                 exc.status_code, file_id)
     raise HTTPException(status_code=502, detail="Drive 中继失败")  # pragma: no cover
 
