@@ -600,3 +600,65 @@ def test_rapid_client_http_401_is_auth(monkeypatch):
     client = transfer115.Pan115Client("COOKIE")
     with pytest.raises(transfer115.Pan115AuthError):
         client.rapid_upload("a.mkv", len(_PAYLOAD), _PAYLOAD_SHA1, "900")
+
+
+def test_rapid_client_response_trailing_tail_bytes(monkeypatch):
+    """活体实测形态：initupload 响应密文尾部带非块对齐尾巴
+    （188 = 176 密文 + 12 尾巴），须截到块对齐再解。旧实现整段
+    喂解密器在 finalize 抛错，秒传上线以来每次都死在这里。"""
+    _patch_upload_info(monkeypatch)
+    monkeypatch.setattr(
+        transfer115, "_http_bytes",
+        lambda method, url, params=None, data=None, **kw:
+        _test_encrypt_response(
+            {"status": 2, "pickcode": "pctail", "file_id": "tailfid"})
+        + b"\xa5" * 12)
+    client = transfer115.Pan115Client("COOKIE")
+    out = client.rapid_upload("a.mkv", len(_PAYLOAD), _PAYLOAD_SHA1, "900")
+    assert out["outcome"] == "hit" and out["fid"] == "tailfid"
+
+
+def _test_aes_encrypt_nopad(data: bytes) -> bytes:
+    from cryptography.hazmat.primitives.ciphers import (
+        Cipher, algorithms, modes)
+    assert len(data) % 16 == 0
+    enc = Cipher(algorithms.AES(_TEST_AES_KEY),
+                 modes.CBC(_TEST_AES_IV)).encryptor()
+    return enc.update(data) + enc.finalize()
+
+
+def test_rapid_client_response_aligned_without_padding(monkeypatch):
+    """明文块对齐时服务端不补填充块：末字节不是合法 PKCS7 填充
+    也必须解出（旧实现严口径 unpad 会判「填充非法」）。"""
+    import json as _json
+    obj = {"status": 1, "bucket": "b", "object": "o", "filler": ""}
+    framed = _test_framed_lz4_encode(_json.dumps(obj).encode())
+    obj["filler"] = "x" * ((-len(framed)) % 16)
+    framed = _test_framed_lz4_encode(_json.dumps(obj).encode())
+    assert len(framed) % 16 == 0
+    raw = _test_aes_encrypt_nopad(framed)
+    _patch_upload_info(monkeypatch)
+    monkeypatch.setattr(
+        transfer115, "_http_bytes",
+        lambda method, url, params=None, data=None, **kw: raw)
+    client = transfer115.Pan115Client("COOKIE")
+    out = client.rapid_upload("a.mkv", len(_PAYLOAD), _PAYLOAD_SHA1, "900")
+    assert out["outcome"] == "miss"
+
+
+def test_rapid_client_initupload_uses_app_ua(monkeypatch):
+    """initupload 是 app 端点，服务端按 UA 里的 app 版本号放行：
+    浏览器 UA 回 status=4/403「请升级到最新版本」（活体实证）。
+    请求 UA 必须带 115wangpan_android 版本标记。"""
+    _patch_upload_info(monkeypatch)
+    seen = {}
+
+    def _fake_bytes(method, url, params=None, data=None, **kw):
+        seen["ua"] = kw.get("ua") or ""
+        return _test_encrypt_response({"status": 1})
+
+    monkeypatch.setattr(transfer115, "_http_bytes", _fake_bytes)
+    client = transfer115.Pan115Client("COOKIE")
+    client.rapid_upload("a.mkv", len(_PAYLOAD), _PAYLOAD_SHA1, "900")
+    assert "115wangpan_android/" in seen["ua"]
+    assert transfer115.PAN115_APP_VERSION in seen["ua"]
