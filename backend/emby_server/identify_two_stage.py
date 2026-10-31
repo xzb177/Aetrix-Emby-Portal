@@ -135,11 +135,12 @@ def _item_year(item) -> Optional[int]:
 def extract_binding(item, fetched: dict) -> Optional[dict]:
     """从已采集证据里抽身份绑定（纯函数，不写库）。
 
-    绑定来源与现行写库同口径：tmdb_id 取 fetched（NFO / 别名 / 搜索命中
-    都已在 IO 阶段落进 fetched["tmdb_id"]）或条目已有值；imdb_id 取
-    TMDB 详情、NFO 或条目已有值。身份列只认已有、不覆盖：条目已有
-    tmdb_id 时不以 fetched 的去换（与现行 ``item.tmdb_id or fetched``
-    同口径）。
+    绑定来源与现行写库同口径：tmdb_id 取 fetched（NFO / 别名命中已在
+    IO 阶段落进 fetched["tmdb_id"]；普通搜索命中只落
+    fetched["tmdb_hit"]，本函数以最低优先读它的 id——见下方注记）
+    或条目已有值；imdb_id 取 TMDB 详情、NFO 或条目已有值。身份列只
+    认已有、不覆盖：条目已有 tmdb_id 时不以 fetched 的去换（与现行
+    ``item.tmdb_id or fetched`` 同口径）。
 
     空白不是绑定（根治，2026-10-27）：各来源身份值先按 strip 口径归
     一再取优先序，None / 空串 / 纯空白字符串一律不算身份——裸 ``or``
@@ -156,12 +157,26 @@ def extract_binding(item, fetched: dict) -> Optional[dict]:
     nfo_data = fetched.get("nfo_data") or {}
     details = fetched.get("tmdb_details") or {}
     item_tmdb = _clean_identity(getattr(item, "tmdb_id", None))
+    fetched_tmdb = _clean_identity(fetched.get("tmdb_id"))
     nfo_tmdb = _clean_identity(nfo_data.get("tmdb_id"))
+    # imdb-only 盲区治本（2026-10-31 诊断定案）：普通搜索路径只把命中
+    # 写进 fetched["tmdb_hit"]、从不写 fetched["tmdb_id"]，本函数此前
+    # 不读 hit——只有 imdb_id 的条目每轮命中却永远抽不出 tmdb 绑定，
+    # 补资料段又从不写身份列，条目无限空转。hit 现作最低优先来源追
+    # 加：它在 IO 阶段已过封禁降级从严门与绑定复核门（被拒的 hit 已
+    # 被 pop 出 fetched），且 apply_identity 落库前还有自己的复核门，
+    # 消费它不绕任何门。命中来源的证据记 search、置信度同为 search
+    # （下方既有口径：非条目自带、非 NFO 即 search）。
+    _hit = fetched.get("tmdb_hit")
+    hit_tmdb = (
+        _clean_identity(_hit.get("id")) if isinstance(_hit, dict) else None
+    )
     had_tmdb = item_tmdb is not None
     tmdb_id = _first_identity(
         getattr(item, "tmdb_id", None),
         fetched.get("tmdb_id"),
         nfo_data.get("tmdb_id"),
+        hit_tmdb,
     )
     imdb_id = _first_identity(
         getattr(item, "imdb_id", None),
@@ -184,7 +199,11 @@ def extract_binding(item, fetched: dict) -> Optional[dict]:
     )
     evidence = {
         "tmdb_id_source": (
-            "item" if had_tmdb else ("nfo" if nfo_tmdb is not None else "fetched")
+            "item" if had_tmdb
+            else ("nfo" if nfo_tmdb is not None
+                  else ("fetched" if fetched_tmdb is not None
+                        else ("search" if hit_tmdb is not None
+                              else "fetched")))
         ),
         "has_details": bool(details),
         "has_nfo": bool(nfo_data),
