@@ -3,6 +3,7 @@
 整合用户端、管理后台和主项目数据到单一数据库
 支持 PostgreSQL/MySQL + Redis 缓存
 """
+import logging
 import os
 import threading
 from sqlalchemy import create_engine, event, text, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
@@ -12,6 +13,8 @@ from datetime import datetime
 import redis
 from typing import Optional
 from backend.emby_server.env_util import env_float, env_int
+
+logger = logging.getLogger(__name__)
 
 # ==================== 数据库配置 ====================
 # 支持环境变量切换数据库类型
@@ -277,7 +280,7 @@ class RedisBreaker:
     def record_success(self) -> None:
         with self._lock:
             if self._open_until:
-                print("✅ Redis 已恢复，退出降级")
+                logger.info("✅ Redis 已恢复，退出降级")
             self._consecutive = 0
             self._open_until = 0.0
             self._probing = False
@@ -288,7 +291,7 @@ class RedisBreaker:
             self._probing = False
             if self._consecutive >= self.failures:
                 if not self._open_until or _time.monotonic() >= self._open_until:
-                    print(f"⚠️ Redis 连续 {self._consecutive} 次失败，"
+                    logger.warning(f"⚠️ Redis 连续 {self._consecutive} 次失败，"
                           f"{self.cooldown:.0f}s 内改用内存缓存 / 进程内限流")
                 self._open_until = _time.monotonic() + self.cooldown
 
@@ -337,7 +340,7 @@ def _start_redis_reconnect() -> None:
                 continue
             redis_client = client
             redis_breaker.reset()
-            print("✅ Redis 重连成功，切回 Redis 缓存 / 限流")
+            logger.info("✅ Redis 重连成功，切回 Redis 缓存 / 限流")
         _reconnect_started = False
 
     _threading.Thread(target=_loop, name="redis-reconnect", daemon=True).start()
@@ -348,9 +351,9 @@ if REDIS_ENABLED:
         redis_client = _make_redis_client()
         # 测试连接
         redis_client.ping()
-        print("✅ Redis 连接成功")
+        logger.info("✅ Redis 连接成功")
     except Exception as e:
-        print(f"⚠️ Redis 连接失败: {e}，将使用内存缓存（后台每 {REDIS_BREAKER_SECONDS:.0f}s 重连）")
+        logger.warning(f"⚠️ Redis 连接失败: {e}，将使用内存缓存（后台每 {REDIS_BREAKER_SECONDS:.0f}s 重连）")
         redis_client = None
         _start_redis_reconnect()
 
@@ -1130,7 +1133,7 @@ def _auto_migrate():
                     conn.execute(text(
                         f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"
                     ))
-                    print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
+                    logger.info(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
                     _newly_added_columns.append((table, col_name))
 
     # R16 P2-2：alert_rules.event_type 唯一索引（老库 create_all 不回填已建的表，
@@ -1144,9 +1147,9 @@ def _auto_migrate():
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_rules_event_type "
                     "ON alert_rules (event_type)"
                 ))
-            print("  🔧 已迁移: alert_rules 唯一索引 (event_type)")
+            logger.info("  🔧 已迁移: alert_rules 唯一索引 (event_type)")
         except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️ alert_rules event_type 唯一索引创建跳过: {exc}")
+            logger.warning(f"  ⚠️ alert_rules event_type 唯一索引创建跳过: {exc}")
 
     # R49：lottery_rounds 同群进行中（status='open'）唯一索引。
     # create_lottery_round 的"同群已有进行中则拒绝"此前只在端点层读-查-写，
@@ -1161,9 +1164,9 @@ def _auto_migrate():
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_lottery_rounds_open_chat "
                     "ON lottery_rounds (chat_id) WHERE status = 'open'"
                 ))
-            print("  🔧 已迁移: lottery_rounds 同群进行中唯一索引 (chat_id WHERE open)")
+            logger.info("  🔧 已迁移: lottery_rounds 同群进行中唯一索引 (chat_id WHERE open)")
         except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️ lottery_rounds 同群进行中唯一索引创建跳过: {exc}")
+            logger.warning(f"  ⚠️ lottery_rounds 同群进行中唯一索引创建跳过: {exc}")
 
     _widen_code_column(existing_tables, inspector)
     _widen_bitrate_column(existing_tables, inspector)
@@ -1232,10 +1235,10 @@ def _migrate_upstream_source_checks(existing_tables: set) -> None:
                     f"ALTER TABLE upstream_sources ADD CONSTRAINT "
                     f"{constraint_name} CHECK ({column} IN ({in_list}))"
                 ))
-            print(f"  🔧 已迁移: upstream_sources CHECK {constraint_name} "
+            logger.info(f"  🔧 已迁移: upstream_sources CHECK {constraint_name} "
                   f"补 '{new_value}'")
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️ upstream_sources CHECK 约束迁移跳过: {exc}")
+        logger.warning(f"  ⚠️ upstream_sources CHECK 约束迁移跳过: {exc}")
 
 
 def _backfill_filename_meta() -> None:
@@ -1291,7 +1294,7 @@ def _backfill_filename_meta() -> None:
             session.commit()
             total += len(mappings)
         if total:
-            print(f"  🔧 已回填: emby_items 文件名元数据 {total} 条")
+            logger.info(f"  🔧 已回填: emby_items 文件名元数据 {total} 条")
     finally:
         session.close()
 
@@ -1320,7 +1323,7 @@ def _hash_plain_emby_tokens(existing_tables: set) -> None:
                 {"h": hashed, "i": rid},
             )
         if rows:
-            print(f"  🔧 已迁移: emby_api_tokens.token 哈希化 {len(rows)} 条")
+            logger.info(f"  🔧 已迁移: emby_api_tokens.token 哈希化 {len(rows)} 条")
 
 
 # 给老库补索引（幂等）。create_all 只在建新表时建索引；升级上来的库表已存在，
@@ -1453,7 +1456,7 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
     for tbl in tables:
         if tbl.name not in existing_tables:
             tbl.create(bind=engine, checkfirst=True)
-            print(f"  🔧 已迁移: 新建表 {tbl.name}（群抽奖）")
+            logger.info(f"  🔧 已迁移: 新建表 {tbl.name}（群抽奖）")
 
     # 三重门·公信门：lottery_rounds 补 drand 列（老库）
     from sqlalchemy import inspect, text
@@ -1466,7 +1469,7 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
         if col_name not in cols:
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE lottery_rounds ADD COLUMN {col_name} {col_def}"))
-            print(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（三重门·公信门）")
+            logger.info(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（三重门·公信门）")
 
     # 抽奖类型：lottery_rounds 补 lottery_type / password_keyword 列（老库）
     cols = {c["name"] for c in inspector.get_columns("lottery_rounds")}
@@ -1477,7 +1480,7 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
         if col_name not in cols:
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE lottery_rounds ADD COLUMN {col_name} {col_def}"))
-            print(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（抽奖类型）")
+            logger.info(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（抽奖类型）")
     # 老库可能未回填默认值，将 NULL 的 lottery_type 统一置为 'button'
     with engine.begin() as conn:
         conn.execute(text("UPDATE lottery_rounds SET lottery_type = 'button' WHERE lottery_type IS NULL"))
@@ -1487,7 +1490,7 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
     if "drawing_at" not in cols:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE lottery_rounds ADD COLUMN drawing_at TIMESTAMP"))
-        print("  🔧 已迁移: lottery_rounds 加列 drawing_at（僵尸 drawing 回收）")
+        logger.info("  🔧 已迁移: lottery_rounds 加列 drawing_at（僵尸 drawing 回收）")
 
     # 公告落库（2026-10-31 根治）：lottery_rounds 补公告/提醒列（老库）
     cols = {c["name"] for c in inspector.get_columns("lottery_rounds")}
@@ -1554,7 +1557,7 @@ def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
                 conn.execute(text(f"CREATE INDEX {name} ON {table} USING {using} ({columns})"))
             else:
                 conn.execute(text(f"CREATE INDEX {name} ON {table} USING {using} ({columns}) WHERE {where}"))
-        print(message)
+        logger.info(message)
 
 
 def _ensure_legacy_indexes(existing_tables: set) -> None:
@@ -1569,7 +1572,7 @@ def _ensure_legacy_indexes(existing_tables: set) -> None:
             with engine.begin() as conn:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️ pg_trgm 扩展安装跳过: {exc}")
+            logger.warning(f"  ⚠️ pg_trgm 扩展安装跳过: {exc}")
         # pg_stat_statements：慢查询归因（2026-10-23 压测后补）。扩展本体在
         # 这里幂等装；统计视图要等 postgres 以 shared_preload_libraries 加载
         # 它才可查——仓库 docker-compose.yml 的 postgres 启动参数已带，
@@ -1578,7 +1581,7 @@ def _ensure_legacy_indexes(existing_tables: set) -> None:
             with engine.begin() as conn:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
         except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️ pg_stat_statements 扩展安装跳过: {exc}")
+            logger.warning(f"  ⚠️ pg_stat_statements 扩展安装跳过: {exc}")
     for spec in _LEGACY_INDEXES:
         _ensure_index(existing_tables, *spec)
 
@@ -1622,7 +1625,7 @@ def _migrate_redpacket_claim_unique(existing_tables: set) -> None:
             "ALTER TABLE red_packet_claims ADD CONSTRAINT uq_rpc_packet_user "
             "UNIQUE (packet_id, user_id)"
         ))
-    print("  🔧 已迁移: red_packet_claims 唯一约束 (packet_id, user_id)")
+    logger.info("  🔧 已迁移: red_packet_claims 唯一约束 (packet_id, user_id)")
 
 
 def _migrate_redpacket_idempotency_unique(existing_tables: set) -> None:
@@ -1650,7 +1653,7 @@ def _migrate_redpacket_idempotency_unique(existing_tables: set) -> None:
             "ALTER TABLE red_packets ADD CONSTRAINT uq_redpacket_idempotency "
             "UNIQUE (idempotency_key)"
         ))
-    print("  🔧 已迁移: red_packets 唯一约束 (idempotency_key)")
+    logger.info("  🔧 已迁移: red_packets 唯一约束 (idempotency_key)")
 
 
 def _migrate_scan_run_single_running(existing_tables: set) -> None:
@@ -1677,7 +1680,7 @@ def _migrate_scan_run_single_running(existing_tables: set) -> None:
     if "emby_scan_runs" not in existing_tables:
         return
     if engine.dialect.name not in ("sqlite", "postgresql"):
-        print("  ⚠️ 当前方言不支持部分唯一索引，emby_scan_runs 跨进程防重跳过（保留进程内防线）")
+        logger.warning("  ⚠️ 当前方言不支持部分唯一索引，emby_scan_runs 跨进程防重跳过（保留进程内防线）")
         return
     inspector = inspect(engine)
     names = {ix["name"] for ix in inspector.get_indexes("emby_scan_runs")}
@@ -1710,13 +1713,13 @@ def _migrate_scan_run_single_running(existing_tables: set) -> None:
                 seen.add(run.library_id)
         if closed:
             session.commit()
-            print(f"  🔧 已迁移: emby_scan_runs 收尾 {closed} 条同库重复的运行中流水（只留最新一条）")
+            logger.info(f"  🔧 已迁移: emby_scan_runs 收尾 {closed} 条同库重复的运行中流水（只留最新一条）")
     except Exception as exc:  # noqa: BLE001 — 收尾失败不许连累启动（协调员补强）
         # 与下方建索引失败同口径：只告警、跳过——跨进程防重退回进程内
         # 防线，行为不比升级前差；异常时 session 里可能有未提交的收尾
         # 改动，close 前先 rollback，别把半截状态留给连接池里的下个用户。
         session.rollback()
-        print(f"  ⚠️ emby_scan_runs 僵尸流水收尾跳过: {exc}")
+        logger.warning(f"  ⚠️ emby_scan_runs 僵尸流水收尾跳过: {exc}")
     finally:
         session.close()
 
@@ -1727,9 +1730,9 @@ def _migrate_scan_run_single_running(existing_tables: set) -> None:
                 "CREATE UNIQUE INDEX uq_scan_runs_one_running "
                 "ON emby_scan_runs (library_id) WHERE status = 'running'"
             ))
-        print("  🔧 已迁移: emby_scan_runs 同库单运行唯一索引 (library_id WHERE status='running')")
+        logger.info("  🔧 已迁移: emby_scan_runs 同库单运行唯一索引 (library_id WHERE status='running')")
     except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️ emby_scan_runs 同库单运行唯一索引创建跳过: {exc}")
+        logger.warning(f"  ⚠️ emby_scan_runs 同库单运行唯一索引创建跳过: {exc}")
 
 
 def _migrate_panel_unseal_fk(existing_tables: set) -> None:
@@ -1761,12 +1764,12 @@ def _migrate_panel_unseal_fk(existing_tables: set) -> None:
             "DELETE FROM panel_unseals WHERE item_id NOT IN (SELECT id FROM emby_items)"
         )).rowcount
         if orphan:
-            print(f"  🧹 panel_unseals 孤儿行已清理: {orphan}")
+            logger.info(f"  🧹 panel_unseals 孤儿行已清理: {orphan}")
         conn.execute(text(
             "ALTER TABLE panel_unseals ADD CONSTRAINT fk_panel_unseal_item "
             "FOREIGN KEY (item_id) REFERENCES emby_items(id) ON DELETE CASCADE"
         ))
-    print("  🔧 已迁移: panel_unseals 外键 item_id → emby_items.id (CASCADE)")
+    logger.info("  🔧 已迁移: panel_unseals 外键 item_id → emby_items.id (CASCADE)")
 
 
 def _migrate_exchange_discount_credit_fk(existing_tables: set) -> None:
@@ -1802,7 +1805,7 @@ def _migrate_exchange_discount_credit_fk(existing_tables: set) -> None:
             conn.execute(text(
                 f'ALTER TABLE exchange_discount_credits DROP CONSTRAINT "{safe}"'
             ))
-            print(f"  🔧 已迁移: exchange_discount_credits 去外键 {safe}")
+            logger.info(f"  🔧 已迁移: exchange_discount_credits 去外键 {safe}")
         is_nullable = conn.execute(text(
             "SELECT is_nullable FROM information_schema.columns "
             "WHERE table_name='exchange_discount_credits' "
@@ -1813,7 +1816,7 @@ def _migrate_exchange_discount_credit_fk(existing_tables: set) -> None:
                 "ALTER TABLE exchange_discount_credits "
                 "ALTER COLUMN exchange_code_id DROP NOT NULL"
             ))
-            print("  🔧 已迁移: exchange_discount_credits.exchange_code_id 放宽为可空")
+            logger.info("  🔧 已迁移: exchange_discount_credits.exchange_code_id 放宽为可空")
 
 
 def _relax_mount_credential_mount_id(existing_tables: set) -> None:
@@ -1844,7 +1847,7 @@ def _relax_mount_credential_mount_id(existing_tables: set) -> None:
                 "ALTER TABLE mount_credentials "
                 "ALTER COLUMN mount_id DROP NOT NULL"
             ))
-            print("  🔧 已迁移: mount_credentials.mount_id 放宽为可空（BYOS 绑定行）")
+            logger.info("  🔧 已迁移: mount_credentials.mount_id 放宽为可空（BYOS 绑定行）")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:
@@ -1865,7 +1868,7 @@ def _resurrect_soft_deleted(existing_tables: set) -> None:
             text("UPDATE emby_items SET deleted_at = NULL WHERE deleted_at IS NOT NULL")
         ).rowcount
     if restored:
-        print(f"  🔧 软删除已关闭：{restored} 条隐藏条目已恢复可见")
+        logger.info(f"  🔧 软删除已关闭：{restored} 条隐藏条目已恢复可见")
 
 
 def _all_metadata():
@@ -1909,7 +1912,7 @@ def _backfill_orm_columns(existing_tables: set) -> None:
             with engine.begin() as conn:
                 for col in missing:
                     conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {_column_ddl(col)}"))
-                    print(f"  🔧 已迁移: {table.name}.{col.name}（按模型补齐）")
+                    logger.info(f"  🔧 已迁移: {table.name}.{col.name}（按模型补齐）")
 
 
 def _column_ddl(col) -> str:
@@ -1974,7 +1977,7 @@ def _ensure_default_realm() -> None:
                 "active": True, "now": datetime.now(),
             })
             row = conn.execute(text("SELECT id FROM server_realms ORDER BY id LIMIT 1")).first()
-            print(f"  🏠 已创建默认服 server_realms.id={row[0]}（原有数据将归入该服）")
+            logger.info(f"  🏠 已创建默认服 server_realms.id={row[0]}（原有数据将归入该服）")
         default_id = row[0]
         for table, column in realm_tables.items():
             if table not in tables:
@@ -1986,7 +1989,7 @@ def _ensure_default_realm() -> None:
                 f"UPDATE {table} SET {column} = :rid WHERE {column} IS NULL"
             ), {"rid": default_id})
             if result.rowcount:
-                print(f"  🔧 已回填: {table}.{column} → 服 #{default_id}（{result.rowcount} 行）")
+                logger.info(f"  🔧 已回填: {table}.{column} → 服 #{default_id}（{result.rowcount} 行）")
         active = conn.execute(text(
             "SELECT value FROM system_configs WHERE key = 'active_realm_id'"
         )).first()
@@ -1995,7 +1998,7 @@ def _ensure_default_realm() -> None:
                 "INSERT INTO system_configs (key, value, description, updated_at) "
                 "VALUES ('active_realm_id', :value, :desc, :now)"
             ), {"value": str(default_id), "desc": "面板当前操作的服（多服运营）", "now": datetime.now()})
-            print(f"  🔧 已设置当前服: active_realm_id={default_id}")
+            logger.info(f"  🔧 已设置当前服: active_realm_id={default_id}")
 
 
 def _widen_bitrate_column(existing_tables: set, inspector) -> None:
@@ -2028,7 +2031,7 @@ def _widen_bitrate_column(existing_tables: set, inspector) -> None:
                 conn.execute(text("ALTER TABLE emby_items ALTER COLUMN bitrate TYPE BIGINT"))
             else:
                 conn.execute(text("ALTER TABLE emby_items MODIFY COLUMN bitrate BIGINT"))
-        print("  🔧 已迁移: emby_items.bitrate → BIGINT（修 32 位码率溢出）")
+        logger.info("  🔧 已迁移: emby_items.bitrate → BIGINT（修 32 位码率溢出）")
 
 
 def _fix_station_message_from_user_fk(existing_tables: set, inspector) -> None:
@@ -2104,7 +2107,7 @@ def _fix_station_message_from_user_fk(existing_tables: set, inspector) -> None:
             "ALTER TABLE station_messages ADD CONSTRAINT station_messages_from_user_id_fkey "
             "FOREIGN KEY (from_user_id) REFERENCES web_users(id)"
         ))
-    print("  🔧 已迁移: station_messages.from_user_id 外键 → web_users(id)（修管理后台发消息静默失败）")
+    logger.info("  🔧 已迁移: station_messages.from_user_id 外键 → web_users(id)（修管理后台发消息静默失败）")
 
 
 def _widen_code_column(existing_tables: set, inspector) -> None:
@@ -2126,7 +2129,7 @@ def _widen_code_column(existing_tables: set, inspector) -> None:
                     conn.execute(text("ALTER TABLE registration_codes ALTER COLUMN code TYPE VARCHAR(64)"))
                 else:
                     conn.execute(text("ALTER TABLE registration_codes MODIFY COLUMN code VARCHAR(64) NOT NULL"))
-            print("  🔧 已迁移: registration_codes.code 宽度 → 64")
+            logger.info("  🔧 已迁移: registration_codes.code 宽度 → 64")
 
 
 def _widen_stream_title_columns(existing_tables: set, inspector) -> None:
@@ -2161,7 +2164,7 @@ def _widen_stream_title_columns(existing_tables: set, inspector) -> None:
                     f"ALTER TABLE emby_media_streams MODIFY COLUMN {col['name']} "
                     "VARCHAR(500)"
                 ))
-        print(f"  🔧 已迁移: emby_media_streams.{col['name']} 宽度 → 500"
+        logger.info(f"  🔧 已迁移: emby_media_streams.{col['name']} 宽度 → 500"
               "（修 StringDataRightTruncation）")
 
 
@@ -2296,7 +2299,7 @@ def init_db():
                 with engine.begin() as _conn:
                     _conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
             except Exception as _exc:  # noqa: BLE001
-                print(f"  ⚠️ pg_trgm 扩展安装跳过: {_exc}")
+                logger.warning(f"  ⚠️ pg_trgm 扩展安装跳过: {_exc}")
         Base.metadata.create_all(bind=engine)
         _auto_migrate()
         _ensure_admin_roles()
@@ -2309,7 +2312,7 @@ def init_db():
             finally:
                 _s.close()
         except Exception as e:  # noqa: BLE001 — 播种失败不阻止启动，用户端懒播种兜底
-            print(f"⚠️ 会员等级种子写入失败（可忽略）: {e}")
+            logger.warning(f"⚠️ 会员等级种子写入失败（可忽略）: {e}")
         # v4 探险家日志面板：幂等播种 12 个成就定义（已存在的跳过）
         try:
             from backend import panel_achievements as _pa
@@ -2317,12 +2320,12 @@ def init_db():
             try:
                 _added = _pa.seed_achievement_defs(_s)
                 if _added:
-                    print(f"✅ 面板成就定义已播种 {_added} 条")
+                    logger.info(f"✅ 面板成就定义已播种 {_added} 条")
             finally:
                 _s.close()
         except Exception as e:  # noqa: BLE001 — 播种失败不阻止启动
-            print(f"⚠️ 面板成就种子写入失败（可忽略）: {e}")
-    print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
+            logger.warning(f"⚠️ 面板成就种子写入失败（可忽略）: {e}")
+    logger.info(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
 
 # ==================== 导出 ====================

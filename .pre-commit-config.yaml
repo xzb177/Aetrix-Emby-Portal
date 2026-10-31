@@ -10,3 +10,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: no-print-in-backend
+        name: no-print-in-backend
+        entry: python scripts/check_no_print_in_backend.py
+        language: system
+        pass_filenames: false
+        always_run: true
