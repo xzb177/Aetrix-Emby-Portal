@@ -61,7 +61,12 @@ IN 查询规模恒以窗为界，不随库大小增长。旧单库 20000 上限�
 ``record_mapping`` 的幂等 upsert 续跑（已写窗不建新行），本模块
 不新增持久检查点表——断点续跑 = 重跑本接口，失败库重试、成功
 窗 upsert 不重复。全局性失败（源未启用、凭据失效、额度耗尽）
-发生在首库之前时仍响亮报错，不写任何东西。
+发生在首库之前时仍响亮报错，不写任何东西。2026-10-31 优化
+O-01 起，任务层（upstream_aggregate_jobs + upstream_aggregate_
+tasks 表）在此之上加了逐库提交与可恢复续跑：执行器传
+commit_each_library=True 时逐库一事务、撞冲突只回滚单库；
+续跑按任务行里已完成的库跳过（skip_library_ids），本模块
+自身仍不建检查点表。
 """
 
 from __future__ import annotations
@@ -74,6 +79,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Dict, List, Optional, Tuple
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
@@ -665,8 +671,10 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
 
 
 # ---------------------------------------------------------------------------
-# 手动触发总入口（只 flush 不 commit，调用方事务内提交）
+# 手动触发总入口（默认只 flush 不 commit；O-01 起执行器可传
+# commit_each_library=True 改走逐库一事务）
 # ---------------------------------------------------------------------------
+
 
 def ensure_aggregatable(source) -> None:
     """不发上游请求的前置校验：未启用、苹果 CMS 直接拒。
@@ -684,10 +692,30 @@ def ensure_aggregatable(source) -> None:
             "苹果 CMS 源走自己的同步，不走 Emby 目录聚合")
 
 
+def _fire_event(on_event, event: dict) -> None:
+    """把进度事件交给调用方（任务行更新等）；回调异常不许打断聚合。
+
+    回调是观测面：它失败最多丢一条进度，绝不能让一轮聚合陪葬；
+    异常记日志后继续。回调契约见 run_manual_aggregation docstring。
+    """
+    if on_event is None:
+        return
+    try:
+        on_event(event)
+    except Exception:
+        logger.exception("上游聚合进度回调失败 type=%s",
+                         event.get("type"))
+
+
 def run_manual_aggregation(db: Session, source, *,
                            http_get: Optional[Callable] = None,
                            http_post: Optional[Callable] = None,
-                           page_size: Optional[int] = None) -> dict:
+                           page_size: Optional[int] = None,
+                           on_event: Optional[Callable] = None,
+                           commit_each_library: bool = False,
+                           skip_library_ids=None,
+                           prior_summaries: Optional[Dict[str, dict]] = None
+                           ) -> dict:
     """手动聚合一轮：按库分批拉目录 → 逐库聚合 → 逐库配对 → 开关开时写映射。
 
     前置校验（响亮失败，不静默跳过，发生在任何写库之前）：
@@ -703,8 +731,33 @@ def run_manual_aggregation(db: Session, source, *,
     返回的 pairs 含 written 标记：开关关时一律 false、written=0；
     每对另带 library_id / library_name 供追溯；written 计 upsert
     返回的行数（含重复三元组的更新行，与旧口径一致）。
-    断点续跑：重跑本接口即可，成功库的映射 upsert 不建新行，
-    失败库重试；本函数不新增持久检查点表。
+
+    事务口径（2026-10-31 优化 O-01，``commit_each_library``）：
+    - 默认 False = 旧口径：全程只 flush，提交归调用方；单库失败
+      隔离只挡 UpstreamAggregateRunError，IntegrityError 等穿透
+      到调用方（整轮回滚）；
+    - True = 逐库一事务：一库跑完即 commit 该库映射；该库中途
+      撞 IntegrityError（映射三元组冲突）只回滚该库、记
+      failed_libraries（code=mapping_conflict）后继续下一库，
+      前面库的成果不陪葬。该库 summary 的 paired/written 按
+      落库实况归 0（fetched/aggregates 照实），其 pairs 不进
+      返回的 pairs 列表。
+
+    进度回调（``on_event``，O-01/O-02 的可观测面）：
+    - ``libraries_discovered``：库清单拿到后发一次，带 libraries
+      与 total；发在任何写库之前，回调可自行 commit；
+    - ``library_done``：一库跑完、commit 之前发（commit 模式），
+      回调对任务行的更新搭同一事务一起提交——回调**不许**自己
+      commit；非 commit 模式下在一库跑完后发，回调可自行 commit；
+    - ``library_failed``：该库已 rollback（commit 模式）或已记入
+      失败项后发，回调可自行 commit。
+    回调异常被吞并记日志（见 _fire_event），不影响聚合本身。
+
+    断点续跑（O-01）：``skip_library_ids`` 里的库不再拉取，其
+    ``prior_summaries``（上一轮该库的 summary）原样并入本轮
+    libraries 列表与总量，summary 副本带 ``skipped_resume=True``
+    标记；不给 prior 的跳过库按零计数空摘要并入。靠的是任务表
+    （upstream_aggregate_tasks），本函数仍不自建检查点表。
     """
     ensure_aggregatable(source)
     if page_size is None:
@@ -713,23 +766,52 @@ def run_manual_aggregation(db: Session, source, *,
     api_key = _resolve_api_key(source, http_post=http_post)
     libraries = fetch_upstream_libraries(
         source, http_get=http_get, http_post=http_post, api_key=api_key)
+    _fire_event(on_event, {
+        "type": "libraries_discovered",
+        "libraries": libraries, "total": len(libraries)})
     mapping_on = uim.mapping_enabled()
+    skip_ids = {str(x) for x in (skip_library_ids or [])}
+    prior = prior_summaries or {}
     all_pairs: List[dict] = []
     unpaired_total: Dict[str, int] = {}
     library_summaries: List[dict] = []
     failed_libraries: List[dict] = []
     total_fetched = 0
     total_aggregates = 0
+    total_paired = 0
     total_written = 0
     for library in libraries:
         lib_id = library["id"]
         lib_name = library["name"]
+        if str(lib_id) in skip_ids:
+            # 续跑跳过：上一轮已完成的库不再拉取，摘要续报。
+            summary = dict(prior.get(str(lib_id)) or {
+                "library_id": lib_id, "library_name": lib_name,
+                "fetched": 0, "aggregates": 0, "paired": 0, "written": 0,
+                "status": "ok",
+            })
+            summary["library_id"] = lib_id
+            summary["library_name"] = lib_name
+            summary["status"] = "ok"
+            summary["skipped_resume"] = True
+            library_summaries.append(summary)
+            total_fetched += int(summary.get("fetched") or 0)
+            total_aggregates += int(summary.get("aggregates") or 0)
+            total_paired += int(summary.get("paired") or 0)
+            total_written += int(summary.get("written") or 0)
+            _fire_event(on_event,
+                        {"type": "library_done", "summary": summary})
+            if commit_each_library:
+                db.commit()
+            continue
         summary: Dict[str, object] = {
             "library_id": lib_id, "library_name": lib_name,
             "fetched": 0, "aggregates": 0, "paired": 0, "written": 0,
             "status": "ok",
         }
         lib_fetched = lib_aggregates = lib_paired = lib_written = 0
+        lib_pairs: List[dict] = []
+        failure: Optional[Tuple[str, str]] = None
         try:
             record_iter = iter_upstream_records_for_parent(
                 source, lib_id, http_get=http_get, http_post=http_post,
@@ -761,38 +843,95 @@ def run_manual_aggregation(db: Session, source, *,
                 lib_aggregates += len(items)
                 lib_paired += len(pairs)
                 lib_written += written
-                all_pairs.extend(pairs)
+                if commit_each_library:
+                    lib_pairs.extend(pairs)
+                else:
+                    all_pairs.extend(pairs)
                 for reason, count in unpaired.items():
                     unpaired_total[reason] = unpaired_total.get(reason, 0) + count
                 total_fetched += len(window)
                 total_aggregates += len(items)
+                total_paired += len(pairs)
                 total_written += written
-            summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
-                            "paired": lib_paired, "written": lib_written})
         except UpstreamAggregateRunError as exc:
-            # 窗粒度断点：已写窗的进度照实留在 summary 里，重跑续写剩余窗。
-            summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
-                            "paired": lib_paired, "written": lib_written})
-            summary.update({"status": "failed", "error_code": exc.code,
-                            "error": exc.message})
+            failure = (exc.code, exc.message)
+        except IntegrityError:
+            if not commit_each_library:
+                raise
+            failure = ("mapping_conflict", "映射写入冲突，请重试")
+            logger.exception("上游按库聚合映射冲突回滚单库 source_id=%s "
+                             "library=%s", source.id, lib_id)
+        if failure is not None:
+            code, message = failure
+            if commit_each_library:
+                # 逐库事务：回滚本库未提交的窗，前面库的成果不动；
+                # 本库 paired/written 按落库实况归 0、其 pairs 不进
+                # 返回列表，总量同步扣回。
+                db.rollback()
+                total_paired -= lib_paired
+                total_written -= lib_written
+                summary.update({
+                    "fetched": lib_fetched, "aggregates": lib_aggregates,
+                    "paired": 0, "written": 0,
+                    "status": "failed", "error_code": code, "error": message})
+            else:
+                # 窗粒度断点（旧口径）：已写窗的进度照实留在 summary。
+                summary.update({
+                    "fetched": lib_fetched, "aggregates": lib_aggregates,
+                    "paired": lib_paired, "written": lib_written,
+                    "status": "failed", "error_code": code, "error": message})
             failed_libraries.append({
                 "library_id": lib_id, "library_name": lib_name,
-                "code": exc.code, "message": exc.message})
+                "code": code, "message": message})
             logger.warning("上游按库聚合单库失败 source_id=%s library=%s "
-                           "code=%s", source.id, lib_id, exc.code)
+                           "code=%s", source.id, lib_id, code)
+            library_summaries.append(summary)
+            _fire_event(on_event,
+                        {"type": "library_failed", "summary": summary})
+            continue
+        summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
+                        "paired": lib_paired, "written": lib_written})
         library_summaries.append(summary)
+        if commit_each_library:
+            all_pairs.extend(lib_pairs)
+            _fire_event(on_event,
+                        {"type": "library_done", "summary": summary})
+            try:
+                db.commit()
+            except IntegrityError:
+                # 提交期才暴露的冲突（延后约束）：按单库失败处理，
+                # library_done 的进度更新同事务回滚、随失败事件重记。
+                db.rollback()
+                total_paired -= lib_paired
+                total_written -= lib_written
+                summary.update({
+                    "paired": 0, "written": 0, "status": "failed",
+                    "error_code": "mapping_conflict",
+                    "error": "映射写入冲突，请重试"})
+                del all_pairs[len(all_pairs) - len(lib_pairs):]
+                failed_libraries.append({
+                    "library_id": lib_id, "library_name": lib_name,
+                    "code": "mapping_conflict",
+                    "message": "映射写入冲突，请重试"})
+                logger.exception("上游按库聚合提交期映射冲突 source_id=%s "
+                                 "library=%s", source.id, lib_id)
+                _fire_event(on_event,
+                            {"type": "library_failed", "summary": summary})
+        else:
+            _fire_event(on_event,
+                        {"type": "library_done", "summary": summary})
     logger.info("上游按库手动聚合 source_id=%s libraries=%s fetched=%s "
                 "aggregates=%s pairs=%s written=%s failed_libraries=%s "
                 "mapping_enabled=%s",
                 source.id, len(libraries), total_fetched, total_aggregates,
-                len(all_pairs), total_written, len(failed_libraries),
+                total_paired, total_written, len(failed_libraries),
                 mapping_on)
     return {
         "source_id": source.id,
         "fetched": total_fetched,
         "aggregates": total_aggregates,
         "pairs": all_pairs,
-        "paired": len(all_pairs),
+        "paired": total_paired,
         "written": total_written,
         "mapping_enabled": mapping_on,
         "unpaired_reasons": unpaired_total,
