@@ -1108,6 +1108,14 @@ def _auto_migrate():
         ("drive_oauth_states", [
             ("nonce_hash", "VARCHAR(64)", "NULL"),
         ]),
+        # 发言奖励小数累计（2026-10-31）：余数（分）＋当日累计（分）＋
+        # 当日日期（上海）。老库补列后 frac/day_cents=0、chat_day=NULL，
+        # 读侧按「日期不符」从今日已结算流水折算当日计数，无缝衔接。
+        ("web_users", [
+            ("chat_frac_cents", "INTEGER", "0"),
+            ("chat_day_cents", "INTEGER", "0"),
+            ("chat_day", "VARCHAR(10)", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

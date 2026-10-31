@@ -15,7 +15,8 @@ SystemConfig 键（实际生效的签到键在 backend/api/economy._checkin_rule
 管理后台「系统设置 → 每日签到」可配）：
 - checkin_base_min / checkin_base_max（基础能量随机范围）
 - checkin_streak_bonus（连签加成）
-- points_chat_daily_cap=20, points_chat_per_msg=1
+- points_chat_daily_cap=20, points_chat_per_msg=0.1（可为两位小数，整数
+  余额/台账下走「小数累计」：按分累计、满 1 结算、余数跨日保留）
 - points_redeem_7d=100, points_redeem_30d=300
 
 兑换门槛（2026-10-30 用户亲点方案，管理后台「积分与公益配置 → 获取与兑换」可配）：
@@ -31,6 +32,8 @@ from __future__ import annotations
 import logging
 import random
 from datetime import datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -168,11 +171,61 @@ def _get_int(db: Session, key: str, default: int) -> int:
     return economy._get_int_config(db, key, default)
 
 
+# ==================== 发言奖励小数累计（2026-10-31） ====================
+# WebUser.points 与 PointsLog.amount 都是 Integer，全链整数、不迁列类型。
+# 每条奖励可为小数（points_chat_per_msg 默认 0.1）：按「分」（0.01 能量）
+# 为最小单位累计到 WebUser.chat_frac_cents，满 100 分结算 1 能量进余额
+# 并写台账；余数跨日保留不清零。当日封顶按 WebUser.chat_day_cents
+# （当日已累计、含已结算部分）判定，小数累计部分同样占额度、不许绕开。
+_CHAT_PER_MSG_DEFAULT = Decimal("0.1")
+_CENT = 100  # 1 能量 = 100 分
+
+
+def _get_decimal(db: Session, key: str, default: Decimal) -> Decimal:
+    """读小数配置（按原始字符串解析 Decimal，不经 float 中转）。"""
+    raw = economy._get_config(db, key, str(default))
+    try:
+        return Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        return default
+
+
+def _chat_today_str() -> str:
+    """上海自然日日期串（与 chat_day 落库口径一致）。"""
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+
+def _settled_chat_today_cents(db: Session, user_id: int) -> int:
+    """今日已结算进台账的发言能量（分）：PointsLog chat 正额合计 ×100。"""
+    today = economy._today_start_utc_naive()  # r34：上海自然日（UTC 入库帧）
+    settled = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user_id,
+        models.PointsLog.type == "chat",
+        models.PointsLog.amount > 0,
+        models.PointsLog.created_at >= today,
+    ).scalar() or 0
+    return int(settled) * _CENT
+
+
+def _chat_day_cents(db: Session, user: models.WebUser) -> int:
+    """今日已累计发言能量（分，含未结算小数）。
+
+    chat_day 是今日 → 直接读 chat_day_cents；日期不符（跨日未刷新、或
+    升级前存量行 chat_day 为 NULL）→ 以今日已结算流水折算：升级当天
+    旧口径已发的整数能量照常占今日额度，不会因切换重复发放。
+    """
+    if getattr(user, "chat_day", None) == _chat_today_str():
+        return int(user.chat_day_cents or 0)
+    return _settled_chat_today_cents(db, user.id)
+
+
 def award_chat_points(db: Session, user_id: int) -> int:
     """发言奖励（供聊天/评论模块调用）
 
-    每条发言奖励 points_chat_per_msg 能量，每日上限 points_chat_daily_cap 能量。
-    达到上限后返回 0，不再奖励。
+    每条发言奖励 points_chat_per_msg 能量（可为小数，默认 0.1），每日上限
+    points_chat_daily_cap 能量（按当日累计口径、含未结算小数判定）。
+    小数部分按分累计、满 1 能量结算进余额；返回本次实际结算的整数能量
+    （未满 1 时为 0）。达到上限后返回 0，不再奖励。
     """
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     if user is None:
@@ -184,66 +237,78 @@ def award_chat_points(db: Session, user_id: int) -> int:
         # 恒成立（earned_today>=0 > 负 cap），奖励被静默永久关闭且无日志，配错了都不知道。
         logger.warning("points_chat_daily_cap 配置为负数 %s，已回落默认值 20", cap)
         cap = 20
-    per_msg = _get_int(db, "points_chat_per_msg", 1)
+    per_msg = _get_decimal(db, "points_chat_per_msg", _CHAT_PER_MSG_DEFAULT)
     # P2 修复（完美审查 B-P2-5）：负配置会反向扣分——非法值记日志回落默认；
     # 0 视为关闭奖励，直接返回。
     if per_msg < 0:
-        logger.warning("points_chat_per_msg 配置为负数 %s，已回落默认值 1", per_msg)
-        per_msg = 1
+        logger.warning("points_chat_per_msg 配置为负数 %s，已回落默认值 %s",
+                       per_msg, _CHAT_PER_MSG_DEFAULT)
+        per_msg = _CHAT_PER_MSG_DEFAULT
     if per_msg == 0:
         # R18-P3：奖励关闭的早退移到行锁 + SUM 查询之前——读配置不需要锁，
         # 每条聊天消息白拿一次 FOR UPDATE 行锁是纯浪费。
+        return 0
+    per_msg_cents = int(
+        (per_msg * _CENT).to_integral_value(rounding=ROUND_HALF_UP)
+    )
+    if per_msg_cents <= 0:
+        # 管理端校验已钳到 2 位小数；直改库写了 0.001 这类不足 0.01 的值时
+        # 按分取整为 0，记日志按关闭处理，不静默吞掉。
+        logger.warning("points_chat_per_msg=%s 不足 0.01 能量，按关闭处理", per_msg)
         return 0
 
     # P2 修复（审查）：每日上限是"先 SUM 后判"，并发两请求都读到同一旧用量、
     # 都判定未超限 → 超发。先锁用户行再统计（与红包频率检查同口径）。
     economy.lock_user_row(db, user_id)
+    # 锁后刷新：等锁期间他人刚提交的累计值要读到最新，否则余数会被旧值覆盖。
+    db.refresh(user)
 
-    today = economy._today_start_utc_naive()  # r34：上海自然日（UTC 入库帧），此前服务器本地口径在北京时间 08:00 才重置
-    earned_today = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
-        models.PointsLog.user_id == user_id,
-        models.PointsLog.type == "chat",
-        models.PointsLog.amount > 0,
-        models.PointsLog.created_at >= today,
-    ).scalar() or 0
-
-    if earned_today >= cap:
+    day_cents = _chat_day_cents(db, user)
+    cap_cents = cap * _CENT
+    if day_cents >= cap_cents:
         # P2 修复（完美审查 B-P2-4）：上限分支也要先 rollback 再返回——
         # 否则行锁持有到请求结束，阻塞同用户并发写入。
         db.rollback()
         return 0
 
-    # 避免单次奖励超过上限
-    award = min(per_msg, cap - earned_today)
-    economy._add_points(db, user, award, "chat", "发言奖励")
+    # 避免单次奖励超过上限（按分补到上限为止，与旧整数口径同型）
+    grant_cents = min(per_msg_cents, cap_cents - day_cents)
+    total_frac = int(user.chat_frac_cents or 0) + grant_cents
+    settle, frac = divmod(total_frac, _CENT)
+    user.chat_frac_cents = frac
+    user.chat_day = _chat_today_str()
+    user.chat_day_cents = day_cents + grant_cents
+    if settle:
+        economy._add_points(db, user, settle, "chat", "发言奖励")
     db.commit()
-    return award
+    return settle
 
 
 def get_chat_points_status(db: Session, user_id: int) -> dict:
     """发言能量只读状态（供 TG /chatpoints 等自助查询）。
 
-    口径与 award_chat_points 完全一致：今日已得 = PointsLog 中 type="chat"
-    且 amount>0、created_at >= 今日起点（上海自然日，UTC 入库帧）的合计；
+    口径与 award_chat_points 完全一致：今日已得 = 当日累计发言能量（含
+    未结算小数，chat_day_cents 口径；日期不符时以今日已结算流水折算）；
     上限/每条取 points_chat_daily_cap / points_chat_per_msg，负数回落默认
     （与发分侧同口径，避免查询显示与实际发分对不上）。只读，不落库。
+    earned_today / per_msg 可为小数（float）；total_earned 只计已结算
+    进台账的整数能量（小数余数未结算前不计入，与余额口径一致）。
     """
     cap = _get_int(db, "points_chat_daily_cap", 20)
     if cap < 0:
         logger.warning("points_chat_daily_cap 配置为负数 %s，已回落默认值 20", cap)
         cap = 20
-    per_msg = _get_int(db, "points_chat_per_msg", 1)
+    per_msg = _get_decimal(db, "points_chat_per_msg", _CHAT_PER_MSG_DEFAULT)
     if per_msg < 0:
-        logger.warning("points_chat_per_msg 配置为负数 %s，已回落默认值 1", per_msg)
-        per_msg = 1
+        logger.warning("points_chat_per_msg 配置为负数 %s，已回落默认值 %s",
+                       per_msg, _CHAT_PER_MSG_DEFAULT)
+        per_msg = _CHAT_PER_MSG_DEFAULT
 
-    today = economy._today_start_utc_naive()
-    earned_today = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
-        models.PointsLog.user_id == user_id,
-        models.PointsLog.type == "chat",
-        models.PointsLog.amount > 0,
-        models.PointsLog.created_at >= today,
-    ).scalar() or 0
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    if user is not None:
+        earned_cents = _chat_day_cents(db, user)
+    else:
+        earned_cents = _settled_chat_today_cents(db, user_id)
 
     total_earned = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
         models.PointsLog.user_id == user_id,
@@ -252,9 +317,9 @@ def get_chat_points_status(db: Session, user_id: int) -> dict:
     ).scalar() or 0
 
     return {
-        "earned_today": int(earned_today),
+        "earned_today": earned_cents / _CENT,
         "daily_cap": int(cap),
-        "per_msg": int(per_msg),
+        "per_msg": float(per_msg),
         "total_earned": int(total_earned),
     }
 
