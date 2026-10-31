@@ -628,6 +628,10 @@ class TransferConfigRequest(BaseModel):
     # 纯记账 fail-open，默认开；校验在 config_schema 的
     # transfer 家族里。
     transfer_manifest_accounting_enabled: bool = True
+    # 换代线 step 4 执行面接管（2026-11-01）：落盘交付行驱动
+    # 续传恢复＋清单 sha1 采信＋同内容调度合并；须与记账开关
+    # 联动才生效，默认开。
+    transfer_manifest_takeover_enabled: bool = True
 
 
 @admin_router.get("/transfer-config")
@@ -678,6 +682,8 @@ def transfer_update_config(
                 request.transfer_cross_cloudpull_timeout_sec),
             transfer_manifest_accounting_enabled=(
                 request.transfer_manifest_accounting_enabled),
+            transfer_manifest_takeover_enabled=(
+                request.transfer_manifest_takeover_enabled),
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
