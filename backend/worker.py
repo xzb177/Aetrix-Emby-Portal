@@ -776,6 +776,19 @@ def main() -> int:
                 logger.info("上游聚合定时调度未开启，不启动")
         except Exception as e:
             logger.warning(f"启动上游聚合定时调度失败（可忽略）: {e}")
+        # 上游聚合任务工人（2026-10-31 优化 O-03）：聚合任务的唯一
+        # 执行面——api 只入队，本工人在 worker 里认领执行（手动与
+        # 定时调度共用任务表与认领口径）。无开关：worker 在跑它
+        # 就该在跑；队列空时只是低频轮询，不发任何上游请求。
+        try:
+            from backend.emby_server import upstream_aggregate_jobs
+
+            if upstream_aggregate_jobs.start_aggregate_worker(
+                    _shutdown_event):
+                started.append("upstream_aggregate_worker")
+                logger.info("✅ 上游聚合任务工人已启动")
+        except Exception as e:
+            logger.warning(f"启动上游聚合任务工人失败（可忽略）: {e}")
         # 302 Next 数据集同步：默认关（总闸与子开关双关），关时不起线程；
         # 开后按 NEXT302_DATASET_SYNC_INTERVAL_SEC（下限 600 秒）跑榜单同步。
         try:

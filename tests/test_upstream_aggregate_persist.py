@@ -91,9 +91,9 @@ def _local(db, *, item_id, tmdb):
 
 
 def _hold_submit(monkeypatch):
-    started = []
-    monkeypatch.setattr(jobs, "_submit", lambda tid: started.append(tid))
-    return started
+    # 历史替身：O-01/O-02 时代防 enqueue 起执行线程；O-03 起
+    # jobs 已无 _submit（执行归 worker），此处仅作无操作保留。
+    return []
 
 
 def _task_row(db, task_id):

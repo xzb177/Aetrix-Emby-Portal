@@ -1,6 +1,8 @@
 """上游聚合自动调度骨架测试。
 
-只测调度层：假源、假聚合函数，不碰真实 DB、不发真实上游请求。
+只测调度层：假源、假入队函数，不碰真实 DB、不发真实上游请求。
+O-03 起调度只入队不执行（执行归 worker 认领），旧 aggregate_fn
+直跑口径的用例已按入队口径改写（失败隔离/非 dict 守卫同义保留）。
 本地 Python 3.12 + pyshim 口径，全量以 GitHub CI 为准。
 """
 
@@ -71,18 +73,21 @@ def test_run_skips_disabled_and_applecms():
                _FakeSource(3)]
     calls = []
 
-    def _aggregate(db, source):
-        calls.append(source.id)
-        return {"fetched": 7, "written": 3}
+    def _enqueue(source_id):
+        calls.append(source_id)
+        return {"task_id": f"t-{source_id}", "source_id": source_id,
+                "status": "queued", "result": None, "error": None}
 
     results = uas.run_scheduled_aggregation(
-        session_factory=_session_factory, aggregate_fn=_aggregate,
+        enqueue_fn=_enqueue, active_fn=lambda sid: None,
         list_sources_fn=lambda: sources)
     by_id = {r["source_id"]: r for r in results}
     assert by_id[1]["status"] == "skipped"
+    assert by_id[1]["reason"] == "source_disabled"
     assert by_id[2]["status"] == "skipped"
-    assert by_id[3]["status"] == "ok"
-    assert by_id[3]["fetched"] == 7 and by_id[3]["written"] == 3
+    assert by_id[2]["reason"] == "source_type_not_supported"
+    assert by_id[3]["status"] == "queued"
+    assert by_id[3]["task_id"] == "t-3"
     assert calls == [3]
 
 
@@ -90,54 +95,47 @@ def test_single_source_failure_isolated():
     sources = [_FakeSource(1), _FakeSource(2), _FakeSource(3)]
     seen = []
 
-    def _aggregate(db, source):
-        seen.append(source.id)
-        if source.id == 2:
-            raise RuntimeError("上游不可用（假）")
-        return {"fetched": 1, "written": 0}
+    def _enqueue(source_id):
+        seen.append(source_id)
+        if source_id == 2:
+            raise RuntimeError("入队失败（假）")
+        return {"task_id": f"t-{source_id}"}
 
     results = uas.run_scheduled_aggregation(
-        session_factory=_session_factory, aggregate_fn=_aggregate,
+        enqueue_fn=_enqueue, active_fn=lambda sid: None,
         list_sources_fn=lambda: sources)
     by_id = {r["source_id"]: r for r in results}
     assert seen == [1, 2, 3]
-    assert by_id[1]["status"] == "ok"
+    assert by_id[1]["status"] == "queued"
     assert by_id[2]["status"] == "failed"
-    assert by_id[3]["status"] == "ok"
+    assert by_id[3]["status"] == "queued"
 
 
-def test_session_open_failure_isolated_per_source():
-    """完美审查第四轮：开会话失败只记该源 failed，不毁整轮。
-
-    修前开会话在 try 外：第一个源开会话一抛，整轮抛掉、已跑完的
-    源结果一并丢失，与模块“单源失败隔离”宣称不符。
-    """
+def test_active_source_is_skipped_not_requeued():
+    """O-03 同源互斥：已有进行中任务的源本轮跳过，不再排第二条。"""
     sources = [_FakeSource(1), _FakeSource(2)]
-    attempts = []
+    calls = []
 
-    def _flaky_factory():
-        attempts.append(1)
-        if len(attempts) == 1:
-            raise RuntimeError("会话打不开（假）")
-        return _FakeSession()
+    def _enqueue(source_id):
+        calls.append(source_id)
+        return {"task_id": f"t-{source_id}"}
 
     results = uas.run_scheduled_aggregation(
-        session_factory=_flaky_factory,
-        aggregate_fn=lambda db, source: {"fetched": 1, "written": 0},
+        enqueue_fn=_enqueue,
+        active_fn=lambda sid: {"task_id": "x"} if sid == 1 else None,
         list_sources_fn=lambda: sources)
     by_id = {r["source_id"]: r for r in results}
-    assert by_id[1]["status"] == "failed"
-    assert by_id[2]["status"] == "ok"
+    assert by_id[1]["status"] == "skipped"
+    assert by_id[1]["reason"] == "task_active"
+    assert by_id[2]["status"] == "queued"
+    assert calls == [2]
 
 
-def test_nondict_outcome_is_failed_not_ok():
-    """完美审查第四轮：聚合返回非 dict 记 failed，不许谎报 ok。
-
-    修前非 dict 被当 ok（fetched/written 全 None），调度日志谎称成功。
-    """
+def test_nondict_outcome_is_failed_not_queued():
+    """入队返回非任务视图记 failed，不许谎报 queued（照旧守卫口径）。"""
     results = uas.run_scheduled_aggregation(
-        session_factory=_session_factory,
-        aggregate_fn=lambda db, source: None,
+        enqueue_fn=lambda source_id: None,
+        active_fn=lambda sid: None,
         list_sources_fn=lambda: [_FakeSource(1)])
     assert results[0]["status"] == "failed"
     assert results[0]["source_id"] == 1
@@ -145,7 +143,8 @@ def test_nondict_outcome_is_failed_not_ok():
 
 def test_list_sources_failure_returns_empty():
     results = uas.run_scheduled_aggregation(
-        session_factory=_session_factory, aggregate_fn=lambda db, s: {},
+        enqueue_fn=lambda sid: {"task_id": "t"},
+        active_fn=lambda sid: None,
         list_sources_fn=lambda: (_ for _ in ()).throw(RuntimeError("列源失败")))
     assert results == []
 

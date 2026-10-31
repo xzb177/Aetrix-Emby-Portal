@@ -126,7 +126,7 @@ def test_run_logs_progress_per_window(db, monkeypatch, caplog):
 def test_window_event_updates_task_row_and_heartbeat(
         db, db_factory, monkeypatch):
     source = _source(db)
-    monkeypatch.setattr(jobs, "_submit", lambda tid: None)
+    # enqueue 现只登记（O-03），无需再压执行线程。
     view = jobs.enqueue(source.id, 100)
     # 把任务行伪造成「跑了很久、心跳过期」：window 事件一到，
     # 心跳应刷新、进度应落行，清扫不再误标 interrupted。

@@ -25,7 +25,15 @@
 仍在 api 进程内起线程执行，认领语义（queued → running 的条件
 更新）已按跨进程口径写，O-03 只换认领方、不换任务表。
 
-苹果 CMS 不进这里；调度器（O-03 前）仍直接调聚合入口。
+执行面（O-03）：api 只入队/查询，执行统一归 worker——
+``start_aggregate_worker`` 的认领循环扫任务表、逐条
+``claim_and_execute_once``（FIFO），手动与定时调度共用同一张
+任务表与同一认领口径，跨进程同源互斥由任务行的 active 查重
+保证（同源同时只许一条 queued/running，后到者复用或跳过）。
+api 进程内不再起执行线程，部署重启 api 不杀聚合；worker 重启
+则靠心跳过期标 interrupted + 续跑兜底。
+
+苹果 CMS 不进这里（走自己的同步）。
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Callable, Optional
@@ -250,10 +259,11 @@ def _create_row(db, *, source_id: int, page_size: int, trigger: str,
 # ---------------------------------------------------------------------------
 
 def enqueue(source_id: int, page_size: int, *, trigger: str = "manual") -> dict:
-    """登记任务行并启动执行，立刻返回当前视图（新任务恒为 queued）。
+    """登记任务行，立刻返回当前视图（新任务恒为 queued）。
 
-    同一源已有 queued/running 时不另起一轮，返回那条任务的当前
-    视图（可能已是 running）。入队前顺手做两件维护：心跳过期的
+    只登记、不执行：执行归 worker 的认领循环（O-03）。同一源
+    已有 queued/running 时不另起一轮，返回那条任务的当前视图
+    （可能已是 running）。入队前顺手做两件维护：心跳过期的
     running 标 interrupted、超保留期的终态行清掉。
     """
     with _lock:
@@ -278,7 +288,6 @@ def enqueue(source_id: int, page_size: int, *, trigger: str = "manual") -> dict:
             _close(db)
     logger.info("上游聚合任务入队 task_id=%s source_id=%s trigger=%s",
                 task_id, source_id, trigger)
-    _submit(task_id)
     return view
 
 
@@ -327,7 +336,6 @@ def resume_task(source_id: int, task_id: str) -> Optional[dict]:
     logger.info("上游聚合任务续跑 task_id=%s resume_of=%s source_id=%s "
                 "skip_libraries=%s", new_task_id, task_id, source_id,
                 len(done_ids))
-    _submit(new_task_id)
     return view
 
 
@@ -343,11 +351,117 @@ def get_task(source_id: int, task_id: str) -> Optional[dict]:
         _close(db)
 
 
-def _submit(task_id: str) -> None:
-    threading.Thread(
-        target=execute_task, args=(task_id,), daemon=True,
-        name=f"upstream-agg-{task_id[:8]}",
-    ).start()
+def active_task_for(source_id: int) -> Optional[dict]:
+    """某源进行中的任务视图（queued/running），没有返回 None。
+
+    调度器入队前用它判同源互斥（O-03）：已有进行中任务时本轮
+    跳过该源，而不是再排一条。
+    """
+    db = _open_session()
+    try:
+        row = _active_row_for(db, source_id)
+        return _view_from_row(row) if row is not None else None
+    finally:
+        _close(db)
+
+
+#: worker 认领轮询间隔（秒）SystemConfig 键：默认 5，钳 [1, 60]。
+KEY_CLAIM_POLL_SEC = "upstream_aggregate_claim_poll_sec"
+CLAIM_POLL_DEFAULT = 5
+
+_worker_thread: Optional[threading.Thread] = None
+_worker_lock = threading.Lock()
+
+
+def claim_poll_sec(db) -> int:
+    """认领轮询间隔（秒）：SystemConfig > 默认 5，钳 [1, 60]。"""
+    configured = uar._system_config_int(db, KEY_CLAIM_POLL_SEC)
+    if configured is not None:
+        return max(1, min(60, configured))
+    return CLAIM_POLL_DEFAULT
+
+
+def _poll_sec() -> float:
+    db = _open_session()
+    try:
+        return float(claim_poll_sec(db))
+    except Exception:
+        return float(CLAIM_POLL_DEFAULT)
+    finally:
+        _close(db)
+
+
+def claim_and_execute_once() -> Optional[str]:
+    """worker 认领一轮：先清扫过期中断，再认领最老的一条 queued
+    执行（FIFO、一次一条）。认领到并执行完返回其 task_id；
+    队列空返回 None。执行本体走 execute_task 的条件认领，
+    与任何其他执行方并发时只有一个能认领成功。
+    """
+    db = _open_session()
+    try:
+        mark_stale_interrupted(db)
+        db.commit()
+        row = (db.query(em.UpstreamAggregateTask)
+               .filter(em.UpstreamAggregateTask.status == "queued")
+               .order_by(em.UpstreamAggregateTask.id.asc())
+               .first())
+        task_id = row.task_id if row is not None else None
+    finally:
+        _close(db)
+    if task_id is None:
+        return None
+    execute_task(task_id)
+    return task_id
+
+
+def run_worker_loop(stop_event=None, *, claim_once=None,
+                    poll_sec: Optional[float] = None) -> None:
+    """worker 认领循环：有活立刻连着认领，空了按轮询间隔等。
+
+    ``claim_once`` 可注入（测试替身）；异常只记日志不杀循环
+    （单轮失败下一轮继续，照调度循环同口径）。
+    """
+    do_claim = claim_once if claim_once is not None \
+        else claim_and_execute_once
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            return
+        try:
+            claimed = do_claim()
+        except Exception:
+            logger.exception("上游聚合任务认领轮次失败（下一轮继续）")
+            claimed = None
+        if claimed:
+            continue
+        wait = poll_sec if poll_sec is not None else _poll_sec()
+        if stop_event is not None:
+            if stop_event.wait(wait):
+                return
+        else:
+            time.sleep(wait)
+
+
+def start_aggregate_worker(stop_event=None, *, claim_once=None,
+                           poll_sec: Optional[float] = None) -> bool:
+    """启动 worker 认领线程（worker.py 调用）。
+
+    无开关：聚合任务的唯一执行面，worker 在跑它就该在跑；
+    幂等：已有存活线程时直接返回 True，不双跑。
+    """
+    global _worker_thread
+    with _worker_lock:
+        alive = _worker_thread
+        if alive is not None and alive.is_alive():
+            return True
+        thread = threading.Thread(
+            target=run_worker_loop,
+            args=(stop_event,),
+            kwargs={"claim_once": claim_once, "poll_sec": poll_sec},
+            daemon=True, name="upstream-aggregate-worker",
+        )
+        thread.start()
+        _worker_thread = thread
+        return True
 
 
 # ---------------------------------------------------------------------------
