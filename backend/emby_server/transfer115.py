@@ -72,6 +72,15 @@ PAN115_UA = os.getenv(
 PAN115_PROAPI_BASE = os.getenv(
     "PAN115_PROAPI_BASE", "https://proapi.115.com").rstrip("/")
 PAN115_APP_VERSION = "36.2.28"  # p115client 当前 appversion
+#: initupload 是 app 端点，服务端按 UA 里的 app 版本号放行：浏览器
+#: UA 没有版本标记，会回 status=4 / statuscode=403「请升级到最新
+#: 版本」（2026-10-31 活体实证：同一 appversion 字段、换 app UA
+#: 即通）。形态与 p115client 的 upload_init 一致，版本号跟随
+#: PAN115_APP_VERSION，升版本时两处一起走。
+PAN115_APP_UA = (
+    f"Mozilla/5.0 115disk/{PAN115_APP_VERSION} "
+    f"115Browser/{PAN115_APP_VERSION} "
+    f"115wangpan_android/{PAN115_APP_VERSION}")
 
 _P115_MD5_SALT = b"Qclm8MGWUv59TnrR0XPg"
 _P115_CRC_SALT = b"^j>WD3Kr?J2gLFjD4W2y@"
@@ -271,14 +280,40 @@ def _ecdh_aes_encrypt(data: bytes) -> bytes:
     return enc.update(_pkcs7_pad(data)) + enc.finalize()
 
 
+def _unpad_response(data: bytes) -> bytes:
+    """initupload 响应填充剥离（p115cipher ``_unpad`` 口径）。
+
+    服务端加密前只在明文非块对齐时才补填充，块对齐时不补，所以
+    不能按 PKCS7 严口径判「填充非法」：末字节构成 1..15 的等值
+    短填充才剥，否则原样返回（无填充，或末字节本就是数据）。
+    """
+    if data:
+        pad = data[-1]
+        if 0 < pad < 16 and data[-pad:] == bytes([pad]) * pad:
+            return data[:-pad]
+    return data
+
+
 def _ecdh_aes_decrypt(cipher_data: bytes) -> bytes:
-    """AES-128-CBC 解密 + 分段 lz4 帧解压（p115cipher 口径）。"""
+    """AES-128-CBC 解密 + 分段 lz4 帧解压（p115cipher 口径）。
+
+    115 的响应密文尾部带非块对齐的尾巴（2026-10-31 活体实测
+    188 字节 = 176 字节密文 + 12 字节尾巴），解密前须先截到
+    16 字节对齐（p115cipher 通行分支同口径）；整段喂解密器
+    会在 finalize 处抛错——秒传上线以来每次 initupload 都死
+    在这里、被执行器当协议异常回落全量上传。
+    """
+    if not cipher_data:
+        raise Pan115Error("115 秒传响应为空")
+    chunk = cipher_data[:len(cipher_data) & -16]
+    if not chunk:
+        raise Pan115Error("115 秒传响应过短")
     from cryptography.hazmat.primitives.ciphers import (
         Cipher, algorithms, modes)
     dec = Cipher(algorithms.AES(_P115_AES_KEY),
                  modes.CBC(_P115_AES_IV)).decryptor()
-    plain = _pkcs7_unpad(dec.update(cipher_data) + dec.finalize())
-    return _framed_lz4_decompress(plain)
+    plain = dec.update(chunk) + dec.finalize()
+    return _framed_lz4_decompress(_unpad_response(plain))
 
 
 def _lz4_block_decompress(block: bytes) -> bytes:
@@ -347,6 +382,10 @@ def _framed_lz4_decompress(data: bytes) -> bytes:
             break
         src = src[2 + ln:]
     if ok and not src:
+        return bytes(out)
+    if out:
+        # 已解出至少一段：与 p115cipher 同口径宽容返回已解部分，
+        # 尾部残段差异不把好响应判死（JSON 是否成立由调用方判）。
         return bytes(out)
     if data.lstrip()[:1] == b"{":
         return data
@@ -1529,7 +1568,8 @@ class Pan115Client:
         params, body = _make_upload_payload(payload)
         raw = _http_bytes(
             "POST", f"{PAN115_UPLB_BASE}/4.0/initupload.php",
-            params=params, data=body, auth_ck=self.cookie, ua=self.ua,
+            params=params, data=body, auth_ck=self.cookie,
+            ua=PAN115_APP_UA,
             content_type="application/x-www-form-urlencoded")
         try:
             resp = json.loads(_ecdh_aes_decrypt(raw))
