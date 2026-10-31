@@ -64,8 +64,11 @@ RUN install -d /usr/share/postgresql-common/pgdg \
     && apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client-16 \
     && rm -rf /var/lib/apt/lists/*
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+# 依赖锁定（审计 A-078）：精确版本与哈希见 backend/requirements.lock
+#（pip-compile 生成）；这里一律装锁文件，禁止装回裸 requirements.txt，
+# 否则 CI 测的版本集合与镜像里的会再次脱节。
+COPY backend/requirements.lock /app/backend/requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r /app/backend/requirements.lock
 # 版本号单一来源：显式先放一份，避免将来白名单调整时漏掉它
 COPY VERSION /app/VERSION
 # 配置自愈的注册表：config_self_heal.py 运行时读 /app/env.example（见文件头白名单说明）
@@ -113,7 +116,7 @@ CMD ["python", "serve.py"]
 # 定位项目根。放进 /app/scripts/ 后 ROOT 正好是 /app，而白名单已经把 backend/
 # 放在了 /app/backend/ —— 两边对得上，不需要为容器改任何一行脚本代码。
 # 依赖同样对得上：scripts/*.py 用到的第三方库（fastapi / httpx / sqlalchemy /
-# starlette / uvicorn）全在 backend/requirements.txt 里，pip 那一步两个变体共用。
+# starlette / uvicorn）全在 backend/requirements.lock 里，pip 那一步两个变体共用。
 #
 # 注意有 scripts 依赖宿主环境、容器里跑不了的（backup.sh 一类按 venv/bin/python
 # 找解释器、enrich_backlog_report.py 读仓库相对路径）。带进来是为了「能跑的那些

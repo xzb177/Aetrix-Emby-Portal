@@ -1,0 +1,8 @@
+# CI 附加依赖（审计 A-078）：只在 CI 里装，不进生产镜像。
+# zhconv：繁简互搜冒烟用（生产里缺失时自动降级，故不在生产锁里）；
+# pytest：单元/回归测试运行器。
+# 编译时以 backend/requirements.lock 作约束（--constraint），保证与
+# 生产锁共有的包版本一致；产物 backend/requirements-ci.lock 同样带哈希，
+# CI 安装时与生产锁一起用 --require-hashes 装。
+zhconv
+pytest

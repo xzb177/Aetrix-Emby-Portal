@@ -168,6 +168,14 @@ jobs:
           done
           exit $fail
 
+      - name: 后端镜像依赖冻结点比对（审计 A-078）
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          TAG_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          docker run --rm --entrypoint pip "ghcr.io/xzb177/aetrix-api:sha-$TAG_SHA" freeze > /tmp/aetrix-api-freeze.txt
+          python3 scripts/check_image_freeze.py backend/requirements.lock /tmp/aetrix-api-freeze.txt --python-version 3.12
+
       - name: 推送后端镜像
         if: steps.gate.outputs.should_publish == 'true'
         env:
