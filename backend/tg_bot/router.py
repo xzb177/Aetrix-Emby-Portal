@@ -106,7 +106,7 @@ def _award_group_chat_points(db, tg_user: dict) -> None:
     """群发言奖励：已绑定账号的发送者按发言计分。
 
     直接进程内调用 points.award_chat_points（与发表影评同款），
-    走 points_chat_* 默认口径（1 分/条、每天 20 分封顶）。
+    走 points_chat_* 默认口径（0.1 能量/条小数累计、每天 20 能量封顶）。
     未绑定发送者静默跳过；发分失败只记日志，绝不中断消息处理。
     """
     tg_user_id = (tg_user or {}).get("id")

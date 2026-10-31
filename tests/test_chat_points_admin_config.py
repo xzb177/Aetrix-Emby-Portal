@@ -41,12 +41,14 @@ def _make_user(db, **kw):
     return u
 
 
-def test_per_msg_registered_with_default_1():
-    assert welfare_admin.WELFARE_CONFIG_KEYS["points_chat_per_msg"] == "1"
+def test_per_msg_registered_with_default_0_1():
+    # 2026-10-31 用户亲令：每条 1 能量太多，默认改 0.1 且支持两位小数
+    assert welfare_admin.WELFARE_CONFIG_KEYS["points_chat_per_msg"] == "0.1"
     assert config_schema.WELFARE_CONFIG_SCHEMA["points_chat_per_msg"] == (
-        "int",
+        "float",
         0,
-        config_schema._BIG,
+        100,
+        2,
     )
 
 
@@ -64,6 +66,8 @@ def test_per_msg_normalize_valid_values():
     assert config_schema.normalize("points_chat_per_msg", spec, 2) == "2"
     assert config_schema.normalize("points_chat_per_msg", spec, "3") == "3"
     assert config_schema.normalize("points_chat_per_msg", spec, 0) == "0"
+    assert config_schema.normalize("points_chat_per_msg", spec, 0.1) == "0.1"
+    assert config_schema.normalize("points_chat_per_msg", spec, "0.2") == "0.2"
     # 空串/None = 未设置（删行，回退默认值），与 PUT 端点口径一致
     assert config_schema.normalize("points_chat_per_msg", spec, "") is None
     assert config_schema.normalize("points_chat_per_msg", spec, None) is None
@@ -71,7 +75,9 @@ def test_per_msg_normalize_valid_values():
 
 def test_per_msg_normalize_rejects_invalid():
     spec = config_schema.WELFARE_CONFIG_SCHEMA["points_chat_per_msg"]
-    for bad in (-1, "abc", 1.5, True):
+    # 1.5 自 2026-10-31 起是合法小数（见 test_chat_points_decimal）；仍拒：
+    # 负数、非数、布尔、超 2 位小数、超上限 100
+    for bad in (-1, "abc", True, "0.123", 101):
         with pytest.raises(config_schema.ConfigValueError):
             config_schema.normalize("points_chat_per_msg", spec, bad)
 
@@ -103,10 +109,12 @@ def test_per_msg_zero_disables_reward(db):
 
 
 def test_defaults_without_rows(db):
-    """未配行时走默认 1／20（与生产现状一致）。"""
+    """未配行时走默认 0.1／20（2026-10-31 起）：发 10 条才结算 1 能量。"""
     from backend import points
 
     u = _make_user(db, username="chatter", points=0)
-    assert points.award_chat_points(db, u.id) == 1
+    assert points.award_chat_points(db, u.id) == 0
+    for _ in range(9):
+        points.award_chat_points(db, u.id)
     db.refresh(u)
     assert u.points == 1

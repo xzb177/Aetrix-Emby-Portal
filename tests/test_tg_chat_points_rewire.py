@@ -1,7 +1,10 @@
 """群发言接回发言奖励（2026-10-28）：群内普通消息按发言计分。
 
 接线位置：router.dispatch 群内非命令文本路径，口令抽奖未命中后调
-points.award_chat_points（默认 1 分/条、每天 20 分封顶，生产无需改配置）。
+points.award_chat_points（每条奖励/每日封顶走 points_chat_* 配置）。
+默认值 2026-10-31 起为 0.1/条小数累计；本文件锁的是接线与封顶语义，
+涉及余额断言的用例把 per_msg 钉为 1，与小数化本身解耦（小数口径
+见 tests/test_chat_points_decimal.py）。
 群白名单由 dispatch 上游 is_group_allowed 拦截；普通聊天不消耗
 _group_allow 群级限流预算；命令、私聊、口令命中、未绑定、未放行群均不发分。
 """
@@ -76,8 +79,14 @@ def _balance(db, user_id):
         models.WebUser.id == user_id).scalar()
 
 
+def _pin_per_msg_1(db):
+    db.add(models.SystemConfig(key="points_chat_per_msg", value="1"))
+    db.commit()
+
+
 def test_group_message_awards_bound_user(db):
     u = _make_user(db, "chat1", 4242)
+    _pin_per_msg_1(db)
     router.dispatch(db, _update("supergroup", -100123, 4242, "hello 大家"))
     assert _balance(db, u.id) == 1
     rows = _chat_rows(db, u.id)
@@ -86,6 +95,7 @@ def test_group_message_awards_bound_user(db):
 
 def test_daily_cap_stops_at_20(db):
     u = _make_user(db, "chat2", 4243)
+    _pin_per_msg_1(db)
     for _ in range(21):
         router.dispatch(db, _update("supergroup", -100123, 4243, "水群"))
     assert _balance(db, u.id) == 20

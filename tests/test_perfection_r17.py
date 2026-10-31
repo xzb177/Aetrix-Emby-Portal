@@ -222,8 +222,13 @@ def test_b_p2_5_negative_per_msg_falls_back_no_deduction(db):
     _set_config(db, "points_chat_daily_cap", 100)
     _set_config(db, "points_chat_per_msg", -3)
     got = points.award_chat_points(db, u.id)
-    # 非法负配置回落默认 1：奖励 1 分，绝不扣分
-    assert got == 1
+    # 非法负配置回落默认（2026-10-31 起默认 0.1）：首条只累计小数、结算 0，
+    # 绝不扣分；累计 10 条后按默认 0.1 结算 1 分
+    assert got == 0
+    db.refresh(u)
+    assert u.points == 0
+    for _ in range(9):
+        points.award_chat_points(db, u.id)
     db.refresh(u)
     assert u.points == 1
 

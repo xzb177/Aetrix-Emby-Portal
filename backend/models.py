@@ -246,6 +246,14 @@ class WebUser(Base):
     # 空值 = 升级前的老管理员 → 按 super 处理（不改权、也不会「没人进得去后台」）
     admin_role = Column(String(20), nullable=True)
     points = Column(Integer, default=0)  # 积分余额（签到/邀请返利/兑换/充值）
+    # 发言奖励小数累计（2026-10-31）：points 与 PointsLog.amount 都是 Integer，
+    # 每条 0.1 这类小数奖励先按「分」（0.01 能量）累计到 chat_frac_cents，
+    # 满 100 分结算 1 能量进 points 并写台账；余数跨日保留不清零。
+    # chat_day（上海日期）+ chat_day_cents 记当日已累计（含已结算部分），
+    # 供每日上限按能量口径判定（见 backend/points.py award_chat_points）。
+    chat_frac_cents = Column(Integer, default=0, nullable=False, server_default="0")
+    chat_day_cents = Column(Integer, default=0, nullable=False, server_default="0")
+    chat_day = Column(String(10), nullable=True)
     # 会员等级（P1 统一货币体系）：经验值只来自真实充值/有效邀请，等级由阈值推导并缓存
     member_xp = Column(Integer, default=0, nullable=False, server_default="0")  # 会员经验值
     member_level = Column(Integer, default=1, nullable=False, server_default="1")  # 缓存的当前等级（1-6）

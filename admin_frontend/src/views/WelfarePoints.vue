@@ -45,12 +45,12 @@ const transferFields = [
 ]
 
 const earnRedeemFields = [
-  { key: 'points_chat_per_msg', label: '发言每条奖励', hint: '默认 1，填 0 关闭发言奖励', suffix: '积分/条' },
-  { key: 'points_chat_daily_cap', label: '发言每日上限', hint: '默认 20', suffix: '积分/天' },
-  { key: 'points_redeem_7d', label: '兑换 7 天', hint: '默认 100', suffix: '积分' },
-  { key: 'points_redeem_30d', label: '兑换 30 天', hint: '默认 300', suffix: '积分' },
-  { key: 'welfare_redeem_min_account_age_days', label: '兑换号龄门槛', hint: '自助兑换需注册满的天数，默认 3，填 0 关闭', suffix: '天' },
-  { key: 'welfare_redeem_min_active_days', label: '兑换活跃门槛', hint: '自助兑换需近 7 天活跃天数（签到/播放算活跃，发言最多计 1 天），默认 2，填 0 关闭', suffix: '天' },
+  { key: 'points_chat_per_msg', label: '发言每条奖励', hint: '默认 0.1，支持两位小数（如 0.1 / 0.2），小数按条累计、满 1 结算，填 0 关闭发言奖励', suffix: '积分/条', inputmode: 'decimal' },
+  { key: 'points_chat_daily_cap', label: '发言每日上限', hint: '默认 20', suffix: '积分/天', inputmode: 'numeric' },
+  { key: 'points_redeem_7d', label: '兑换 7 天', hint: '默认 100', suffix: '积分', inputmode: 'numeric' },
+  { key: 'points_redeem_30d', label: '兑换 30 天', hint: '默认 300', suffix: '积分', inputmode: 'numeric' },
+  { key: 'welfare_redeem_min_account_age_days', label: '兑换号龄门槛', hint: '自助兑换需注册满的天数，默认 3，填 0 关闭', suffix: '天', inputmode: 'numeric' },
+  { key: 'welfare_redeem_min_active_days', label: '兑换活跃门槛', hint: '自助兑换需近 7 天活跃天数（签到/播放算活跃，发言最多计 1 天），默认 2，填 0 关闭', suffix: '天', inputmode: 'numeric' },
 ]
 
 // 兑换来源限定开关：word 风格 true/false（后端 economy._get_bool_config 只认 'true'）
@@ -326,7 +326,7 @@ onMounted(load)
             <span class="field-hint">开启后自助兑换公益资格只能花自己挣的能量（签到、发言等），转入、赠送、中奖的能量不能用于兑换资格；只卡自助兑换，管理员发放与买查看权限不受影响，默认开</span>
           </el-form-item>
           <el-form-item v-for="f in earnRedeemFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" class="field-input" :inputmode="f.inputmode" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>

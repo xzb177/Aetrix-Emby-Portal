@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 _BOOL_TRUE = ("1", "true", "yes", "on")
@@ -24,7 +25,7 @@ class ConfigValueError(ValueError):
 def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Optional[str]:
     """按 spec 校验并返回要落库的字符串；None 表示「未设置」。
 
-    spec: ("int", lo, hi) | ("float", lo, hi) | ("bool",) | ("bool", "digit"|"word")
+    spec: ("int", lo, hi) | ("float", lo, hi) | ("float", lo, hi, places) | ("bool",) | ("bool", "digit"|"word")
         | ("int_list", lo, hi) | ("str",) | ("enum", (allowed...)) | ("raw",)
     bool_style: "word" → true/false，"digit" → 1/0（仅在传入 Python bool 时决定写法；
     字符串原样保留大小写外的写法，避免改变读取侧既有判断口径）。
@@ -90,6 +91,21 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
             raise ConfigValueError(f"{key} 必须是数字")
         if f != f or not lo <= f <= hi:  # NaN 也拒绝
             raise ConfigValueError(f"{key} 需在 {lo}~{hi} 之间")
+        if len(spec) > 3:
+            # 可选第 4 位 places：小数位数上限（发言每条奖励 0.01 级精度用）。
+            # 命中时按 Decimal 校验位数并归一化落库（"0.10"→"0.1"、"2.00"→"2"），
+            # 读侧按字符串解析 Decimal，不经 float 中转、无二进制浮点误差。
+            places = spec[3]
+            try:
+                d = Decimal(str(value).strip())
+            except (InvalidOperation, ValueError):
+                raise ConfigValueError(f"{key} 必须是数字")
+            if -d.as_tuple().exponent > places:
+                raise ConfigValueError(f"{key} 最多 {places} 位小数")
+            s = format(d, "f")
+            if "." in s:
+                s = s.rstrip("0").rstrip(".")
+            return s or "0"
         return str(value).strip()
     if kind == "int_list":
         parts = [p.strip() for p in str(value).replace("，", ",").split(",") if p.strip()]
@@ -110,7 +126,8 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
 
 # 公益配置（welfare_admin.WELFARE_CONFIG_KEYS）里的数值/开关键；未列出的（群 id 列表等）按字符串保存
 WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
-    "points_chat_per_msg": ("int", 0, _BIG),
+    # 发言每条奖励可为小数（2026-10-31 用户亲令默认 0.1）：0~100、最多 2 位小数
+    "points_chat_per_msg": ("float", 0, 100, 2),
     "points_chat_daily_cap": ("int", 0, _BIG),
     "points_redeem_7d": ("int", 0, _BIG),
     "points_redeem_30d": ("int", 0, _BIG),

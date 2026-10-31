@@ -112,7 +112,8 @@ def test_handler_bound_shows_today_progress_and_total(db):
 
     status = points_mod.get_chat_points_status(db, u.id)
     assert status == {
-        "earned_today": 3, "daily_cap": 20, "per_msg": 1, "total_earned": 8,
+        # per_msg 默认 2026-10-31 起为 0.1（小数）；earned_today 3.0 == 3
+        "earned_today": 3, "daily_cap": 20, "per_msg": 0.1, "total_earned": 8,
     }
 
     text = handlers.handle_chatpoints(db, {"id": 6101}, 6101, "")

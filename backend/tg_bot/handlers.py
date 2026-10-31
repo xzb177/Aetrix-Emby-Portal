@@ -587,9 +587,9 @@ def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
     filled = round(earned / cap * 10) if cap > 0 else 0
     bar = "▓" * filled + "░" * (10 - filled)
     rows = [
-        layout.row("📅", "今日已得", f"<b>{earned}</b> / {cap} 能量 <code>{bar}</code>"),
+        layout.row("📅", "今日已得", f"<b>{earned:g}</b> / {cap} 能量 <code>{bar}</code>"),
         layout.row("🏆", "累计能量", f"<b>{status['total_earned']}</b> 能量"),
-        layout.row("📏", "发言规则", f"在公益群里发言每条 +{per_msg} 能量，每天最多 {cap} 能量"),
+        layout.row("📏", "发言规则", f"在公益群里发言每条 +{per_msg:g} 能量，每天最多 {cap} 能量"),
     ]
     notes = []
     if earned >= cap:
