@@ -561,3 +561,40 @@ export const toggleMemberLevel = (id: number) =>
 
 export const deleteMemberLevel = (id: number) =>
   del<{ deleted: boolean }>(`/member-levels/${id}`)
+
+// ==================== 全员赠送能量（批次） ====================
+
+export type GiftAllScope = 'all' | 'welfare'
+
+export interface GiftAllPreview {
+  scope: GiftAllScope
+  amount: number
+  user_count: number
+  total_amount: number
+}
+
+export interface GiftBatchRow {
+  id: number
+  amount: number
+  scope: GiftAllScope
+  reason: string
+  target_count: number
+  granted_count: number
+  status: 'pending' | 'running' | 'done' | 'failed'
+  created_by: number | null
+  created_by_name: string | null
+  last_error: string | null
+  created_at: string | null
+  finished_at: string | null
+}
+
+/** 发放前预览：命中人数与总发放量（只读） */
+export const previewGiftAll = (amount: number, scope: GiftAllScope) =>
+  get<GiftAllPreview>(`/economy/gift-all/preview?amount=${amount}&scope=${scope}`)
+
+/** 新建赠送批次（只落批次，发放由 worker 分块执行） */
+export const createGiftBatch = (data: { amount: number; scope: GiftAllScope; reason: string }) =>
+  post<GiftBatchRow>('/economy/gift-all/batches', data)
+
+export const fetchGiftBatches = (limit = 50) =>
+  get<{ batches: GiftBatchRow[] }>(`/economy/gift-all/batches?limit=${limit}`)

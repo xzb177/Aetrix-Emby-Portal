@@ -7,12 +7,13 @@
  * P0 统一货币体系：新增货币体系（充值比例）与红包规则配置组。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeftRight, Bot, Coins, Dices, Gift, KeyRound, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
 import { fetchViewUnlockSettings, updateViewUnlockSettings } from '@/api/admin'
+import { createGiftBatch, fetchGiftBatches, previewGiftAll, type GiftAllPreview, type GiftAllScope, type GiftBatchRow } from '@/api/economy'
 
 const { isPhone } = useBreakpoint()
 /** 窄屏标签放到输入框上方，120px 的左侧标签会把输入框挤出屏幕 */
@@ -172,6 +173,8 @@ async function load() {
   } catch {
     /* 查看权限加载失败时该卡片显示错误态，不影响福利表单 */
   }
+  // 全员赠送批次历史走独立 endpoint，一边失败不影响另一边
+  await loadGiftBatches()
 }
 
 async function save() {
@@ -184,6 +187,90 @@ async function save() {
     /* 写操作失败由请求拦截器统一弹错 */
   } finally {
     saving.value = false
+  }
+}
+
+// ==================== 全员赠送能量（批次） ====================
+// 能力口径：金额/范围/备注全是建批参数，不写死；建批只落批次，发放由后端
+// worker 分块执行。提交前必须先预览（人数+总量），且预览后改了参数要重预览。
+const giftForm = ref<{ amount: number | null; scope: GiftAllScope; reason: string }>({
+  amount: null, scope: 'all', reason: '',
+})
+const giftPreview = ref<GiftAllPreview | null>(null)
+const giftPreviewKey = ref('')
+const giftPreviewing = ref(false)
+const giftCreating = ref(false)
+const giftBatches = ref<GiftBatchRow[]>([])
+const giftBatchesLoading = ref(false)
+
+const giftStatusText: Record<GiftBatchRow['status'], string> = {
+  pending: '待发放', running: '发放中', done: '已完成', failed: '失败待续跑',
+}
+
+function giftKey(amount: number | null, scope: GiftAllScope) {
+  return `${amount ?? ''}|${scope}`
+}
+
+async function loadGiftBatches() {
+  giftBatchesLoading.value = true
+  try {
+    const res = await fetchGiftBatches(50)
+    giftBatches.value = res.batches ?? []
+  } catch {
+    /* 列表加载失败不影响配置表单，历史区保持空 */
+  } finally {
+    giftBatchesLoading.value = false
+  }
+}
+
+async function doGiftPreview() {
+  const amount = Math.floor(Number(giftForm.value.amount) || 0)
+  if (amount <= 0) {
+    ElMessage.warning('每人赠送量必须为正整数')
+    return
+  }
+  giftPreviewing.value = true
+  try {
+    giftPreview.value = await previewGiftAll(amount, giftForm.value.scope)
+    giftPreviewKey.value = giftKey(amount, giftForm.value.scope)
+  } catch {
+    /* 失败由请求拦截器统一弹错 */
+  } finally {
+    giftPreviewing.value = false
+  }
+}
+
+async function doGiftCreate() {
+  const amount = Math.floor(Number(giftForm.value.amount) || 0)
+  if (amount <= 0) {
+    ElMessage.warning('每人赠送量必须为正整数')
+    return
+  }
+  if (!giftPreview.value || giftPreviewKey.value !== giftKey(amount, giftForm.value.scope)) {
+    ElMessage.warning('请先点「预览」核对命中人数与总发放量，改了参数要重新预览')
+    return
+  }
+  const p = giftPreview.value
+  try {
+    await ElMessageBox.confirm(
+      `将给 ${p.user_count} 位用户每人赠送 ${amount} 能量，共 ${p.total_amount} 能量。批次创建后由后台分批发放，确定创建？`,
+      '确认全员赠送',
+      { type: 'warning', confirmButtonText: '创建批次', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  giftCreating.value = true
+  try {
+    await createGiftBatch({ amount, scope: giftForm.value.scope, reason: giftForm.value.reason.trim() })
+    ElMessage.success('赠送批次已创建，后台发放中，可在下方历史里看进度')
+    giftPreview.value = null
+    giftPreviewKey.value = ''
+    await loadGiftBatches()
+  } catch {
+    /* 失败由请求拦截器统一弹错 */
+  } finally {
+    giftCreating.value = false
   }
 }
 
@@ -377,6 +464,68 @@ onMounted(load)
       </SectionCard>
 
     </div>
+
+    <!-- 全员赠送能量：独立 endpoint 独立提交（不随上方配置表单保存） -->
+    <SectionCard
+      v-if="loaded"
+      title="全员赠送能量"
+      :icon="Gift"
+      description="给全体用户（或仅公益资格用户）每人赠送能量：先预览人数与总量，确认后建批次，后台分批发放、可续跑不重发"
+      style="margin-top: 16px"
+    >
+      <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form-item label="每人赠送">
+          <el-input-number v-model="giftForm.amount" :min="1" :step="10" class="field-input" />
+          <span class="field-suffix">能量/人</span>
+          <span class="field-hint">正整数；金额与范围都是本次批次的参数，不写死在配置里</span>
+        </el-form-item>
+        <el-form-item label="赠送范围">
+          <el-select v-model="giftForm.scope" class="field-input">
+            <el-option label="全部用户" value="all" />
+            <el-option label="仅公益资格用户" value="welfare" />
+          </el-select>
+          <span class="field-hint">公益口径＝当前持有有效公益资格（未过期）者；发放时按实时资格判定</span>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="giftForm.reason" maxlength="255" placeholder="如：系统维护补偿" class="field-input" style="width: 260px" />
+          <span class="field-hint">会写进每位用户的能量台账说明</span>
+        </el-form-item>
+        <el-form-item>
+          <el-button :loading="giftPreviewing" @click="doGiftPreview">预览</el-button>
+          <el-button type="primary" :loading="giftCreating" @click="doGiftCreate">创建赠送批次</el-button>
+          <span v-if="giftPreview" class="field-hint" style="flex-basis: auto; margin-left: 12px">
+            命中 {{ giftPreview.user_count }} 人，共发放 {{ giftPreview.total_amount }} 能量
+          </span>
+        </el-form-item>
+      </el-form>
+
+      <el-table v-loading="giftBatchesLoading" :data="giftBatches" size="small" style="margin-top: 8px">
+        <el-table-column prop="id" label="批次" width="70" />
+        <el-table-column label="每人" width="80">
+          <template #default="{ row }">{{ row.amount }} 能量</template>
+        </el-table-column>
+        <el-table-column label="范围" width="90">
+          <template #default="{ row }">{{ row.scope === 'welfare' ? '公益资格' : '全部用户' }}</template>
+        </el-table-column>
+        <el-table-column prop="reason" label="备注" min-width="140" show-overflow-tooltip />
+        <el-table-column label="进度" width="110">
+          <template #default="{ row }">{{ row.granted_count }} / {{ row.target_count }} 人</template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            {{ giftStatusText[row.status as GiftBatchRow['status']] }}
+            <span v-if="row.status === 'failed' && row.last_error" class="field-hint">{{ row.last_error }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_by_name" label="操作者" width="110" />
+        <el-table-column label="创建时间" min-width="150">
+          <template #default="{ row }">{{ row.created_at ? row.created_at.replace('T', ' ').slice(0, 19) : '' }}</template>
+        </el-table-column>
+      </el-table>
+      <div style="margin-top: 8px">
+        <el-button text :loading="giftBatchesLoading" @click="loadGiftBatches">刷新历史</el-button>
+      </div>
+    </SectionCard>
   </div>
 </template>
 
