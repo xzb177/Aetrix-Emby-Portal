@@ -302,15 +302,30 @@ def test_auto_renew_idempotent_no_double_renew(db):
         models.SubscriptionOrder.payment_method == "auto_renew").count() == 1
 
 
-def test_auto_renew_skipped_when_no_points_price(db):
-    """套餐无积分价：跳过（人民币自动扣款未开通），不报错不打扰"""
+def test_auto_renew_no_points_price_reminds_renew_failed(db):
+    """套餐无积分价（审计 A-109）：不再静默跳过，走 renew_failed 去重
+    提醒（与套餐下架同口径，钉死版见 test_audit_a109_renew_skip_remind）；
+    不扣款、不顺延，再跑一轮不再重复提醒"""
     r = _realm(db)
     u = _user(db, "u1", points=10000)
     plan = _plan(db, r.id, points_price=None, days=30)
-    _active_sub(db, u, plan, r, hours_left=12)
+    sub = _active_sub(db, u, plan, r, hours_left=12)
+    old_end = sub.end_date
     out = subs.auto_renew_subscriptions(db)
-    assert out["skipped"] == 1 and out["renewed"] == 0
-    assert out["notices"] == []
+    assert out["skipped"] == 0 and out["renewed"] == 0
+    assert out["failed"] == 1
+    assert len(out["notices"]) == 1
+    assert out["notices"][0]["user_id"] == u.id
+    rows = db.query(models.SubscriptionReminder).filter(
+        models.SubscriptionReminder.subscription_id == sub.id,
+        models.SubscriptionReminder.kind == subs.RENEW_FAILED_KIND).all()
+    assert len(rows) == 1
+    db.refresh(sub)
+    assert sub.end_date == old_end  # 没顺延
+    assert _balance(db, u.id) == 10000  # 没扣款
+    # 第二轮：去重记录已在，不再出通知
+    out2 = subs.auto_renew_subscriptions(db)
+    assert out2["failed"] == 1 and out2["notices"] == []
 
 
 def test_auto_renew_outside_window_untouched(db):
