@@ -346,6 +346,9 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     "upstream_aggregate_claim_poll_sec": ("int", 1, 60),
     "upstream_aggregate_progress_log_every": ("int", 1, 100),
     "upstream_aggregate_task_retention_days": ("int", 1, 365),
+    # O-08 系列级配对（series+episode）置信度：默认 0.9（低于
+    # imdb 0.95、高于 title+year 0.7），读取侧钳制同此范围。
+    "upstream_aggregate_series_episode_confidence": ("float", 0.01, 1),
 }
 
 

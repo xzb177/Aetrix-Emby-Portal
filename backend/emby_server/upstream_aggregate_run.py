@@ -27,10 +27,18 @@
 - 本地标题取 ``scan_title``（扫描期身份快照）回落 ``name``，
   年份取 ``scan_year`` 回落 ``production_year``；年份缺失不只
   按标题配（照 CMS 同步同款纪律）。
-- 单集只按单集自身的 ``tmdb_id`` / ``imdb_id`` 精确配对：
-  剧名 + 季集号没有年份护栏，弱证据不配对，缺身份的单集
-  只进未配对统计、不写映射（待后续项：系列身份 + 季集号
-  的系列级配对）。
+- 单集先按单集自身的 ``tmdb_id`` / ``imdb_id`` 精确配对；
+  自身**无**身份的单集再走系列级配对（2026-10-31 优化
+  O-08）：先定系列——同批系列已按上面三档口径配上本地系列
+  的用那份结果，同批同名系列没配上的不许靠标题回落配进
+  疑似同名异版，同批没有该系列时本地同名系列唯一才用——
+  再按季集号精确对齐本地单集，证据 ``series+episode``、
+  置信度默认 0.9（低于 imdb、高于 title+year，SystemConfig
+  可调）。防错红线（配错集比配错电影严重）：季集号缺失或
+  对不齐不配（仍记 ``episode_no_identity``）；系列多候选记
+  ``episode_series_ambiguous``、同季同集多行记
+  ``episode_multi_candidate``，一律不配。带自身身份的单集
+  不走此路（没命中仍记 ``episode_no_identity``，口径不变）。
 - 同一本地条目被多个上游条目配上时，每个上游条目各写一行
   映射（同一本地条目多线路是合法形态）；同一三元组重复写
   由 ``record_mapping`` 的幂等 upsert 兜底。
@@ -171,6 +179,31 @@ def _page_retry_config(db):
         backoff = PAGE_RETRY_BACKOFF_DEFAULT
     return max(0, min(5, retries)), max(0, min(30, backoff))
 
+
+def _system_config_float(db, key):
+    """SystemConfig 浮点热读：与 _system_config_int 同口径（无行/
+    非法/异常一律 None 回退）；非正按未设置处理（置信度域 (0, 1]）。"""
+    if db is None:
+        return None
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, key, "")
+    except Exception:
+        return None
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _series_episode_confidence(db) -> float:
+    """O-08 系列级配对置信度：SystemConfig > 默认 0.9，钳 [0.01, 1]。"""
+    configured = _system_config_float(db, KEY_SERIES_EPISODE_CONFIDENCE)
+    if configured is not None:
+        return max(0.01, min(1.0, configured))
+    return CONFIDENCE_SERIES_EPISODE
+
 #: 单次请求超时（秒）：目录页带数据，比探活的 10 秒放宽。
 HTTP_TIMEOUT_SEC = 30.0
 
@@ -178,6 +211,15 @@ HTTP_TIMEOUT_SEC = 30.0
 CONFIDENCE_TMDB = 1.0
 CONFIDENCE_IMDB = 0.95
 CONFIDENCE_TITLE_YEAR = 0.7
+
+#: O-08 系列级配对（证据 ``series+episode``）默认置信度：低于
+#: imdb 的 0.95、高于 title+year 的 0.7——系列身份本身可靠，
+#: 不确定性只在季集对齐这一跳；可经 SystemConfig 调（见
+#: KEY_SERIES_EPISODE_CONFIDENCE），读取钳 [0.01, 1] 与注册表
+#: 同口径。纯 SystemConfig 键，不进 env.example（#1527 先例）。
+CONFIDENCE_SERIES_EPISODE = 0.9
+KEY_SERIES_EPISODE_CONFIDENCE = \
+    "upstream_aggregate_series_episode_confidence"
 
 #: 上游侧可配对的条目类型：季（Season）不是播放寻址目标，不配对。
 PAIRABLE_ITEM_TYPES = ("Movie", "Series", "Episode")
@@ -584,10 +626,17 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
 
     查询策略（批量，不逐聚合查库）：
     - tmdb / imdb 各一次 IN 查询建映射；
-    - 标题 + 年份按年份分组查候选，Python 里按聚合键比对。
+    - 标题 + 年份按年份分组查候选，Python 里按聚合键比对；
+    - 自身无身份的单集延后到第二遍走 O-08 系列级配对
+      （见 _pair_deferred_episodes），其余口径一字不变。
     """
     pairs: List[dict] = []
     unpaired: Dict[str, int] = {}
+    # O-08 第二遍的入料：自身无身份、第一遍没配上的单集先攒着，
+    # 等同批系列的配对结果齐了再定系列（系列可能排在单集之后）。
+    deferred_episodes: List[agg.UpstreamAggregateItem] = []
+    resolved_series_by_title: Dict[str, set] = {}
+    unresolved_series_titles: set = set()
 
     def bump(reason: str) -> None:
         unpaired[reason] = unpaired.get(reason, 0) + 1
@@ -650,12 +699,26 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
                     confidence, evidence = CONFIDENCE_TITLE_YEAR, "title+year"
         if local is None:
             if item.item_type == "Episode":
-                bump("episode_no_identity")
+                if item.tmdb_id or item.imdb_id:
+                    # 带自身身份仍没命中：旧口径不变，且不走系列级
+                    # 路径（O-08 范围只限自身无身份的单集）。
+                    bump("episode_no_identity")
+                else:
+                    deferred_episodes.append(item)
             elif item.tmdb_id or item.imdb_id:
                 bump("identity_no_local_match")
             else:
                 bump("title_year_no_local_match")
+            if item.item_type == "Series":
+                title_key = agg._normalize_title(item.name or "")
+                if title_key:
+                    unresolved_series_titles.add(title_key)
             continue
+        if item.item_type == "Series":
+            title_key = agg._normalize_title(item.name or "")
+            if title_key:
+                resolved_series_by_title.setdefault(
+                    title_key, set()).add(local.id)
         for line in item.lines:
             pairs.append({
                 "aggregate_key": item.aggregate_key,
@@ -667,7 +730,112 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
                 "confidence": confidence,
                 "evidence": evidence,
             })
+    if deferred_episodes:
+        _pair_deferred_episodes(
+            db, deferred_episodes, pairs, bump,
+            resolved_series_by_title, unresolved_series_titles)
     return pairs, unpaired
+
+
+def _local_series_title_index(db: Session):
+    """本地活系列按归一标题索引：{标题键: {id: 行}}（O-08 回落用）。
+
+    标题取 _local_title_year 口径（scan_title 回落 name），归一用
+    聚合模块同款 _normalize_title；同名多行全保留——多候选由
+    调用方按防错红线拒配，这里不替它做主。
+    """
+    index: Dict[str, Dict[int, object]] = {}
+    for row in (_alive_local_query(db)
+                .filter(em.MediaItem.item_type == "series").all()):
+        title, _year = _local_title_year(row)
+        if not title:
+            continue
+        key = agg._normalize_title(title)
+        if key:
+            index.setdefault(key, {})[row.id] = row
+    return index
+
+
+def _pair_deferred_episodes(db: Session, episodes, pairs, bump,
+                            resolved_series_by_title,
+                            unresolved_series_titles) -> None:
+    """O-08 系列级配对（第二遍）：自身无身份的单集先定系列再对齐。
+
+    定系列（按可靠度排序）：
+    1. 同批系列已按现行口径（tmdb / imdb / title+year）配上本地
+       系列时，直接用那份结果——系列身份走的是原配对链；
+    2. 同批有同名系列但它没配上（身份对不上本地）时，不许靠
+       标题回落把单集配进疑似同名异版（翻拍）系列——拒配；
+    3. 同批没有该系列时，本地同名系列唯一才用它；同名多部
+       （翻拍等）拒配，记 episode_series_ambiguous。
+
+    对齐：本地系列下按 (season_number, episode_number) 精确找
+    单集——缺号/对不齐拒配（仍记 episode_no_identity）；同季
+    同集多行拒配，记 episode_multi_candidate（配错集比不配
+    更糟）。配上的一律证据 series+episode、置信度走
+    _series_episode_confidence（默认 0.9）。
+    """
+    confidence = _series_episode_confidence(db)
+    local_series_by_title = None
+    episodes_by_series: Dict[int, list] = {}
+
+    for item in episodes:
+        title_key = agg._normalize_title(item.series_name or "")
+        episode_numbers = {line.episode_index for line in item.lines}
+        if (not title_key or item.season_number is None
+                or len(episode_numbers) != 1
+                or None in episode_numbers):
+            bump("episode_no_identity")
+            continue
+        episode_number = next(iter(episode_numbers))
+        if title_key in resolved_series_by_title:
+            series_ids = resolved_series_by_title[title_key]
+            if len(series_ids) > 1:
+                bump("episode_series_ambiguous")
+                continue
+            local_series_id = next(iter(series_ids))
+        elif title_key in unresolved_series_titles:
+            bump("episode_no_identity")
+            continue
+        else:
+            if local_series_by_title is None:
+                local_series_by_title = _local_series_title_index(db)
+            rows = local_series_by_title.get(title_key) or {}
+            if not rows:
+                bump("episode_no_identity")
+                continue
+            if len(rows) > 1:
+                bump("episode_series_ambiguous")
+                continue
+            local_series_id = next(iter(rows))
+        if local_series_id not in episodes_by_series:
+            episodes_by_series[local_series_id] = (
+                _alive_local_query(db)
+                .filter(em.MediaItem.item_type == "episode")
+                .filter(em.MediaItem.series_id == local_series_id)
+                .all())
+        candidates = [
+            row for row in episodes_by_series[local_series_id]
+            if row.season_number == item.season_number
+            and row.episode_number == episode_number]
+        if not candidates:
+            bump("episode_no_identity")
+            continue
+        if len(candidates) > 1:
+            bump("episode_multi_candidate")
+            continue
+        local = candidates[0]
+        for line in item.lines:
+            pairs.append({
+                "aggregate_key": item.aggregate_key,
+                "name": item.name,
+                "item_type": item.item_type,
+                "local_item_id": local.id,
+                "upstream_item_id": line.upstream_item_id,
+                "episode_index": line.episode_index,
+                "confidence": confidence,
+                "evidence": "series+episode",
+            })
 
 
 # ---------------------------------------------------------------------------

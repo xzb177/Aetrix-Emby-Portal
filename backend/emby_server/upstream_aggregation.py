@@ -345,6 +345,11 @@ class UpstreamAggregateItem:
     imdb_id: Optional[str] = None
     partition: str = ""
     category_binding: str = ""
+    # 单集的季号与所属系列名（O-08 系列级配对用）：聚合键里已含
+    # 季集号，但配对层不该去解析键串，这里从记录显式带出；非单集
+    # 记录这两项为空/None，不参与任何既有口径。
+    season_number: Optional[int] = None
+    series_name: str = ""
     lines: List[UpstreamLine] = field(default_factory=list)
 
 
@@ -379,6 +384,8 @@ def build_aggregates(
                 imdb_id=record.imdb_id,
                 partition=f"upstream:{record.source_id}",
                 category_binding=bindings.get(record.category_id, ""),
+                season_number=record.season_number,
+                series_name=record.series_name,
             )
             by_key[key] = item
         else:
@@ -390,6 +397,10 @@ def build_aggregates(
                 item.imdb_id = record.imdb_id
             if not item.production_year:
                 item.production_year = record.production_year
+            if item.season_number is None:
+                item.season_number = record.season_number
+            if not item.series_name:
+                item.series_name = record.series_name
         line_key = f"upstream:{record.source_id}:{record.upstream_item_id}"
         if any(line.line_key == line_key for line in item.lines):
             continue
