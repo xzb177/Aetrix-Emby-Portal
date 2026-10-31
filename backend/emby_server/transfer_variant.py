@@ -6743,6 +6743,50 @@ def _wake_subscriber_loop(stop_event):
             stop_event.wait(30)
 
 
+def _reclaim_leases_once(session_factory, source="janitor"):
+    """开短会话跑一次租约回收，返回打回数；异常只记 warning 返回 0。
+
+    回收兜底自身绝不许炸：启动路径与看门狗循环都靠它续命，DB
+    抖一下不能把工人带走（与工人其它兜底同口径）。回收只把
+    running 且租约已过期的行打回 pending，后续认领仍走原认领
+    路径（排序/限流/门禁一概不变）；与认领内的回收并发重复执行
+    无害（第二个看到的已是 pending）。"""
+    db = None
+    try:
+        db = session_factory()
+        count = reclaim_expired_leases(db)
+        if count:
+            logger.info("转存工人：租约回收打回 %d 单（%s）",
+                        count, source)
+        return count
+    except Exception:
+        logger.warning("转存工人：租约回收失败（%s），下一周期重试",
+                       source, exc_info=True)
+        return 0
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _lease_reclaim_loop(stop_event, session_factory):
+    """租约回收看门狗：独立于唤醒订阅与守护主循环的周期兜底。
+
+    为什么必须独立（2026-10-31 生产实证）：回收原本只搭认领的车
+    （claim_due_jobs 开头），而主循环一轮要等本轮认领的单全部执行
+    完才返回——跨 provider 长单或每日巡检能把一轮占住十几分钟，
+    道全忙时轮内补认领又不调 claim_due_jobs。部署重建窗口里旧进程
+    认领的三单租约过期后 12 分钟无人回收、用户点播恒 409，手工
+    重启工人后第一轮认领才顺带回收。本循环按 worker_sweep_sec()
+    （TRANSFER_WORKER_SWEEP_SEC，默认 60）独立跑回收，主循环卡在
+    任何一轮里都不耽误死单回队。"""
+    while not stop_event.is_set():
+        _reclaim_leases_once(session_factory, source="janitor")
+        stop_event.wait(worker_sweep_sec())
+
+
 def reclaim_expired_leases(db, now=None):
     """租约回收：running 且租约已过期 → pending（attempts 不变），
     兼容旧行：租约 NULL 且 updated_at 距今超 STUCK_RUNNING_SEC
@@ -7341,6 +7385,10 @@ def start_transfer_daemon(session_factory=None, drive_api_factory=None):
       唤醒路径（Redis 断连、进程重启）失效时仍能跑，绝不改 5 秒。
     - 每轮先跑可伸缩认领轮（快通道优先、按用户限流、租约认领、
       并行执行），再按需跑每天一次巡检；闲置 TTL 每小时独立一轮；总闸关时空转等待。
+    - 租约回收双保险（2026-10-31 僵单事件后加）：启动时先同步回收
+      一次（上一个进程死了留下的过期单不等主循环第一轮），另有
+      看门狗线程按兜底扫间隔独立周期回收（见 _lease_reclaim_loop，
+      回收不再搭认领/主循环迭代的车）。
     - session_factory / drive_api_factory 可注入（测试用），默认
       生产值：backend.database.SessionLocal / DriveApiClient。
     任何异常只记 warning、不炸线程。返回线程对象，调用方持有以便观测。
@@ -7353,6 +7401,12 @@ def start_transfer_daemon(session_factory=None, drive_api_factory=None):
         session_factory = SessionLocal
     if drive_api_factory is None:
         drive_api_factory = DriveApiClient
+    # 启动即回收：先把前任进程留下的过期租约单交还队列，再起线程。
+    _reclaim_leases_once(session_factory, source="startup")
+    janitor = threading.Thread(
+        target=_lease_reclaim_loop, args=(stop, session_factory),
+        daemon=True, name="transfer-lease-reclaim")
+    janitor.start()
     subscriber = threading.Thread(
         target=_wake_subscriber_loop, args=(stop,), daemon=True,
         name="transfer-wake-subscriber")
