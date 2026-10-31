@@ -4378,49 +4378,144 @@ class UserDriveApiClient(DriveApiClient):
         （元数据 name + parents，X-Upload-Content-Length=size）→
         按 _CROSS_SEGMENT 分段 PUT（Content-Range: bytes s-e/size）：
         200/201 回文件 id；308 按 Range 头续传；401 刷新令牌重试
-        当段一次。会话 URI 只活在本任务尝试内，不持久化——中途
-        失败整单重来时重建会话（v1 已知代价，与搬运层不静默重试
-        一致）。上传侧 403 不按凭据过期算（可能是空间/配额），
+        当段一次。上传侧 403 不按凭据过期算（可能是空间/配额），
         一律 _CrossRemoteError 走有界重试；令牌刷新失败抛
         DriveOAuthError（调用方记 no_binding，与 Path A 同口径）。
         reader 须支持 seek/tell/read 的文件类对象。
+
+        会话落盘续传（换代线 step 3，2026-11-01）：调用方可在
+        实例上挂 ``drive_session_hooks``（dict）开启——
+        ``resume_session_uri`` 给上次尝试落盘的会话 URI 时，本
+        函数先对它做状态查询（PUT Content-Range: bytes */size）：
+        服务端已提交偏移是权威，308 带 Range 才从该偏移续；
+        查询回 200/201 = 上游已完成、直接拿 id 收尾；会话已死
+        （400/404/410，含违规作废）响亮记日志并回落新建会话从
+        头传，绝不因恢复失败打挂这一单。``on_session(uri)`` 在
+        新建会话后回调（供落盘），``on_progress(committed)`` 在
+        每次服务端确认偏移后回调（供落盘已提交偏移）；回调异
+        常只记日志、不影响上传。不挂 hooks 时行为与此前逐字
+        一致（会话只活在本次尝试内）。会话与令牌解耦：查询与
+        续传都用现取令牌的 _headers，换令牌不断会话（可行性
+        报告 §二实测）。
         """
         from backend.emby_server.drive_oauth import DriveOAuthError
-        params = {"uploadType": "resumable", "supportsAllDrives": "true"}
-        meta = {"name": name, "parents": [folder_id]}
-        headers = dict(self._headers(drive_id))
-        headers["X-Upload-Content-Type"] = "application/octet-stream"
-        headers["X-Upload-Content-Length"] = str(size)
-        try:
-            resp = httpx.request("POST", _DRIVE_UPLOAD_URL, params=params,
-                                 json=meta, headers=headers, timeout=120)
-        except (httpx.TimeoutException, httpx.ConnectError,
-                httpx.RemoteProtocolError, httpx.ReadError) as exc:
-            raise _CrossRemoteError(
-                f"Drive 可续传会话创建网络异常：{type(exc).__name__}"
-                ) from exc
-        if resp.status_code == 401:
-            headers = dict(self._headers(drive_id, force_refresh=True))
+        hooks = getattr(self, "drive_session_hooks", None) or {}
+        resume_uri = str(hooks.get("resume_session_uri") or "").strip()
+        on_session = hooks.get("on_session")
+        on_progress = hooks.get("on_progress")
+
+        def _fire(cb, *args):
+            if cb is None:
+                return
+            try:
+                cb(*args)
+            except Exception:  # noqa: BLE001 — 落盘回调失败不打挂上传
+                logger.warning("Drive 会话落盘回调失败", exc_info=True)
+
+        session_uri = None
+        pos = 0
+        if resume_uri:
+            # 状态查询对账：不传字节，只问服务端已提交前缀。
+            q_refreshed = False
+            while True:
+                q_headers = dict(self._headers(drive_id))
+                q_headers["Content-Range"] = f"bytes */{size}"
+                q_headers["Content-Length"] = "0"
+                try:
+                    q = httpx.request("PUT", resume_uri,
+                                      headers=q_headers, content=b"",
+                                      timeout=120)
+                except (httpx.TimeoutException, httpx.ConnectError,
+                        httpx.RemoteProtocolError,
+                        httpx.ReadError) as exc:
+                    raise _CrossRemoteError(
+                        f"Drive 可续传状态查询网络异常："
+                        f"{type(exc).__name__}") from exc
+                if q.status_code == 401 and not q_refreshed:
+                    q_refreshed = True
+                    self._headers(drive_id, force_refresh=True)
+                    continue
+                break
+            if q.status_code in (200, 201):
+                data = q.json() if q.content else {}
+                fid = str((data or {}).get("id") or "")
+                if not fid:
+                    raise _CrossRemoteError(
+                        "Drive 可续传状态查询回完成但未返回文件 id")
+                _fire(on_progress, size)
+                return fid
+            if q.status_code == 308:
+                session_uri = resume_uri
+                ranged = (q.headers.get("range") or "").strip()
+                if ranged.startswith("bytes=0-"):
+                    try:
+                        pos = int(ranged[len("bytes=0-"):]) + 1
+                    except ValueError:
+                        pos = 0
+                logger.info(
+                    "Drive 可续传会话恢复：已提交 %s/%s 字节，续传",
+                    pos, size)
+            elif q.status_code in (400, 404, 410):
+                # 会话已死（过期/被取消/违规作废）：响亮记日志，
+                # 回落新建会话从头传（用户口径：不许让单子死在
+                # 恢复路上）。会话 URI 本身是能力凭据，不打日志。
+                logger.warning(
+                    "Drive 可续传会话已失效（状态查询 %s），"
+                    "回落新建会话从头上传 size=%s",
+                    q.status_code, size)
+                session_uri = None
+                pos = 0
+            else:
+                raise _CrossRemoteError(
+                    f"Drive 可续传状态查询失败：{q.status_code}")
+        if session_uri is None:
+            params = {"uploadType": "resumable",
+                      "supportsAllDrives": "true"}
+            meta = {"name": name, "parents": [folder_id]}
+            headers = dict(self._headers(drive_id))
             headers["X-Upload-Content-Type"] = "application/octet-stream"
             headers["X-Upload-Content-Length"] = str(size)
             try:
-                resp = httpx.request("POST", _DRIVE_UPLOAD_URL, params=params,
-                                     json=meta, headers=headers, timeout=120)
+                resp = httpx.request("POST", _DRIVE_UPLOAD_URL,
+                                     params=params, json=meta,
+                                     headers=headers, timeout=120)
             except (httpx.TimeoutException, httpx.ConnectError,
                     httpx.RemoteProtocolError, httpx.ReadError) as exc:
                 raise _CrossRemoteError(
-                    f"Drive 可续传会话创建网络异常（刷新后）："
-                    f"{type(exc).__name__}") from exc
-        session_uri = (resp.headers.get("location") or "").strip()
-        if resp.status_code != 200 or not session_uri:
-            raise _CrossRemoteError(
-                f"Drive 可续传会话创建失败：{resp.status_code}")
-        pos = 0
+                    f"Drive 可续传会话创建网络异常：{type(exc).__name__}"
+                    ) from exc
+            if resp.status_code == 401:
+                headers = dict(self._headers(drive_id,
+                                             force_refresh=True))
+                headers["X-Upload-Content-Type"] = "application/octet-stream"
+                headers["X-Upload-Content-Length"] = str(size)
+                try:
+                    resp = httpx.request("POST", _DRIVE_UPLOAD_URL,
+                                         params=params, json=meta,
+                                         headers=headers, timeout=120)
+                except (httpx.TimeoutException, httpx.ConnectError,
+                        httpx.RemoteProtocolError,
+                        httpx.ReadError) as exc:
+                    raise _CrossRemoteError(
+                        f"Drive 可续传会话创建网络异常（刷新后）："
+                        f"{type(exc).__name__}") from exc
+            session_uri = (resp.headers.get("location") or "").strip()
+            if resp.status_code != 200 or not session_uri:
+                raise _CrossRemoteError(
+                    f"Drive 可续传会话创建失败：{resp.status_code}")
+            _fire(on_session, session_uri)
         refreshed = False
         guard = (size + _CROSS_SEGMENT - 1) // _CROSS_SEGMENT + 5
         while pos < size and guard > 0:
             guard -= 1
-            end = min(pos + _CROSS_SEGMENT, size) - 1
+            if pos % _CROSS_SEGMENT:
+                # 续传落点在段中间：本段只传到下一段界——保证非
+                # 尾段长度恒为 _CROSS_SEGMENT 的因数倍（256 KiB
+                # 整数倍硬约束，报告 §二.2），不整段越界重传。
+                end = min((pos // _CROSS_SEGMENT + 1) * _CROSS_SEGMENT,
+                          size) - 1
+            else:
+                end = min(pos + _CROSS_SEGMENT, size) - 1
             reader.seek(pos)
             chunk = reader.read(end - pos + 1)
             if len(chunk) != end - pos + 1:
@@ -4446,12 +4541,14 @@ class UserDriveApiClient(DriveApiClient):
                 fid = str((data or {}).get("id") or "")
                 if not fid:
                     raise _CrossRemoteError("Drive 可续传完成未返回文件 id")
+                _fire(on_progress, size)
                 return fid
             if put.status_code == 308:
                 ranged = (put.headers.get("range") or "").strip()
                 if ranged.startswith("bytes=0-"):
                     try:
                         pos = int(ranged[len("bytes=0-"):]) + 1
+                        _fire(on_progress, pos)
                         continue
                     except ValueError:
                         pass
@@ -6558,6 +6655,57 @@ def _run_cross_115_to_drive(db, job, item):
         _raw_fetch,
         _acquire_source_stage("pan115", "", item.drive_file_id or "", size))
 
+    # Drive 会话落盘续传（换代线 step 3）：记账开关开时，把上次
+    # 尝试落盘的会话 URI 交给 resumable_upload 先对账续传，并把
+    # 新会话/已提交偏移经 hooks 同步落盘。纯旁路、fail-open：接
+    # 线失败或恢复不到会话时 hooks 不挂，上传行为与此前逐字
+    # 一致（会话只活在本次尝试内）。恢复/失效的日志在
+    # resumable_upload 内打（失效回落新建会话，不打挂本单）。
+    _content_key = _stage_key("pan115", "", item.drive_file_id or "",
+                              size)
+    _tman = None
+    if manifest_accounting_enabled(db):
+        try:
+            from backend.emby_server import transfer_manifest as _tman
+            _restored = _tman.restore_drive_session(
+                db, job.id, _content_key, size, folder_id)
+            _resume_uri = (_restored or {}).get("session_uri")
+            _session_cell = {"uri": _resume_uri}
+
+            def _drive_on_session(uri):
+                _session_cell["uri"] = uri
+                _tman.persist_drive_session(
+                    db, job_id=job.id, content_key=_content_key,
+                    dest_ref=folder_id, session_uri=uri, size=size,
+                    name=name,
+                    dest_binding_id=getattr(binding, "id", None))
+
+            def _drive_on_progress(committed):
+                uri = _session_cell.get("uri")
+                if not uri:
+                    return
+                _tman.persist_drive_session(
+                    db, job_id=job.id, content_key=_content_key,
+                    dest_ref=folder_id, session_uri=uri, size=size,
+                    name=name, committed_offset=committed,
+                    dest_binding_id=getattr(binding, "id", None))
+
+            user_client.drive_session_hooks = {
+                "resume_session_uri": _resume_uri,
+                "on_session": _drive_on_session,
+                "on_progress": _drive_on_progress,
+            }
+            if _resume_uri:
+                logger.info(
+                    "pan115→Drive 凭落盘会话续传 job=%s item=%s",
+                    job.id, item.id)
+        except Exception:  # noqa: BLE001 — 接线失败不打挂搬运
+            _tman = None
+            try:
+                user_client.drive_session_hooks = None
+            except Exception:
+                pass
+
     # 透传哈希包装（2026-10-30 扩围）：字节实际流经本进程，顺手
     # 算整文件 sha1 供下方沉淀——源列表没给 sha1 时也不再白搬。
     reader = _HashingReader(_SegmentReader(size, _fetch), size)
@@ -6565,13 +6713,21 @@ def _run_cross_115_to_drive(db, job, item):
         new_fid = user_client.resumable_upload(user_drive, name, folder_id,
                                                size, reader)
     except DriveOAuthError as exc:
+        if _tman is not None:
+            _tman.finish_delivery(db, job.id, "aborted")
         return _fail_job(db, job, "no_binding",
                          f"用户 Drive 令牌失效：{exc}")
     except _CrossAuthError as exc:
+        if _tman is not None:
+            _tman.finish_delivery(db, job.id, "aborted")
         return _fail_job(db, job, "auth_error", str(exc))
     except Exception as exc:
-        return {"job_id": job.id,
-                "outcome": _schedule_retry(db, job, exc)}
+        outcome = _schedule_retry(db, job, exc)
+        if outcome == "failed" and _tman is not None:
+            _tman.finish_delivery(db, job.id, "aborted")
+        return {"job_id": job.id, "outcome": outcome}
+    if _tman is not None:
+        _tman.finish_delivery(db, job.id, "completed")
     try:
         verified_fid = _verify_drive_copy_in_dir(
             user_client, user_drive, folder_id, name, new_fid)

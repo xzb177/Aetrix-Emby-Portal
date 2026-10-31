@@ -25,6 +25,18 @@ chunk-sync-engine-feasibility-20261031.md §七顺序 1–2）：
 会话仍由 transfer115 的 ListParts 对账说了算，落盘行只是给
 sidecar 丢失时多一个找回会话的来源。
 
+3. **Drive 会话落盘续传**（换代线 step 3，2026-11-01 用户亲令
+解除点火门后落地）：115→Drive 方向的 resumable 会话 URI 此前
+只活在单次尝试内（``UserDriveApiClient.resumable_upload``），
+尝试失败即整单重传。本模块把会话 URI＋已提交偏移同步进
+``transfer_deliveries``（dest_provider="drive"，session 记
+``{"kind": "drive_resumable", ...}``），新尝试先凭落盘会话做
+状态查询对账（服务端已提交偏移是权威，见报告 §二.1），一致
+才续。恢复校验（content_key＋size＋目标目录）与 sidecar 同
+口径；会话认不认最终由 Drive 侧状态查询说了算，落盘行仍只
+是找回来源。用户口径：新路任何一步出错必须响亮记日志并回
+落现行旧路（新建会话从头传）把这一单办完。
+
 **fail-open 总则**：本模块全部 DB 函数失败只记日志返回失败
 标记，绝不抛进转存主流程；``ChunkTracker.feed`` 与
 ``TrackingReader`` 的记账动作同样吞异常——清单写失败、tracker
@@ -492,6 +504,100 @@ def finish_delivery(db, job_id, state):
         logger.warning("transfer_manifest finish_delivery failed "
                        "job=%s", job_id, exc_info=True)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Drive 可续传会话落盘（step 3：115→Drive 方向，fail-open 同上）
+# ---------------------------------------------------------------------------
+
+def persist_drive_session(db, *, job_id, content_key, dest_ref,
+                          session_uri, size, name="",
+                          committed_offset=0, dest_binding_id=None,
+                          state="active"):
+    """把 Drive resumable 会话同步进 transfer_deliveries。
+
+    按 job_id 一行原地演进（与 persist_delivery 同口径）；session
+    存 ``{"kind": "drive_resumable", "session_uri", "name"}``，
+    不含任何凭据（会话 URI 本身即能力凭据——它只进本表、不打
+    日志、不回任何用户面，与 sidecar 文件同级对待）。已终态
+    （completed/aborted）的行不再被覆盖。
+    """
+    if db is None or not job_id or not session_uri:
+        return False
+    try:
+        size = int(size)
+        committed_offset = int(committed_offset or 0)
+        row = (db.query(em.TransferDelivery)
+               .filter_by(job_id=int(job_id)).one_or_none())
+        if row is not None and row.state in ("completed", "aborted"):
+            return False
+        if row is None:
+            row = em.TransferDelivery(job_id=int(job_id),
+                                      content_key=content_key or "")
+            db.add(row)
+        row.content_key = content_key or ""
+        row.dest_provider = "drive"
+        row.dest_binding_id = dest_binding_id
+        row.dest_ref = dest_ref
+        row.size = size
+        row.session = json.dumps(
+            {"kind": "drive_resumable", "session_uri": session_uri,
+             "name": name or ""}, ensure_ascii=False)
+        row.committed_chunks = (committed_offset // CHUNK_SIZE
+                                if committed_offset else 0)
+        row.committed_offset = committed_offset
+        row.state = state or "active"
+        row.updated_at = datetime.now()
+        db.commit()
+        return True
+    except Exception:  # noqa: BLE001 — 落盘失败绝不打挂转存
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.warning("transfer_manifest persist_drive_session failed "
+                       "job=%s", job_id, exc_info=True)
+        return False
+
+
+def restore_drive_session(db, job_id, content_key, size, dest_ref):
+    """凭 transfer_deliveries 行恢复 Drive resumable 会话。
+
+    校验与 sidecar 同口径：行存在且 state=active、kind 对、
+    content_key＋size＋目标目录（dest_ref）三项全对、会话 URI
+    非空。任一不符回 None（调用方按无会话走新建会话，与会话
+    只活在尝试内的现行语义一致）。返回
+    ``{"session_uri", "committed_offset", "name"}``。
+    """
+    if db is None or not job_id:
+        return None
+    try:
+        row = (db.query(em.TransferDelivery)
+               .filter_by(job_id=int(job_id)).one_or_none())
+        if row is None or row.state != "active":
+            return None
+        if (row.content_key != content_key
+                or int(row.size or 0) != int(size)
+                or row.dest_ref != dest_ref):
+            return None
+        data = json.loads(row.session or "")
+        session = data if isinstance(data, dict) else {}
+        if session.get("kind") != "drive_resumable":
+            return None
+        uri = str(session.get("session_uri") or "").strip()
+        if not uri:
+            return None
+        return {"session_uri": uri,
+                "committed_offset": int(row.committed_offset or 0),
+                "name": str(session.get("name") or "")}
+    except Exception:  # noqa: BLE001 — 恢复失败按无会话处理
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.warning("transfer_manifest restore_drive_session failed "
+                       "job=%s", job_id, exc_info=True)
+        return None
 
 
 def restore_delivery_session(db, job_id, content_key, size, dest_cid):
