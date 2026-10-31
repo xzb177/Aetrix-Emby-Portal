@@ -44,6 +44,22 @@ def _generate_invite_code(db: Session) -> str:
             return code
 
 
+def _mask_invite_code(code_str: str | None) -> str:
+    """邀请码掩码（A-128：日志只许记掩码，不许记原文）。
+
+    只露首尾各 1 位：8 位 36 字母码露首尾各 2 位只剩 36^4 ≈ 170 万种、
+    对无鉴权注册口可枚举；露首尾各 1 位剩 36^6，不可枚举，
+    配合 user id / 时间戳仍可定位到具体一次注册尝试。
+    短码（≤2 位）直接全掩。
+    """
+    s = (code_str or "").strip()
+    if not s:
+        return ""
+    if len(s) <= 2:
+        return "****"
+    return f"{s[0]}{'*' * (len(s) - 2)}{s[-1]}"
+
+
 def _get_config(db: Session, key: str, default: str) -> str:
     # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
     _env_v = _switch_env_value(key)
@@ -154,7 +170,7 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     if (code.whitelist or "").strip():
         allowed = {w.strip().lower() for w in code.whitelist.split(",") if w.strip()}
         if (user.username or "").strip().lower() not in allowed:
-            logger.info("邀请码白名单未命中，跳过: code=%s user=%s", code_str, user.id)
+            logger.info("邀请码白名单未命中，跳过: code_id=%s user=%s", code.id, user.id)
             return {"applied": False}
 
     inviter = db.query(models.WebUser).filter(
@@ -176,7 +192,7 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     # 并发下抢不到名额的直接拒绝，不会走到后面的发奖。占位失败整体回滚，不留半截状态。
     if not _claim_invitation_use(db, code, now):
         db.rollback()
-        logger.info("邀请码名额并发占位失败: code=%s user=%s", code_str, user.id)
+        logger.info("邀请码名额并发占位失败: code_id=%s user=%s", code.id, user.id)
         return {"applied": False}
 
     # 记录邀请关系（reward_points 先占位，promotion 发放后回填实际数值）
@@ -227,8 +243,8 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
         logger.warning("邀请发奖遇到写锁竞争，已回滚: invitee=%s", user.id)
         return {"applied": False}
 
-    logger.info("邀请关系建立: inviter=%s invitee=%s code=%s",
-                inviter.id, user.id, code_str)
+    logger.info("邀请关系建立: inviter=%s invitee=%s code_id=%s",
+                inviter.id, user.id, code.id)
     return {
         "applied": True,
         "inviter_id": inviter.id,

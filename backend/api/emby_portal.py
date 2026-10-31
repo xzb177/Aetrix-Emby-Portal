@@ -491,7 +491,12 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
             db.commit()
         except Exception:  # noqa: BLE001 — 邀请奖励失败不阻塞注册
             db.rollback()
-            logger.warning("邀请码应用失败: user=%s code=%s", user.id, req.invitation_code,
+            # A-128：此处拿不到码行 id（apply 本身已抛错），只记掩码；
+            # 掩码函数与 apply_invitation 同模块，沿用本块的懒导入写法。
+            from backend.api.invitation import _mask_invite_code
+
+            logger.warning("邀请码应用失败: user=%s code_mask=%s", user.id,
+                           _mask_invite_code(req.invitation_code),
                            exc_info=True)
 
     # 公益服冷启动赠送：失败静默不阻塞注册（与邀请奖励同一容错口径）。
