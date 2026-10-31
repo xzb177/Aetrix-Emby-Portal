@@ -763,8 +763,9 @@ def main() -> int:
         # 上游聚合定时调度（准备线，开关默认关）：仅
         # UPSTREAM_AGGREGATE_SCHEDULE_ENABLED=1 时启动；关时不启动、
         # 不发任何上游请求，全站行为逐字不变。本块只加自己的启动行，
-        # 不动苹果 CMS 调度 / 探活工人的接线行。调度本体复用手动聚合
-        # 入口（见 backend/emby_server/upstream_aggregate_scheduler.py）。
+        # 不动苹果 CMS 调度 / 探活工人的接线行。调度本体走任务表入队
+        # （O-03/A-120，见 upstream_aggregate_scheduler.py），执行
+        # 由下面的认领工人认领。
         try:
             from backend.emby_server import upstream_aggregate_scheduler
 
@@ -776,6 +777,21 @@ def main() -> int:
                 logger.info("上游聚合定时调度未开启，不启动")
         except Exception as e:
             logger.warning(f"启动上游聚合定时调度失败（可忽略）: {e}")
+        # 上游聚合认领工人（O-03）：无开关门——worker 进程跑起来它就
+        # 必须在，否则 api/调度入队的任务无人执行。本块只加自己的
+        # 启动行，不动调度 / 探活工人的接线行。认领循环每轮按 FIFO
+        # 提交 queued 任务到 worker 进程内执行（见
+        # backend/emby_server/upstream_aggregate_jobs.py）。
+        try:
+            from backend.emby_server import upstream_aggregate_jobs
+
+            if upstream_aggregate_jobs.start_aggregate_worker(_shutdown_event):
+                started.append("upstream_aggregate_worker")
+                logger.info("✅ 上游聚合认领工人已启动")
+            else:
+                logger.info("上游聚合认领工人未启动")
+        except Exception as e:
+            logger.warning(f"启动上游聚合认领工人失败（可忽略）: {e}")
         # 302 Next 数据集同步：默认关（总闸与子开关双关），关时不起线程；
         # 开后按 NEXT302_DATASET_SYNC_INTERVAL_SEC（下限 600 秒）跑榜单同步。
         try:
