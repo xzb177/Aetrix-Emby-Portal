@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import tempfile
 
@@ -153,4 +154,73 @@ def test_strategy_fixture_teardown_cleans():
 def test_endpoints_fixture_teardown_cleans():
     _drive_fixture_teardown(
         endpoints_mod.db, KEY_TABLES_ENDPOINTS, _build_endpoints_canaries
+    )
+
+
+# ---------------------------------------------------------------------------
+# #1668 回归守卫：测试文件导入时不许把全局引擎重绑到未建表的空库。
+#
+# 背景（2026-11-01）：tests/test_whitelist_code_permanent.py 在导入时把全局
+# backend.database.engine/SessionLocal 重绑到自己的临时库且不调 init_db，又是
+# 套件中字母序最后的重绑者，导致之后所有依赖全局 SessionLocal 的测试在 setup
+# 集体报 no such table: web_users，CI 冒烟两轮同形态红。
+# 正统写法（其余 70+ 重绑文件皆如此）：导入时重绑后必须紧跟顶层 init_db()。
+# 本守卫是纯源码静态检查，不执行被测模块、不动全局引擎、不触碰真实库：
+# 对 tests/test_*.py 逐文件做 AST 扫描，只算导入时真正执行的顶层语句
+# （递归进 If/Try/With，但不进函数/类体）；凡顶层出现 .engine/.SessionLocal
+# 赋值或 configure_session_local 调用、却没有顶层 init_db()/create_all() 调用，
+# 即判违规。test_honeypot_code.py 曾是全套件唯一违规者，已随本守卫同单修复。
+# ---------------------------------------------------------------------------
+
+
+def _iter_import_time_nodes(node):
+    """产出导入时执行的节点：顶层语句，递归进 If/Try/With，不进函数/类体。"""
+    if isinstance(
+        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+    ):
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _iter_import_time_nodes(child)
+
+
+def _import_time_rebind_without_init(path):
+    """该文件是否在导入时重绑全局引擎却未在导入时建表。"""
+    tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    rebind = False
+    init = False
+    for stmt in tree.body:
+        for node in _iter_import_time_nodes(stmt):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Attribute) and target.attr in (
+                        "engine",
+                        "SessionLocal",
+                    ):
+                        rebind = True
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Attribute):
+                    if func.attr == "configure_session_local":
+                        rebind = True
+                    if func.attr in ("init_db", "create_all"):
+                        init = True
+                elif isinstance(func, ast.Name) and func.id == "init_db":
+                    init = True
+    return rebind and not init
+
+
+def test_no_import_time_engine_rebind_without_init():
+    tests_dir = pathlib.Path(__file__).parent
+    violators = sorted(
+        p.name
+        for p in tests_dir.glob("test_*.py")
+        if _import_time_rebind_without_init(p)
+    )
+    assert not violators, (
+        "测试文件在导入时重绑全局引擎却未在导入时建表：重绑者若成套件最后"
+        "重绑者，后续依赖全局 SessionLocal 的测试会在 setup 集体报缺表"
+        "（#1668 同形态回归）——请删导入时副作用，或在导入时补 init_db()："
+        + ", ".join(violators)
     )

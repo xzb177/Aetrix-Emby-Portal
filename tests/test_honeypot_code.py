@@ -10,21 +10,16 @@
 5. 普通卡码不受影响（兑换成功、用户不被封禁）。
 """
 import os
-import tempfile
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
-_fd, _tmp = tempfile.mkstemp(suffix=".db")
-os.close(_fd)
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}"
 
+# 注意（#1668 教训）：本文件不许在导入时重绑全局 backend.database.engine。
+# 旧写法曾在导入时建临时库并重绑全局引擎且不调 init_db；一旦它成为套件
+# 最后一个重绑者，后续依赖全局 SessionLocal 的测试会在 setup 集体报缺表。
+# 本文件自带 db 夹具（内存库），根本用不到全局引擎，故直接删掉导入时副作用。
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
-
-from backend import database as _dbmod  # noqa: E402
-
-_dbmod.engine = create_engine(os.environ["DATABASE_URL"])
-_dbmod.configure_session_local(sessionmaker(bind=_dbmod.engine))
 
 import logging  # noqa: E402
 
