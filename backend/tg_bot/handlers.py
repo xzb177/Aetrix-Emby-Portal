@@ -579,6 +579,10 @@ def handle_checkin(db, tg_user: dict, chat_id: int, args: str) -> str:
     user = resolve(db, int(tg_user.get("id") or 0))
     if user is None:
         return _bind_guide_text()
+    # PA-029：停用账号经机器人签到领能量须拦（与 PA-019 博彩门同口径，
+    # 落机器人侧入口，不改 tg_bot resolve 层与网站核心）。
+    if not getattr(user, "is_active", True):
+        return "账号已被停用"
     try:
         award = _do_checkin_core(db, user)
     except HTTPException as e:
@@ -654,6 +658,10 @@ def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
     user = resolve(db, int(tg_user.get("id") or 0))
     if user is None:
         return _bind_guide_text()
+    # PA-029：停用账号经机器人兑码须拦（与签到门同口径，入口处拦，
+    # 码本身不受影响、仍可由正常账号兑换）。
+    if not getattr(user, "is_active", True):
+        return "账号已被停用"
     code_str = (args or "").strip()
     if not code_str:
         return layout.card(
@@ -740,7 +748,9 @@ def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -
 
     sql = (
         "SELECT r.id, r.title, r.status, r.draw_at, "
-        "(SELECT COUNT(*) FROM lottery_round_winners w WHERE w.round_id = r.id AND w.user_id = :uid) AS won "
+        "(SELECT COUNT(*) FROM lottery_round_winners w "
+        "JOIN lottery_round_entries e2 ON e2.id = w.entry_id "
+        "WHERE w.round_id = r.id AND e2.user_id = :uid) AS won "
         "FROM lottery_rounds r "
         "JOIN lottery_round_entries e ON e.round_id = r.id AND e.user_id = :uid "
         "ORDER BY r.id DESC LIMIT 10"
