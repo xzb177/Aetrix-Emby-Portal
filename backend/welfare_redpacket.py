@@ -102,6 +102,12 @@ def send_packet(
     # 手续费（向上取整）
     fee_pct = _get_int_config(db, "redpacket_fee_pct", 5)
     fee = math.ceil(total_amount * fee_pct / 100) if fee_pct > 0 else 0
+    if fee > 0 and economy._whitelist_fee_exempt(db, sender):
+        # 白名单（永久）账号免红包手续费（2026-11-02 独一无二体验包，
+        # 判定与转账共用 economy._whitelist_fee_exempt）：fee 归 0 后，
+        # 下游记账与 fee_pct 配置为 0 时逐字一致（不写 redpacket_fee
+        # 台账行、日志 fee=0）。收款方行为不变。
+        fee = 0
     need = total_amount + fee
 
     balance = int(sender.points or 0)

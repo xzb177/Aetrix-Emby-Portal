@@ -2253,6 +2253,26 @@ async def payment_return(request: Request, db: Session = Depends(get_db)):
 
 # ==================== 积分转账（C2） ====================
 
+def _whitelist_fee_exempt(db: Session, user) -> bool:
+    """白名单（永久）账号免手续费判定（转账/红包共用）。
+
+    口径只复用 codes 的白名单定义（codes.is_whitelist_account：核销
+    痕迹＋三处永久现算），不另立名单。函数内导入 codes 避开循环导入
+    （与 vitality 豁免同款写法）。判定失败时按不豁免处理
+    （fail-closed）并记日志，绝不凭不确定数据免单。
+    """
+    if user is None:
+        return False
+    try:
+        from backend import codes as _codes
+
+        return _codes.is_whitelist_account(db, user)
+    except Exception:
+        logger.exception("白名单免手续费判定失败，按不豁免处理 user=%s",
+                         getattr(user, "id", None))
+        return False
+
+
 def _transfer_enabled(db: Session) -> bool:
     """积分转账总开关（points_transfer_enabled，"1"=开；兼容 true/on/yes）。"""
     value = str(_get_config(db, "points_transfer_enabled", "1")).strip().lower()
@@ -2314,6 +2334,11 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
             raise ValueError(f"今日转账额度已用完（上限 {daily_cap} 能量）")
 
     fee = math.ceil(amount * fee_pct / 100) if fee_pct > 0 else 0
+    if fee > 0 and _whitelist_fee_exempt(db, sender):
+        # 白名单（永久）账号免转账手续费（2026-11-02 独一无二体验包）：
+        # fee 归 0 后，下游记账与 fee_pct 配置为 0 时逐字一致
+        # （need 只剩本金、不写 transfer_fee 台账行、返回 fee=0）。
+        fee = 0
     need = amount + fee
     balance = sender.points or 0
     if balance < need:

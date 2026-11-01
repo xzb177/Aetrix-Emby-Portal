@@ -28,7 +28,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from backend import config_service, media_seek, models, realms, register_channel
@@ -1275,12 +1275,29 @@ def get_media_seeks(
         # 想看它们就显式传 status_filter=withdrawn。
         query = query.filter(models.MovieRequest.status != "withdrawn")
 
-    requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
+    # 白名单（永久）账号求片置顶（2026-11-02 独一无二体验包·求片 VIP）：
+    # 名单只复用 codes 口径（批量版 whitelist_account_ids），现算不存
+    # 第二份状态；名单为空时排序与现行逐字一致。默认序在 SQL 层把
+    # 白名单行排到最前（组内仍按提交时间降序）；order=hot 时置顶
+    # 优先于热度——置顶是处理优先级，热度只是同档内的次序。
+    from backend import codes as _codes
+
+    try:
+        vip_user_ids = _codes.whitelist_account_ids(db)
+    except Exception:
+        vip_user_ids = set()
+    if vip_user_ids:
+        requests = query.order_by(
+            case((models.MovieRequest.user_id.in_(vip_user_ids), 0), else_=1),
+            models.MovieRequest.created_at.desc(),
+        ).limit(200).all()
+    else:
+        requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
     if order == "hot":
         # v2 热度排序：附议数高的在前（附议数相同按提交时间）
         requests = sorted(
             requests,
-            key=lambda r: ((r.vote_count or 0), r.created_at),
+            key=lambda r: (r.user_id in vip_user_ids, (r.vote_count or 0), r.created_at),
             reverse=True,
         )[:200]
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
