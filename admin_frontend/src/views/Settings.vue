@@ -137,6 +137,21 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    id: 'watch-points',
+    title: '观影能量',
+    desc: '公益服观影能量：按当日累计观影分钟分档发能量（积分），与活力观影奖并行；每档每日只发一次',
+    icon: Coins,
+    fields: [
+      { key: 'watch_points_first_minutes', label: '首看分钟数', type: 'int', suffix: '分钟', hint: '当日累计观影达到该分钟数发首看奖，默认 20' },
+      { key: 'watch_points_first', label: '首看奖', type: 'int', suffix: '能量', hint: '首看奖能量，默认 4；填 0 关闭该档' },
+      { key: 'watch_points_tier1_minutes', label: '一档分钟数', type: 'int', suffix: '分钟', hint: '当日累计观影达到该分钟数发一档奖，应不小于首看分钟数，默认 45' },
+      { key: 'watch_points_tier1', label: '一档奖励', type: 'int', suffix: '能量', hint: '一档奖能量，与首看奖叠加，默认 8；填 0 关闭该档' },
+      { key: 'watch_points_tier2_minutes', label: '二档分钟数', type: 'int', suffix: '分钟', hint: '当日累计观影达到该分钟数发二档奖，应不小于一档分钟数，默认 120' },
+      { key: 'watch_points_tier2', label: '二档奖励', type: 'int', suffix: '能量', hint: '二档奖能量，与前两档叠加，默认 7；填 0 关闭该档' },
+      { key: 'watch_points_daily_cap', label: '每日封顶', type: 'int', suffix: '能量/天', hint: '观影能量每日发放上限，默认 16；0=不限' },
+    ],
+  },
+  {
     id: 'exchange',
     title: '兑换码 · 求片',
     desc: '卡码默认套餐与求片额度（日限 + 公益/付费月限都在这一张卡）',

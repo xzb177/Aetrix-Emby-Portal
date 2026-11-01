@@ -562,6 +562,15 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "vitality_checkin_skip_deduct_enabled": ("bool",),
     # 签到活力奖励（economy._do_checkin_core 读取；默认 1，填 0 则签到不恢复活力）
     "vitality_checkin_gain": ("int", 0, _BIG),
+    # 观影能量（货币再设计第一期；watch_points 读取：当日累计分钟分档发能量，
+    # 首看/一档/二档奖励与分钟数＋每日封顶，0 奖励=该档关闭、封顶 0=不限）
+    "watch_points_first": ("int", 0, _BIG),
+    "watch_points_first_minutes": ("int", 0, _BIG),
+    "watch_points_tier1": ("int", 0, _BIG),
+    "watch_points_tier1_minutes": ("int", 0, _BIG),
+    "watch_points_tier2": ("int", 0, _BIG),
+    "watch_points_tier2_minutes": ("int", 0, _BIG),
+    "watch_points_daily_cap": ("int", 0, _BIG),
     "series_merge_interval_sec": ("int", 3600, 604800),
     "series_merge_batch_limit": ("int", 10, 100000),
 }

@@ -452,6 +452,14 @@ def _record_stopped(request: Request, user: models.WebUser, db: Session, body: d
         _ml.award_watch_xp(db, user.id, watched_ticks / 600_000_000, item.id)
     except Exception:  # noqa: BLE001 — 经验发放失败不挡停播上报
         logger.debug("观影 XP 发放失败", exc_info=True)
+    # 货币再设计第一期：观影能量（尽力而为，与活力/经验同结算点同输入；
+    # 按当日累计分钟分档发能量，幂等与封顶在 watch_points 内）。
+    try:
+        from backend import watch_points as _wp
+        _wp.award_watch_points(db, user.id, watched_ticks / 600_000_000,
+                               item.id, finished)
+    except Exception:  # noqa: BLE001 — 奖励失败不挡停播上报
+        logger.debug("观影能量发放失败", exc_info=True)
     # 批一 #3：尽力提前释放「挂载+路径前缀」播放路数租约（stream_limits）。
     # 只是提前量：客户端不发 Stopped 也没关系，租约靠 TTL 到期收敛；
     # release 本身永不抛，这里再套一层保险，不许影响 Stopped 主流程。
