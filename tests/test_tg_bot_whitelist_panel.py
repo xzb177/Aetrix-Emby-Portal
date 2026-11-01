@@ -133,10 +133,10 @@ def test_fixture_matches_production_definition(db):
 def test_user_panel_whitelist_layout(db):
     vip = _make_whitelist(db, _user(db, TG_VIP, "vip"))
     text = features.user_panel(db, vip)
-    # 专属问候标题
-    assert text.startswith("▎<b>欢迎回来，创世守护者！</b>vip")
+    # 专属问候标题（称号唯一来源 codes.WHITELIST_TITLE，断言按常量取值）
+    assert text.startswith(f"▎<b>欢迎回来，{codes.WHITELIST_TITLE}！</b>vip")
     # 称号行：紧跟用户编号行、在公益资格行之前
-    title_row = "· 👑 <b>专属称号</b> | <b>创世守护者</b>"
+    title_row = f"· 👑 <b>专属称号</b> | <b>{codes.WHITELIST_TITLE}</b>"
     assert title_row in text
     assert text.index("用户编号") < text.index("专属称号") < text.index("公益资格")
     # 编号尚未落地：只显示称号，不出编号行
@@ -150,8 +150,24 @@ def test_user_panel_whitelist_layout(db):
 def test_compact_dashboard_whitelist_layout(db):
     vip = _make_whitelist(db, _user(db, TG_VIP, "vip"))
     text = features.compact_dashboard(db, vip, display_name="Vip")
-    assert "· 👑 <b>专属称号</b> | <b>创世守护者</b>" in text
-    assert "欢迎回来，创世守护者！" in text
+    assert f"· 👑 <b>专属称号</b> | <b>{codes.WHITELIST_TITLE}</b>" in text
+    assert f"欢迎回来，{codes.WHITELIST_TITLE}！" in text
+
+
+# ---------- 1b. 称号唯一来源：codes.WHITELIST_TITLE，面板不许再硬写一份 ----------
+
+def test_title_follows_codes_constant(db, monkeypatch):
+    """临时改 codes.WHITELIST_TITLE 的值，两个面板的问候与称号行必须随动。
+
+    这是称号来源的自证：面板侧若再硬写字面，本例立刻红。
+    """
+    vip = _make_whitelist(db, _user(db, TG_VIP, "vip"))
+    monkeypatch.setattr(codes, "WHITELIST_TITLE", "探针称号")
+    text = features.user_panel(db, vip)
+    assert "· 👑 <b>专属称号</b> | <b>探针称号</b>" in text
+    assert "欢迎回来，探针称号！" in text
+    account = features.handle_account(db, _tg(TG_VIP, "Vip"), TG_VIP, "")
+    assert "· 👑 <b>专属称号</b> | <b>探针称号</b>" in account
 
 
 # ---------- 2. 白名单：账号中心（/account、/me） ----------
@@ -160,7 +176,7 @@ def test_account_whitelist_layout(db):
     vip = _make_whitelist(db, _user(db, TG_VIP, "vip"))
     text = features.handle_account(db, _tg(TG_VIP, "Vip"), TG_VIP, "")
     assert text.startswith("▎<b>专属账号中心！</b>vip")
-    title_row = "· 👑 <b>专属称号</b> | <b>创世守护者</b>"
+    title_row = f"· 👑 <b>专属称号</b> | <b>{codes.WHITELIST_TITLE}</b>"
     assert title_row in text
     # 称号行紧跟账号名称行、在当前等级行之前
     assert text.index("账号名称") < text.index("专属称号") < text.index("当前等级")

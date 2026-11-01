@@ -29,8 +29,8 @@ def _bound_user(db, tg_user: dict):
 
 # ---------------- 白名单专属版式（2026-11-02 体验包·机器人面板单） ----------------
 
-#: 白名单专属称号：全站最高档、不可购买，只对生效中的白名单账号展示。
-WHITELIST_TITLE = "创世守护者"
+# 白名单专属称号不在本文件定义：唯一来源是 backend.codes.WHITELIST_TITLE
+# （与身份组 #1680 共用一份），取值点在 _whitelist_identity。
 
 # 创世编号的只读探查面：编号由身份组单落库，本单不落库、不编号——
 # user 属性、codes helper、codes 名单行三处任一有值就展示，都没有时
@@ -101,7 +101,7 @@ def _whitelist_identity(db, user):
         logger.debug("白名单判定失败，面板回落普通版式 user=%s",
                      getattr(user, "id", None), exc_info=True)
         return None
-    return {"title": WHITELIST_TITLE, "serial": _whitelist_serial(db, user)}
+    return {"title": _codes.WHITELIST_TITLE, "serial": _whitelist_serial(db, user)}
 
 
 def _whitelist_rows(identity) -> list[str]:
@@ -427,7 +427,7 @@ def user_panel(db, user, display_name: str | None = None) -> str:
     if identity is not None:
         # 白名单专属版式：专属问候＋称号/编号行紧跟用户编号行，其余照旧。
         rows[1:1] = _whitelist_rows(identity)
-        return layout.card(layout.title("欢迎回来，创世守护者！", greet), rows)
+        return layout.card(layout.title(f"欢迎回来，{identity['title']}！", greet), rows)
     return layout.card(layout.title("欢迎进入用户面板！", greet), rows)
 
 
