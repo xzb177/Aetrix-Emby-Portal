@@ -674,6 +674,12 @@ def create_binding(db: Session, user_id: int, provider: str,
     cred.status = "active"
     cred.last_verified_at = now
     cred.last_error_kind = None
+    # 绑定成功连带复活转存死单（PA-004 补全，2026-11-02 用户
+    # 亲点）：与 Drive 重绑共用同一份实现，该用户 failed/
+    # no_binding 等三类行打回 pending、工人按新凭据重跑；只在
+    # 验活成功点调，失败落态/一过性回滚路径不调（同事务提交）。
+    from backend.emby_server import transfer_variant as _tv
+    _tv.revive_binding_failed_jobs(db, user_id)
     db.commit()
     return binding
 
@@ -756,6 +762,11 @@ def verify_binding(db: Session, user_id: int,
     cred.status = "active"
     cred.last_verified_at = now
     cred.last_error_kind = None
+    # 重验通过连带复活转存死单（PA-004 补全，口径同
+    # create_binding 成功点）：与 Drive 重绑共用同一份实现，
+    # 只在验活通过点调，失败落态/一过性不改状态路径不调。
+    from backend.emby_server import transfer_variant as _tv
+    _tv.revive_binding_failed_jobs(db, user_id)
     db.commit()
     return binding
 
