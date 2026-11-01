@@ -148,6 +148,10 @@ class UpstreamCatalogRecord:
     season_number: Optional[int] = None
     episode_number: Optional[int] = None
     versions: Tuple[UpstreamVersion, ...] = ()
+    # 上游侧所属剧的 Item Id（Emby Episode 的 SeriesId 基础字段）：
+    # 进库二期单集回查所属剧的身份级依据（靠它查映射/托管剧行，
+    # 不靠剧名猜）。Movie / Series 记录恒为空。放末尾保位置构造兼容。
+    series_upstream_id: str = ""
 
 
 def _provider_id(provider_ids: object, *names: str) -> Optional[str]:
@@ -213,6 +217,7 @@ def parse_emby_item(
         season_number=_as_int(raw.get("ParentIndexNumber")),
         episode_number=_as_int(raw.get("IndexNumber")),
         versions=tuple(versions),
+        series_upstream_id=str(raw.get("SeriesId") or ""),
     )
 
 
@@ -351,6 +356,13 @@ class UpstreamAggregateItem:
     season_number: Optional[int] = None
     series_name: str = ""
     lines: List[UpstreamLine] = field(default_factory=list)
+    # 单集本名与所属剧的上游 Id（进库二期）：聚合层为单集把
+    # ``name`` 置成了剧名（配对/展示口径，不许改），建集行需要
+    # 集自己的标题与所属剧的身份级定位，这里从记录原样带出；
+    # 非单集记录 episode_name 与 name 同值、series_upstream_id
+    # 为空，均不参与既有口径。
+    episode_name: str = ""
+    series_upstream_id: str = ""
 
 
 def build_aggregates(
@@ -386,6 +398,8 @@ def build_aggregates(
                 category_binding=bindings.get(record.category_id, ""),
                 season_number=record.season_number,
                 series_name=record.series_name,
+                episode_name=record.name,
+                series_upstream_id=record.series_upstream_id,
             )
             by_key[key] = item
         else:
@@ -401,6 +415,10 @@ def build_aggregates(
                 item.season_number = record.season_number
             if not item.series_name:
                 item.series_name = record.series_name
+            if not item.episode_name:
+                item.episode_name = record.name
+            if not item.series_upstream_id:
+                item.series_upstream_id = record.series_upstream_id
         line_key = f"upstream:{record.source_id}:{record.upstream_item_id}"
         if any(line.line_key == line_key for line in item.lines):
             continue

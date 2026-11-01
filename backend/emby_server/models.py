@@ -1203,6 +1203,71 @@ class UpstreamItemMapping(Base):
                         nullable=False)
 
 
+class UpstreamLibraryLink(Base):
+    """上游库 ↔ 本地库对应关系（独有资源进库二期：自动建库落点）。
+
+    一期进库按上游库名现找同名本地库；二期自动建库后必须按关系
+    找库、不靠同名现找——管理员把自动建的库改名后，同名查找会
+    落空并重复建库。一行 = 一个源的一个上游库（Emby
+    /Library/MediaFolders 的 Id）对应一个本地库；自动建库时与
+    库行同事务落本行，它同时是建库动作的审计记录（谁、何时、
+    按什么类型建的）。不加外键（照 UpstreamSource 先例）：本地
+    库被删时关系行留着供追溯，解析时发现目标库不存在按无关系
+    处理（重新走同名/新建并刷新本行）。由 create_all 自动建表，
+    老库无需 ALTER（见 EnrichFlipEvent 先例）。
+    """
+
+    __tablename__ = "upstream_library_links"
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "upstream_library_id",
+                         name="uq_upstream_library_link"),
+        Index("ix_upstream_library_links_source", "source_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_id = Column(Integer, nullable=False)  # upstream_sources.id，无外键
+    upstream_library_id = Column(String(100), nullable=False)  # 对方库 Id
+    upstream_library_name = Column(String(200))  # 建库时的上游库名（追溯用）
+    local_library_id = Column(Integer, nullable=False)  # emby_libraries.id，无外键
+    collection_type = Column(String(30))  # 建库时定的本地 collection_type
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+
+
+class UpstreamHostedLifecycle(Base):
+    """上游托管行生命周期对账状态（独有资源进库二期）。
+
+    一行 = 一个托管行（MediaItem.upstream_source_id 非空）在一源
+    下的连续缺失计数：聚合每轮对账时，本轮目录里见到的行清零、
+    没见到的 +1；连续 2 轮不见隐藏、再 2 轮不见软删（口径见
+    upstream_import.reconcile_hosted_lifecycle）。状态必须落库：
+    轮次跨进程/跨天，内存计数活不过一轮。``hidden_by_lifecycle``
+    区分「对账藏的」与「源开关/管理员藏的」——恢复可见时只许
+    恢复对账自己藏的行，不许替别人掀盖。季行不单独跟踪（无上游
+    条目 id），随所属剧的级联与「无子季行回收」处理。不加外键
+    （照 UpstreamSource 先例），由 create_all 自动建表。
+    """
+
+    __tablename__ = "upstream_hosted_lifecycle"
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "local_item_id",
+                         name="uq_upstream_hosted_lifecycle"),
+        Index("ix_upstream_hosted_lifecycle_source", "source_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_id = Column(Integer, nullable=False)  # upstream_sources.id，无外键
+    local_item_id = Column(Integer, nullable=False)  # emby_items.id，无外键
+    missing_rounds = Column(Integer, nullable=False, default=0)
+    hidden_by_lifecycle = Column(Boolean, nullable=False, default=False)
+    last_seen_at = Column(DateTime)  # 最近一次在上游目录里见到该行
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+
+
 #: 上游聚合任务状态全集（upstream_aggregate_tasks.status 的 CHECK 用）。
 UPSTREAM_AGGREGATE_TASK_STATUSES = (
     "queued", "running", "succeeded", "failed", "interrupted")

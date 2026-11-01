@@ -5502,6 +5502,57 @@ def _resolve_series_playback_episode(db: Session, user, series: em.MediaItem):
     return episodes[0]
 
 
+def _resolve_hosted_series_episode(db: Session, user, series: em.MediaItem):
+    """托管剧 PlaybackInfo（IsPlayback=true）的落集选择：目标集或 None。
+
+    ``_resolve_series_playback_episode`` 只认有 file_path 的集
+    （本地剧口径），托管剧的集恒无 file_path，剧级点播永远落空
+    ——客户端在剧页点播只对 series 本体发请求（《眷思量》案
+    同形），落空即黑屏。这里是托管剧的同口径落集：候选 = 本剧
+    未隐藏、未合并的集（不设 file_path 门），排序与已播口径与
+    本地版一致（未看完优先、全看完从第一集重播），且候选必须
+    有可展示上游映射——没线路的集落了也播不了，继续往后找；
+    一部都没有返回 None（调用方保持回空源）。
+    """
+    from backend.emby_server import upstream_playback as _up
+
+    MI = em.MediaItem
+    episodes = (
+        db.query(MI)
+        .filter(
+            MI.item_type == "episode",
+            MI.series_id == series.id,
+            MI.is_hidden == False,  # noqa: E712
+            MI.merged_into_id.is_(None),
+        )
+        .order_by(
+            MI.season_number.asc().nullslast(),
+            MI.episode_number.asc().nullslast(),
+            MI.id.asc(),
+        )
+        .all()
+    )
+    episodes = [e for e in episodes if _item_visible(db, user, e)]
+    if not episodes:
+        return None
+    played_ids = {
+        row[0]
+        for row in db.query(em.UserMediaData.item_id)
+        .filter(
+            em.UserMediaData.user_id == user.id,
+            em.UserMediaData.item_id.in_([e.id for e in episodes]),
+            em.UserMediaData.played == True,  # noqa: E712
+        )
+        .all()
+    }
+    ordered = ([e for e in episodes if e.id not in played_ids]
+               + [e for e in episodes if e.id in played_ids])
+    for ep in ordered:
+        if _up.get_displayable_mapping(db, ep.id) is not None:
+            return ep
+    return None
+
+
 @emby_router.post("/emby/Items/{item_id}/PlaybackInfo")
 @emby_router.post("/Items/{item_id}/PlaybackInfo")
 @emby_router.get("/emby/Items/{item_id}/PlaybackInfo")
@@ -5571,6 +5622,27 @@ async def playback_info(
                         "PlaySessionId": secrets.token_hex(8),
                         "ErrorCode": None,
                     })
+            if item.item_type == "series" and (
+                request.query_params.get("IsPlayback") or ""
+            ).lower() == "true":
+                # 托管剧剧级点播（进库二期）：本地落集只认有
+                # file_path 的集，托管集恒无 → 永远落空；改走
+                # 托管落集（见 _resolve_hosted_series_episode），
+                # 落到的集仍只回上游线路一条源、不进转存流水线。
+                _hosted_episode = await run_db(
+                    _resolve_hosted_series_episode, db, user, item)
+                if _hosted_episode is not None:
+                    _up_only = await run_db(
+                        _upstream_only_media_source, db,
+                        _hosted_episode, request, user)
+                    if _up_only is not None:
+                        _pt.mark("upstream_only_source_hosted_series")
+                        _pt.done()
+                        return _strip_nulls({
+                            "MediaSources": [_up_only],
+                            "PlaySessionId": secrets.token_hex(8),
+                            "ErrorCode": None,
+                        })
             # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
             # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
             # 返回空 MediaSources 是 Emby 客户端认可的「无可播放源」。
