@@ -535,6 +535,12 @@ DEAD_CONFIG_KEYS = (
     "playback_transcode_enabled",
     # 2026-10-23 去重退役
     "chat_points_enabled",
+    # 2026-11-02 自挣来源限定删除残留（#1678）：两键的校验与注册已删净，
+    # 生产实查 welfare_redeem_self_earned_only=true 仍有存量行（另一键无行），
+    # 靠自愈清掉；残留行即使未清也无读方、不复活门槛（回归在
+    # tests/test_welfare_redeem_gate.py 与 tests/test_subscription_points_gate.py）
+    "welfare_redeem_self_earned_only",
+    "subscription_buy_self_earned_only",
     # strm_gen 子系统残留
     "strm_gen_enabled",
     "strm_gen_interval_minutes",
