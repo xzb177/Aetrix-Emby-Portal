@@ -201,6 +201,10 @@ def test_checkin_gain_default_is_1(db):
 def test_checkin_gain_custom_and_zero(db):
     from backend.api.economy import _do_checkin_core
 
+    # PA-014：签到活力受每日免费上限钳制（默认上限 2 会把 gain 3 压成 2）；
+    # 本用例测的是“自定义 gain 值生效”，故把上限抬到 10 隔离钳制影响，
+    # 钳制本身由 test_pa013_016_economy.py 的 PA-014 用例覆盖。
+    _set_config(db, "vitality_daily_gain_limit", "10")
     _set_config(db, "vitality_checkin_gain", "3")
     u = _checkin_welfare_user(db, "welf2", vitality=5)
     _do_checkin_core(db, u)
