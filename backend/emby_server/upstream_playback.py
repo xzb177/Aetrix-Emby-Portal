@@ -652,6 +652,88 @@ def get_displayable_mapping(db, local_item_id):
     return mapping, source
 
 
+def _default_http_get_json(url: str, headers: dict, timeout: float):
+    """默认 GET 层（与 _default_http_post 同款）：返回 (status, body)。"""
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with upstream_http.safe_urlopen(req, timeout=timeout) as resp:
+            try:
+                body = json.loads(resp.read().decode("utf-8", "replace"))
+            except (ValueError, UnicodeDecodeError):
+                body = None
+            return resp.status, body
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8", "replace"))
+        except (ValueError, UnicodeDecodeError, AttributeError):
+            body = None
+        return exc.code, body
+    except Exception:
+        return None, None
+
+
+#: 现查媒体参数时轨道只许带这些字段：上游 MediaStream 里的
+#: DeliveryUrl / Path 等可能嵌着对方地址与凭据，一律不许过界。
+_MEDIA_PARAM_STREAM_KEYS = (
+    "Index", "Type", "Codec", "Language", "DisplayTitle", "IsDefault",
+    "IsForced", "IsExternal", "Width", "Height", "Channels", "BitRate",
+    "AspectRatio", "VideoRange", "SampleRate",
+)
+
+
+def fetch_upstream_media_params(source, upstream_item_id: str, *,
+                                http_get: Optional[Callable] = None,
+                                http_post: Optional[Callable] = None):
+    """现查上游条目的媒体参数（无本地源时的合成源取数，进库一期）。
+
+    GET ``{base}/Items/{id}`` 取首个 MediaSource 的 Size /
+    RunTimeTicks / Container / Bitrate 与轨道摘要（白名单字段，见
+    ``_MEDIA_PARAM_STREAM_KEYS``——绝不带上游 URL、路径与凭据）。
+    凭据走本模块唯一消费点 ``_auth_token_for_source``。任何失败
+    （凭据失效、上游不可用、响应异常）一律返回 None：合成源回落
+    本地行数据，现查只是参数补强，绝不许把 PlaybackInfo 打挂。
+    """
+    try:
+        token = _auth_token_for_source(source, http_post=http_post)
+    except Exception:
+        return None
+    base = (source.base_url or "").rstrip("/")
+    item_part = urllib.parse.quote((upstream_item_id or "").strip(), safe="")
+    if not base or not item_part:
+        return None
+    url = f"{base}/Items/{item_part}"
+    if token:
+        url += "?" + urllib.parse.urlencode({"api_key": token})
+    get = _default_http_get_json if http_get is None else http_get
+    try:
+        status, body = get(url, _source_headers(source),
+                           UPSTREAM_PROBE_TIMEOUT_SEC)
+    except Exception:
+        return None
+    if status != 200 or not isinstance(body, dict):
+        return None
+    media_sources = body.get("MediaSources")
+    if not isinstance(media_sources, list) or not media_sources:
+        return None
+    first = media_sources[0]
+    if not isinstance(first, dict):
+        return None
+    streams = []
+    raw_streams = first.get("MediaStreams")
+    if isinstance(raw_streams, list):
+        for raw in raw_streams:
+            if isinstance(raw, dict):
+                streams.append({k: raw[k] for k in _MEDIA_PARAM_STREAM_KEYS
+                                if k in raw})
+    return {
+        "size": first.get("Size"),
+        "run_time_ticks": first.get("RunTimeTicks"),
+        "container": first.get("Container"),
+        "bitrate": first.get("Bitrate"),
+        "media_streams": streams,
+    }
+
+
 def resolve_mapped_upstream_stream(db: Session, local_item_id: int, *,
                                    http_probe=None, http_post=None,
                                    http_get=None, parse_resolver=None) -> str:

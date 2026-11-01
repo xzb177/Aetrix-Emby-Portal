@@ -10,7 +10,7 @@ StrmAssistant 做法（ScheduledTask/MergeMultiVersionTask.cs）：
 - 定时任务：扫描 movie/series，按 tmdb_id（优先）/imdb_id 分组
 - union-find 处理传递闭包
 - 物理合并：被合并条目的 merged_into_id 指向主记录
-- 主记录选择：复用 dedup.pick_primary（有海报 > 有 tmdb > 有简介 > id 小）
+- 主记录选择：复用 dedup.pick_primary（有本地文件 > 有海报 > 有 tmdb > 有简介 > id 小）
 
 与 dedup.py 的关系：
 - dedup.py 是展示层去重（API 过滤），本模块是数据层物理合并
@@ -421,6 +421,14 @@ def merge_group(db, group: List) -> int:
         if item.merged_into_id is not None:
             continue
         item.merged_into_id = primary.id
+        # 合并跟随（进库一期）：被合并行的上游映射迁到主记录——映射
+        # 读契约只认活行，不迁线路就凭空消失；冲突保留置信高者
+        # （口径见 upstream_item_mappings.migrate_mappings）。
+        from backend.emby_server import upstream_item_mappings as _uim
+        # db=None 契约（test_c_p2_1_merge_group_marks_done 以 None 调本函数）：
+        # 无会话时无映射可迁，直接跳过，不许为迁映射把纯内存合并打断。
+        if db is not None:
+            _uim.migrate_mappings(db, item.id, primary.id)
         # P2 修复（完美审查 C-P2-1）：被合并条目元数据走主记录，enrich 直接记 done——
         # 否则 _claim_batch 用 merged_into_id.is_(None) 永久排除它们，而 health_report
         # 的 backlog 照计 pending/enriching：永远不会被处理，也永远不会从 backlog 消失。
@@ -454,6 +462,8 @@ def _follow_series_episodes(db, group: List) -> None:
     from backend.emby_server import dedup
     from backend.emby_server import models as em
 
+    if db is None:
+        return
     if len(group) < 2:
         return
     primary = dedup.pick_primary(group)
@@ -488,6 +498,9 @@ def _follow_series_episodes(db, group: List) -> None:
             main_ep = main_map.get(key)
             if main_ep is not None and main_ep.id != ep.id:
                 ep.merged_into_id = main_ep.id
+                # 集跟随同口径：被合并集的上游映射迁到主集（见 merge_group）。
+                from backend.emby_server import upstream_item_mappings as _uim
+                _uim.migrate_mappings(db, ep.id, main_ep.id)
                 logger.debug(
                     "集跟随：%s (id=%d) → 主集 id=%d",
                     ep.name, ep.id, main_ep.id,

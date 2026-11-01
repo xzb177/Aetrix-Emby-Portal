@@ -101,6 +101,7 @@ from sqlalchemy.orm import Session
 from backend.emby_server import models as em
 from backend.emby_server import upstream_aggregation as agg
 from backend.emby_server import upstream_http
+from backend.emby_server import upstream_import as uimp
 from backend.emby_server import upstream_item_mappings as uim
 from backend.emby_server import upstream_sources as us
 
@@ -903,7 +904,8 @@ def run_manual_aggregation(db: Session, source, *,
                            on_heartbeat: Optional[Callable] = None,
                            commit_each_library: bool = False,
                            skip_library_ids=None,
-                           prior_summaries: Optional[Dict[str, dict]] = None
+                           prior_summaries: Optional[Dict[str, dict]] = None,
+                           import_limit: Optional[int] = None
                            ) -> dict:
     """手动聚合一轮：按库分批拉目录 → 逐库聚合 → 逐库配对 → 开关开时写映射。
 
@@ -925,6 +927,13 @@ def run_manual_aggregation(db: Session, source, *,
     返回的 pairs 含 written 标记：开关关时一律 false、written=0；
     每对另带 library_id / library_name 供追溯；written 计 upsert
     返回的行数（含重复三元组的更新行，与旧口径一致）。
+
+    独有电影进库（一期，2026-11-01）：每窗配对后顺手把未配对
+    独有电影进库（见 upstream_import），统计并入返回的
+    imported / import_* 与各库 summary 的 import_* 键；聚合恒全量，
+    进库恒执行。``import_limit`` 是内部试点口（整轮新建行上限），
+    调度/管理端路径不传 = 不限量。进库是附加动作：单窗失败只记
+    日志，不打断聚合主流程。
 
     事务口径（2026-10-31 优化 O-01，``commit_each_library``）：
     - 默认 False = 旧口径：全程只 flush，提交归调用方；单库失败
@@ -983,6 +992,12 @@ def run_manual_aggregation(db: Session, source, *,
     total_aggregates = 0
     total_paired = 0
     total_written = 0
+    # 进库统计（整轮）：import_remaining 是 import_limit 的整轮余量，
+    # 跨窗跨库递减（None = 不限量）。
+    import_totals = {"candidates": 0, "imported": 0, "existing": 0,
+                     "no_library": 0, "limited": 0}
+    import_blocked: Optional[str] = None
+    import_remaining = import_limit
     for library in libraries:
         lib_id = library["id"]
         lib_name = library["name"]
@@ -1013,6 +1028,8 @@ def run_manual_aggregation(db: Session, source, *,
             "status": "ok",
         }
         lib_fetched = lib_aggregates = lib_paired = lib_written = 0
+        lib_import = {"candidates": 0, "imported": 0, "existing": 0,
+                      "no_library": 0, "limited": 0}
         lib_pairs: List[dict] = []
         failure: Optional[Tuple[str, str]] = None
         try:
@@ -1069,6 +1086,32 @@ def run_manual_aggregation(db: Session, source, *,
                     unpaired["episode_index_invalid"] = (
                         unpaired.get("episode_index_invalid", 0)
                         + write_invalid)
+                # 独有电影进库（一期）：把本窗未配对的独有电影
+                # 落同名库建托管行 + 映射（upstream_import）。
+                # 聚合自 #1652 起恒全量（无收窄模式），进库恒执行；
+                # 落点按上游库名找同名库。进库失败只记日志、本窗
+                # 跳过，绝不打断聚合主流程（聚合是主、进库是附加）；
+                # 口径见 upstream_import 模块头。
+                try:
+                    _imp_stats = uimp.import_unpaired_movies(
+                        db, source, items,
+                        {p["upstream_item_id"] for p in pairs},
+                        upstream_library_name=lib_name,
+                        limit=import_remaining)
+                    for _k in lib_import:
+                        _v = int(_imp_stats.get(_k) or 0)
+                        lib_import[_k] += _v
+                        import_totals[_k] += _v
+                    if _imp_stats.get("blocked"):
+                        import_blocked = str(_imp_stats["blocked"])
+                    if import_remaining is not None:
+                        import_remaining = max(
+                            0, import_remaining
+                            - int(_imp_stats.get("imported") or 0))
+                except Exception:
+                    logger.exception(
+                        "上游独有电影进库失败（已跳过本窗） "
+                        "source_id=%s library=%s", source.id, lib_id)
                 lib_fetched += len(window)
                 lib_aggregates += len(items)
                 lib_paired += len(pairs)
@@ -1097,6 +1140,13 @@ def run_manual_aggregation(db: Session, source, *,
             failure = ("mapping_conflict", "映射写入冲突，请重试")
             logger.exception("上游按库聚合映射冲突回滚单库 source_id=%s "
                              "library=%s", source.id, lib_id)
+        # 进库统计并入本库 summary（commit 模式回滚时在下面归 0）。
+        summary.update({
+            "import_candidates": lib_import["candidates"],
+            "import_imported": lib_import["imported"],
+            "import_existing": lib_import["existing"],
+            "import_no_library": lib_import["no_library"],
+            "import_limited": lib_import["limited"]})
         if failure is not None:
             code, message = failure
             if commit_each_library:
@@ -1106,9 +1156,14 @@ def run_manual_aggregation(db: Session, source, *,
                 db.rollback()
                 total_paired -= lib_paired
                 total_written -= lib_written
+                for _k in import_totals:
+                    import_totals[_k] -= lib_import[_k]
                 summary.update({
                     "fetched": lib_fetched, "aggregates": lib_aggregates,
                     "paired": 0, "written": 0,
+                    "import_candidates": 0, "import_imported": 0,
+                    "import_existing": 0, "import_no_library": 0,
+                    "import_limited": 0,
                     "status": "failed", "error_code": code, "error": message})
             else:
                 # 窗粒度断点（旧口径）：已写窗的进度照实留在 summary。
@@ -1140,8 +1195,13 @@ def run_manual_aggregation(db: Session, source, *,
                 db.rollback()
                 total_paired -= lib_paired
                 total_written -= lib_written
+                for _k in import_totals:
+                    import_totals[_k] -= lib_import[_k]
                 summary.update({
                     "paired": 0, "written": 0, "status": "failed",
+                    "import_candidates": 0, "import_imported": 0,
+                    "import_existing": 0, "import_no_library": 0,
+                    "import_limited": 0,
                     "error_code": "mapping_conflict",
                     "error": "映射写入冲突，请重试"})
                 del all_pairs[len(all_pairs) - len(lib_pairs):]
@@ -1169,6 +1229,12 @@ def run_manual_aggregation(db: Session, source, *,
         "pairs": all_pairs,
         "paired": total_paired,
         "written": total_written,
+        "imported": import_totals["imported"],
+        "import_candidates": import_totals["candidates"],
+        "import_existing": import_totals["existing"],
+        "import_no_library": import_totals["no_library"],
+        "import_limited": import_totals["limited"],
+        "import_blocked": import_blocked,
         "mapping_enabled": mapping_on,
         "unpaired_reasons": unpaired_total,
         "libraries": library_summaries,

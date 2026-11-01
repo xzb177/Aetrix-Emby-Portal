@@ -733,8 +733,11 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         # 与主源同一签名口径：签名轨只给已有 active 绑定的用户；
         # 线路地址只回本服务取流口，(source_id, upstream_item_id)
         # 不下发，点播时取流口现查映射复验。
-        if (dto["MediaSources"] and item.item_type in ("movie", "episode")
-                and item.file_path):
+        # 进库一期（2026-11-01）：不再要求 file_path——上游托管行没有
+        # 本地文件，有映射即可挂线路（本地主源的 DirectPlayUrl 仍只给
+        # 有 file_path 的条目，见上方）；有映射与否由
+        # _upstream_line_media_source 内的 get_displayable_mapping 裁决。
+        if (dto["MediaSources"] and item.item_type in ("movie", "episode")):
             from backend.emby_server import playback_gate as _gate_mod
             _up_line = _upstream_line_media_source(
                 item, dto["MediaSources"][0], base, user_id, db, api_key,
@@ -1440,6 +1443,11 @@ def _upstream_line_media_source(item, base_source: dict, base: str, user_id,
     if found is None:
         return None
     _mapping, source = found
+    if base_source is None:
+        # 无本地源（上游托管行，进库一期）：合成基础源——本地行数据
+        # 打底、媒体参数现查上游补强（见 _synthetic_upstream_base_source）。
+        base_source = _synthetic_upstream_base_source(
+            item, _mapping, source, base, api_key, db)
     line = copy.deepcopy(base_source)
     url, _exp, _sig = _signed_upstream_line_url(
         item, base, user_id, db, api_key, with_sign=with_sign)
@@ -1457,6 +1465,50 @@ def _upstream_line_media_source(item, base_source: dict, base: str, user_id,
     })
     line.pop("TranscodingUrl", None)
     return line
+
+
+def _synthetic_upstream_base_source(item, mapping, source, base: str,
+                                    api_key: str = "", db=None) -> dict:
+    """无本地源时上游线路的合成基础源（进库一期）。
+
+    托管行没有本地文件、没有本地 MediaSource 可深拷贝：先用本地行
+    数据走 _media_source 拼同形空壳（容器/时长多为空），再现查上游
+    条目补真实媒体参数（Size / RunTimeTicks / Container / Bitrate /
+    轨道摘要，见 upstream_playback.fetch_upstream_media_params）；
+    现查失败就用空壳——参数缺失只是展示粗糙，取流口点播时仍会现查
+    映射复验 + 探活，播放不受影响。
+    """
+    dto = _media_source(item, base, api_key, db, synthesize=True)
+    try:
+        from backend.emby_server import upstream_playback as _up
+        params = _up.fetch_upstream_media_params(
+            source, mapping.upstream_item_id)
+    except Exception as exc:  # noqa: BLE001 — 现查只是补强，失败回落空壳
+        logger.warning("上游媒体参数现查失败 item=%s: %s", item.id, exc)
+        params = None
+    if params:
+        if params.get("size"):
+            dto["Size"] = params["size"]
+        if params.get("run_time_ticks"):
+            dto["RunTimeTicks"] = params["run_time_ticks"]
+        if params.get("container"):
+            dto["Container"] = params["container"]
+        if params.get("bitrate"):
+            dto["Bitrate"] = params["bitrate"]
+        if params.get("media_streams"):
+            dto["MediaStreams"] = params["media_streams"]
+    return dto
+
+
+def _upstream_only_media_source(db, item, request, user):
+    """PlaybackInfo 托管行专用：只组装上游线路一条源（同步，run_db 内跑）。
+
+    签名轨与主流程同口径恒签（PlaybackInfo 入口已过付费墙与绑定
+    门禁）；无可展示映射返回 None，调用方回空源（原口径）。
+    """
+    base = _base_url(request)
+    return _upstream_line_media_source(
+        item, None, base, user.id if user else None, db, "", True)
 
 
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
@@ -5504,6 +5556,21 @@ async def playback_info(
             _series_episode = await run_db(
                 _resolve_series_playback_episode, db, user, item)
         if _series_episode is None:
+            # 上游托管行（进库一期）：无本地文件是常态，有可展示映射时
+            # 只回上游线路一条源、直达取流口——不进下面的转存 / quota
+            # 流水线（无本地源可转存）；付费墙与绑定门禁已在函数头过完，
+            # 口径不变。无映射仍回空源（原口径）。
+            if item.item_type in ("movie", "episode"):
+                _up_only = await run_db(
+                    _upstream_only_media_source, db, item, request, user)
+                if _up_only is not None:
+                    _pt.mark("upstream_only_source")
+                    _pt.done()
+                    return _strip_nulls({
+                        "MediaSources": [_up_only],
+                        "PlaySessionId": secrets.token_hex(8),
+                        "ErrorCode": None,
+                    })
             # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
             # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
             # 返回空 MediaSources 是 Emby 客户端认可的「无可播放源」。

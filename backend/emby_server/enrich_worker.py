@@ -1718,6 +1718,13 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
                 result["nfo_data"] = nfo_data
             except Exception as exc:  # noqa: BLE001
                 logger.debug("补全 NFO 失败 %s: %s", item.file_path, exc)
+    elif kind in ("episode", "movie") and getattr(
+            item, "upstream_source_id", None):
+        # 上游托管行（进库一期）：无本地文件是常态，与容器条目同款
+        # 只走 TMDB 补全（片名/年份/tmdb_id 都在行上）；判失败会让它
+        # 永远在重试队列里空转锁死，绝不走下面的判死分支。
+        logger.debug("补全 %s 上游托管行无 file_path（托管条目），仅走 TMDB：%s",
+                     item_type, item.name)
     elif kind in ("episode", "movie"):
         # 真正需要本地文件却没有 → 无从补全，判失败让退避重试
         result["ok"] = False

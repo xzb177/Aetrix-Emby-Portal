@@ -204,3 +204,50 @@ def get_best_mapping(db: Session, local_item_id: int, *,
         if row.source_id in enabled_ids:
             return row
     return None
+
+
+def migrate_mappings(db: Session, from_local_id: int, to_local_id: int) -> int:
+    """把一个本地条目的全部映射改挂到另一个条目（合并跟随用）。
+
+    合并选主改版后（有本地文件优先），上游托管行会被合并进本地行；
+    映射若留在被合并行上，读契约（活行校验）会让线路凭空消失——
+    合并方（merge_versions_worker.merge_group / 集跟随）在置
+    merged_into_id 的同一事务里调本函数迁走。
+
+    冲突口径（同一 (source_id, upstream_item_id) 在存活行已有映射，
+    唯一约束不许两行并存）：保留置信度高者——败者行删除；若被迁行
+    置信更高，把存活行的 confidence / evidence / episode_index 抬到
+    被迁行的值（episode_index 仅被迁行非 None 时覆盖，同
+    record_mapping 的 upsert 口径）。只 flush 不 commit（调用方事务）。
+    返回处理行数（改挂 + 冲突合并）。
+    """
+    if not from_local_id or not to_local_id or from_local_id == to_local_id:
+        return 0
+    rows = (db.query(em.UpstreamItemMapping)
+            .filter(em.UpstreamItemMapping.local_item_id == from_local_id)
+            .all())
+    handled = 0
+    for row in rows:
+        clash = (db.query(em.UpstreamItemMapping)
+                 .filter(
+                     em.UpstreamItemMapping.local_item_id == to_local_id,
+                     em.UpstreamItemMapping.source_id == row.source_id,
+                     em.UpstreamItemMapping.upstream_item_id
+                     == row.upstream_item_id)
+                 .first())
+        if clash is None:
+            row.local_item_id = to_local_id
+        else:
+            if (row.confidence or 0.0) > (clash.confidence or 0.0):
+                clash.confidence = row.confidence
+                clash.evidence = row.evidence
+                if row.episode_index is not None:
+                    clash.episode_index = row.episode_index
+                clash.updated_at = datetime.now()
+            db.delete(row)
+        handled += 1
+    if handled:
+        db.flush()
+        logger.info("上游映射合并迁移：local_item_id %s → %s，共 %d 行",
+                    from_local_id, to_local_id, handled)
+    return handled
