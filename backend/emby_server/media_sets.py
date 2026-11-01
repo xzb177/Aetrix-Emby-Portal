@@ -222,9 +222,16 @@ def candidate_item_ids(db, media_set) -> set:
         prefix = (media_set.path_prefix or "").strip()
         if not prefix:
             return set()
+        # 目录边界（PA-010）：前缀无尾斜杠时，裸 LIKE prefix%
+        # 会误收兄弟目录（如 prefix=/mnt/甲 命中 /mnt/甲2/...）。
+        # 归一化：前缀本身（精确文件）或补尾斜杠后的目录下。
+        dir_prefix = prefix if prefix.endswith("/") else prefix + "/"
         ids = {r[0] for r in base.filter(
-            em.MediaItem.file_path.like(
-                f"{_like_escape(prefix)}%", escape="\\")
+            or_(
+                em.MediaItem.file_path == prefix,
+                em.MediaItem.file_path.like(
+                    f"{_like_escape(dir_prefix)}%", escape="\\"),
+            )
         ).with_entities(em.MediaItem.id).all()}
     elif media_set.source_type in ("rule", "preset"):
         rules = db.query(em.EmbyMediaSetRule).filter(
@@ -372,6 +379,8 @@ def visible_items_query(db, set_id):
     """合集成员的读查询（露/藏判定与有效计数都走它，不另起口径）。
 
     - 已合并副本排除；软删除行由全局钩子排除；
+    - 上游生命周期隐藏行（is_hidden）排除，与站内其他货架面
+      同口径（PA-009）；
     - D1 开关关（默认）时挂案 A 身份条件（复用 identity_gate
       的唯一判据，不私自判 tmdb_id）：未绑定成员不露；
       开关开时全露。
@@ -382,6 +391,7 @@ def visible_items_query(db, set_id):
     ).filter(
         em.EmbyMediaSetMember.set_id == set_id,
         em.MediaItem.merged_into_id.is_(None),
+        em.MediaItem.is_hidden == False,  # noqa: E712
     )
     if not show_unbound():
         query = query.filter(identity_clause())

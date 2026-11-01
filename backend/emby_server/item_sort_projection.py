@@ -88,14 +88,17 @@ def decode_cursor(raw: str) -> tuple[str, object, int]:
 
 
 def _live_items_query(db, library_id: int):
-    """活条目查询（movie / series，未软删、未合并；软删除钩子另会
-    自动过滤 deleted_at，这里显式写出 merged 口径，见数据库口径）。"""
+    """活条目查询（movie / series，未软删、未合并、未隐藏；软删除钩子
+    另会自动过滤 deleted_at，这里显式写出 merged 口径，见数据库口径。
+    is_hidden 由 PA-011 补上：重建与现算回落同源，旧投影行由重建的
+    删失效行逻辑清掉）。"""
     return (
         db.query(em.MediaItem)
         .filter(
             em.MediaItem.library_id == library_id,
             em.MediaItem.item_type.in_(_SORT_TYPES),
             em.MediaItem.merged_into_id.is_(None),
+            em.MediaItem.is_hidden == False,  # noqa: E712
         )
     )
 

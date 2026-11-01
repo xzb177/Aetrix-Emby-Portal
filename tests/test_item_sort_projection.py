@@ -163,3 +163,37 @@ def test_cursor_decode_rejects_garbage():
         isp.decode_cursor("not-a-cursor!!")
     with pytest.raises(ValueError):
         isp.decode_cursor(isp.encode_cursor("bogus", "x", 1))
+
+
+# ---------- PA-011（R7 审计） ----------
+
+def test_hidden_items_excluded_from_projection_and_live_page(db):
+    """PA-011：is_hidden 行既不进排序投影、也不出现在游标页与现算回落里；
+    重建还会清掉已有的隐藏行投影。"""
+    lib = em.Library(name="藏库", guid=f"lib-{os.urandom(4).hex()}")
+    db.add(lib)
+    db.commit()
+    shown = em.MediaItem(
+        name="可见", guid=f"item-{os.urandom(6).hex()}",
+        library_id=lib.id, item_type="movie", production_year=2024,
+        date_added=datetime(2024, 1, 1))
+    hidden = em.MediaItem(
+        name="已藏", guid=f"item-{os.urandom(6).hex()}",
+        library_id=lib.id, item_type="movie", production_year=2024,
+        date_added=datetime(2024, 1, 2), is_hidden=True)
+    db.add_all([shown, hidden])
+    db.commit()
+    db.refresh(shown)
+    db.refresh(hidden)
+    # 先给隐藏行造一个陈旧投影行：重建必须把它删掉。
+    db.add(em.MediaItemSortProjection(item_id=hidden.id, library_id=lib.id,
+                                      title_key="x", year_key=2024,
+                                      computed_at=datetime(2024, 1, 1)))
+    db.commit()
+    isp.rebuild_projection(db)
+    db.commit()
+    assert db.query(em.MediaItemSortProjection).filter(
+        em.MediaItemSortProjection.item_id == hidden.id).count() == 0
+    assert [i.name for i in _walk(db, lib.id, "title")] == ["可见"]
+    items, _ = isp.live_page(db, lib.id, "title", None, None, 10)
+    assert [i.name for i in items] == ["可见"]

@@ -240,3 +240,58 @@ def test_d1_switch_gates_unbound_at_read_time(authed, db, gate_on,
     members = db.query(em.EmbyMediaSetMember).filter(
         em.EmbyMediaSetMember.set_id == sid).count()
     assert members == 2  # 成员表行数未变：判定只在读时
+
+
+# ---------- PA-009 / PA-010（R7 审计） ----------
+
+def test_path_prefix_without_slash_excludes_sibling_dir(authed, db, gate_on):
+    """PA-010：无尾斜杠前缀不得误收兄弟目录（目录边界）。"""
+    lib = _lib(db, "乙库")
+    _item(db, lib.id, "甲一", "/mnt/测试系列甲/甲一.mkv", tmdb="2001")
+    _item(db, lib.id, "甲二", "/mnt/测试系列甲2/甲二.mkv", tmdb="2002")
+    _item(db, lib.id, "甲三", "/mnt/测试系列甲/甲三.mkv", tmdb="2003")
+    r = authed.post("/api/admin/media-sets",
+                    json={"name": "路径集无斜杠", "source_type": "path",
+                          "path_prefix": "/mnt/测试系列甲",
+                          "min_effective_members": 2})
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
+    r = authed.post(f"/api/admin/media-sets/{sid}/refresh")
+    assert r.json()["added"] == 2, r.text
+    assert sorted(_member_names(authed, sid)) == ["甲一", "甲三"]
+
+
+def test_path_prefix_exact_file_still_matches(authed, db, gate_on):
+    """PA-010 回归：前缀恰好等于某文件自身路径时，该文件仍入选
+    （不因补目录边界而丢掉旧有精确命中）。"""
+    lib = _lib(db, "丙库")
+    _item(db, lib.id, "单文件", "/mnt/单文件.mkv", tmdb="3001")
+    r = authed.post("/api/admin/media-sets",
+                    json={"name": "路径集精确文件", "source_type": "path",
+                          "path_prefix": "/mnt/单文件.mkv",
+                          "min_effective_members": 1})
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
+    r = authed.post(f"/api/admin/media-sets/{sid}/refresh")
+    assert r.json()["added"] == 1, r.text
+    assert _member_names(authed, sid) == ["单文件"]
+
+
+def test_visible_items_excludes_hidden_members(db, gate_on):
+    """PA-009：is_hidden 成员不在读查询里、也不计入有效成员数。"""
+    lib = _lib(db, "丁库")
+    shown = _item(db, lib.id, "可见", "/data/可见.mkv", tmdb="4001")
+    hidden = _item(db, lib.id, "已藏", "/data/已藏.mkv", tmdb="4002")
+    hidden.is_hidden = True
+    db.commit()
+    mset = em.EmbyMediaSet(name="手工集", source_type="manual",
+                           visibility_status="visible")
+    db.add(mset)
+    db.commit()
+    db.refresh(mset)
+    for item in (shown, hidden):
+        db.add(em.EmbyMediaSetMember(set_id=mset.id, item_id=item.id,
+                                     member_source="manual"))
+    db.commit()
+    assert [i.id for i in ms.visible_items_query(db, mset.id).all()] == [shown.id]
+    assert ms.effective_count(db, mset) == 1
