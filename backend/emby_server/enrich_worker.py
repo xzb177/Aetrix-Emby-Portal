@@ -2897,34 +2897,46 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     if _dbn_first:
         try:
             _dbn_details = fetched.get("douban_details") or {}
+            # PA-008：本块只补缺项——来源标记只在确实补了字段时写，且
+            # 永不改写 NFO 来源（NFO 管文字最权威，见块首注释）。
+            _dbn_filled = False
             if _dbn_first.get("title") and not (item.overview or "").strip() \
                     and not item.poster_path and not item.primary_image_url:
                 from backend.emby_server.tmdb import clean_title as _ct
                 _n = _ct(_dbn_first["title"])
                 if _n:
                     item.name = _n
+                    _dbn_filled = True
             if _dbn_first.get("year") and not item.production_year:
                 try:
                     item.production_year = int(_dbn_first["year"])
+                    _dbn_filled = True
                 except (TypeError, ValueError):
                     pass
             if _dbn_details.get("overview") and not (item.overview or "").strip():
                 item.overview = _dbn_details["overview"][:2000]
+                _dbn_filled = True
             if _dbn_details.get("runtime_ticks") and not (
                     getattr(item, "metadata_runtime_ticks", 0) or 0):
                 item.metadata_runtime_ticks = int(_dbn_details["runtime_ticks"])
-            if _dbn_details.get("rating"):
+                _dbn_filled = True
+            # 评分只填空（与 tmdb.py:2376、metasources/engine.py:483 同口径）：
+            # is None 才写，0.0 是合法已有评分，不得用 falsy 判空。
+            if _dbn_details.get("rating") and item.community_rating is None:
                 try:
                     item.community_rating = float(_dbn_details["rating"])
+                    _dbn_filled = True
                 except (TypeError, ValueError):
                     pass
             if _dbn_first.get("image") and not item.poster_path \
                     and not item.primary_image_url:
                 from backend.emby_server.tmdb import _set_image as _si
                 _si(item, "Primary", _dbn_first["image"])
+                _dbn_filled = True
             if not item.last_scraped_at:
                 item.last_scraped_at = datetime.now()
-            item.metadata_source = "douban"
+            if _dbn_filled and item.metadata_source != "nfo":
+                item.metadata_source = "douban"
         except Exception as exc:
             logger.debug("豆瓣兜底落库失败 %s: %s", getattr(item, "name", ""), exc)
             _dbn_first = None
