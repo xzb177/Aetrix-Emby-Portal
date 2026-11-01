@@ -8370,7 +8370,7 @@ def _is_aged_cross(job, now, cross_aging_sec):
 
 def _pick_candidates(candidates, limit, running_counts, cap, now=None,
                      cross_cap=None, cross_running=0, cross_aging_sec=None,
-                     probeable_ids=None):
+                     probeable_ids=None, vip_owners=None):
     """公平挑单：点播组（trigger=playback）在前、后台组在后；
     每组内按用户轮流取
     （每轮每用户先取 1 单，再取第 2 单……），直至 limit 或取尽。
@@ -8400,6 +8400,13 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
     本轮已挑的不可探针跨单）另受 cross_cap-1 约束——跨槽恒为
     可探针单保留至少 1 槽（cross_cap≥2 时），免得它被小时级
     搬运单挤到天荒地老。可探针单自身只受 cross_cap 总帽约束。
+    白名单 VIP（2026-11-02 独一无二体验包·转存 VIP，vip_owners 非空
+    时生效，None=现行行为逐字不变）：vip_owners 是 owner 键集合
+    （名单由 claim_due_jobs 按 codes 口径现算），命中的 owner 在
+    每组轮转序里整体排到普通 owner 之前（同轮先行）；档内仍按
+    原公平键（在途数→最老等待→owner 键）排序，per-owner cap 与
+    跨槽约束照旧——普通 owner 在同一轮后续轮次仍按原序推进，
+    不会被饿死（只是同轮排在 VIP 之后，名额尽时顺延下一轮认领）。
     返回挑中的任务行（不改状态，认领在 claim_due_jobs 里做）。"""
     now = now or datetime.now()
     fast = [c for c in candidates
@@ -8433,6 +8440,10 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
             for key, group in by_owner.items()}
 
         def _owner_order(key, _used=used, _oldest=oldest_at):
+            if vip_owners:
+                # VIP 档（0）整体在普通档（1）之前，档内公平键不变
+                return (0 if key in vip_owners else 1,
+                        _used.get(key, 0), _oldest[key], key)
             return (_used.get(key, 0), _oldest[key], key)
 
         round_no = 0
@@ -8614,12 +8625,27 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
                 _job._claim_probeable = True
         if not probeable_ids:
             probeable_ids = None
+    # 白名单（永久）账号转存 VIP：名单只复用 codes 口径（批量版
+    # whitelist_account_ids），现算不存第二份状态；名单读取失败
+    # 不挡认领——本轮回落普通公平序（fail-open 到现行行为）。
+    vip_owners = None
+    try:
+        from backend import codes as _codes
+
+        _vip_ids = _codes.whitelist_account_ids(db)
+        if _vip_ids:
+            vip_owners = {_owner_key("user", uid) for uid in _vip_ids}
+    except Exception:
+        logger.warning("转存工人：白名单名单读取失败，本轮不启用 VIP 优先",
+                       exc_info=True)
+        vip_owners = None
     picked = _pick_candidates(
         due, limit, running_counts, cap, now=now,
         cross_cap=cross_lane_concurrency(db),
         cross_running=_running_cross_count(db, now=now),
         cross_aging_sec=cross_aging_sec(db),
-        probeable_ids=probeable_ids)
+        probeable_ids=probeable_ids,
+        vip_owners=vip_owners)
     if not picked:
         return []
     lease_until = now + timedelta(seconds=worker_lease_sec())

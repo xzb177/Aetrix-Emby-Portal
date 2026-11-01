@@ -163,15 +163,44 @@ def used_this_month(db: Session, user_id: int) -> int:
     ).count()
 
 
+def _is_whitelist_exempt(db: Session, user) -> bool:
+    """白名单（永久）账号判定（求片月度额度豁免用）。
+
+    口径只复用 codes 的白名单定义（codes.is_whitelist_account：核销痕迹
+    ＋三处永久现算），本模块不另立名单。函数内导入 codes 避开循环导入
+    （与 vitality 豁免同款写法）。判定失败时按不豁免处理
+    （fail-closed）并记日志，绝不凭不确定数据放行。
+    """
+    if user is None:
+        return False
+    try:
+        from backend import codes as _codes
+
+        return _codes.is_whitelist_account(db, user)
+    except Exception:
+        logger.exception("白名单求片额度豁免判定失败，按不豁免处理 user=%s",
+                         getattr(user, "id", None))
+        return False
+
+
 def monthly_quota(db: Session, user) -> dict:
-    """月度额度快照：kind=用户类型，limit/used/remaining=上限/已用/剩余（剩余不为负）"""
+    """月度额度快照：kind=用户类型，limit/used/remaining=上限/已用/剩余（剩余不为负）
+
+    白名单（永久）账号月度额度豁免（2026-11-02 独一无二体验包·求片 VIP）：
+    limit/used 仍如实快照（kind 与上限口径不变），但 remaining 不被用满
+    卡死、另带 monthly_exempt=True 标明身份。提交口（api.user 的月度
+    429 校验）读的就是本快照的 remaining，豁免在这一处单点生效，
+    展示与校验不会两张皮。每日防刷上限不豁免，不在此列。
+    """
     limit = monthly_limit(db, user)
     used = used_this_month(db, user.id)
+    exempt = _is_whitelist_exempt(db, user)
     return {
         "kind": "welfare" if _is_welfare_active(user) else "paid",
         "monthly_limit": limit,
         "monthly_used": used,
-        "monthly_remaining": max(0, limit - used),
+        "monthly_remaining": limit if exempt else max(0, limit - used),
+        "monthly_exempt": exempt,
     }
 
 
