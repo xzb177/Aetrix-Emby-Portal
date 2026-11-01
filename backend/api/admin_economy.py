@@ -283,6 +283,10 @@ ECONOMY_CONFIG_KEYS = {
     # 签到随机基础分 / 惩罚（economy._checkin_rules 读取；留空=回退默认值 5）
     "checkin_base_min": "int", "checkin_base_max": "int",
     "checkin_penalty_pct": "int", "checkin_penalty_min": "int", "checkin_penalty_max": "int",
+    # 签到增强（2026-11-01 货币再设计一期）：里程碑/全勤/暴击（economy._checkin_rules 读取）
+    "checkin_milestone_points": "int", "checkin_milestone_days": "str",
+    "checkin_full_attendance_points": "int", "checkin_full_attendance_min_days": "int",
+    "checkin_crit_pct": "int", "checkin_crit_cap": "int",
     "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
     "media_seek_daily_vote_limit": "int",  # Step 1：用户每日附议上限（默认 20 次，按当日现存附议行计）
     "welfare_request_monthly": "int",  # 公益服每月求片上限（2026-10-23 去重 #5 与日限同卡）
@@ -344,6 +348,13 @@ _CHECKIN_INT_RANGES = {
     "checkin_penalty_pct": (0, 100),
     "checkin_penalty_min": (0, 100000),
     "checkin_penalty_max": (0, 100000),
+    # 签到增强（2026-11-01）：里程碑/全勤/暴击的整数键；
+    # checkin_milestone_days 是逗号列表，由 config_schema 的 int_list 在落库通道校验
+    "checkin_milestone_points": (0, 100000),
+    "checkin_full_attendance_points": (0, 100000),
+    "checkin_full_attendance_min_days": (0, 366),
+    "checkin_crit_pct": (0, 100),
+    "checkin_crit_cap": (0, 100000),
 }
 
 
