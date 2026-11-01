@@ -149,6 +149,7 @@ def check_eligibility(
 
     返回 {"ok": True} 或 {"ok": False, "reason": ...}：
     - "disabled"：功能总开关关闭
+    - "account_disabled"：账号已被停用（PA-019，与总开关的 "disabled" 区分）
     - "closed"：活动已结束或未开始
     - "blacklisted"：在黑名单中
     - "too_new"：账号注册天数不足
@@ -162,6 +163,8 @@ def check_eligibility(
     """
     if not is_enabled(db):
         return {"ok": False, "reason": "disabled"}
+    if not getattr(user, "is_active", True):
+        return {"ok": False, "reason": "account_disabled"}
     if round.status != "open":
         return {"ok": False, "reason": "closed"}
     # 发起人禁参赛（A-101）：created_by 为空的老轮次不受影响；管理端创建
@@ -389,7 +392,8 @@ def join_round(
     - 成功：{"ok": True, "entry": entry}
     - 失败：{"ok": False, "reason": ...}
       三重门 reason 全集：
-      "disabled"（总开关关闭）| "closed"（活动已结束）
+      "disabled"（总开关关闭）| "account_disabled"（账号被停用）
+      | "closed"（活动已结束）
       | "blacklisted"（黑名单）| "too_new"（账号太新）
       | "rate_limited"（今日参加超限）| "not_member"（不在 TG 群里）
       | "already"（已参加过）| "full"（名额已满）
@@ -906,6 +910,9 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
     TG 发送走函数内懒导入（避免循环依赖），任何发送失败只记日志不抛异常。
     distribute_errors：发奖失败明细（distribute_round 返回的 errors）；非空时群公告
     如实提示部分奖品发放失败，不把原始 error 文案拼进公告（可能含内部信息）。
+    私聊分流（PA-018）：发奖成败以库里最新 distributed 为准（distribute 用
+    synchronize_session=False 更新，传入的 winners 对象不一定已刷新）——已发放者
+    收“已到账”，未发放者收“发放遇到问题、系统将自动补发”，不再一律报已到账。
     """
     result: dict[str, Any] = {"sent": False, "group": False, "dm_sent": 0, "dm_failed": 0}
     if not notify_winners_enabled(db):
@@ -942,8 +949,15 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
         [e for e in entries_by_id.values() if e.id in winner_entry_ids],
         users_by_id)
 
+    # 发奖成败现查库：传入的 winners 行在 distribute 的
+    # synchronize_session=False 更新后不一定已刷新，notify 也可能在补发后被重调。
+    distributed_by_winner_id = {
+        w.id: bool(w.distributed)
+        for w in db.query(models.LotteryRoundWinner)
+        .filter(models.LotteryRoundWinner.round_id == round_id).all()
+    }
     lines: list[str] = []
-    dm_targets: list[tuple[int, str]] = []
+    dm_targets: list[tuple[int, str, bool]] = []
     for w in winners or []:
         prize = prizes_by_id.get(w.prize_id)
         entry = entries_by_id.get(w.entry_id)
@@ -951,7 +965,8 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
             continue
         shown_name = html.escape(display_names.get(entry.id) or _mask_telegram(entry.telegram_id))
         lines.append(f"🥇 {shown_name} — {_prize_unit_text(prize)}")
-        dm_targets.append((entry.telegram_id, str(prize.name)))
+        dm_targets.append((entry.telegram_id, str(prize.name),
+                           distributed_by_winner_id.get(w.id, False)))
 
     round_title = html.escape(str(round.title or ""))
     if distribute_errors:
@@ -987,13 +1002,20 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
             db.rollback()
             logger.exception("群抽奖开奖取消公告置顶异常 round_id=%s", round_id)
 
-    for telegram_id, prize_name in dm_targets:
+    for telegram_id, prize_name, delivered in dm_targets:
         try:
-            ok, err = sender.send_message(
-                db,
-                telegram_id,
-                f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了「{html.escape(prize_name)}」，奖励已发放到账。",
-            )
+            if delivered:
+                dm_text = (
+                    f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了"
+                    f"「{html.escape(prize_name)}」，奖励已发放到账。"
+                )
+            else:
+                dm_text = (
+                    f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了"
+                    f"「{html.escape(prize_name)}」，奖励发放遇到问题，"
+                    f"系统将自动补发，请留意到账通知。"
+                )
+            ok, err = sender.send_message(db, telegram_id, dm_text)
             if ok:
                 result["dm_sent"] += 1
             else:

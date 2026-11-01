@@ -60,11 +60,14 @@ def send_packet(
     校验：金额>0，个数>0，金额>=个数（每人至少 1 能量），余额充足（含手续费）
     频率：7天内发送次数上限（redpacket_send_limit_7d，0=不限）
     手续费：按 redpacket_fee_pct 比例额外扣除，记 redpacket_fee 账本
+    停用账号（PA-019）不得发红包
 
     幂等：idempotency_key（如 tg:<update_id>）有唯一约束；TG poller
     at-least-once 重放时，第二次 insert 撞唯一约束 → 回滚并返回已存在的包，
     不再重复扣款（P1 修复）。
     """
+    if not getattr(sender, "is_active", True):
+        raise ValueError("账号已被停用，无法发红包")
     if total_amount <= 0:
         raise ValueError("红包金额必须大于0")
     if total_count <= 0:
@@ -162,6 +165,7 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
 
     校验：红包存在、未过期、还有剩余、未领过
     频率：7天内领取次数上限（redpacket_recv_limit_7d，0=不限；管理员发出的不计）
+    停用账号（PA-019）不得抢红包；发送者（PA-017）不得抢自己发的红包
     金额：随机 1 ~ (剩余金额-剩余个数+1)，最后一个拿全部剩余
     并发：红包行加行锁（FOR UPDATE），同一红包的抢领串行化，防超发；
     领取记录有唯一约束 (packet_id, user_id) 兜底，竞态重复走 IntegrityError
@@ -172,6 +176,8 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
         models.RedPacket.id == packet_id).with_for_update().first()
     if packet is None:
         raise ValueError("红包不存在")
+    if not getattr(user, "is_active", True):
+        raise ValueError("账号已被停用，无法抢红包")
 
     # 领取频率检查（管理员发出的红包不计入）
     recv_limit = _get_int_config(db, "redpacket_recv_limit_7d", 10)
@@ -198,6 +204,11 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
         raise ValueError("红包已过期")
     if packet.remaining_count <= 0:
         raise ValueError("红包已被抢完")
+
+    # 发送者不能抢自己发的红包（PA-017）：行锁内、过期/抢完校验后拦截，
+    # 否则“分给别人”的语义会被自抢大头掏空。
+    if user.id == packet.sender_id:
+        raise ValueError("不能抢自己发的红包")
 
     # 防重复领取
     dup = db.query(models.RedPacketClaim).filter(

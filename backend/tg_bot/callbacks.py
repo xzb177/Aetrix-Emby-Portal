@@ -476,6 +476,8 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
             _answer_callback(db, cb_id, "发起人不能参加自己发起的活动", show_alert=True)
         elif reason in ("closed", "disabled"):
             _answer_callback(db, cb_id, "本轮抽奖已结束")
+        elif reason == "account_disabled":
+            _answer_callback(db, cb_id, "账号已被停用，无法参加抽奖", show_alert=True)
         elif reason == "blacklisted":
             _answer_callback(db, cb_id, "你暂无抽奖资格", show_alert=True)
         elif reason == "too_new":
