@@ -518,6 +518,14 @@ def main() -> int:
             logger.warning(f"启动采样哈希 worker 失败（可忽略）: {e}")
 
         try:
+            from backend.emby_server import transfer_sediment
+            if transfer_sediment.start():
+                started.append("transfer_sediment")
+                logger.info("✅ 指纹沉淀 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动指纹沉淀 worker 失败（可忽略）: {e}")
+
+        try:
             from backend.emby_server import thumbnail_worker
             if thumbnail_worker.start():
                 started.append("thumbnail_worker")

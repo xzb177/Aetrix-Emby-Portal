@@ -710,6 +710,17 @@ const transfer = reactive({
   transfer_cross_cloudpull_timeout_sec: 3600,
   quark_play_enabled: true,
   transfer_paused_categories: '[]',
+  transfer_sediment_enabled: true,
+  transfer_sediment_tier_demand_enabled: true,
+  transfer_sediment_tier_watching_enabled: true,
+  transfer_sediment_tier_hot_enabled: false,
+  transfer_sediment_tier_new_enabled: false,
+  transfer_sediment_daily_budget_gib: 200,
+  transfer_sediment_interval_sec: 1800,
+  transfer_sediment_max_items_per_round: 20,
+  transfer_sediment_fuse_window_days: 30,
+  transfer_sediment_fuse_unconsumed_ratio: 0.7,
+  transfer_sediment_fused: false,
 })
 const transferOriginal = reactive({ ...transfer })
 const transferLoading = ref(false)
@@ -730,6 +741,17 @@ function applyTransfer(data: TransferConfig) {
   transfer.quark_play_enabled = data.quark_play_enabled !== false
   transfer.transfer_paused_categories = typeof data.transfer_paused_categories === 'string'
     ? data.transfer_paused_categories : '[]'
+  transfer.transfer_sediment_enabled = data.transfer_sediment_enabled !== false
+  transfer.transfer_sediment_tier_demand_enabled = data.transfer_sediment_tier_demand_enabled !== false
+  transfer.transfer_sediment_tier_watching_enabled = data.transfer_sediment_tier_watching_enabled !== false
+  transfer.transfer_sediment_tier_hot_enabled = data.transfer_sediment_tier_hot_enabled === true
+  transfer.transfer_sediment_tier_new_enabled = data.transfer_sediment_tier_new_enabled === true
+  transfer.transfer_sediment_daily_budget_gib = Number(data.transfer_sediment_daily_budget_gib) || 200
+  transfer.transfer_sediment_interval_sec = Number(data.transfer_sediment_interval_sec) || 1800
+  transfer.transfer_sediment_max_items_per_round = Number(data.transfer_sediment_max_items_per_round) || 20
+  transfer.transfer_sediment_fuse_window_days = Number(data.transfer_sediment_fuse_window_days) || 30
+  transfer.transfer_sediment_fuse_unconsumed_ratio = Number(data.transfer_sediment_fuse_unconsumed_ratio) || 0.7
+  transfer.transfer_sediment_fused = data.transfer_sediment_fused === true
   Object.assign(transferOriginal, transfer)
 }
 
@@ -758,7 +780,18 @@ transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_tra
   || transfer.transfer_cross_cloudpull_ttl_sec !== transferOriginal.transfer_cross_cloudpull_ttl_sec
   || transfer.transfer_cross_cloudpull_timeout_sec !== transferOriginal.transfer_cross_cloudpull_timeout_sec
   || transfer.quark_play_enabled !== transferOriginal.quark_play_enabled
-  || transfer.transfer_paused_categories !== transferOriginal.transfer_paused_categories,
+  || transfer.transfer_paused_categories !== transferOriginal.transfer_paused_categories
+  || transfer.transfer_sediment_enabled !== transferOriginal.transfer_sediment_enabled
+  || transfer.transfer_sediment_tier_demand_enabled !== transferOriginal.transfer_sediment_tier_demand_enabled
+  || transfer.transfer_sediment_tier_watching_enabled !== transferOriginal.transfer_sediment_tier_watching_enabled
+  || transfer.transfer_sediment_tier_hot_enabled !== transferOriginal.transfer_sediment_tier_hot_enabled
+  || transfer.transfer_sediment_tier_new_enabled !== transferOriginal.transfer_sediment_tier_new_enabled
+  || transfer.transfer_sediment_daily_budget_gib !== transferOriginal.transfer_sediment_daily_budget_gib
+  || transfer.transfer_sediment_interval_sec !== transferOriginal.transfer_sediment_interval_sec
+  || transfer.transfer_sediment_max_items_per_round !== transferOriginal.transfer_sediment_max_items_per_round
+  || transfer.transfer_sediment_fuse_window_days !== transferOriginal.transfer_sediment_fuse_window_days
+  || transfer.transfer_sediment_fuse_unconsumed_ratio !== transferOriginal.transfer_sediment_fuse_unconsumed_ratio
+  || transfer.transfer_sediment_fused !== transferOriginal.transfer_sediment_fused,
 )
 
 /** 转存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -809,6 +842,31 @@ async function saveTransferCore(): Promise<boolean> {
     if (!Array.isArray(pausedRules)) throw new Error('not-array')
   } catch {
     ElMessage.error('类别级熔断规则必须是 JSON 数组，如 [{"provider": "drive", "error_kind": "*"}]')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_sediment_daily_budget_gib)
+    || transfer.transfer_sediment_daily_budget_gib < 1 || transfer.transfer_sediment_daily_budget_gib > 10000) {
+    ElMessage.error('沉淀每日预算需在 1~10000 GiB 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_sediment_interval_sec)
+    || transfer.transfer_sediment_interval_sec < 300 || transfer.transfer_sediment_interval_sec > 86400) {
+    ElMessage.error('沉淀轮次间隔需在 300~86400 秒之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_sediment_max_items_per_round)
+    || transfer.transfer_sediment_max_items_per_round < 1 || transfer.transfer_sediment_max_items_per_round > 200) {
+    ElMessage.error('沉淀每轮条数需在 1~200 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_sediment_fuse_window_days)
+    || transfer.transfer_sediment_fuse_window_days < 7 || transfer.transfer_sediment_fuse_window_days > 90) {
+    ElMessage.error('沉淀熔断窗口需在 7~90 天之间')
+    return false
+  }
+  if (typeof transfer.transfer_sediment_fuse_unconsumed_ratio !== 'number'
+    || transfer.transfer_sediment_fuse_unconsumed_ratio < 0.1 || transfer.transfer_sediment_fuse_unconsumed_ratio > 1) {
+    ElMessage.error('沉淀熔断未消费比例需在 0.1~1 之间')
     return false
   }
   try {
@@ -1795,6 +1853,152 @@ watch(
                     />
                   </div>
                   <span class="field-hint">按「源 provider＋失败类别」暂停派发：JSON 数组，每条 {"provider": "drive/pan115/quark", "error_kind": "失败类别，* 表示全部类别"}；命中的任务留在排队中不执行、不计次，改回 [] 即恢复派发。默认 [] 不暂停</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="指纹沉淀">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.transfer_sediment_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：闲时提前把热门/在等内容的整文件指纹（SHA1）算好登记，用户点播试秒传时不用现读整遍源；关：完全停沉淀，已登记的指纹不受影响。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀需求档">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.transfer_sediment_tier_demand_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：近期有转存单在等（排队/失败）的未登记内容优先沉淀，不受队列空闲限制。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀追剧档">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.transfer_sediment_tier_watching_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：按近 14 天播放历史，给在追剧的同季后续 3 集提前沉淀；只在转存队列空闲时跑。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀热门/新入库档">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.transfer_sediment_tier_hot_enabled"
+                      active-text="热门开"
+                      inactive-text="热门关"
+                    />
+                    <el-switch
+                      v-model="transfer.transfer_sediment_tier_new_enabled"
+                      active-text="新入库开"
+                      inactive-text="新入库关"
+                      style="margin-left: 12px"
+                    />
+                  </div>
+                  <span class="field-hint">本期只有开关位、尚未实现选片：打开也不会沉淀，待转化率数据出来后再启用。默认关</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀每日预算">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_sediment_daily_budget_gib"
+                      :min="1"
+                      :max="10000"
+                      :step="10"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">GiB/日</span>
+                  </div>
+                  <span class="field-hint">沉淀每天最多读源的字节量，烧完当日停，防闲时预热烧爆源盘配额，默认 200</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀轮次间隔">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_sediment_interval_sec"
+                      :min="300"
+                      :max="86400"
+                      :step="60"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">秒</span>
+                  </div>
+                  <span class="field-hint">后台沉淀多久跑一轮，默认 1800 秒（30 分钟）</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀每轮条数">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_sediment_max_items_per_round"
+                      :min="1"
+                      :max="200"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">条</span>
+                  </div>
+                  <span class="field-hint">每轮最多沉淀的内容条数（与每日预算双重封顶），默认 20</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀熔断窗口">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_sediment_fuse_window_days"
+                      :min="7"
+                      :max="90"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">天</span>
+                  </div>
+                  <span class="field-hint">沉淀满这个天数后开始算转化率，默认 30 天</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀熔断未消费比例">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_sediment_fuse_unconsumed_ratio"
+                      :min="0.1"
+                      :max="1"
+                      :step="0.05"
+                      :precision="2"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                  </div>
+                  <span class="field-hint">窗口内沉淀的内容超过这个比例没人真用过（样本≥20），就自动熔断停沉淀并记日志，默认 0.7</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="沉淀熔断状态">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.transfer_sediment_fused"
+                      active-text="已熔断"
+                      inactive-text="正常"
+                    />
+                  </div>
+                  <span class="field-hint">转化率熔断触发后这里自动变成「已熔断」、沉淀停摆；核查选片信号没问题后手动切回「正常」恢复</span>
                 </div>
               </el-form-item>
               <el-form-item label="115 云下载（形态 B）">
