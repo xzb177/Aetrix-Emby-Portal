@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-"""公益资格自助兑换门槛（2026-10-30 用户亲点全套方案第一单）：
+"""公益资格自助兑换门槛：
 
-1. 能量来源限定：兑换公益资格（points.redeem_welfare）只认「自挣类」能量
-   （签到 checkin / 发言与影评 chat），转入、邀请、红包、卡码、管理员发放、
-   抽奖、老虎机赢分等非自挣来源不计入可用额；只卡兑换资格这一个消费口，
-   买查看行、管理员发放等其余路径不受影响。
-2. 轻量双钥匙：自助兑换前置＝注册满 N 天（默认 3）＋近 7 天活跃 M 天
-   （默认 2；签到/播放为硬信号，发言天数最多计 1 天）。阈值走 SystemConfig。
-3. 存量口径为台账纯函数：自挣可用额 =
-   max(0, min(当前余额, 自挣类累计入账 − 累计全部支出))，不新增余额字段。
+1. 双钥匙（唯一兑换门槛）：自助兑换前置＝注册满 N 天（默认 3）＋近 7 天
+   活跃 M 天（默认 2；签到/播放为硬信号，发言天数最多计 1 天）。阈值走
+   SystemConfig。
+2. 能量不分来源（2026-11-02 用户亲令删除来源限定）：2026-10-30 曾有
+   「兑换只认自挣能量」门槛（welfare_redeem_self_earned_only），已随
+   订阅侧的 subscription_buy_self_earned_only 一并删除——赠送/中奖/
+   转入与自挣同权，兑换只看总余额＋双钥匙。来源分类
+   （POINT_TYPE_SELF_EARNED）与自挣可用额公式作为台账分类保留（本文件
+   1、2 节仍钉其口径），不再有任何消费口用它拦截；生产库里残留的旧键
+   SystemConfig 行读侧已无人读、自动忽略（本文件有专测钉住）。
 """
 
 import os
@@ -185,17 +187,31 @@ def test_self_earned_formula_floor_and_balance_cap(db):
     assert points_mod.self_earned_balance(db, u2) == 0
 
 
-# ==================== 3. 来源限定（兑换口） ====================
+# ==================== 3. 来源不限定（兑换口） ====================
 
-def test_transfer_only_balance_rejected(db):
+def test_transfer_only_balance_can_redeem(db):
+    """2026-11-02 起能量不分来源：只有赠送/转入来源的余额也能兑换 30 天。
+
+    本例旧行为（来源限定开）应被拦，正是本单要删的门槛。
+    """
     u = _active_user(db, "gate_transfer")
     _log(db, u, 400, "transfer_in", days_ago=0)
-    with pytest.raises(ValueError) as ei:
-        points_mod.redeem_welfare(db, u, 30)
-    assert "自挣" in str(ei.value)
+    out = points_mod.redeem_welfare(db, u, 30)
+    assert out["cost"] == 300 and out["balance"] == 100
     db.refresh(u)
-    assert int(u.points) == 400, "被拒时不许扣款"
-    assert not u.is_welfare
+    assert int(u.points) == 100
+    assert u.is_welfare and u.welfare_expires_at is not None
+
+
+def test_redeem_ignores_legacy_self_earned_row(db):
+    """生产库残留的旧键行（值 true）必须被忽略：读侧已删除，不许复活门槛。"""
+    _set_config(db, "welfare_redeem_self_earned_only", "true")
+    u = _active_user(db, "gate_legacy_row")
+    _log(db, u, 400, "transfer_in", days_ago=0)
+    out = points_mod.redeem_welfare(db, u, 30)
+    assert out["balance"] == 100
+    db.refresh(u)
+    assert u.is_welfare
 
 
 def test_self_earned_can_redeem(db):
@@ -208,16 +224,15 @@ def test_self_earned_can_redeem(db):
     assert u.is_welfare and u.welfare_expires_at is not None
 
 
-def test_mixed_balance_capped_by_self_earned(db):
+def test_mixed_balance_can_redeem_30d(db):
+    """混合来源按总余额判：自挣 150＋转入 200＝350 ≥ 300，30 天可兑。"""
     u = _active_user(db, "gate_mixed")
     _log(db, u, 150, "chat", days_ago=2)
     _log(db, u, 200, "transfer_in", days_ago=1)
-    # 总余额 350 ≥ 300，但自挣只有 150 → 30 天被拒、7 天可兑
-    with pytest.raises(ValueError) as ei:
-        points_mod.redeem_welfare(db, u, 30)
-    assert "自挣" in str(ei.value)
-    out = points_mod.redeem_welfare(db, u, 7)
-    assert out["balance"] == 250
+    out = points_mod.redeem_welfare(db, u, 30)
+    assert out["cost"] == 300 and out["balance"] == 50
+    db.refresh(u)
+    assert u.is_welfare and u.welfare_expires_at is not None
 
 
 def test_insufficient_total_balance_message_kept(db):
@@ -264,7 +279,6 @@ def test_activity_gate_and_chat_cap(db):
 
 
 def test_gates_can_be_configured_off(db):
-    _set_config(db, "welfare_redeem_self_earned_only", "false")
     _set_config(db, "welfare_redeem_min_account_age_days", "0")
     _set_config(db, "welfare_redeem_min_active_days", "0")
     u = _make_user(db, "gate_off", age_days=0)
@@ -307,11 +321,12 @@ def test_gate_config_keys_registered(db):
     from backend import config_schema
     from backend.api import welfare_admin
     keys = welfare_admin.WELFARE_CONFIG_KEYS
-    assert keys["welfare_redeem_self_earned_only"] == "true"
+    # 来源限定键已于 2026-11-02 删除：默认表与 schema 均不得再出现
+    assert "welfare_redeem_self_earned_only" not in keys
     assert keys["welfare_redeem_min_account_age_days"] == "3"
     assert keys["welfare_redeem_min_active_days"] == "2"
     schema = config_schema.WELFARE_CONFIG_SCHEMA
-    assert schema["welfare_redeem_self_earned_only"] == ("bool",)
+    assert "welfare_redeem_self_earned_only" not in schema
     assert schema["welfare_redeem_min_account_age_days"] == ("int", 0, 365)
     assert schema["welfare_redeem_min_active_days"] == ("int", 0, 7)
     with pytest.raises(config_schema.ConfigValueError):

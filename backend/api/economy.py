@@ -1627,24 +1627,8 @@ def create_payment_order(
             # 下单口；在线支付走下面的网关路径，不受影响。
             if not _get_bool_realm_config(db, "subscription_points_purchase_enabled", plan.realm_id, True):
                 raise HTTPException(status_code=403, detail="该服未开启能量购买订阅，请使用在线支付或联系管理员")
-            # P1-4：来源限定（按服开关，默认开，与兑换公益资格同口径，
-            # 分类实现复用 points.self_earned_balance，全仓只许这一套）。
-            # 判定按折后实付 points_cost，不按原价。先锁用户行再判定，
-            # 判定与随后的扣款同一事务：_spend_points 的原子余额扣只防
-            # 余额双花，防不住两笔并发购买各自拿同一份自挣额过判
-            # （归属双花，与 redeem_welfare 的锁口径一致）。
-            lock_user_row(db, current_user.id)
-            if _get_bool_realm_config(db, "subscription_buy_self_earned_only", plan.realm_id, True):
-                from backend import points as _points_mod
-
-                earned = _points_mod.self_earned_balance(db, current_user)
-                if earned < points_cost:
-                    db.rollback()
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(f"自挣能量不足：能量购买订阅只能使用自己挣的能量"
-                                f"（签到、发言等），当前自挣能量 {earned}，需要 {points_cost}；"
-                                f"转入、赠送、中奖的能量不能用于购买订阅"))
+            # 能量不分来源（2026-11-02 删除来源限定）：赠送/中奖/转入与
+            # 自挣同权，只看总余额；够不够由下方 _spend_points 原子判定。
             balance = db.query(models.WebUser.points).filter(models.WebUser.id == current_user.id).scalar() or 0
             if balance < points_cost:
                 raise HTTPException(status_code=400, detail=f"能量不足（需要 {points_cost}，当前 {int(balance)}）")

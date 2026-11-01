@@ -19,12 +19,14 @@ SystemConfig 键（实际生效的签到键在 backend/api/economy._checkin_rule
   余额/台账下走「小数累计」：按分累计、满 1 结算、余数跨日保留）
 - points_redeem_7d=100, points_redeem_30d=300
 
-兑换门槛（2026-10-30 用户亲点方案，管理后台「积分与公益配置 → 获取与兑换」可配）：
-- welfare_redeem_self_earned_only=true：兑换资格只认自挣能量（见下方来源分类）
+兑换门槛（管理后台「积分与公益配置 → 获取与兑换」可配）：
 - welfare_redeem_min_account_age_days=3：自助兑换的注册满天数（0=关）
 - welfare_redeem_min_active_days=2：自助兑换需近 7 天活跃天数（0=关）
 只卡 redeem_welfare 这一个自助消费口；管理员发放（含后续机器人申请流批准）
 与买查看行、转让、下注等其余消费一律不走这道门。
+能量不分来源（2026-11-02 用户亲令删除来源限定）：此前的
+welfare_redeem_self_earned_only 已删，赠送/中奖/转入与自挣同权；下方
+来源分类仅作台账分类保留，不再拦截任何消费口。
 """
 
 from __future__ import annotations
@@ -371,20 +373,17 @@ def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
     """能量兑换公益天数
 
     days_option: 只能是 7 或 30
-    流程：过兑换门槛（来源限定＋双钥匙）→ 原子扣能量 → portal.grant_welfare
+    流程：过兑换门槛（双钥匙）→ 原子扣能量 → portal.grant_welfare
     注意：grant_welfare 内部会 db.commit()，所以扣能量后不再单独 commit
 
-    门槛（2026-10-30 定版，只卡这个自助口）：
-    1. 来源限定（welfare_redeem_self_earned_only，默认开）：花费额必须能被
-       自挣可用额覆盖（见 self_earned_balance），转入/赠送/中奖的能量不能
-       用来兑换资格——掐断「A 攒分供 B 开号」与小号矩阵变现。
-    2. 号龄（welfare_redeem_min_account_age_days，默认 3，0=关）。
-    3. 活跃（welfare_redeem_min_active_days，默认 2，0=关）：近 7 天活跃
+    门槛（只卡这个自助口）：
+    1. 号龄（welfare_redeem_min_account_age_days，默认 3，0=关）。
+    2. 活跃（welfare_redeem_min_active_days，默认 2，0=关）：近 7 天活跃
        天数，口径见 _recent_active_days。
-    判定全程持用户行锁，与随后的原子扣减同一事务：否则并发两笔兑换可
-    各自通过自挣额判定、合计兑出超过自挣额的天数（总余额原子扣只防
-    余额双花，防不住归属双花）。不满足时明确报错差什么，不静默拒绝；
-    管理员发放是豁免通道，不经过这里。
+    能量不分来源（2026-11-02 删除来源限定）：赠送/中奖/转入与自挣同权，
+    只看总余额。判定全程持用户行锁，与随后的原子扣减同一事务。
+    不满足时明确报错差什么，不静默拒绝；管理员发放是豁免通道，
+    不经过这里。
     """
     if days_option not in (7, 30):
         raise ValueError("仅支持兑换 7 天或 30 天")
@@ -401,15 +400,6 @@ def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
         )
         if balance < cost:
             raise ValueError(f"能量不足，需要 {cost} 能量，当前 {balance} 能量")
-
-        if economy._get_bool_config(db, "welfare_redeem_self_earned_only", True):
-            earned = self_earned_balance(db, user)
-            if earned < cost:
-                raise ValueError(
-                    f"自挣能量不足：兑换公益资格只能使用自己挣的能量"
-                    f"（签到、发言等），当前自挣能量 {earned}，需要 {cost}；"
-                    f"转入、赠送、中奖的能量不能用于兑换资格"
-                )
 
         min_age_days = max(
             0, _get_int(db, "welfare_redeem_min_account_age_days", 3))

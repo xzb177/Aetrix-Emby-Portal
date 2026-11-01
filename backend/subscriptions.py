@@ -372,7 +372,6 @@ def _auto_renew_one(db: Session, sub_id: int, now: datetime):
         _spend_points,
         subscription_grant_lock,
     )
-    from backend import points as _points_mod
     from backend import reminders as _reminders
 
     # r52 锁序：先拿（用户，服）发放串行锁，再拿行锁。_grant_subscription 内部
@@ -449,10 +448,11 @@ def _auto_renew_one(db: Session, sub_id: int, now: datetime):
             logger.warning("自动续订跳过（订阅 %s）：积分价配置错误", sub_id)
             return "skipped"
 
-        # 两服共存 P1-4/P1-5：自动续订也是在花能量买订阅，与手动购买
-        # 同口径——该服能量购买通道关着，或来源限定开着且自挣能量覆盖
-        # 不了折后实付时，不扣款，走现成的 renew_failed 提醒路径
-        # （去重口径与下面的余额不足分支一致），不新造失败语义。
+        # 两服共存 P1-5：自动续订也是在花能量买订阅，与手动购买
+        # 同口径——该服能量购买通道关着时，不扣款，走现成的 renew_failed
+        # 提醒路径（去重口径与下面的余额不足分支一致），不新造失败语义。
+        # 能量不分来源（2026-11-02 删除来源限定）：续订只看总余额，
+        # 余额不足走下方 _spend_points 的 InsufficientPoints 分支。
         renew_block_title = None
         renew_block_content = None
         if not _get_bool_realm_config(
@@ -462,17 +462,6 @@ def _auto_renew_one(db: Session, sub_id: int, now: datetime):
                 f"你的「{plan.name}」将于 {sub.end_date.strftime('%Y-%m-%d %H:%M')} 到期，"
                 f"该服已关闭能量购买订阅，自动续订未扣款。"
                 f"请联系管理员，或改用其他方式续费。")
-        elif _get_bool_realm_config(
-                db, "subscription_buy_self_earned_only", sub.realm_id, True):
-            earned = _points_mod.self_earned_balance(db, user)
-            if earned < paid_points:
-                renew_block_title = "⚡ 自动续订失败：自挣能量不足"
-                renew_block_content = (
-                    f"你的「{plan.name}」将于 {sub.end_date.strftime('%Y-%m-%d %H:%M')} 到期，"
-                    f"自动续订只能使用自己挣的能量（签到、发言等），"
-                    f"当前自挣能量 {earned}，需要 {paid_points}，未续订。"
-                    f"转入、赠送、中奖的能量不能用于自动续订；"
-                    f"请及时补充自挣能量，或关闭自动续订改手动续费。")
         if renew_block_title is not None:
             db.rollback()
             recorded = _reminders._record(

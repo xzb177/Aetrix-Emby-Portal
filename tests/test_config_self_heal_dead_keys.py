@@ -91,3 +91,46 @@ def test_dead_list_covers_audit_keys():
         "chat_points_enabled",
     ):
         assert key in config_self_heal.DEAD_CONFIG_KEYS
+
+
+# ---------------------------------------------------------------------------
+# 自挣来源限定两键（#1678 删除校验与注册后的存量行清理）
+# ---------------------------------------------------------------------------
+# #1678 已证「残留行在场时门槛不复活」（tests/test_welfare_redeem_gate.py、
+# tests/test_subscription_points_gate.py）；这里只测另一半：启动自愈把
+# 存量行删掉、且补缺不把两键当成缺失项重新插回来。
+
+
+def test_dead_list_covers_self_earned_keys():
+    """清单完整性：自挣来源限定两键必须在死键清单里。"""
+    for key in (
+        "welfare_redeem_self_earned_only",
+        "subscription_buy_self_earned_only",
+    ):
+        assert key in config_self_heal.DEAD_CONFIG_KEYS
+
+
+def test_prune_removes_self_earned_residual_rows(db):
+    """存量行（生产实查 welfare_redeem_self_earned_only=true 有行）启动后删净，活键不动。"""
+    _add(db, "welfare_redeem_self_earned_only", "true")
+    _add(db, "subscription_buy_self_earned_only", "true")
+    _add(db, "site_name", "x")
+
+    pruned = config_self_heal._prune_dead_config_keys(db)
+
+    assert sorted(pruned) == [
+        "subscription_buy_self_earned_only",
+        "welfare_redeem_self_earned_only",
+    ]
+    assert _keys(db) == ["site_name"]
+
+
+def test_heal_does_not_resurrect_self_earned_keys(db):
+    """全量自愈：两键行被清，且注册已删——补缺不得把它们重新插回。"""
+    _add(db, "welfare_redeem_self_earned_only", "true")
+
+    config_self_heal.heal_system_config(db)
+
+    keys = _keys(db)
+    assert "welfare_redeem_self_earned_only" not in keys
+    assert "subscription_buy_self_earned_only" not in keys

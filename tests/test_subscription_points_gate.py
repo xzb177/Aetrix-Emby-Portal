@@ -1,23 +1,24 @@
 # -*- coding: utf-8 -*-
-"""两服共存 P1-4＋P1-5：能量买订阅来源限定＋购买开关按服化。
+"""两服共存 P1-5 购买开关按服化＋能量买订阅来源不限定。
 
-钉住的口径（2026-10-30 定版，执行计划第四、五节）：
-1. P1-4 手动购买：能量买订阅在折后实付定下后、扣款前判定来源——
-   开关 subscription_buy_self_earned_only（默认开）时，自挣能量
-   （points.self_earned_balance，#1550 的全仓唯一分类实现）不足以
-   覆盖折后实付 → 400 明确报错（说清是来源不够、不是余额不够）。
-   判定按折后实付，不按原价。
-2. P1-4 自动续订侧门：无人值守续订同样判来源，不足时不扣款、
-   走现成的 renew_failed 通知路径；该服能量购买通道关着同样停续。
-3. 独立开关 subscription_points_purchase_enabled（默认开）：该服
-   能量购买通道总开关，只拦能量下单口，在线支付不受影响。
-4. P1-5：subscription_purchase_enabled 按服化——支付方式呈现、
+钉住的口径：
+1. 能量不分来源（2026-11-02 用户亲令删除来源限定）：2026-10-30 曾有
+   「能量买订阅只认自挣能量」门槛（subscription_buy_self_earned_only，
+   手动购买与自动续订各一处消费点），已随兑换公益资格的同款门槛一并
+   删除——赠送/中奖/转入与自挣同权，购买与续订只看总余额（判定按
+   折后实付，不按原价）。生产库里若残留该键的 SystemConfig 行，读侧
+   已无人读、自动忽略（本文件有专测钉住）。
+2. 独立开关 subscription_points_purchase_enabled（默认开）：该服
+   能量购买通道总开关，只拦能量下单口，在线支付不受影响；
+   自动续订侧：该服能量购买通道关着同样停续，走 renew_failed 通知。
+3. P1-5：subscription_purchase_enabled 按服化——支付方式呈现、
    套餐列表、下单硬拦三处读点改走 realms.realm_config；A 服关
    不影响 B 服；默认服（legacy）仍读原键、行为与改前一致。
    recharge_enabled / exchange_enabled 不按服（计划裁定，不在本单）。
-5. 两个新开关注册三处齐：config_schema.ECONOMY_CONFIG_SCHEMA、
+4. 保留开关注册两处齐：config_schema.ECONOMY_CONFIG_SCHEMA、
    admin_economy.ECONOMY_CONFIG_KEYS（回包/保存/审计同一通道）、
-   消费侧缺省 true；管理端 PUT 改值 → GET 回读为新值。
+   消费侧缺省 true；管理端 PUT 改值 → GET 回读为新值。已删的
+   subscription_buy_self_earned_only 不得再出现在回包里。
 """
 import os
 
@@ -134,23 +135,25 @@ def _balance(db, uid):
         models.WebUser.id == uid).scalar() or 0
 
 
-# ==================== 1. 手动购买来源限定 ====================
+# ==================== 1. 手动购买（来源不限定） ====================
 
-def test_points_buy_rejected_when_balance_not_self_earned(db):
-    """余额充足但全是转入：开关默认开 → 400 且文案说清是来源问题，不扣款。"""
+def test_points_buy_succeeds_with_transferred_balance(db):
+    """2026-11-02 起能量不分来源：只有赠送/转入来源的余额也能买订阅。
+
+    本例旧行为（来源限定开）应被拦，正是本单要删的门槛。
+    """
     _gateway(db)
     r = _realm(db)
     plan = _plan(db, r.id, points_price=400)
     u = _user(db, "rich_transferred")
     _log(db, u, 1000, "transfer_in")
-    with pytest.raises(HTTPException) as ei:
-        _buy(db, u, plan)
-    assert ei.value.status_code == 400
-    assert "自挣" in ei.value.detail
-    assert _balance(db, u.id) == 1000
-    assert db.query(models.UserSubscription).count() == 0
+    res = _buy(db, u, plan)
+    assert res["success"] is True and res["points_cost"] == 400
+    assert _balance(db, u.id) == 600
+    assert db.query(models.UserSubscription).filter(
+        models.UserSubscription.user_id == u.id).count() == 1
     assert db.query(models.PointsLog).filter(
-        models.PointsLog.type == "subscription_buy").count() == 0
+        models.PointsLog.type == "subscription_buy").count() == 1
 
 
 def test_points_buy_succeeds_with_self_earned(db):
@@ -167,13 +170,13 @@ def test_points_buy_succeeds_with_self_earned(db):
         models.UserSubscription.user_id == u.id).count() == 1
 
 
-def test_points_buy_allowed_when_self_earned_gate_off(db):
-    """开关关：任意来源可买（转入能量照常购买）。"""
+def test_points_buy_ignores_legacy_self_earned_row(db):
+    """生产库残留的旧键行（值 true）必须被忽略：读侧已删除，不许复活门槛。"""
     _gateway(db)
     r = _realm(db)
-    _set_config(db, "subscription_buy_self_earned_only", "false")
+    _set_config(db, "subscription_buy_self_earned_only", "true")
     plan = _plan(db, r.id, points_price=400)
-    u = _user(db, "gate_off")
+    u = _user(db, "legacy_row")
     _log(db, u, 1000, "transfer_in")
     res = _buy(db, u, plan)
     assert res["success"] is True
@@ -181,23 +184,25 @@ def test_points_buy_allowed_when_self_earned_gate_off(db):
 
 
 def test_points_buy_discount_judged_on_paid_amount(db):
-    """折扣按折后实付判：原价 400、九折实付 360；自挣 380 放行、350 拦。"""
+    """折扣按折后实付判（来源合并后按总余额判）：原价 400、九折实付 360；
+    总余额 380（全转入）放行、350 时按余额不足拦，文案不得再提自挣。"""
     _gateway(db)
     r = _realm(db)
     _level(db, 2, 10)
     plan = _plan(db, r.id, points_price=400)
     ok = _user(db, "discount_ok", level=2)
-    _log(db, ok, 380, "checkin")
+    _log(db, ok, 380, "transfer_in")
     res = _buy(db, ok, plan)
     assert res["success"] is True and res["points_cost"] == 360
     assert _balance(db, ok.id) == 20
 
     ng = _user(db, "discount_ng", level=2)
-    _log(db, ng, 350, "chat")
+    _log(db, ng, 350, "transfer_in")
     with pytest.raises(HTTPException) as ei:
         _buy(db, ng, plan)
     assert ei.value.status_code == 400
-    assert "自挣" in ei.value.detail
+    assert "能量不足" in ei.value.detail
+    assert "自挣" not in ei.value.detail
     assert _balance(db, ng.id) == 350
 
 
@@ -220,7 +225,7 @@ def test_points_channel_disabled_rejects_points_order_only(db):
     assert order is not None and order.status == "pending"
 
 
-# ==================== 2. 自动续订来源限定 ====================
+# ==================== 2. 自动续订（来源不限定） ====================
 
 def _active_sub(db, user, plan, realm, hours_left=12):
     now = datetime.now()
@@ -235,8 +240,11 @@ def _active_sub(db, user, plan, realm, hours_left=12):
     return s
 
 
-def test_auto_renew_blocked_when_not_self_earned(db):
-    """续订侧门：余额足但全是转入 → 不扣款、不续，走 renew_failed 通知。"""
+def test_auto_renew_succeeds_with_transferred_balance(db):
+    """2026-11-02 起能量不分来源：余额全是转入也能自动续订扣款顺延。
+
+    本例旧行为（来源限定开）应被拦，正是本单要删的门槛。
+    """
     r = _realm(db)
     plan = _plan(db, r.id, points_price=400)
     u = _user(db, "renew_transferred")
@@ -244,14 +252,12 @@ def test_auto_renew_blocked_when_not_self_earned(db):
     sub = _active_sub(db, u, plan, r)
     old_end = sub.end_date
     out = subs.auto_renew_subscriptions(db)
-    assert out["renewed"] == 0 and out["failed"] == 1
-    assert len(out["notices"]) == 1
-    assert "自挣" in out["notices"][0]["title"] + out["notices"][0]["content"]
+    assert out["renewed"] == 1 and out["failed"] == 0
     db.refresh(sub)
-    assert sub.end_date == old_end
-    assert _balance(db, u.id) == 1000
+    assert sub.end_date == old_end + timedelta(days=30)
+    assert _balance(db, u.id) == 600
     assert db.query(models.PointsLog).filter(
-        models.PointsLog.type == "subscription_auto_renew").count() == 0
+        models.PointsLog.type == "subscription_auto_renew").count() == 1
 
 
 def test_auto_renew_succeeds_with_self_earned(db):
@@ -269,12 +275,12 @@ def test_auto_renew_succeeds_with_self_earned(db):
     assert _balance(db, u.id) == 600
 
 
-def test_auto_renew_allowed_when_gate_off(db):
-    """来源限定关：转入能量也可自动续订。"""
+def test_auto_renew_ignores_legacy_self_earned_row(db):
+    """生产库残留的旧键行（值 true）必须被忽略：续订读侧已删除。"""
     r = _realm(db)
-    _set_config(db, "subscription_buy_self_earned_only", "false")
+    _set_config(db, "subscription_buy_self_earned_only", "true")
     plan = _plan(db, r.id, points_price=400)
-    u = _user(db, "renew_gate_off")
+    u = _user(db, "renew_legacy_row")
     _log(db, u, 1000, "transfer_in")
     _active_sub(db, u, plan, r)
     out = subs.auto_renew_subscriptions(db)
@@ -358,33 +364,32 @@ def _admin(db):
 
 
 def test_admin_settings_defaults_and_roundtrip(db):
-    """新两键：无行时回包缺省 true；PUT 改值 → 落库 → GET 回读为新值；
-    按服化的 subscription_purchase_enabled 同通道往返。"""
+    """保留开关：无行时回包缺省 true；PUT 改值 → 落库 → GET 回读为新值；
+    按服化的 subscription_purchase_enabled 同通道往返。已删的
+    subscription_buy_self_earned_only 不得再出现在回包里。"""
     admin = _admin(db)
     got = admin_economy.economy_get_settings(current_admin=admin, db=db)["settings"]
-    assert got["subscription_buy_self_earned_only"] == "true"
+    assert "subscription_buy_self_earned_only" not in got
     assert got["subscription_points_purchase_enabled"] == "true"
 
     res = admin_economy.economy_update_settings(
         admin_economy.EconomySettingsRequest(settings={
-            "subscription_buy_self_earned_only": "false",
             "subscription_points_purchase_enabled": "false",
             "subscription_purchase_enabled": "false",
         }), current_admin=admin, db=db)
     assert set(res["changed"]) >= {
-        "subscription_buy_self_earned_only",
         "subscription_points_purchase_enabled",
         "subscription_purchase_enabled",
     }
     got = admin_economy.economy_get_settings(current_admin=admin, db=db)["settings"]
-    assert got["subscription_buy_self_earned_only"] == "false"
+    assert "subscription_buy_self_earned_only" not in got
     assert got["subscription_points_purchase_enabled"] == "false"
     assert got["subscription_purchase_enabled"] == "false"
 
     res = admin_economy.economy_update_settings(
         admin_economy.EconomySettingsRequest(settings={
-            "subscription_buy_self_earned_only": "true",
+            "subscription_points_purchase_enabled": "true",
         }), current_admin=admin, db=db)
-    assert res["changed"] == ["subscription_buy_self_earned_only"]
+    assert res["changed"] == ["subscription_points_purchase_enabled"]
     got = admin_economy.economy_get_settings(current_admin=admin, db=db)["settings"]
-    assert got["subscription_buy_self_earned_only"] == "true"
+    assert got["subscription_points_purchase_enabled"] == "true"
