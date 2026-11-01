@@ -2467,6 +2467,71 @@ def pending_share_revoke_row_ids(db, user_id):
         return []
 
 
+#: 转存工人建目录失败的 error_detail 前缀（本模块 ensure_folder
+#: 建目录非 200 时原样记入“建转存目录失败：<码>”；绑定恢复后
+#: 的重置判定只认这个前缀，不认别的失败）。
+MKDIR_FAILED_PREFIX = "建转存目录失败"
+
+#: 转存工人列目录失败且为 401 的 error_detail 前缀（ensure_folder
+#: 列目录非 200 时原样记入“列转存目录失败：<码>”；401 = 令牌已
+#: 死，重绑换了新凭据才可重跑，故与建目录失败同列重置范围。
+#: 只认 401：429/5xx 属可重试瞬态、工人自会重跑，不由重绑顺手
+#: 复活；403 不在此列，属权限问题另议）。
+LIST_FAILED_401_PREFIX = "列转存目录失败：401"
+
+
+def revive_binding_failed_jobs(db, user_id):
+    """绑定恢复后，把该用户因绑定/凭据问题而 failed 的转存任务
+    打回 pending、attempts 清零、错误/重试时间/租约清掉——工人
+    下一轮即按现取的新绑定凭据重跑（工人只捡 pending，failed
+    不再处理；门禁对 failed 返 409 终态；24h 节流又挡新任务——
+    三重死锁，不重置这单永远播不了）。
+
+    全站唯一实现（2026-11-02 PA-004 补全下沉）：Drive OAuth
+    重绑成功点（drive_oauth.reset_mkdir_failed_jobs 转调本
+    函数）与 115/夸克建绑/重验成功点（user_bindings.
+    create_binding / verify_binding）共用同一份，不许另抄。
+    命中三类行：
+
+    - error_detail 以“建转存目录失败”开头的行（只读令牌写盘
+      403）；
+    - error_detail 以“列转存目录失败：401”开头的行（令牌已
+      死）；
+    - error_kind == “no_binding”的行（PA-004 跟进，2026-11-02
+      用户亲点“重绑后自动复活，死单打回待处理”）：绑定失效/
+      缺失时判死的单——按归属过滤不分落点，dest 为
+      userdrive:/pan115:/quark: 的跨 provider 死单也在内（这类
+      单多是源侧绑定没了连带判死，绑定恢复后留在 failed 只会
+      让门禁永远明示失败、工人永不重捡）。
+
+    其它失败原因（dead 源失效、auth_error、insufficient_space、
+    列目录 429/5xx 等瞬态）与本次绑定恢复无关或另有口径，不许
+    顺手复活；只动本人 user scope 的 failed 行，pending/done
+    行不碰（重复触发幂等）。返回重置行数（调用方提交）。"""
+    from sqlalchemy import or_ as _or
+    rows = (
+        db.query(em.TransferJob)
+        .filter(em.TransferJob.owner_scope == "user",
+                em.TransferJob.owner_ref == str(user_id),
+                em.TransferJob.status == "failed",
+                _or(em.TransferJob.error_detail.like(
+                        MKDIR_FAILED_PREFIX + "%"),
+                    em.TransferJob.error_detail.like(
+                        LIST_FAILED_401_PREFIX + "%"),
+                    em.TransferJob.error_kind == "no_binding"))
+        .all()
+    )
+    for job in rows:
+        job.status = "pending"
+        job.attempts = 0
+        job.error_kind = None
+        job.error_detail = None
+        job.next_retry_at = None
+        job.lease_expires_at = None
+        job.claimed_by = None
+    return len(rows)
+
+
 def run_pending_share_revokes(db, limit_users=20):
     """死令牌待收回兜底执行：逐个处理有待收回登记的用户。
 
