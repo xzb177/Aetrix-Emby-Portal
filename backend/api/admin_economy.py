@@ -293,8 +293,7 @@ ECONOMY_CONFIG_KEYS = {
     "paid_request_monthly": "int",  # 付费服每月求片上限（此前无后台入口，本轮补登记）
     "code_default_plan_id": "int",  # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取）
     "recharge_enabled": "bool", "subscription_purchase_enabled": "bool",
-    "subscription_buy_self_earned_only": "bool",  # P1-4：能量买订阅只认自挣能量（默认开，与兑换资格同口径）
-    "subscription_points_purchase_enabled": "bool",  # P1-4：能量购买订阅通道总开关（默认开）
+    "subscription_points_purchase_enabled": "bool",  # 能量购买订阅通道总开关（默认开；来源限定键已于 2026-11-02 删除）
     "payment_gateway_url": "str", "payment_partner_id": "str",
     "payment_partner_key": "secret", "payment_qqpay_enabled": "bool",
     "site_url": "str",
@@ -466,7 +465,6 @@ def economy_get_settings(
     missing_on = {
         _promo_enabled: _promo_defaults[_promo_enabled],
         "stream_accel_enabled": "true",
-        "subscription_buy_self_earned_only": "true",
         "subscription_points_purchase_enabled": "true",
     }
     result = {}

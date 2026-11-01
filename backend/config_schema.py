@@ -133,9 +133,8 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "points_redeem_30d": ("int", 0, _BIG),
     # G1 资格码月配额：0 在读侧是「不限」，故下限 0 合法
     "welfare_code_monthly_quota": ("int", 0, _BIG),
-    # 兑换资格门槛：来源限定开关 word 风格 ("bool",)（读侧 _get_bool_config
-    # 只认 "true"）；号龄上限 365 天；活跃天数窗口固定近 7 天，故钳 0~7
-    "welfare_redeem_self_earned_only": ("bool",),
+    # 兑换资格门槛（双钥匙）：号龄上限 365 天；活跃天数窗口固定近 7 天，
+    # 故钳 0~7（来源限定键 welfare_redeem_self_earned_only 已于 2026-11-02 删除）
     "welfare_redeem_min_account_age_days": ("int", 0, 365),
     "welfare_redeem_min_active_days": ("int", 0, 7),
     "welfare_grace_days": ("int", 0, 3650),
@@ -537,7 +536,7 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取；无行=按服自动推导）
     "code_default_plan_id": ("int", 0, _BIG),
     "recharge_enabled": ("bool",), "subscription_purchase_enabled": ("bool",),
-    "subscription_buy_self_earned_only": ("bool",),
+    # subscription_buy_self_earned_only 已于 2026-11-02 随来源限定删除
     "subscription_points_purchase_enabled": ("bool",),
     "payment_gateway_url": ("raw",), "payment_partner_id": ("raw",),
     "payment_partner_key": ("raw",), "payment_qqpay_enabled": ("bool",),
