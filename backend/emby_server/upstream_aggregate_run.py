@@ -1074,7 +1074,8 @@ def run_manual_aggregation(db: Session, source, *,
                            skip_library_ids=None,
                            prior_summaries: Optional[Dict[str, dict]] = None,
                            import_limit: Optional[int] = None,
-                           run_kind: str = RUN_KIND_FULL
+                           run_kind: str = RUN_KIND_FULL,
+                           import_series_limit: Optional[int] = None
                            ) -> dict:
     """手动聚合一轮：按库分批拉目录 → 逐库聚合 → 逐库配对 → 开关开时写映射。
 
@@ -1111,6 +1112,12 @@ def run_manual_aggregation(db: Session, source, *,
     （reconcile_hosted_lifecycle，上游下架跟随），结果并入返回
     的 lifecycle 键；任一条件不满足整轮不对账（seen 不完整
     计数会误判下架）。
+
+    ``import_series_limit`` 是内部试点口（整轮新剧上限）：只
+    数新建的独有剧树、接纳整树进/未接纳整树不进（语义见
+    upstream_import 的 ``series_limit``），计数与接纳/拒绝
+    集合跨窗跨库由一个 ``_SeriesBudget`` 整轮线程化；调度/
+    管理端路径不传 = 不限量。
 
     事务口径（2026-10-31 优化 O-01，``commit_each_library``）：
     - 默认 False = 旧口径：全程只 flush，提交归调用方；单库失败
@@ -1189,10 +1196,13 @@ def run_manual_aggregation(db: Session, source, *,
     _IMPORT_KEYS = ("candidates", "imported", "existing", "no_library",
                     "limited", "libraries_created", "series_imported",
                     "episodes_imported", "seasons_created", "no_identity",
-                    "no_series", "no_position")
+                    "no_series", "no_position", "series_limited")
     import_totals = {key: 0 for key in _IMPORT_KEYS}
     import_blocked: Optional[str] = None
     import_remaining = import_limit
+    # 剧数预算（整轮）：计数与接纳/拒绝集合跨窗跨库存活；
+    # import_series_limit=None 时预算对象不介入（旧口径）。
+    series_budget = uimp._SeriesBudget(import_series_limit)
     # 生命周期对账的本轮 seen 集合（该源目录里出现过的全部上游
     # 条目 id）：随窗累积，整轮可信时才在收尾对账（见循环后）。
     seen_upstream_ids: Set[str] = set()
@@ -1331,11 +1341,12 @@ def run_manual_aggregation(db: Session, source, *,
                 # 口径见 upstream_import 模块头。
                 # 二期：落点解析带上游库 id（自动建库＋关系落点），
                 # 电影之后接剧整棵进库/补集（同窗同事务）。
-                for _imp_fn, _imp_args in (
+                for _imp_fn, _imp_args, _imp_extra in (
                     (uimp.import_unpaired_movies,
-                     (items, {p["upstream_item_id"] for p in pairs})),
+                     (items, {p["upstream_item_id"] for p in pairs}), {}),
                     (uimp.import_unpaired_series_tree,
-                     (items, pairs)),
+                     (items, pairs),
+                     {"series_budget": series_budget}),
                 ):
                     try:
                         _imp_stats = _imp_fn(
@@ -1344,7 +1355,8 @@ def run_manual_aggregation(db: Session, source, *,
                             upstream_library_id=lib_id,
                             upstream_collection_type=library.get(
                                 "collection_type", ""),
-                            limit=import_remaining)
+                            limit=import_remaining,
+                            **_imp_extra)
                         for _k in lib_import:
                             _v = int(_imp_stats.get(_k) or 0)
                             lib_import[_k] += _v
@@ -1503,6 +1515,7 @@ def run_manual_aggregation(db: Session, source, *,
         "import_existing": import_totals["existing"],
         "import_no_library": import_totals["no_library"],
         "import_limited": import_totals["limited"],
+        "import_series_limited": import_totals["series_limited"],
         "import_libraries_created": import_totals["libraries_created"],
         "series_imported": import_totals["series_imported"],
         "episodes_imported": import_totals["episodes_imported"],
