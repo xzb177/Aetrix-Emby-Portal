@@ -378,7 +378,9 @@ def refresh_media_set(db, media_set) -> dict:
 def visible_items_query(db, set_id):
     """合集成员的读查询（露/藏判定与有效计数都走它，不另起口径）。
 
-    - 已合并副本排除；软删除行由全局钩子排除；
+    - 已合并副本排除；软删除行显式排除（PA-035：全局钩子看不见
+      JOIN 语句的 FROM，联结成员表时必须自己带 deleted_at 条件，
+      否则已下架成员会同时漏进列表与计数）；
     - 上游生命周期隐藏行（is_hidden）排除，与站内其他货架面
       同口径（PA-009）；
     - D1 开关关（默认）时挂案 A 身份条件（复用 identity_gate
@@ -391,6 +393,7 @@ def visible_items_query(db, set_id):
     ).filter(
         em.EmbyMediaSetMember.set_id == set_id,
         em.MediaItem.merged_into_id.is_(None),
+        em.MediaItem.deleted_at.is_(None),
         em.MediaItem.is_hidden == False,  # noqa: E712
     )
     if not show_unbound():
@@ -399,8 +402,13 @@ def visible_items_query(db, set_id):
 
 
 def effective_count(db, media_set) -> int:
-    """有效成员数：读时实时算（不存成员表、不物化）。"""
-    return visible_items_query(db, media_set.id).count()
+    """有效成员数：读时实时算（不存成员表、不物化）。
+
+    PA-035：不用 Query.count()（它把语句包成子查询，全局软删钩子
+    看不见内层表名），改 with_entities(func.count) 让计数与列表同口径。
+    """
+    return visible_items_query(db, media_set.id).with_entities(
+        func.count()).scalar() or 0
 
 
 def shelf_eligible(db, media_set) -> bool:

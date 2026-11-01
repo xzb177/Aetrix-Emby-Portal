@@ -4335,6 +4335,9 @@ def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user
         db.query(em.MediaItem)
         .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.is_favorite == True)  # noqa: E712
+        # PA-035：全局软删钩子看不见 JOIN 语句的 FROM，联结后必须自己带
+        # deleted_at 条件，否则已下架收藏会同时漏进列表与总数。
+        .filter(em.MediaItem.deleted_at.is_(None))
         .order_by(em.UserMediaData.updated_at.desc())
     )
     if identity_gate.phase2_enabled():
@@ -4342,7 +4345,9 @@ def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user
         # 不进收藏列表，但 is_favorite 标记保留，重绑后自动回来。
         # 门挂在 count 之前，TotalRecordCount 与实返一致。
         base_q = base_q.filter(identity_gate.identity_clause())
-    total = base_q.count()
+    # PA-035：不用 Query.count()（子查询包装会绕过软删钩子），
+    # order_by(None) 是因为聚合查询不能带 ORDER BY（PG 会报错）。
+    total = base_q.order_by(None).with_entities(func.count()).scalar() or 0
     rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)
     _prefetch_list_data(db, user.id, rows)
@@ -4361,13 +4366,18 @@ def get_played_items(request: Request, user: models.WebUser = Depends(get_emby_u
         db.query(em.MediaItem)
         .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.played == True)  # noqa: E712
+        # PA-035：全局软删钩子看不见 JOIN 语句的 FROM，联结后必须自己带
+        # deleted_at 条件，否则已下架已看会同时漏进列表与总数。
+        .filter(em.MediaItem.deleted_at.is_(None))
         .order_by(em.UserMediaData.last_played_at.desc())
     )
     if identity_gate.phase2_enabled():
         # 身份门二期（货架面）：与收藏同口径——展示过滤、已看标记不删，
         # 门挂在 count 之前，TotalRecordCount 与实返一致。
         base_q = base_q.filter(identity_gate.identity_clause())
-    total = base_q.count()
+    # PA-035：不用 Query.count()（子查询包装会绕过软删钩子），
+    # order_by(None) 是因为聚合查询不能带 ORDER BY（PG 会报错）。
+    total = base_q.order_by(None).with_entities(func.count()).scalar() or 0
     rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)
     _prefetch_list_data(db, user.id, rows)

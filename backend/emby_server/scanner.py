@@ -2692,6 +2692,8 @@ def count_virtual_items(db: Session, library) -> int:
     platform = (getattr(library, "platform", "") or "").strip()
     if not platform:
         return 0
+    # PA-035：不用 Query.count()（子查询包装会绕过软删钩子），改
+    # with_entities(func.count)；本函数当前无调用方，属潜伏死路径一并修。
     return (
         db.query(emby_models.MediaItem)
         .filter(
@@ -2699,7 +2701,7 @@ def count_virtual_items(db: Session, library) -> int:
             emby_models.MediaItem.item_type.in_(["movie", "series"]),
             emby_models.MediaItem.platforms.ilike(f"%{platform}%"),
         )
-        .count()
+        .with_entities(func.count()).scalar() or 0
     )
 
 

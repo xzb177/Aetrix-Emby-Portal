@@ -2784,7 +2784,9 @@ def admin_search_items(staff: models.WebUser = Depends(require_staff), db: Sessi
         query = query.filter(em.MediaItem.name.ilike(f"%{search}%"))
     if type:
         query = query.filter(em.MediaItem.item_type == type)
-    total = query.count()
+    # PA-035：不用 Query.count()（子查询包装会绕过软删钩子，列表排掉
+    # 下架行、总数却算进去），改 with_entities(func.count) 与列表同口径。
+    total = query.with_entities(func.count()).scalar() or 0
     items = query.order_by(em.MediaItem.date_added.desc()).offset(offset).limit(limit).all()
     return {"total": total, "items": [
         {"id": i.guid, "name": i.name, "type": i.item_type, "year": i.production_year,

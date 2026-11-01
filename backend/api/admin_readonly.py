@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.api.admin_core import get_current_admin
@@ -104,12 +105,14 @@ def sample_hash_progress(
             (em.MediaItem.content_hash.is_(None))
             | (em.MediaItem.content_hash == ""),
         )
-        .count()
+        # PA-035：不用 Query.count()（子查询包装会绕过软删钩子）。
+        .with_entities(func.count()).scalar() or 0
     )
     sampled = (
         db.query(em.MediaItem)
         .filter(em.MediaItem.content_hash_algo == shw.SAMPLE_ALGO)
-        .count()
+        # PA-035：不用 Query.count()（子查询包装会绕过软删钩子）。
+        .with_entities(func.count()).scalar() or 0
     )
     worker = worker_registry.snapshot().get("sample_hash")
     return {
