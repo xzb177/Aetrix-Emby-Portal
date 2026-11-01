@@ -117,6 +117,7 @@ def _recently_updated_items(db, limit: int = 20) -> list[dict]:
             em.Library.is_enabled == True,  # noqa: E712
             em.MediaItem.item_type.in_(("movie", "series")),
             em.MediaItem.merged_into_id.is_(None),
+            em.MediaItem.is_hidden == False,  # noqa: E712  # PA-011
         )
     )
     if gate_enabled():

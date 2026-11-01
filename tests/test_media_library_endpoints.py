@@ -376,3 +376,19 @@ def test_views_order_with_sort_order(db, emby_client, user):
     ids = [it.get("Id") for it in r.json()["Items"]]
     mine = [g for g in ids if g in (a.guid, b.guid, c.guid)]
     assert mine == [c.guid, b.guid, a.guid]
+
+
+# ---------- PA-011（R7 审计） ----------
+
+def test_sections_recently_updated_excludes_hidden(db, user_client, monkeypatch):
+    """PA-011：首页“最近更新”不得出现 is_hidden 行。"""
+    monkeypatch.setattr(ml_api, "SECTIONS_ENABLED", 1)
+    lib = _lib(db, "藏")
+    _movie(db, lib, "可见", added=datetime(2024, 5, 1))
+    hidden = _movie(db, lib, "已藏", added=datetime(2024, 5, 2))
+    hidden.is_hidden = True
+    db.commit()
+    r = user_client.get("/api/user/media-library/home/sections")
+    assert r.status_code == 200, r.text
+    recent = r.json()["sections"][1]["items"]
+    assert [it["name"] for it in recent] == ["可见"]
