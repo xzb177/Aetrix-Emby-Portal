@@ -1342,6 +1342,37 @@ class UpstreamAggregateTask(Base):
     heartbeat_at = Column(DateTime)
 
 
+class UpstreamAggregateWatermark(Base):
+    """上游聚合增量拉取水位线（定时增量轮）。
+
+    一行 = 一个（源，上游库）的增量水位：``watermark_at`` 是上轮
+    成功处理到的最大 ``DateLastContentAdded``（ISO 字符串，归一
+    化与解析口径见 upstream_aggregate_run._parse_upstream_ts）。
+    定时增量轮逐库按该字段倒序拉、整页不高于水位即停；水位只在
+    该库本轮成功完成后推进（随逐库事务同提交/同回滚），失败
+    不推进；无行 = 该库还没成功跑过，下一轮按全量并在成功后
+    建行。手动轮与全量轮成功后同样刷新本表（全量见过全库，
+    水位跟着走是实情）。不加外键（照 UpstreamSource 先例）：
+    源删了水位行留着无害。由 create_all 自动建表，老库无需
+    ALTER。
+    """
+
+    __tablename__ = "upstream_aggregate_watermarks"
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "upstream_library_id",
+                         name="uq_upstream_aggregate_watermark"),
+        Index("ix_upstream_aggregate_watermarks_source", "source_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_id = Column(Integer, nullable=False)  # upstream_sources.id，无外键
+    upstream_library_id = Column(String(100), nullable=False)  # 对方库 Id
+    watermark_at = Column(String(40), nullable=False)  # ISO 时间串（UTC 归一）
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+
+
 class SourceCategoryBinding(Base):
     """上游源分类绑定（苹果 CMS W1：类型与持久化）。
 
