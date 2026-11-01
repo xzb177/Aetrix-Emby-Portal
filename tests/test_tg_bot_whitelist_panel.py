@@ -235,3 +235,41 @@ def test_revoked_whitelist_falls_back_to_plain_layout(db):
     account = features.handle_account(db, _tg(TG_VIP, "Vip"), TG_VIP, "")
     assert "专属称号" not in account
     assert account.startswith("▎<b>账号中心！</b>vip")
+
+
+# ---------- 6. 创世编号真口径：whitelist_serials 表（身份组 #1680） ----------
+
+def test_serial_shown_from_serials_table(db):
+    """编号在 WhitelistSerial 表里时，面板必须经 codes.whitelist_serial_for 读出。
+
+    回归：面板原探查名单（user 属性／codes 同名 helper／名单行 serial 键）
+    三处都对不上 #1680 的落地口径，编号已落库也恒显示不出来。
+    """
+    vip = _make_whitelist(db, _user(db, TG_VIP, "vip"))
+    db.add(models.WhitelistSerial(user_id=vip.id, serial=5))
+    db.commit()
+    identity = features._whitelist_identity(db, vip)
+    assert identity is not None and identity["serial"] == 5
+    rows = features._whitelist_rows(identity)
+    assert any("创世编号" in row and "No.5" in row for row in rows)
+    text = features.user_panel(db, vip)
+    assert "· 🔢 <b>创世编号</b> | No.5" in text
+    account = features.handle_account(db, _tg(TG_VIP, "Vip"), TG_VIP, "")
+    assert "· 🔢 <b>创世编号</b> | No.5" in account
+
+
+def test_serial_none_when_no_serial_row(db):
+    """白名单但未分配编号：身份仍在，编号为 None、面板只出称号行。"""
+    vip = _make_whitelist(db, _user(db, TG_VIP, "vip"))
+    identity = features._whitelist_identity(db, vip)
+    assert identity is not None and identity["serial"] is None
+    assert "创世编号" not in features.user_panel(db, vip)
+
+
+def test_serial_row_ignored_for_plain_user(db):
+    """非白名单账号即使有编号行也不出专属版式（判定仍走 is_whitelist_account）。"""
+    plain = _user(db, TG_PLAIN, "alice")
+    db.add(models.WhitelistSerial(user_id=plain.id, serial=9))
+    db.commit()
+    assert features._whitelist_identity(db, plain) is None
+    assert "创世编号" not in features.user_panel(db, plain)
