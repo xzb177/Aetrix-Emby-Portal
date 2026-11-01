@@ -198,14 +198,17 @@ def test_per_library_commit_isolates_mapping_conflict(
     _local(db, item_id=11, tmdb="999")
     db.commit()
     monkeypatch.setenv(uim.MAPPING_ENABLED_ENV, "1")
-    real_record = uim.record_mapping
+    real_batch = uim.record_mappings_batch
 
-    def flaky_record(db_session, **kwargs):
-        if kwargs["upstream_item_id"] == "u-2":
+    def flaky_batch(db_session, entries):
+        # 写映射攒批后（2026-11-01 加速）冲突注入点随实现迁到
+        # 批量写：批中含 u-2 即整批在 flush 处撞冲突，断言口径
+        #（单库隔离/commit 已落库）与逐条时代逐字不变。
+        if any(e["upstream_item_id"] == "u-2" for e in entries):
             raise IntegrityError("INSERT", {}, Exception("dup"))
-        return real_record(db_session, **kwargs)
+        return real_batch(db_session, entries)
 
-    monkeypatch.setattr(uim, "record_mapping", flaky_record)
+    monkeypatch.setattr(uim, "record_mappings_batch", flaky_batch)
     _hold_submit(monkeypatch)
     fake = _TwoLibItems()
     monkeypatch.setattr(uar, "_default_http_get", fake.get)
@@ -236,10 +239,10 @@ def test_legacy_run_still_propagates_integrity_error(db, monkeypatch):
     _local(db, item_id=10, tmdb="278")
     monkeypatch.setenv(uim.MAPPING_ENABLED_ENV, "1")
 
-    def boom(db_session, **kwargs):
+    def boom(db_session, entries):
         raise IntegrityError("INSERT", {}, Exception("dup"))
 
-    monkeypatch.setattr(uim, "record_mapping", boom)
+    monkeypatch.setattr(uim, "record_mappings_batch", boom)
     fake = _TwoLibItems()
     with pytest.raises(IntegrityError):
         uar.run_manual_aggregation(db, source, http_get=fake.get)

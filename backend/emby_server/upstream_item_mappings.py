@@ -151,6 +151,96 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
     return row
 
 
+def record_mappings_batch(db: Session, entries):
+    """批量写映射（:func:`record_mapping` 的批量版，语义逐字一致）。
+
+    ``entries`` 是与 record_mapping 同名的 kwargs dict 列表。返回
+    ``(results, invalid)``：``results`` 与 entries 对齐（行或
+    None），``invalid`` 是校验不过（upstream_item_id 空 / id 非
+    正整数 / episode_index 为负）的下标集合——这些条目不写、
+    对应位 None，由调用方按单条版抛 ValueError 时的口径自行
+    处置（聚合 run 逐对计数、进库整窗中止）。开关关时与单条版
+    同口径：不校验、不写、results 全 None、invalid 为空。
+
+    批量化手法（聚合加速，2026-11-01）：存在性查询合并成一条
+    IN（源/本地/上游三维取超集、Python 里按三元组精确对齐），
+    插入攒 db.add、更新就地改字段，最后一次 flush——替代逐对
+    SELECT+flush（实测 3100 对 = 6200 条 SQL）。同批内同三元组
+    重复出现时按输入顺序逐条生效（后写覆盖先写，与逐条调用
+    逐字一致）。只 flush 不 commit，调用方事务内执行。
+    """
+    entries = list(entries or ())
+    results: list = [None] * len(entries)
+    if not entries:
+        return results, set()
+    if not mapping_enabled():
+        return results, set()
+    # 1) 纯校验先行（不碰库）：与单条版同样的 ValueError 判据，
+    #    非法条目隔离出来，不连累整批。
+    invalid = set()
+    prepared = []
+    for index, entry in enumerate(entries):
+        item_id = (entry.get("upstream_item_id") or "").strip()
+        try:
+            if not item_id:
+                raise ValueError("upstream_item_id 不能为空")
+            local_id = _as_pos_int(entry.get("local_item_id"),
+                                   "local_item_id")
+            src_id = _as_pos_int(entry.get("source_id"), "source_id")
+            episode_index = entry.get("episode_index")
+            if episode_index is not None:
+                episode_index = _as_nonneg_int(episode_index,
+                                               "episode_index")
+        except ValueError:
+            invalid.add(index)
+            continue
+        prepared.append((index, local_id, src_id, item_id,
+                         episode_index, entry))
+    if not prepared:
+        return results, invalid
+    # 2) 一条 IN 查齐本批已存在的映射行（超集查、精确对齐）。
+    existing = {}
+    rows = (db.query(em.UpstreamItemMapping)
+            .filter(
+                em.UpstreamItemMapping.source_id.in_(
+                    sorted({p[2] for p in prepared})),
+                em.UpstreamItemMapping.local_item_id.in_(
+                    sorted({p[1] for p in prepared})),
+                em.UpstreamItemMapping.upstream_item_id.in_(
+                    sorted({p[3] for p in prepared})))
+            .all())
+    for row in rows:
+        existing[(row.local_item_id, row.source_id,
+                  row.upstream_item_id)] = row
+    # 3) 按输入顺序逐条生效（同三元组后写覆盖先写），一次 flush。
+    now = datetime.now()
+    for index, local_id, src_id, item_id, episode_index, entry in prepared:
+        key = (local_id, src_id, item_id)
+        row = existing.get(key)
+        if row is None:
+            row = em.UpstreamItemMapping(
+                local_item_id=local_id,
+                source_id=src_id,
+                upstream_item_id=item_id,
+                episode_index=episode_index,
+                confidence=_clamp_confidence(entry.get("confidence")),
+                evidence=(entry.get("evidence") or "").strip()[:200],
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+            existing[key] = row
+        else:
+            row.confidence = _clamp_confidence(entry.get("confidence"))
+            row.evidence = (entry.get("evidence") or "").strip()[:200]
+            if episode_index is not None:
+                row.episode_index = episode_index
+            row.updated_at = now
+        results[index] = row
+    db.flush()
+    return results, invalid
+
+
 def _local_item_live(db: Session, local_id: int) -> bool:
     """本地条目是否活行：行在、未软删、未合并、未隐藏。
 

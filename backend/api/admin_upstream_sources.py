@@ -398,3 +398,40 @@ def put_upstream_detail_line_config(
         schema="upstream_aggregate")
     db.commit()
     return {"enabled": _up.detail_line_enabled(db)}
+
+
+class UpstreamFetchConcurrencyConfigIn(BaseModel):
+    """聚合拉取并发写入体（2026-11-01 加速）。"""
+
+    concurrency: int
+
+
+@admin_emby_router.get("/upstream-fetch-concurrency-config")
+def get_upstream_fetch_concurrency_config(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读聚合拉取并发（SystemConfig，无行＝默认 4，钳 [1, 16]）。"""
+    return {"concurrency": uar.configured_fetch_concurrency(db)}
+
+
+@admin_emby_router.put("/upstream-fetch-concurrency-config")
+def put_upstream_fetch_concurrency_config(
+    payload: UpstreamFetchConcurrencyConfigIn,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """写聚合拉取并发（走 config_service 统一保存通道）。
+
+    范围 [1, 16] 由 upstream_aggregate 家族 schema 校验，越界抛
+    ConfigValueError（main.py 统一转 400）。并发只改逐库拉取的
+    请求时序；上游不稳时调回 1 即回串行旧行为。审计由
+    /api/admin/emby/* 中间件统一记录。
+    """
+    from backend import config_service
+
+    config_service.save_config(
+        db, {uar.KEY_FETCH_CONCURRENCY: payload.concurrency},
+        schema="upstream_aggregate")
+    db.commit()
+    return {"concurrency": uar.configured_fetch_concurrency(db)}
