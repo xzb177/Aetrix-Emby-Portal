@@ -29,9 +29,11 @@ logger = logging.getLogger(__name__)
 # - govlog：现行命令，治理审计日志查看（features.handle_govlog：仅私聊、
 #   仅公益服、仅 Lv.6），属特权查看，按更严一级归管理员级；
 # - whois / reconcile / rankpush：管理员命令（审计反查 / 群号对账 /
-#   观影榜手动推送），其实现在独立草稿 PR 中，尚未合入 BOT_COMMANDS；
-#   在此预注册分类——它们进入 BOT_COMMANDS 之日自动归管理员级，
-#   在此之前本模块只从 BOT_COMMANDS 取交集下发，不会下发不存在的命令。
+#   观影榜手动推送），均已合入 BOT_COMMANDS 并归管理员级。
+#   whois 群内可执行（管理员精简卡，2026-11-01）但刻意不进下面的
+#   GROUP_COMMANDS：群菜单是给全群看的，管理员命令不挂上去，群里
+#   靠管理员手输触发，权限门禁在 handler 的 is_staff 判定（菜单
+#   可见性从来不是安全边界，见本文件头注）。
 ADMIN_ONLY_COMMANDS: frozenset[str] = frozenset({
     "govlog",
     "whois",

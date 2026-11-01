@@ -2,9 +2,11 @@
 """TG Bot 管理员审计反查 /whois（embyboss 借鉴第 2 项）。
 
 口径：
-- 仅私聊、仅网站管理员（is_staff 现行判定，与 handle_admin 同一口径）；
-  非管理员回现行拒绝卡（🔒 仅管理员可用），未绑定回绑定指引，
-  群聊由 router private_only 拦 + handler 层私聊 guard 双保险。
+- 审计全卡仅私聊、仅网站管理员（is_staff 现行判定，与 handle_admin
+  同一口径）；非管理员回现行拒绝卡（🔒 仅管理员可用），未绑定回
+  绑定指引，handler 层对未声明群上下文的直调仍有私聊 guard。
+- 群聊模式（2026-11-01 用户拍板）：管理员在群里发 /whois 出精简卡
+  （字段白名单、无审计痕迹），见 test_tg_bot_whois_group_lite.py。
 - 全只读：只查 web_users / login_logs / emby_playback_sessions /
   user_storage_bindings / emby_items，不建行不改行不提交。
 - 结果绝不出现 password_hash / emby_password / 凭据等秘密字段；
@@ -162,14 +164,17 @@ def test_handler_group_chat_double_guard(db):
     assert "targetx" not in out
 
 
-def test_router_group_whois_private_only(db, sent):
+def test_router_group_whois_staff_gets_lite_card(db, sent):
+    # 2026-11-01 起 /whois 不再被 router private_only 拦：管理员群里
+    # 带参查人出精简卡（用户名在、登录 IP 等审计痕迹不在）。
     _staff(db)
     target = _user(db, "grouptarget", tg_id=700301)
     _login(db, target)
     router.dispatch(db, _group_update("/whois grouptarget"))
     assert len(sent) == 1
-    assert "请私聊机器人使用" in sent[0]
-    assert "grouptarget" not in sent[0]
+    assert "grouptarget" in sent[0]
+    assert "1.2.3.4" not in sent[0]
+    assert "最近登录" not in sent[0]
 
 
 # ---------- 命中形态 ----------
@@ -306,7 +311,7 @@ def test_lookup_is_readonly(db):
 def test_command_registered(db, sent):
     _staff(db)
     assert policy.COMMAND_SWITCHES.get("/whois") == "bot_cmd_whois"
-    assert ("whois", "[私聊] 账号反查（管理员）") in poller.BOT_COMMANDS
+    assert ("whois", "[群/私聊] 账号反查（管理员）") in poller.BOT_COMMANDS
     router.dispatch(db, _private_update("/whois nothinghere"))
     assert len(sent) == 1
     assert "未知命令" not in sent[0]

@@ -1103,17 +1103,24 @@ def handle_reconcile(db, tg_user: dict, chat_id: int, args: str):
     return reconcile.render_report(result)
 
 
-def handle_whois(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """管理员审计反查（只读，embyboss 借鉴第 2 项）。
+def handle_whois(db, tg_user: dict, chat_id: int, args: str,
+                 *, in_group: bool = False,
+                 reply_from: dict | None = None) -> str:
+    """管理员查人（只读，embyboss 借鉴第 2 项 + 群内精简卡）。
 
-    双门与 handle_admin 同一口径：私聊限定（handler 层 guard，
-    router 的 private_only 另有一层）+ resolve 后 is_staff 判定，
-    一字不改判定逻辑；非管理员回现行拒绝卡，未绑定回绑定指引。
-    查询与渲染全在 whois.py（只读，只查现有表）。
+    私聊（默认路径）：审计全卡，口径逐字不变——双门与 handle_admin
+    同一口径：私聊限定（handler 层 guard，router 的 private_only
+    另有一层）+ resolve 后 is_staff 判定；非管理员回现行拒绝卡，
+    未绑定回绑定指引。查询与渲染全在 whois.py（只读，只查现有表）。
+
+    群聊（router 显式传 in_group=True 才进，2026-11-01 用户拍板）：
+    同一 is_staff 判定，只出精简卡；见 _whois_group。
     """
     from backend.tg_bot import queries, whois
 
     tg_id = tg_user.get("id")
+    if in_group:
+        return _whois_group(db, tg_id, args, reply_from)
     if not tg_id or chat_id != int(tg_id):
         return queries.PRIVATE_ONLY_TEXT
     user = resolve(db, int(tg_id))
@@ -1134,3 +1141,55 @@ def handle_whois(db, tg_user: dict, chat_id: int, args: str) -> str:
             ],
         )
     return whois.render_whois(db, keyword)
+
+
+def _whois_group(db, tg_id, args: str, reply_from: dict | None) -> str:
+    """群内精简卡路径（仅管理员，2026-11-01 用户拍板）。
+
+    门禁顺序与私聊全卡一致：调用者未绑定→绑定指引、非管理员→现行
+    🔒 拒绝卡（卡里绝不带被查人任何信息）。目标定位：优先被回复
+    消息的发送者（reply_from，凭其 TG 号走 identity 链），其次
+    带参（站内用户名 / TG 号，whois.find_lite_user 只查 web_users）。
+    查无此人 / 对方未绑定一律回明示卡，不报错、不建行（全只读）；
+    渲染只走 whois.render_whois_lite 的字段白名单。
+    """
+    from backend.tg_bot import whois
+
+    if not tg_id:
+        return _bind_guide_text()
+    caller = resolve(db, int(tg_id))
+    if caller is None:
+        return _bind_guide_text()
+    if not bool(getattr(caller, "is_staff", False)):
+        return layout.card(
+            layout.title("账号反查"),
+            [layout.row("🔒", "访问状态", "仅管理员可用")],
+        )
+    if reply_from and reply_from.get("id"):
+        target = resolve(db, int(reply_from["id"]))
+        if target is None:
+            return layout.card(
+                layout.title("账号速览"),
+                [layout.row("📭", "结果", "对方还没有绑定站内账号")],
+            )
+        name = (f"{reply_from.get('first_name') or ''} "
+                f"{reply_from.get('last_name') or ''}").strip()
+        if not name:
+            name = str(reply_from.get("username") or "")
+        return whois.render_whois_lite(db, target, name or None)
+    keyword = (args or "").strip()
+    if not keyword:
+        return layout.card(
+            layout.title("账号速览"),
+            [
+                layout.row("🔍", "用法", "回复某人的消息发送 /whois"),
+                layout.row("🧭", "也可", "/whois 站内用户名 或 /whois TG 号"),
+            ],
+        )
+    target = whois.find_lite_user(db, keyword)
+    if target is None:
+        return layout.card(
+            layout.title("账号速览"),
+            [layout.row("📭", "结果", "没查到这个账号")],
+        )
+    return whois.render_whois_lite(db, target)

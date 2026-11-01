@@ -221,12 +221,17 @@ def test_slots_registered_in_all_three_places():
 _PRIVATE_ONLY_FACT = {
     # private_only 集合
     "request", "myrequests", "login", "renew", "govlog",
-    "report", "propose", "launch", "reconcile", "rankpush", "whois",
+    "report", "propose", "launch", "reconcile", "rankpush",
     # P1 个人查询：群里不执行
     "bindings", "transfers", "whyplay", "wants",
     # 群里拒执行（删原消息＋提示私聊）
     "redeem",
 }
+
+# 群内可执行但仅管理员、且刻意不进群菜单 scope 的命令（2026-11-01）：
+# /whois 群里出管理员精简卡——GROUP_COMMANDS 是给全群看的菜单，
+# 管理员命令不进；标签仍按「群里能用」的事实记 [群/私聊]。
+_GROUP_ADMIN_FACT = {"whois"}
 
 
 def test_scene_tags_match_scope_facts():
@@ -236,6 +241,8 @@ def test_scene_tags_match_scope_facts():
         if name in command_scopes.GROUP_COMMANDS:
             expected = "[群/私聊] "
             tagged_group_ok.add(name)
+        elif name in _GROUP_ADMIN_FACT:
+            expected = "[群/私聊] "
         else:
             expected = "[私聊] "
             # 不在群 scope 的命令必须能在 router 拦截事实里找到依据；

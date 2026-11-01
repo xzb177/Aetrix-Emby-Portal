@@ -506,8 +506,11 @@ def dispatch(db, update: dict) -> None:
         # 账号、求片和免密登录都可能泄露隐私/凭据，强制私聊。
         # 账号展示（/account、/me）已放行群聊：只展示能量/活力/馆灵/成就等
         # 个人面板信息，不含任何凭据；登录与求片仍私聊限定。
+        # /whois 是刻意例外（2026-11-01）：不在本集合——群里走 handler
+        # 的管理员精简卡模式（is_staff 门禁 + 字段白名单，无审计痕迹），
+        # 私聊仍出审计全卡；见 handlers.handle_whois 的 in_group 路径。
         private_only = {"/request", "/myrequests", "/login", "/renew", "/govlog",
-                        "/report", "/propose", "/launch", "/reconcile", "/rankpush", "/whois"}
+                        "/report", "/propose", "/launch", "/reconcile", "/rankpush"}
         if cmd in private_only and in_group:
             _send_reply(db, chat_id, "🔒 这个功能请私聊机器人使用",
                         autodelete=True)
@@ -574,6 +577,15 @@ def dispatch(db, update: dict) -> None:
             # 开关口径与 menu:slots 面板入口一致），单独分发
             reply = handlers.handle_slots_command(
                 db, tg_user, chat_id, args, in_group=in_group)
+        elif cmd == "/whois":
+            # /whois 需要群聊上下文（私聊全卡 vs 群内管理员精简卡）
+            # 与被回复消息的发送者（群内回复定位），通用签名拿不到，
+            # 与 /slots 同款单独分发；handler 默认参数保证私聊与
+            # 直调行为逐字不变。
+            reply_from = (msg.get("reply_to_message") or {}).get("from")
+            reply = handlers.handle_whois(
+                db, tg_user, chat_id, args,
+                in_group=in_group, reply_from=reply_from)
         else:
             reply = fn(db, tg_user, chat_id, args)
         # handler 可返回 str 或 (text, reply_markup) 元组（一键登录按钮）
