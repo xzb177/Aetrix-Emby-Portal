@@ -45,24 +45,13 @@
 - 本地侧只认活行：``merged_into_id IS NULL``（``deleted_at``
   由 ORM 全局钩子自动拼）；同一身份多行时取 id 最小（确定性）。
 
-备注-分类对位（2026-10-31 用户亲定，2026-11-01 口径修订）：
-分类只用来收窄，不写就不收窄。源备注（``upstream_sources.note``）
-按「备注-分类」约定写分类时（如「乐观-国产剧」），聚合先从
-备注解析出分类，再把分类对位到一个本地真实库（分类→库名
-可经 SystemConfig ``upstream_aggregate_category_library_map``
-改配，没配到的分类默认同名对位；分类名单与库名一律来自
-服主数据，代码不写死），本源全部配对只在该库内进行；写了
-分类却对不上任何本地库时整源跳过：不解析凭据、不拉上游，
-结果带 ``skipped`` 与 ``skip_reason``（短码 + 文案 + 分类），
-日志同步记一条——写错分类名不许静默全量乱配。跳过不是
-失败，任务照常以 succeeded 落终态、结果里看得到跳过原因。
-
-全量模式（2026-11-01 简单方案，用户亲定，取代按分类拆源）：
-备注没写分类（空/解析不出）默认就是全量：整源聚合、配对
-不收窄，按条目自身所属逐库对位——分类本来就是机器按片子
-对位，没必要让人先分。分类段恰写「全部」是同一模式的显式
-写法，与没写分类等效。服主全程不用为聚合碰备注，除非他
-想把某个源收窄到一个库。
+备注是纯备注（2026-11-01 用户亲令，删除分类选项）：源备注
+（``upstream_sources.note``）只供管理员写自由说明，聚合不解析
+它——所有源一律整源全量：逐库拉取、配对按条目自身所属逐库
+对位，不因备注收窄、不因备注跳过，结果不带任何分类字段。
+#1639/#1643 的「备注-分类」对位（备注末段写分类名就收窄到
+对位库、对不上整源跳过）已整体删除，不要再加回来；口径由
+tests/test_upstream_aggregate_category.py 钉死。
 
 写路径开关：``UPSTREAM_ITEM_MAPPING_ENABLED``（默认关）只管
 写路径——关时 ``record_mapping`` 返回 None、不写任何东西，
@@ -197,148 +186,6 @@ def _page_retry_config(db):
     if backoff is None:
         backoff = PAGE_RETRY_BACKOFF_DEFAULT
     return max(0, min(5, retries)), max(0, min(30, backoff))
-
-
-def _system_config_text(db, key):
-    """SystemConfig 文本热读：与 _system_config_int 同口径
-    （无行/异常一律 None 回退，读失败不许把聚合打停）。"""
-    if db is None:
-        return None
-    try:
-        from backend.integrations import store
-        raw = store.get_value(db, key, "")
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    return text or None
-
-
-#: 分类→本地库名改配 SystemConfig 键（备注-分类对位）：JSON 对象
-#: {"分类名": "本地库名"}，只列要改配的分类；没列的分类默认同名
-#: 对位。保存侧在 config_schema 严格校验（json_str_map），运行时
-#: 读取宽容（见 category_library_map）。纯 SystemConfig 键，不进
-#: env.example（#1527 先例）。
-KEY_CATEGORY_LIBRARY_MAP = "upstream_aggregate_category_library_map"
-
-#: 整源跳过短码：只剩「分类对不上任何本地库」一种——备注没写
-#: 分类不再跳过（2026-11-01 口径修订：默认全量，见 CATEGORY_ALL
-#: 与 resolve_target_library），旧短码 category_remark_missing
-#: 已随口径取消，不要再产生。
-SKIP_LIBRARY_UNMATCHED = "category_library_unmatched"
-
-#: 全量模式保留分类（2026-11-01 简单方案，用户亲定）：备注分类
-#: 段恰为此值时整源全量聚合、配对不收窄到单一库（按条目自身
-#: 逐库对位）。它是模式开关、不是分类名也不是库名：对位解析
-#: 先于改配表命中它就短路，改配表里给它配了值也不生效——映射
-#: 表只管分类→改配库。同日口径修订后它只是全量的显式写法：
-#: 备注没写分类默认就是全量（见 resolve_target_library），写
-#: 不写「全部」等效；服主不必按分类拆源（拆源方案已被取代）。
-CATEGORY_ALL = "全部"
-
-#: 备注里「备注」与「分类」的分隔符：半角与全角横线都认。
-_REMARK_SEPARATORS = ("-", "－")
-
-
-def parse_remark_category(note) -> Optional[str]:
-    """从源备注解析分类：「备注-分类」取最后一段为分类。
-
-    - 备注为空/全空白 → None；
-    - 含分隔符 → 分隔符后的最后一段（去空白，空段按无分类）；
-    - 不含分隔符 → 整段备注即分类名（服主只写分类也成立）。
-    分类名本身是服主数据，这里只做形态切分、不校验名单。
-    """
-    text = (note or "").strip()
-    if not text:
-        return None
-    cut = -1
-    for sep in _REMARK_SEPARATORS:
-        idx = text.rfind(sep)
-        if idx > cut:
-            cut = idx
-    if cut < 0:
-        return text
-    category = text[cut + 1:].strip()
-    return category or None
-
-
-def category_library_map(db) -> Dict[str, str]:
-    """读分类→库名改配表（运行时宽容口径）。
-
-    存量值解析不出来（人工直改库写坏等）一律当没配——回落同名
-    对位，不许把一轮聚合打停；坏条目（非字符串键值、空键空值）
-    逐条跳过。保存侧的严格校验在 config_schema，运行时不复检。
-    """
-    raw = _system_config_text(db, KEY_CATEGORY_LIBRARY_MAP)
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        logger.warning("上游聚合分类改配表解析失败，按未配置处理")
-        return {}
-    if not isinstance(parsed, dict):
-        logger.warning("上游聚合分类改配表不是 JSON 对象，按未配置处理")
-        return {}
-    out: Dict[str, str] = {}
-    for key, value in parsed.items():
-        if isinstance(key, str) and isinstance(value, str):
-            key = key.strip()
-            value = value.strip()
-            if key and value:
-                out[key] = value
-    return out
-
-
-def resolve_target_library(db: Session, source) -> dict:
-    """把源备注的分类对位到本地真实库（备注-分类对位的唯一实现）。
-
-    返回 {"library": Library|None, "category": str|None,
-    "all_libraries": bool,
-    "skip": None|{"code", "message", "category"}}：
-    - 备注为空/解析不出分类 → 默认全量模式（2026-11-01 口径
-      修订）：library=None、category=None、all_libraries=True、
-      不跳过——分类只用来收窄，没写就不收窄；
-    - 分类恰为「全部」（CATEGORY_ALL）→ 同样是全量模式（显式
-      写法，与没写分类等效）：先于改配表短路，映射表只管
-      分类→改配库，劫持不了模式开关；
-    - 其余分类：目标库名 = 改配表命中值，未命中默认分类同名；
-      按名找非虚拟库（虚拟库是平台生成的展示库、没有自己的
-      条目，不是对位目标），同名多行取 id 最小（确定性）；
-      找不到 → skip=category_library_unmatched（写了分类就要
-      对得上，对不上响亮跳过并报明，不许静默全量）。
-    """
-    category = parse_remark_category(getattr(source, "note", None))
-    if category is None:
-        return {"library": None, "category": None, "skip": None,
-                "all_libraries": True}
-    if category == CATEGORY_ALL:
-        return {"library": None, "category": category, "skip": None,
-                "all_libraries": True}
-    target_name = category_library_map(db).get(category, category)
-    # 同名多行取 id 最小（确定性）；虚拟判定走全仓同款 Python 侧
-    # bool() 口径（is_virtual 为 NULL 的老行算非虚拟，SQL == False
-    # 会把它们漏掉）。库是「台」数量级，全取回内存筛不放大查询。
-    library = None
-    for row in (db.query(em.Library)
-                .filter(em.Library.name == target_name)
-                .order_by(em.Library.id).all()):
-        if not bool(getattr(row, "is_virtual", False)):
-            library = row
-            break
-    if library is None:
-        return {
-            "library": None, "category": category, "all_libraries": False,
-            "skip": {
-                "code": SKIP_LIBRARY_UNMATCHED,
-                "message": f"源备注分类「{category}」对位本地库"
-                           f"「{target_name}」不存在，已跳过该源聚合",
-                "category": category,
-            },
-        }
-    return {"library": library, "category": category, "skip": None,
-            "all_libraries": False}
 
 
 def _system_config_float(db, key):
@@ -763,9 +610,8 @@ def _local_title_year_key(local) -> Optional[str]:
 def _alive_local_query(db: Session, library_id=None):
     """本地活行查询基底：merged_into_id 与 is_hidden 显式过滤
     （deleted_at 由 ORM 全局钩子自动拼，见软删除纪律；与本站
-    浏览口径对齐）。``library_id`` 给了就再按库收窄——备注-分类
-    对位后配对只认对位库内的行，聚合的全部本地查询都从这里出，
-    一处收窄即全链路不跨库。"""
+    浏览口径对齐）。``library_id`` 给了就再按库收窄（pair_aggregates
+    的显式参数，聚合主路径不传）；聚合的全部本地查询都从这里出。"""
     query = (db.query(em.MediaItem)
              .filter(em.MediaItem.merged_into_id.is_(None))
              .filter(em.MediaItem.is_hidden == False))  # noqa: E712
@@ -790,10 +636,9 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem],
     返回 (pairs, unpaired_reasons)：pairs 每项含本地条目 id、
     上游条目 id（逐线路）、置信度、证据、集序号；unpaired_reasons
     按原因码计数（不逐条列未配对明细，响应体保持小）。
-    ``library_id`` 给了时只在该本地库内配对（备注-分类对位，
-    见 resolve_target_library）；不给 = 全库配对——run 的全量
-    模式（默认/分类「全部」）经对位解析传 None 走这条，另有
-    存量直接调用方与旧测试。
+    ``library_id`` 给了时只在该本地库内配对（显式收窄参数）；
+    不给 = 全库配对——run_manual_aggregation 一律走这条（全量
+    口径：逐条按条目自身对位各库），直接调用方与旧测试同此。
 
     查询策略（批量，不逐聚合查库）：
     - tmdb / imdb 各一次 IN 查询建映射；
@@ -915,7 +760,7 @@ def _local_series_title_index(db: Session, library_id=None):
     标题取 _local_title_year 口径（scan_title 回落 name），归一用
     聚合模块同款 _normalize_title；同名多行全保留——多候选由
     调用方按防错红线拒配，这里不替它做主。``library_id`` 给了
-    时索引只含对位库内的系列（备注-分类对位，不跨库）。
+    时索引只含该库内的系列（与 pair 的显式收窄参数同口径）。
     """
     index: Dict[str, Dict[int, object]] = {}
     for row in (_alive_local_query(db, library_id)
@@ -1067,19 +912,10 @@ def run_manual_aggregation(db: Session, source, *,
     - 源未启用 → 400（停用即断聚合）；
     - applecms 型 → 400（走它自己的同步，不按 Emby 协议撞接口）。
 
-    备注-分类对位（2026-10-31，2026-11-01 口径修订）：前置
-    校验后先按源备注解析对位（见 resolve_target_library）。
-    写了分类却对不上本地库时整源跳过——不算失败：不解析
-    凭据、不拉上游，直接返回带 ``skipped=True`` 与
-    ``skip_reason`` 的零计数结果，并记一条 warning 日志；
-    对位命中后全部配对只在对位库内进行，结果带 ``category`` /
-    ``target_library_id`` / ``target_library_name`` 供追溯。
-    没写分类（默认）或分类恰为「全部」时走全量模式：不收窄、
-    按条目自身逐库对位，结果带显式模式标记
-    ``all_libraries=True``（单库对位与跳过时为 False）、
-    ``target_library_id`` / ``target_library_name`` 为 None、
-    ``category`` 为解析出的分类（「全部」或 None），另记一行
-    全量模式日志；逐库推进/逐库提交的既有机制不因此改变。
+    备注口径（2026-11-01 删除分类选项后）：source.note 是纯
+    备注，本函数根本不读它——所有源一律整源全量聚合、逐条
+    按条目自身对位各库，不收窄、不跳过，结果不带任何分类
+    字段；逐库推进/逐库提交的既有机制不因此改变。
     逐库语义：
     - 先取库清单，再逐库分窗（WINDOW_RECORDS 条一窗）拉取/聚合/
       配对/写映射（flush，调用方事务内提交）；
@@ -1125,46 +961,8 @@ def run_manual_aggregation(db: Session, source, *,
     （upstream_aggregate_tasks），本函数仍不自建检查点表。
     """
     ensure_aggregatable(source)
-    routing = resolve_target_library(db, source)
-    if routing["skip"] is not None:
-        skip = routing["skip"]
-        logger.warning("上游聚合按备注分类跳过整源 source_id=%s "
-                       "code=%s category=%s", source.id, skip["code"],
-                       skip["category"])
-        return {
-            "source_id": source.id,
-            "fetched": 0,
-            "aggregates": 0,
-            "pairs": [],
-            "paired": 0,
-            "written": 0,
-            "mapping_enabled": uim.mapping_enabled(),
-            "unpaired_reasons": {},
-            "libraries": [],
-            "libraries_discovered": 0,
-            "failed_libraries": [],
-            "skipped": True,
-            "skip_reason": skip,
-            "category": routing["category"],
-            "all_libraries": bool(routing.get("all_libraries")),
-            "target_library_id": None,
-            "target_library_name": None,
-        }
-    target_library = routing["library"]
-    # 全量模式（没写分类或分类=「全部」）没有单一对位库：target
-    # 置 None，pair_aggregates 收到 library_id=None 即走不收窄
-    # 的逐库对位。
-    target_library_id = (target_library.id
-                         if target_library is not None else None)
-    if routing.get("all_libraries"):
-        if routing["category"]:
-            logger.info("上游聚合全量模式 source_id=%s category=%s"
-                        "（备注分类「全部」：配对不收窄，按条目自身"
-                        "逐库对位）", source.id, routing["category"])
-        else:
-            logger.info("上游聚合全量模式 source_id=%s category=None"
-                        "（备注未写分类，默认全量：配对不收窄，"
-                        "按条目自身逐库对位）", source.id)
+    # 全量口径：不读 source.note（纯备注），pair_aggregates 不传
+    # library_id，逐条按条目自身对位各库（见模块头备注口径）。
     if page_size is None:
         page_size = configured_default_page_size(db)
     page_retries, page_backoff = _page_retry_config(db)
@@ -1231,7 +1029,7 @@ def run_manual_aggregation(db: Session, source, *,
                         f"{aggregated[0].error}")
                 items = aggregated[0].items if aggregated else []
                 pairs, unpaired = pair_aggregates(
-                    db, items, library_id=target_library_id)
+                    db, items)
                 written = 0
                 write_invalid = 0
                 for pair in pairs:
@@ -1360,10 +1158,10 @@ def run_manual_aggregation(db: Session, source, *,
                         {"type": "library_done", "summary": summary})
     logger.info("上游按库手动聚合 source_id=%s libraries=%s fetched=%s "
                 "aggregates=%s pairs=%s written=%s failed_libraries=%s "
-                "mapping_enabled=%s category=%s target_library_id=%s",
+                "mapping_enabled=%s",
                 source.id, len(libraries), total_fetched, total_aggregates,
                 total_paired, total_written, len(failed_libraries),
-                mapping_on, routing["category"], target_library_id)
+                mapping_on)
     return {
         "source_id": source.id,
         "fetched": total_fetched,
@@ -1376,11 +1174,4 @@ def run_manual_aggregation(db: Session, source, *,
         "libraries": library_summaries,
         "libraries_discovered": len(libraries),
         "failed_libraries": failed_libraries,
-        "skipped": False,
-        "skip_reason": None,
-        "category": routing["category"],
-        "all_libraries": bool(routing.get("all_libraries")),
-        "target_library_id": target_library_id,
-        "target_library_name": (target_library.name
-                                if target_library is not None else None),
     }

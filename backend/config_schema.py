@@ -67,11 +67,6 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
         # 结构化 JSON 规则（如播放器黑名单）：入参可为 JSON 文本或已解析的
         # list，归一化为 canonical JSON 文本落库；结构非法直接拒绝。
         return normalize_player_blacklist_rules(value)
-    if kind == "json_str_map":
-        # 字符串→字符串 JSON 对象（如上游聚合分类→本地库映射）：入参可为
-        # JSON 文本或已解析的 dict，归一化为 canonical JSON 文本落库；
-        # 非对象 / 键值非字符串 / 空键空值直接拒绝。
-        return normalize_category_library_map(value)
     lo, hi = spec[1], spec[2]
     if kind == "int":
         if isinstance(value, bool):
@@ -373,12 +368,6 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     "upstream_aggregate_mapping_patrol_interval_days": ("int", 1, 30),
     "upstream_aggregate_mapping_patrol_sample_size": ("int", 1, 200),
     "upstream_aggregate_mapping_patrol_alert_pct": ("int", 0, 100),
-    # 备注-分类对位（2026-10-31 用户亲定）：源备注「备注-分类」的
-    # 分类默认同名对位本地库；本键是 JSON 对象（分类名 → 本地库名），
-    # 只收改配项，没列的分类仍同名对位。保存侧严格校验形态
-    # （json_str_map），运行时读取宽容（见 upstream_aggregate_run
-    # 的 category_library_map）。纯 SystemConfig 键，不进 env.example。
-    "upstream_aggregate_category_library_map": ("json_str_map",),
 }
 
 
@@ -430,39 +419,6 @@ def normalize_player_blacklist_rules(value: Any) -> str:
             raise ConfigValueError("player_login_blacklist 必须是合法的 JSON 数组")
     rules = coerce_player_blacklist_rules(value, strict=True)
     return json.dumps(rules, ensure_ascii=False)
-
-
-def normalize_category_library_map(value: Any) -> str:
-    """保存侧校验入口：分类→本地库名映射 → canonical JSON 文本。
-
-    入参可为 JSON 文本或已解析 dict；必须是对象、键值均为字符串、
-    键与值去空白后都非空（空映射请用「未设置」表达，不许存空对象
-    以外的脏形态）。分类名与库名都是服主数据，这里只校验形态，
-    不校验库是否真实存在——存在性由聚合运行时的对位解析判定
-    （对不上即跳过并报出，见 upstream_aggregate_run）。
-    """
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            raise ConfigValueError(
-                "upstream_aggregate_category_library_map 必须是合法的 JSON 对象")
-    if not isinstance(value, dict):
-        raise ConfigValueError(
-            "upstream_aggregate_category_library_map 必须是 JSON 对象"
-            "（分类名 → 本地库名）")
-    out: dict[str, str] = {}
-    for raw_key, raw_val in value.items():
-        if not isinstance(raw_key, str) or not isinstance(raw_val, str):
-            raise ConfigValueError(
-                "upstream_aggregate_category_library_map 的键与值必须是字符串")
-        key = raw_key.strip()
-        val = raw_val.strip()
-        if not key or not val:
-            raise ConfigValueError(
-                "upstream_aggregate_category_library_map 的分类名与库名不许为空")
-        out[key] = val
-    return json.dumps(out, ensure_ascii=False, sort_keys=True)
 
 
 # 播放器登录黑名单（2026-10-30）：规则数组整体走 json_rules 校验，
