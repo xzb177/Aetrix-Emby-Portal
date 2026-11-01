@@ -939,6 +939,10 @@ class _EnrichItemSnapshot:
     imdb_id: Optional[str] = None
     aliases: Optional[str] = None
     tmdb_id: Optional[str] = None
+    # 上游托管标记（进库一期）：非空 = 该行是上游托管行、无本地文件是常态，
+    # _enrich_fetch_pre 靠它走「只走 TMDB、不判死」分支。漏带此字段曾让
+    # 托管行在快照后全部落判死分支（2026-11-01 生产 6074 条 enrich 全灭）。
+    upstream_source_id: Optional[int] = None
     repair_requested_at: Optional[datetime] = None
     overview: Optional[str] = None
     series_id: Optional[int] = None
@@ -987,6 +991,7 @@ def _snapshot_item(item: Any) -> _EnrichItemSnapshot:
         imdb_id=item.imdb_id,
         aliases=item.aliases,
         tmdb_id=item.tmdb_id,
+        upstream_source_id=getattr(item, "upstream_source_id", None),
         repair_requested_at=item.repair_requested_at,
         overview=item.overview,
         metadata_locked=bool(getattr(item, "metadata_locked", False)),
