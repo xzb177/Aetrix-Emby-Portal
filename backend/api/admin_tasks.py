@@ -562,14 +562,17 @@ def cancel_transfer_job(job_id: int, db: Session = Depends(get_db),
 
     原子条件更新与工人认领互斥；没抢到（已被认领/已终态）回 409 并明示
     当前状态，任务不存在回 404。取消只置终态 cancelled，不删行。
+    终态类别落 ops_cancelled（操作者发起的取消独立落点，统计一律
+    剔除，见 transfer_variant.OPS_CANCELLED_KIND 的来历注释）。
     """
     from backend.emby_server import models as em
+    from backend.emby_server.transfer_variant import OPS_CANCELLED_KIND
 
     updated = (db.query(em.TransferJob)
                .filter(em.TransferJob.id == job_id,
                        em.TransferJob.status == "pending")
                .update({"status": "cancelled",
-                        "error_kind": "cancelled",
+                        "error_kind": OPS_CANCELLED_KIND,
                         "error_detail": "管理员在任务总览手动取消",
                         "next_retry_at": None,
                         "lease_expires_at": None,

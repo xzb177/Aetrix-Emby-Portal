@@ -31,7 +31,7 @@
 import logging
 import os
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from backend.emby_server import models as em
 
@@ -64,19 +64,31 @@ def _sa_section() -> dict:
 def _queue_section(db) -> dict:
     counts = {"pending": 0, "running": 0, "done": 0, "failed": 0}
     recent_failed = []
+    # 统计口径（2026-11-01）：ops_cancelled（运维处置型取消）一律
+    # 剔除——哪怕以 failed 形态出现也不计入 failed 计数与最近失败
+    # 列表，防 2026-10-29 批量处置污染基线重演（类别唯一定义在
+    # transfer_variant.OPS_CANCELLED_KIND）。
+    from backend.emby_server import transfer_variant as _tv
     try:
-        rows = (db.query(em.TransferJob.status, func.count())
-                .group_by(em.TransferJob.status).all())
-        for status, n in rows:
+        rows = (db.query(em.TransferJob.status, em.TransferJob.error_kind,
+                         func.count())
+                .group_by(em.TransferJob.status, em.TransferJob.error_kind)
+                .all())
+        for status, kind, n in rows:
+            if status == "failed" and (kind or "") == _tv.OPS_CANCELLED_KIND:
+                continue
             if status in counts:
-                counts[status] = int(n)
+                counts[status] += int(n)
     except Exception as exc:  # noqa: BLE001 — 降级显示，不崩
         logger.warning("额度驾驶舱转存队列计数失败：%s", exc)
         return {"counts": counts, "status": "unknown",
                 "recent_failed": []}
     try:
         failed_rows = (db.query(em.TransferJob)
-                       .filter(em.TransferJob.status == "failed")
+                       .filter(em.TransferJob.status == "failed",
+                               or_(em.TransferJob.error_kind.is_(None),
+                                   em.TransferJob.error_kind
+                                   != _tv.OPS_CANCELLED_KIND))
                        .order_by(em.TransferJob.id.desc())
                        .limit(MAX_RECENT_FAILED).all())
         for job in failed_rows:
