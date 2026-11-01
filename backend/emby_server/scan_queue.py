@@ -223,14 +223,23 @@ def _merge_scope_into(base_snapshot, new_snapshot):
     if new_is_whole:
         # 新请求是整库 → 结果整库
         if base_is_whole:
-            return base_snapshot
-        return dataclasses.replace(base_snapshot, limit_prefixes=(), targeted=False)
-    if base_is_whole:
-        return base_snapshot  # 整库已是超集
-    merged = tuple(sorted(set(base_prefixes) | set(new_prefixes)))
-    if merged == base_prefixes:
-        return base_snapshot
-    return dataclasses.replace(base_snapshot, limit_prefixes=merged)
+            result = base_snapshot
+        else:
+            result = dataclasses.replace(base_snapshot, limit_prefixes=(), targeted=False)
+    elif base_is_whole:
+        result = base_snapshot  # 整库已是超集
+    else:
+        merged = tuple(sorted(set(base_prefixes) | set(new_prefixes)))
+        if merged == base_prefixes:
+            result = base_snapshot
+        else:
+            result = dataclasses.replace(base_snapshot, limit_prefixes=merged)
+    # PA-006：force_full 只升不降——新请求要全量时合并结果必须升格，否则
+    # 管理员点的「全量扫描」会在合并时被静默降为增量。
+    if getattr(new_snapshot, "force_full", False) and not getattr(result, "force_full", False):
+        if hasattr(result, "force_full"):
+            result = dataclasses.replace(result, force_full=True)
+    return result
 
 
 def _scope_covered_by(cover_snapshot, new_snapshot) -> bool:
@@ -267,11 +276,16 @@ def _try_merge_scan_task(existing: "ScanTask", new_snapshot, new_trigger: str = 
             return True
         # RUNNING：范围已冻结。若新范围已被当前任务覆盖，无需补扫；
         # 否则登记补扫（与已登记的补扫范围再合并，避免多次登记膨胀）。
+        # PA-006：范围被覆盖 ≠ 全量被覆盖——在跑任务是增量而新请求要全量时，
+        # 仍需登记一轮全量补扫，否则 force_full 会被合并静默丢弃。
+        new_full = getattr(new_snapshot, "force_full", False)
         if _scope_covered_by(existing.snapshot, new_snapshot):
-            return True
+            if not (new_full and not getattr(existing.snapshot, "force_full", False)):
+                return True
         pending = existing.pending_rescan_snapshot
         if pending is not None and _scope_covered_by(pending, new_snapshot):
-            return True
+            if not (new_full and not getattr(pending, "force_full", False)):
+                return True
         existing.pending_rescan_snapshot = _merge_scope_into(pending, new_snapshot)
         existing.pending_rescan_trigger = str(new_trigger or "manual")
         logger.info("扫描范围补登记：库 id=%s 正在跑，新请求范围更宽，跑完后补扫（触发=%s）",
