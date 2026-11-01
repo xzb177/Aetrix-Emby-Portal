@@ -80,6 +80,8 @@ ROUTER_MODULES = (
     "backend.api.emby_servers",
     "backend.emby_server.portal",
     "backend.emby_server.portal_mount_routes",
+    "backend.api.admin_artwork",  # PA-032：条目图覆盖与库封面策略写口
+    "backend.api.admin_services",  # PA-033：备份配置与手动备份写口
 )
 
 # 由中间件统一审计的前缀（不要求端点自己写 _audit）

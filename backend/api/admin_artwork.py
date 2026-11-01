@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.api.admin_core import _audit
 from backend.database import get_db
 from backend.emby_server import cover_mirror, item_artwork, library_covers
 from backend.emby_server import models as em
@@ -73,13 +74,18 @@ def set_override(
     item = db.query(em.MediaItem).filter(em.MediaItem.id == payload.item_id).first()
     if item is None:
         raise HTTPException(status_code=404, detail="条目不存在")
+    admin_id = getattr(admin, "id", None)  # 助手层会 commit，先取纯值防过期
     try:
         row = item_artwork.set_override(
             db, payload.item_id, payload.kind, payload.image_url,
-            created_by=getattr(admin, "id", None),
+            created_by=admin_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if admin_id is not None:
+        _audit(db, admin_id, "artwork_override_set", "media_item",
+               payload.item_id, {"kind": payload.kind})
+        db.commit()
     return {
         "ok": True, "id": row.id, "item_id": row.item_id,
         "kind": row.kind, "image_url": row.image_url,
@@ -91,10 +97,16 @@ def delete_override(
     item_id: int,
     kind: str,
     db: Session = Depends(get_db),
+    admin=Depends(require_staff),
 ):
     """取消覆盖：无此行 → 404。"""
     if not item_artwork.cancel_override(db, item_id, kind):
         raise HTTPException(status_code=404, detail="没有这条覆盖")
+    admin_id = getattr(admin, "id", None)
+    if admin_id is not None:
+        _audit(db, admin_id, "artwork_override_delete",
+               "media_item", item_id, {"kind": kind})
+        db.commit()
     return {"ok": True, "item_id": item_id, "kind": kind}
 
 
@@ -123,6 +135,7 @@ def get_cover_strategy(db: Session = Depends(get_db)):
 def set_cover_strategy(
     payload: CoverStrategyIn,
     db: Session = Depends(get_db),
+    admin=Depends(require_staff),
 ):
     """保存库封面策略顺序：未知步骤 → 400；空表 → 400（至少保留一步）；
     重复步骤按首次出现去重。存 system_configs，不新增 env 键；出图侧
@@ -150,6 +163,10 @@ def set_cover_strategy(
         db.add(row)
     else:
         row.value = json.dumps(steps)
+    admin_id = getattr(admin, "id", None)
+    if admin_id is not None:
+        _audit(db, admin_id, "cover_strategy_save", "system",
+               None, {"steps": len(steps), "order": steps})
     db.commit()
     return {
         "ok": True,
@@ -172,6 +189,7 @@ def cover_mirror_stats(db: Session = Depends(get_db)):
 def cover_mirror_retry(
     payload: CoverMirrorRetryIn,
     db: Session = Depends(get_db),
+    admin=Depends(require_staff),
 ):
     """图床镜像手动重推：无行 → 404；failed/dead → pending（计数清零）；
     进行中或已成功 → 409（不动）。"""
@@ -180,4 +198,10 @@ def cover_mirror_retry(
         raise HTTPException(status_code=404, detail="没有这条镜像")
     if result is False:
         raise HTTPException(status_code=409, detail="该镜像不需重推（进行中或已成功）")
+    admin_id = getattr(admin, "id", None)
+    if admin_id is not None:
+        _audit(db, admin_id, "cover_mirror_retry",
+               "cover_mirror", None,
+               {"source_hash": (payload.source_hash or "").strip()})
+        db.commit()
     return {"ok": True, "source_hash": (payload.source_hash or "").strip()}

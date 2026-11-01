@@ -105,10 +105,16 @@ def update_backup_config(payload: BackupConfigIn, admin=Depends(get_current_admi
                          db: Session = Depends(get_db)):
     """修改数据库备份配置（开关 / 时间 / 保留天数）；立即生效，无需重启"""
     from backend.emby_server import db_backup
+    admin_id = getattr(admin, "id", None)  # save_config 会 commit，先取纯值防过期
     try:
         cfg = db_backup.save_config(db, payload.enabled, payload.time, payload.keep_days)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if admin_id is not None:
+        _audit(db, admin_id, "backup_config_update", "system", None,
+               {"enabled": payload.enabled, "time": payload.time,
+                "keep_days": payload.keep_days})
+        db.commit()
     return {"success": True, **cfg}
 
 
@@ -119,10 +125,15 @@ def run_backup_now(admin=Depends(get_current_admin), db: Session = Depends(get_d
     cfg = db_backup.get_config(db)
     try:
         result = db_backup.run_backup_now(reason="manual")
-        db_backup.prune_old_backups(cfg["keep_days"])
+        pruned = db_backup.prune_old_backups(cfg["keep_days"])
     except Exception as exc:  # noqa: BLE001 — 转 500，错误信息给管理员看
         logger.error("手动数据库备份失败：%s", exc)
         raise HTTPException(status_code=500, detail=f"备份失败：{exc}")
+    admin_id = getattr(admin, "id", None)
+    if admin_id is not None:
+        _audit(db, admin_id, "backup_run_manual", "backup_file",
+               None, {"name": result["name"], "pruned": pruned})
+        db.commit()
     logger.info("管理员手动触发数据库备份：%s", result["name"])
     return {"success": True, "backup": {"name": result["name"], "size": result["size"]},
             **{k: v for k, v in cfg.items() if k != "backups"},
