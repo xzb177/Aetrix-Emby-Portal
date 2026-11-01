@@ -94,8 +94,20 @@ def save_config(db: Session, enabled: bool, time_str: str) -> dict:
 
 
 def _should_run_today(now: datetime, time_str: str, last_run: str) -> bool:
-    """到点了且今天没跑过。"""
-    return now.strftime("%H:%M") == time_str and last_run != now.strftime("%Y-%m-%d")
+    """到点了且今天没跑过。
+
+    窗口判定（PA-007）：当天已过设定时刻即触发，不要求 tick 恰好落在目标分钟内；
+    _loop 周期为 60 秒＋tick 耗时，相位持续漂移，整分钟相等判定必然偶发漏跑。
+    仍靠 last_run 占位防重复：触发后当天后续 tick 不再重复；时间格式非法按关闭处理。
+    """
+    if last_run == now.strftime("%Y-%m-%d"):
+        return False
+    try:
+        hour, minute = int(time_str[:2]), int(time_str[3:5])
+    except (ValueError, IndexError):
+        return False
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return now >= target
 
 
 def _enqueue_all(db: Session) -> dict:

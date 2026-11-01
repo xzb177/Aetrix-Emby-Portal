@@ -61,6 +61,55 @@ def test_should_run_today():
     assert auto_scan._should_run_today(now, "03:00", "2026-09-25") is True     # 昨天跑过
 
 
+def test_should_run_today_window_catchup():
+    # PA-007：tick 落在目标分钟之后（相位漂移/重启延迟），当天仍应触发
+    assert auto_scan._should_run_today(datetime(2026, 9, 26, 3, 1, 30), "03:00", "") is True
+    assert auto_scan._should_run_today(datetime(2026, 9, 26, 3, 59), "03:00", "") is True
+    assert auto_scan._should_run_today(datetime(2026, 9, 26, 23, 59), "03:00", "") is True
+    # 未到点不触发
+    assert auto_scan._should_run_today(datetime(2026, 9, 26, 2, 59, 59), "03:00", "") is False
+    # 当天已跑过不重复
+    assert auto_scan._should_run_today(datetime(2026, 9, 26, 3, 30), "03:00", "2026-09-26") is False
+    # 次日未到点不触发，到点触发
+    assert auto_scan._should_run_today(datetime(2026, 9, 27, 0, 30), "03:00", "2026-09-26") is False
+    assert auto_scan._should_run_today(datetime(2026, 9, 27, 3, 0, 5), "03:00", "2026-09-26") is True
+
+
+def test_restart_within_target_minute_catches_up():
+    # PA-007：进程在目标分钟内重启，首个 tick 在 60 秒后（已过目标分钟），仍应补触发
+    assert auto_scan._should_run_today(datetime(2026, 9, 26, 3, 1, 30), "03:00", "") is True
+
+
+def test_busy_placeholder_blocks_same_day_next_day_triggers():
+    # PA-007：忙跳过只记占位——当天后续 tick 不再触发，次日到点正常触发（现行语义保留）
+    assert auto_scan._should_run_today(datetime(2026, 9, 26, 5, 0), "03:00", "2026-09-26") is False
+    assert auto_scan._should_run_today(datetime(2026, 9, 27, 3, 0, 30), "03:00", "2026-09-26") is True
+
+
+def _simulate_missed_days(period_seconds, days=60):
+    """模拟 _loop：每 period 秒 tick 一次，返回 60 天内漏跑的日期（空表＝零漏跑）。"""
+    from datetime import timedelta
+
+    start = datetime(2026, 9, 26, 0, 0, 37)
+    end = start + timedelta(days=days)
+    last_run = ""
+    hit_days = set()
+    tick = start
+    while tick < end:
+        if auto_scan._should_run_today(tick, "03:00", last_run):
+            last_run = tick.strftime("%Y-%m-%d")
+            hit_days.add(last_run)
+        tick += timedelta(seconds=period_seconds)
+    all_days = {(start + timedelta(days=d)).strftime("%Y-%m-%d") for d in range(days)}
+    return sorted(all_days - hit_days)
+
+
+@pytest.mark.parametrize("period", [61, 62, 65])
+def test_drift_simulation_no_missed_days(period):
+    # PA-007：tick 周期 60 秒＋耗时导致相位漂移时，60 天零漏跑
+    assert _simulate_missed_days(period) == []
+
+
 def test_start_scheduler_idempotent():
     assert auto_scan.start_auto_scan_scheduler() in (True, False)
     # 第二次调用返回 False（已启动），不重复起线程
