@@ -760,6 +760,44 @@ def mount_serving_update_config(
     return result
 
 
+# ---------- 播放交付编排器（见 backend/emby_server/delivery_plan.py） ----------
+
+class DeliveryPlanConfigRequest(BaseModel):
+    enabled: bool = True
+    ttl_sec: int = 120
+
+
+@admin_router.get("/delivery-plan-config")
+def delivery_plan_get_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """交付计划配置读取：编排器开关 + 计划 TTL（含默认值）。"""
+    from backend.emby_server import delivery_plan
+
+    return delivery_plan.config_payload(db)
+
+
+@admin_router.put("/delivery-plan-config")
+def delivery_plan_update_config(
+    request: DeliveryPlanConfigRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """交付计划配置写入：TTL 越界时 400（中文信息），保存即生效。"""
+    from backend.emby_server import delivery_plan
+
+    try:
+        result = delivery_plan.write_config(
+            db, enabled=request.enabled, ttl_sec=request.ttl_sec)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(db, current_admin, "delivery_plan_update_config", "system",
+           None, {"enabled": request.enabled, "ttl_sec": request.ttl_sec})
+    db.commit()
+    return result
+
+
 # ---------- Drive API 全局限速（见 backend/emby_server/drive_changes.py） ----------
 
 class DriveApiConfigRequest(BaseModel):

@@ -5519,6 +5519,15 @@ async def playback_info(
             "剧级点播落集 series=%s -> episode=%s user=%s",
             item.guid, _series_episode.guid, user.id)
         item = _series_episode
+    # 播放交付编排器预计算（换代线 step 5）：计划缺失/过期时顺手
+    # 算一份落库（探针全 fail-open），点播热路径只读计划；本处
+    # 失败只记日志，绝不影响本次 PlaybackInfo。
+    try:
+        from backend.emby_server import delivery_plan as _dp
+        await run_db(_dp.ensure_plan, db, user, item)
+    except Exception:  # noqa: BLE001 — 预计算失败不影响本次播放
+        logger.warning("交付计划预计算失败 item=%s",
+                       getattr(item, "id", "?"), exc_info=True)
     base = _base_url(request)
     body = {}
     try:
@@ -6133,8 +6142,17 @@ async def video_stream(
     from backend.emby_server import transfer_variant as _tv
     _play_fid, _play_variant = _fid, None
     if _fid:
-        _play_fid, _play_variant = await run_db(
-            _tv.resolve_play_file_id, db, item, user)
+        # 播放交付编排器（换代线 step 5）：热路径只读预计算计划——
+        # 计划新鲜且顶腿是本人 ready 副本、且变体行复核通过时直
+        # 接采用；其余一切情形（无计划/过期/开关关/复核不过）
+        # 逐字走现行 resolve_play_file_id，下方门禁链一律不变。
+        from backend.emby_server import delivery_plan as _dp
+        _plan_pair = await run_db(_dp.plan_ready_leg, db, item, user)
+        if _plan_pair is not None:
+            _play_fid, _play_variant = _plan_pair
+        else:
+            _play_fid, _play_variant = await run_db(
+                _tv.resolve_play_file_id, db, item, user)
     # 首播转存门禁（2026-10-26 用户亲定“先转存再播”）：绑定用户只走
     # 自己绑定盘里的副本，无副本先转存、转完再播，绝不静默回落共享
     # SA 中继。门禁在选路之后、阶段 6 换线之前：Drive 就绪副本已由

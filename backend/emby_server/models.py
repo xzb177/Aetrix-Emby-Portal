@@ -1764,6 +1764,38 @@ class TransferDelivery(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class PlaybackDeliveryPlan(Base):
+    """播放交付计划（换代线 step 5「播放交付编排器」v1，2026-11-01）。
+
+    一行 = 一个 (用户, 条目) 的预计算交付计划：有序腿清单
+    （本人 ready 副本 → 本人副本制备中 → 挂载直读 → 上游 →
+    现行兜底序）以 JSON 存 ``plan_json``。平时由 PlaybackInfo
+    与转存完成事件刷新，点播热路径**只读未过期计划**——计划
+    缺失/过期/开关关时热路径逐字走现行选路，本表纯粹是加速与
+    可观测面，不是新的选路真相源：热路径采用计划前仍按 PK
+    复核变体行（状态/归属/条目全对才算数）。
+
+    计划可能过期即弃：``expires_at`` 一过读侧当不存在。腿里
+    不存本地文件绝对路径等敏感串（挂载腿只记可用性，路径在
+    消费时现算）。新表由 create_all 建出。
+    """
+
+    __tablename__ = "playback_delivery_plans"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "item_id",
+                         name="uq_playback_plan_user_item"),
+        Index("ix_playback_plan_expires", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    item_id = Column(Integer, nullable=False)
+    plan_json = Column(Text, nullable=False, default="{}")
+    computed_at = Column(DateTime, default=datetime.now)
+    expires_at = Column(DateTime, nullable=False)
+
+
 class SeriesFollow(Base):
     """全自动追剧订阅（opt-in，2026-10-27 首批第二单）。
 

@@ -294,6 +294,17 @@ MOUNT_SERVING_CONFIG_SCHEMA: dict[str, tuple] = {
     "mount_serving_local_roots": ("raw",),
 }
 
+# 播放交付编排器（换代线 step 5，2026-11-01）：(用户, 条目)
+# 交付计划预计算开关 + 计划 TTL。读取唯一实现 delivery_plan
+# .delivery_plan_enabled / plan_ttl_sec（热读、默认开/TTL 默认
+# 120 秒，读取侧钳制与本 schema 同口径）；关 = 不建计划、热
+# 路径不读计划，选路与现行逐字一致。纯 SystemConfig 键，不
+# 进 env.example（#1527 先例）。
+DELIVERY_PLAN_CONFIG_SCHEMA: dict[str, tuple] = {
+    "delivery_plan_enabled": ("bool",),
+    "delivery_plan_ttl_sec": ("int", 30, 3600),
+}
+
 # 列表去重缓存（2026-10-18）：Emby 列表接口 dropped 集合的服务端缓存。
 # enabled 默认开（纯性能优化、零行为变化）；ttl=0 或关 = 旧路径。
 ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {

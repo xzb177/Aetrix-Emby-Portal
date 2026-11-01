@@ -7740,6 +7740,17 @@ def _execute_claimed_job(job_id, session_factory, drive_api_factory):
             if fresh_kind in _AUTH_TERMINAL_KINDS and (
                     getattr(job, "owner_scope", "") or "") == "user":
                 pause_user_queue(job.owner_scope, job.owner_ref)
+        if outcome == "done":
+            # 播放交付编排器（换代线 step 5）：本人副本转存完成
+            # 即刷新该 (用户, 条目) 的交付计划，下一次点播热路
+            # 径可直接命中本人 ready 副本腿。fail-open：刷新失
+            # 败只记日志，计划过期后热路径自会回落现行选路。
+            try:
+                from backend.emby_server import delivery_plan as _dp
+                _dp.refresh_plan_for_job(db, job)
+            except Exception:  # noqa: BLE001 — 刷新失败不影响任务结果
+                logger.warning("交付计划刷新失败 job=%s", job_id,
+                               exc_info=True)
         return outcome
     finally:
         stop_heartbeat.set()
