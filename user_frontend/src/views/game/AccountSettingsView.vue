@@ -12,6 +12,12 @@
           <div class="acct-head-main">
             <h1>{{ displayName }}</h1>
             <p>改登录密码、看我的会员、管我的设备、绑自己的网盘 —— 账号自己的事都在这儿。</p>
+            <!-- 白名单专属身份：徽章+固定称号+创世编号；非白名单整个元素不渲染 -->
+            <div v-if="whitelistIdentity" class="acct-whitelist">
+              <span class="acct-whitelist-badge">白名单</span>
+              <span class="acct-whitelist-title">{{ whitelistIdentity.title }}</span>
+              <span class="acct-whitelist-serial">{{ whitelistIdentity.label }}</span>
+            </div>
           </div>
           <span v-if="identityBadge" class="acct-badge">{{ identityBadge }}</span>
         </div>
@@ -935,6 +941,8 @@ const identityBadge = computed(() => {
   if (userStore.isVIP) return '会员'
   return ''
 })
+// 白名单专属身份（后端 auth/me 出参，非白名单为 null → 模板不渲染）
+const whitelistIdentity = computed(() => userStore.user?.whitelist_identity ?? null)
 
 // —— 重排版新增（纯 UI 展开态 + 行摘要，由既有绑定数据派生）：网盘行式列表 ——
 const openProviders = ref<Set<string>>(new Set())
@@ -1552,6 +1560,33 @@ watch(providersLoaded, (loaded) => {
   color: var(--au-primary, #016a71);
   font-size: 12px;
   white-space: nowrap;
+}
+.acct-whitelist {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.acct-whitelist-badge {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--au-primary, #016a71);
+  color: var(--paper, #f6f1e7);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.acct-whitelist-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.acct-whitelist-serial {
+  font-size: 12px;
+  color: var(--au-primary, #016a71);
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 .acct-title-row {
   display: flex;

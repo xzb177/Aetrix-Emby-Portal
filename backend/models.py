@@ -1014,6 +1014,28 @@ class RegistrationCode(Base):
     welfare_include_view = Column(Boolean, default=True)
 
 
+class WhitelistSerial(Base):
+    """白名单创世编号（独一无二体验包·身份组，2026-11-02）
+
+    编号按「成为白名单的先后」分配（核销痕迹时间，分配逻辑见
+    codes.ensure_whitelist_serials），一旦分配永不变更、永不复用：
+    账号被回收也只下线展示（判定走 codes.is_whitelist_account），
+    编号行保留占位，新人不得占走已分配的号。
+    user_id / serial 双唯一约束是并发分配的兜底。
+    """
+    __tablename__ = 'whitelist_serials'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', name='uq_whitelist_serial_user'),
+        UniqueConstraint('serial', name='uq_whitelist_serial_no'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    serial = Column(Integer, nullable=False)
+    assigned_at = Column(DateTime, default=datetime.now)
+
+
 class UserDevice(Base):
     """用户设备（第三方播放器登录设备，用于设备上限与设备审查）
 
