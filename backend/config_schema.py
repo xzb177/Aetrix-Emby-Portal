@@ -315,10 +315,25 @@ ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
 # per_owner_inflight /
 # pan115_rapid_upload_enabled / pan115_multipart_upload_enabled /
 # rebind_waiver_window_days / rebind_waiver_max_uses，
-# 范围与读取侧钳制同口径。
+# 范围与读取侧钳制同口径。探针道五键（2026-11-01）读取实现
+# 同在 transfer_variant（probe_enabled / probe_priority_enabled
+# / probe_lane_concurrency / probe_recheck_sec /
+# play_inline_probe_budget_sec）。
 TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "cross_provider_transfer_enabled": ("bool",),
     "transfer_cross_lane_concurrency": ("int", 1, 8),
+    # 探针道（2026-11-01 转存等待压缩 期一＋期二）：探针道总
+    # 开关 + 期一优先排序开关默认开（读取默认兜底在
+    # transfer_variant.probe_enabled / probe_priority_enabled，
+    # 无行=True）；探针单轮认领上限默认 4、钳 [1, 16]（管理端
+    # 字段同名，见 Settings 转存卡片）；探针节流默认 300、钳
+    # [30, 3600]；点播当场探针预算默认 15、钳 [1, 60]。范围与
+    # 读取侧钳制同口径。纯 SystemConfig 键，不进 env.example。
+    "transfer_probe_enabled": ("bool",),
+    "transfer_probe_priority_enabled": ("bool",),
+    "transfer_probe_lane_concurrency": ("int", 1, 16),
+    "transfer_probe_recheck_sec": ("int", 30, 3600),
+    "play_inline_probe_budget_sec": ("int", 1, 60),
     "transfer_cross_aging_sec": ("int", 60, 86400),
     "transfer_fast_lane_concurrency": ("int", 1, 32),
     "transfer_per_owner_inflight": ("int", 1, 16),

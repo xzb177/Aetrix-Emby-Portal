@@ -420,6 +420,8 @@ export interface TransferConfig {
   cross_provider_transfer_enabled: boolean
   /** 跨 provider 搬字节在途并发上限（默认 2，范围 1~8） */
   transfer_cross_lane_concurrency: number
+  /** 探针道单轮认领上限：指纹已登记的跨单先只试秒传、不占搬字节在途（默认 4，范围 1~16） */
+  transfer_probe_lane_concurrency: number
   /** 跨单 aging 提权阈值（秒）：慢组跨单排队超过该秒数后按点播组待遇参与挑选，防无限期饿死（默认 1800，范围 60~86400） */
   transfer_cross_aging_sec: number
   /** 转存执行道并发（默认 8，范围 1~32） */

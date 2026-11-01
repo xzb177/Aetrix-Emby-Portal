@@ -1744,6 +1744,14 @@ class TransferJob(Base):
     # 另一工人认领；NULL = 未认领或已终态。老库由 auto-migrate 补列。
     lease_expires_at = Column(DateTime)
     claimed_by = Column(String(64))
+    # 等待分段度量（2026-11-01 探针道方案期一/期二）：claimed_at
+    # 为最近一次认领（普通/探针/当场）落笔时刻，NULL = 从未被
+    # 认领；W1=created_at→claimed_at、W2/W3=claimed_at→终态可
+    # SQL 直查。last_probe_at 为最近一次探针（只试秒传）时刻，
+    # 探针节流（transfer_probe_recheck_sec）据它跳过刚探过的单，
+    # 普通认领不读它。老库由 auto-migrate 补列。
+    claimed_at = Column(DateTime)
+    last_probe_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

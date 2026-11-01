@@ -611,6 +611,10 @@ def items_dedup_cache_update_config(
 class TransferConfigRequest(BaseModel):
     cross_provider_transfer_enabled: bool = True
     transfer_cross_lane_concurrency: int = 2
+    # 探针道单轮认领上限（2026-11-01 期二）：默认 4，范围钳在
+    # config_schema 的 transfer 家族（1~16）；探针只试秒传、
+    # 不占跨 provider 在途上限。
+    transfer_probe_lane_concurrency: int = 4
     transfer_cross_aging_sec: int = 1800
     transfer_fast_lane_concurrency: int = 8
     transfer_per_owner_inflight: int = 2
@@ -713,6 +717,8 @@ def transfer_update_config(
                 request.cross_provider_transfer_enabled),
             transfer_cross_lane_concurrency=(
                 request.transfer_cross_lane_concurrency),
+            transfer_probe_lane_concurrency=(
+                request.transfer_probe_lane_concurrency),
             transfer_cross_aging_sec=(
                 request.transfer_cross_aging_sec),
             transfer_fast_lane_concurrency=(
@@ -746,6 +752,8 @@ def transfer_update_config(
             request.cross_provider_transfer_enabled,
             "transfer_cross_lane_concurrency":
             request.transfer_cross_lane_concurrency,
+            "transfer_probe_lane_concurrency":
+            request.transfer_probe_lane_concurrency,
             "transfer_cross_aging_sec":
             request.transfer_cross_aging_sec,
             "transfer_fast_lane_concurrency":
