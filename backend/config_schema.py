@@ -27,8 +27,9 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
 
     spec: ("int", lo, hi) | ("float", lo, hi) | ("float", lo, hi, places) | ("bool",) | ("bool", "digit"|"word")
         | ("int_list", lo, hi) | ("str",) | ("enum", (allowed...)) | ("raw",)
-    bool_style: "word" → true/false，"digit" → 1/0（仅在传入 Python bool 时决定写法；
-    字符串原样保留大小写外的写法，避免改变读取侧既有判断口径）。
+    bool_style: "word" → true/false，"digit" → 1/0；Python bool、int 0/1 与
+    "1"/"yes"/"on" 等字符串输入一律按风格转换落库（PA-034：原样返回会让
+    word 键被严格读口径误读为关）。
     spec 里显式带风格位（("bool", "digit")）时，spec 优先于 bool_style 参数——
     同一个家族里不同键可能用不同存储风格（如告警总开关存 1/0），风格必须跟键走。
     ("str",): 自由字符串，不做类型校验（空串/None → None = 未设置）；
@@ -50,10 +51,21 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
                 return "1" if value else "0"
             return "true" if value else "false"
         if isinstance(value, int) and value in (0, 1):
-            return str(value)
+            # PA-034：int 必须按风格转换，原样 str() 会让 word 键落库 "1"、
+            # 被严格读口径（只认 "true"）误读为关。
+            if _style == "digit":
+                return "1" if value == 1 else "0"
+            return "true" if value == 1 else "false"
         s = str(value).strip().lower()
-        if s in _BOOL_TRUE or s in _BOOL_FALSE:
-            return s
+        if s in _BOOL_TRUE:
+            # PA-034：字符串同样按风格转换，"yes"/"on"/"1" 在 word 键下是开。
+            if _style == "digit":
+                return "1"
+            return "true"
+        if s in _BOOL_FALSE:
+            if _style == "digit":
+                return "0"
+            return "false"
         raise ConfigValueError(f"{key} 必须是开关值（true/false 或 1/0）")
     if kind == "str":
         return str(value)
