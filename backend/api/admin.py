@@ -1401,6 +1401,15 @@ async def push_media_seek(
     # 取求片：同步查询下放线程池（这个端点还要 await 外部推送，必须是 async def）
     media_request = await run_in_threadpool(_load_movie_request_sync, db, request_id)
 
+    # PA-025：推送入口状态守卫，必须在任何外部调用之前拦住。已撤回/
+    # 已拒绝/已入库的求片一旦推给 MoviePilot/qB，就会产生真实订阅/加种，
+    # 与审核结论相反且不可仅靠「管理员不会点错」兜底。
+    if media_request.status not in media_seek.ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该求片当前状态为 {media_request.status}，不可再推送",
+        )
+
     # qB 要链接：直接给磁力最好；只贴了整段分享文本也能从中挑出一条
     link = qbittorrent.pick_link(payload.link or "") or (payload.link or "").strip()
     result = await servers.push_media_seek(db, media_request, payload.target, link=link)
@@ -1448,6 +1457,18 @@ def _review_media_seek_sync(db: Session, admin_id: int, request_id: int,
     ).first()
     if not media_request:
         raise HTTPException(status_code=404, detail="求片请求不存在")
+
+    # PA-024：终态不可再审核。已入库（completed）是核实过的结论，翻回
+    # approved 会让 mark-in-library 重复标记；已撤回（withdrawn）是用户
+    # 主动撤销，翻回 approved 等于管理员单方面复活并误发「已批准」通知。
+    # 只有处理中（pending/approved）才可改写，与撤回/标记入库/推送的守卫同口径。
+    if media_request.status not in media_seek.ACTIVE_STATUSES:
+        state_word = {"completed": "已入库", "withdrawn": "已撤回",
+                      "rejected": "已拒绝"}.get(media_request.status, "已终结")
+        raise HTTPException(
+            status_code=400,
+            detail=f"该求片{state_word}，不可再审核",
+        )
 
     media_request.status = status_value
     media_request.admin_note = note or None

@@ -24,8 +24,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import threading
+from contextlib import contextmanager
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -70,6 +74,51 @@ admin_router = APIRouter(
     tags=["管理端·想看商店求片"],
     dependencies=[Depends(require_store_enabled)],
 )
+
+
+def _tmdb_lock_key(tmdb_id: str) -> int:
+    """登记串行锁的 64 位 key：按 tmdb 派生，与订阅发放锁的 key 域隔离。"""
+    return int.from_bytes(
+        hashlib.sha256(f"aetrix-store-request:{tmdb_id}".encode()).digest()[:8],
+        "big", signed=True,
+    )
+
+
+_tmdb_key_locks: dict[str, threading.Lock] = {}
+_tmdb_key_locks_guard = threading.Lock()
+
+
+def _tmdb_key_lock(tmdb_id: str) -> threading.Lock:
+    with _tmdb_key_locks_guard:
+        lock = _tmdb_key_locks.get(tmdb_id)
+        if lock is None:
+            lock = threading.Lock()
+            _tmdb_key_locks[tmdb_id] = lock
+        return lock
+
+
+@contextmanager
+def tmdb_request_lock(db: Session, tmdb_id: str):
+    """同一 tmdb 登记的「先查处理中行再新建」串行锁（PA-026）。
+
+    行锁锁不住「不存在的行」：两并发请求同时查不到处理中行，会各自
+    新建 pending 行、附议被拆散。照订阅发放锁（economy.py 的
+    ``subscription_grant_lock``）同款：PG 用事务级 advisory lock（随事
+    务提交/回滚自动释放，第二个事务的检查一定能看到第一个已提交的行）；
+    SQLite/测试用按 tmdb 分键的进程内锁。用户行锁粒度不够——两用户
+    同 tmdb 也会撞，所以不用 ``lock_user_row``。
+    """
+    try:
+        is_pg = db.bind.dialect.name == "postgresql"
+    except Exception:  # noqa: BLE001
+        is_pg = False
+    if is_pg:
+        db.execute(text("SELECT pg_advisory_xact_lock(:k)"),
+                   {"k": _tmdb_lock_key(tmdb_id)})
+        yield
+    else:
+        with _tmdb_key_lock(tmdb_id):
+            yield
 
 
 def _r1_state(status: str) -> str:
@@ -237,95 +286,96 @@ def post_request(
             message=REQUEST_IN_LIBRARY_MESSAGE,
         )
 
-    existing = (
-        db.query(models.MovieRequest)
-        .filter(
-            models.MovieRequest.tmdb_id == key,
-            models.MovieRequest.status.in_(media_seek.ACTIVE_STATUSES),
-        )
-        .order_by(models.MovieRequest.id)
-        .first()
-    )
-    if existing is not None:
-        # 同步检查：两次打开之间入库了，附议不再落到旧行上。
-        if _sync_row(db, existing):
-            db.commit()
-            db.refresh(existing)
-            in_library, library_item_id = _library_hit(db, key)
-            return RequestRecord(
-                request_id=None,
-                tmdb_id=key,
-                movie_name=existing.movie_name,
-                vote_count=existing.vote_count or 0,
-                weighted_vote_count=media_seek.weighted_votes_for(
-                    db, [existing.id]).get(existing.id, 0),
-                status="completed",
-                state="stored",
-                in_library=in_library,
-                library_item_id=library_item_id,
-                voted=False,
-                message=REQUEST_IN_LIBRARY_MESSAGE,
-            )
-        voted = (
-            db.query(models.MovieRequestVote)
+    with tmdb_request_lock(db, key):
+        existing = (
+            db.query(models.MovieRequest)
             .filter(
-                models.MovieRequestVote.request_id == existing.id,
-                models.MovieRequestVote.user_id == user.id,
+                models.MovieRequest.tmdb_id == key,
+                models.MovieRequest.status.in_(media_seek.ACTIVE_STATUSES),
             )
+            .order_by(models.MovieRequest.id)
             .first()
-            is not None
         )
-        if voted:
-            return _record(
-                existing, in_library=False, library_item_id=None,
-                voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
-                weighted_vote_count=media_seek.weighted_votes_for(
-                    db, [existing.id]).get(existing.id, 0),
+        if existing is not None:
+            # 同步检查：两次打开之间入库了，附议不再落到旧行上。
+            if _sync_row(db, existing):
+                db.commit()
+                db.refresh(existing)
+                in_library, library_item_id = _library_hit(db, key)
+                return RequestRecord(
+                    request_id=None,
+                    tmdb_id=key,
+                    movie_name=existing.movie_name,
+                    vote_count=existing.vote_count or 0,
+                    weighted_vote_count=media_seek.weighted_votes_for(
+                        db, [existing.id]).get(existing.id, 0),
+                    status="completed",
+                    state="stored",
+                    in_library=in_library,
+                    library_item_id=library_item_id,
+                    voted=False,
+                    message=REQUEST_IN_LIBRARY_MESSAGE,
+                )
+            voted = (
+                db.query(models.MovieRequestVote)
+                .filter(
+                    models.MovieRequestVote.request_id == existing.id,
+                    models.MovieRequestVote.user_id == user.id,
+                )
+                .first()
+                is not None
             )
-        outcome, existing = _append_vote(db, existing, user.id)
-        if outcome == "gone":
-            # 行并发消失：落到下面的新建支，重新登记一行。
-            pass
-        elif outcome == "limited":
-            # Step 1：今日附议已达上限（与 toggle_vote 同文案，走 400）
-            raise HTTPException(status_code=400, detail="今日附议已达上限")
-        elif outcome == "already":
-            return _record(
-                existing, in_library=False, library_item_id=None,
-                voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
-                weighted_vote_count=media_seek.weighted_votes_for(
-                    db, [existing.id]).get(existing.id, 0),
-            )
-        else:
-            return _record(
-                existing, in_library=False, library_item_id=None,
-                voted=True, message=REQUEST_VOTED_MESSAGE,
-                weighted_vote_count=media_seek.weighted_votes_for(
-                    db, [existing.id]).get(existing.id, 0),
-            )
+            if voted:
+                return _record(
+                    existing, in_library=False, library_item_id=None,
+                    voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
+                    weighted_vote_count=media_seek.weighted_votes_for(
+                        db, [existing.id]).get(existing.id, 0),
+                )
+            outcome, existing = _append_vote(db, existing, user.id)
+            if outcome == "gone":
+                # 行并发消失：落到下面的新建支，重新登记一行。
+                pass
+            elif outcome == "limited":
+                # Step 1：今日附议已达上限（与 toggle_vote 同文案，走 400）
+                raise HTTPException(status_code=400, detail="今日附议已达上限")
+            elif outcome == "already":
+                return _record(
+                    existing, in_library=False, library_item_id=None,
+                    voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
+                    weighted_vote_count=media_seek.weighted_votes_for(
+                        db, [existing.id]).get(existing.id, 0),
+                )
+            else:
+                return _record(
+                    existing, in_library=False, library_item_id=None,
+                    voted=True, message=REQUEST_VOTED_MESSAGE,
+                    weighted_vote_count=media_seek.weighted_votes_for(
+                        db, [existing.id]).get(existing.id, 0),
+                )
 
-    row = models.MovieRequest(
-        user_id=user.id,
-        movie_name=title or key,
-        tmdb_id=key,
-        status="pending",
-        vote_count=1,
-    )
-    db.add(row)
-    db.flush()
-    # Step 1：创建人首票同样按其等级权重快照计（与附议同口径）
-    db.add(models.MovieRequestVote(
-        request_id=row.id, user_id=user.id,
-        weight_snapshot=media_seek.vote_weight_for_user(db, user, row),
-    ))
-    db.commit()
-    db.refresh(row)
-    return _record(
-        row, in_library=False, library_item_id=None,
-        voted=True, message=REQUEST_REGISTERED_MESSAGE,
-        weighted_vote_count=media_seek.weighted_votes_for(
-            db, [row.id]).get(row.id, 0),
-    )
+        row = models.MovieRequest(
+            user_id=user.id,
+            movie_name=title or key,
+            tmdb_id=key,
+            status="pending",
+            vote_count=1,
+        )
+        db.add(row)
+        db.flush()
+        # Step 1：创建人首票同样按其等级权重快照计（与附议同口径）
+        db.add(models.MovieRequestVote(
+            request_id=row.id, user_id=user.id,
+            weight_snapshot=media_seek.vote_weight_for_user(db, user, row),
+        ))
+        db.commit()
+        db.refresh(row)
+        return _record(
+            row, in_library=False, library_item_id=None,
+            voted=True, message=REQUEST_REGISTERED_MESSAGE,
+            weighted_vote_count=media_seek.weighted_votes_for(
+                db, [row.id]).get(row.id, 0),
+        )
 
 
 @router.get("/requests", response_model=RequestListResponse)
