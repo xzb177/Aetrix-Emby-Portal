@@ -28,7 +28,7 @@ from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
-from backend import config_service, models, realms, subscriptions
+from backend import config_service, models, permanent_whitelist, realms, subscriptions
 from backend.usernames import username_conflict
 from backend.database import get_db, SessionLocal
 
@@ -566,6 +566,10 @@ def unlock_emby_view(
         raise HTTPException(status_code=404, detail="服不存在")
     if not realms.is_free_realm(db, realm_id):
         raise HTTPException(status_code=400, detail="当前服为付费服，查看权限来自有效订阅，无需能量解锁")
+    # 永久账号白名单：查看凭证恒有效，直接返回已解锁，绝不扣费
+    if permanent_whitelist.is_permanent(db, request_user.id):
+        return {"success": True, "already": True, "permanent": True,
+                "expires_at": None}
     now = datetime.now()
     existing = (db.query(models.EmbyViewUnlock)
                   .filter(models.EmbyViewUnlock.user_id == request_user.id,
@@ -3128,11 +3132,16 @@ def is_welfare_user(db, user) -> bool:
 
     有效公益用户需满足：is_welfare=True 且资格未过期
     （welfare_expires_at 为 NULL 视为永不过期）。
+    永久账号白名单用户资格恒有效：is_welfare=True 且在名单里，
+    到期时间已过也算有效（名单只豁免过期，不凭空授予公益身份；
+    判定单口见 backend/permanent_whitelist.py）。
     """
     if user is None:
         return False
     if not getattr(user, 'is_welfare', False):
         return False
+    if permanent_whitelist.is_permanent(db, getattr(user, 'id', None)):
+        return True
     expires_at = getattr(user, 'welfare_expires_at', None)
     if expires_at is None:
         return True

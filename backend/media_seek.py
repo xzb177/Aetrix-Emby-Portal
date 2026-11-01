@@ -25,7 +25,7 @@ from typing import Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from backend import entitlements, governance, models
+from backend import entitlements, governance, models, permanent_whitelist
 from backend.integrations.store import switch_env_value as _switch_env_value
 
 logger = logging.getLogger(__name__)
@@ -108,10 +108,16 @@ DEFAULT_MONTHLY_WELFARE = 3
 DEFAULT_MONTHLY_PAID = 10
 
 
-def _is_welfare_active(user) -> bool:
-    """用户公益资格是否有效（is_welfare 开关 + 到期时间）"""
+def _is_welfare_active(db: Session, user) -> bool:
+    """用户公益资格是否有效（is_welfare 开关 + 到期时间）
+
+    永久账号白名单用户资格恒有效（与 portal.is_welfare_user 同口径，
+    判定单口见 backend/permanent_whitelist.py）。
+    """
     if not bool(getattr(user, "is_welfare", False)):
         return False
+    if permanent_whitelist.is_permanent(db, getattr(user, "id", None)):
+        return True
     expires_at = getattr(user, "welfare_expires_at", None)
     if expires_at is None:
         return True  # 永不过期
@@ -141,7 +147,7 @@ def monthly_limit(db: Session, user) -> int:
     3. 没声明（无订阅/缺键/值非法）回落现行 paid 口径
        ``paid_request_monthly``（默认 10），与没有权益表时逐字一致。
     """
-    if _is_welfare_active(user):
+    if _is_welfare_active(db, user):
         return _monthly_limit_value(db, CONFIG_MONTHLY_WELFARE, DEFAULT_MONTHLY_WELFARE)
     entitled = entitlements.get_user_entitlement(db, user, "media_seek_monthly_limit")
     if entitled is not None:
@@ -168,7 +174,7 @@ def monthly_quota(db: Session, user) -> dict:
     limit = monthly_limit(db, user)
     used = used_this_month(db, user.id)
     return {
-        "kind": "welfare" if _is_welfare_active(user) else "paid",
+        "kind": "welfare" if _is_welfare_active(db, user) else "paid",
         "monthly_limit": limit,
         "monthly_used": used,
         "monthly_remaining": max(0, limit - used),
