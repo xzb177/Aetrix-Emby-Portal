@@ -121,6 +121,10 @@ with SessionLocal() as db:
     db.query(models.WebUser).filter(models.WebUser.id == bob_id).update({"is_welfare": True})
     # 2026-10-21：签到缺省改为关（服主保持关），开关仍在面板/DB——本冒烟按 DB 行打开
     db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    # 签到暴击（#1672）缺省 5%、命中当日所得 ×3：第 2 节断言「只发了一份奖励
+    # （余额恰为 5）」必须把暴击播种为 0，否则每轮约 5% 概率掷出 15 假红
+    # （PR #1680 第三轮 CI 实测中招：余额=15，run 41335462768）
+    db.add(models.SystemConfig(key="checkin_crit_pct", value="0"))
     # 2026-10-23 去重 #3：邀请人奖励只由推广发放——冒烟按推广口径种配置
     # （开、余额型、100 分），下方邀请幂等节的「邀请者 +100」期望由此而来
     db.add(models.SystemConfig(key="promotion_reward_enabled", value="true"))
