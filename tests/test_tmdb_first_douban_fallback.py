@@ -216,3 +216,57 @@ def test_display_name():
     assert dbn.display_name("嘉羿 Jia Yi") == "嘉羿"
     assert dbn.display_name("Tom Hanks") == "Tom Hanks"
     assert dbn.display_name("") == ""
+
+
+def _douban_fallback_fetched():
+    """PA-008 回归用合成 fetched：豆瓣兜底命中，详情带评分 7.5。"""
+    return {
+        "douban_fallback_hit": {"title": "测试片", "year": "2024",
+                                "image": "https://img.doubanio.com/p/x.jpg"},
+        "douban_details": {"title": "测试片", "overview": "豆瓣简介",
+                           "runtime_ticks": 0, "rating": "7.5"},
+    }
+
+
+def test_douban_fallback_keeps_nfo_rating_and_source_when_nothing_filled(db):
+    """PA-008：NFO 已有评分 9.2＋来源 nfo，豆瓣兜底无一字段可补时两者都不动。"""
+    item = _series(db, name="测试片",
+                   overview="NFO简介", community_rating=9.2,
+                   metadata_source="nfo", poster_path="/x.jpg")
+    enrich_worker._enrich_apply(db, item, _douban_fallback_fetched())
+    db.commit()
+    fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+    assert fresh.community_rating == 9.2
+    assert fresh.metadata_source == "nfo"
+
+
+def test_douban_fallback_fills_missing_rating_and_source(db):
+    """PA-008 补缺路径不断：无评分无来源时豆瓣 7.5 正常落库、来源 douban。"""
+    item = _series(db, name="测试片")
+    enrich_worker._enrich_apply(db, item, _douban_fallback_fetched())
+    db.commit()
+    fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+    assert fresh.community_rating == 7.5
+    assert fresh.metadata_source == "douban"
+
+
+def test_douban_fallback_keeps_zero_rating(db):
+    """PA-008：已有 0.0 评分是合法数据（is None 口径），不被豆瓣 7.5 覆盖。"""
+    item = _series(db, name="测试片",
+                   community_rating=0.0)
+    enrich_worker._enrich_apply(db, item, _douban_fallback_fetched())
+    db.commit()
+    fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+    assert fresh.community_rating == 0.0
+
+
+def test_douban_fallback_fills_overview_but_keeps_nfo_source(db):
+    """PA-008：豆瓣补了简介缺项时评分仍守 NFO 9.2，来源仍 nfo 不改写。"""
+    item = _series(db, name="测试片",
+                   community_rating=9.2, metadata_source="nfo")
+    enrich_worker._enrich_apply(db, item, _douban_fallback_fetched())
+    db.commit()
+    fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+    assert fresh.community_rating == 9.2
+    assert fresh.overview == "豆瓣简介"
+    assert fresh.metadata_source == "nfo"
