@@ -61,6 +61,7 @@ from backend.database import SessionLocal, engine, init_db  # noqa: E402
 from backend.emby_server import api as emby_api  # noqa: E402
 from backend.emby_server import compat_routes, facets  # noqa: E402
 from backend.emby_server import mount_health  # noqa: E402
+from backend.emby_server import nodes as node_lib  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server.auth import hash_emby_token  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
@@ -549,12 +550,21 @@ async def section_probe_layer():
 
         # 5.2 真实路由：POST /api/admin/servers/{id}/test（体检 + 落库 + 无）
         #     体检本身不发真网络（本节量的是「落库在哪个线程」），探测器换成假的。
+        #     注意：EA 体检还有第二段网络——probe_and_store 在探测 ok 后会调
+        #     fetch_node_identity 拉节点身份（每次新建 httpx 客户端 + 真发请求），
+        #     那段成本同样压在事件循环上、同样不在量测范围内，必须一并换成假的；
+        #     只换探测器不换身份拉取，就是此前三连红（0.18–0.20s）的来源。
         real_probe = registry.probe_server
+        real_identity = node_lib.fetch_node_identity
 
         async def fake_probe(kind, url, config=None):  # noqa: ARG001
             return {"ok": True, "message": "smoke 体检"}
 
+        async def fake_identity(url, timeout=12.0):  # noqa: ARG001
+            return {"ok": True, "data": {}}
+
         registry.probe_server = fake_probe
+        node_lib.fetch_node_identity = fake_identity
         box: dict = {}
         try:
             transport = httpx.ASGITransport(app=app)
@@ -571,6 +581,7 @@ async def section_probe_layer():
                 elapsed, gap = await measure(hit_probe)
         finally:
             registry.probe_server = real_probe
+            node_lib.fetch_node_identity = real_identity
 
         resp = box.get("resp")
         check("服务器体检 → 200", resp is not None and resp.status_code == 200,
