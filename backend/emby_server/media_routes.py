@@ -71,6 +71,15 @@ def download_item(item_id: str, request: Request,
     # 站点级下载开关：第三方播放器触发的下载同样拦下。
     # request 带上网关（DownloadGuardMiddleware）已判过的结论，避免同一请求查两遍。
     ensure_download_allowed(db, user, request=request)
+    # 首播转存门禁（与 item_file 同口径，PA-003）：该片需先转存到用户
+    # 自己绑定盘且尚无 ready 副本时，不许经 Download 拿到共享原件字节；
+    # 已下发链接消费不追溯（play_sign 豁免与主路一致）。本单只补转存
+    # 门禁，不加绑定门禁（下载绑定门禁口径用户 2026-10-26 明确未定）。
+    from backend.emby_server import playback_gate as _gate
+    _play_sign_consume = _gate._request_uses_issued_play_sign(request, db)
+    from backend.emby_server import transfer_variant as _tv
+    _gate.raise_for_transfer_gate(_tv.ensure_user_copy_gate(
+        db, item, user, play_sign_consume=_play_sign_consume))
     target = _play_target(db, item)
     if target.kind == "url":
         # 最简播放（SEAM-3，中继已删）：Drive 条目 302 到谷歌 usercontent
