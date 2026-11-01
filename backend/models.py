@@ -840,6 +840,35 @@ class VitalityLog(Base):
     user = relationship("WebUser")
 
 
+class WatchPointsDaily(Base):
+    """观影能量每日累计（货币再设计第一期，2026-11-01）
+
+    观影能量按「当日累计观影分钟」分档发放（首看/一档/二档），累计量
+    无法从 UserMediaData 推出（那是单条目本轮最远点，看完即清零），故
+    每人每天一行落库累计：total_minutes 是当日已计入的累计分钟，
+    item_baselines 是 {item_id: 已计入基线分钟} 的 JSON——同条目重复
+    停播只计超出基线的增量，看完（90% 口径）后基线清零、重看重新计。
+    发了哪几档不存这里：以 points_logs 里 type='watch_points'、
+    ref_id='watch_points:<day>:<tier>' 的流水为唯一凭证（审计同源）。
+    day 为 Asia/Shanghai 自然日（YYYY-MM-DD），与成就日界口径一致。
+    """
+    __tablename__ = 'watch_points_daily'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'day', name='uq_watch_points_daily_user_day'),
+        Index('idx_watch_points_daily_day', 'day'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    day = Column(String(10), nullable=False)  # Asia/Shanghai 日期 YYYY-MM-DD
+    total_minutes = Column(Float, default=0, nullable=False)  # 当日已计入累计分钟
+    item_baselines = Column(Text, default='{}')  # JSON {item_id: 已计入基线分钟}
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship("WebUser")
+
+
 class EmbyViewUnlock(Base):
     """Emby 账号/线路查看权限（公益服花积分解锁）
 

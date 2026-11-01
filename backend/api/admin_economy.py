@@ -322,6 +322,12 @@ ECONOMY_CONFIG_KEYS = {
     "vitality_checkin_skip_deduct_enabled": "bool",
     # 签到活力奖励（economy._do_checkin_core 读取；默认 1，填 0 则签到不恢复活力）
     "vitality_checkin_gain": "int",
+    # 观影能量（货币再设计第一期）：当日累计观影分钟分档发能量，
+    # 首看/一档/二档奖励与分钟数＋每日封顶，watch_points 读取
+    "watch_points_first": "int", "watch_points_first_minutes": "int",
+    "watch_points_tier1": "int", "watch_points_tier1_minutes": "int",
+    "watch_points_tier2": "int", "watch_points_tier2_minutes": "int",
+    "watch_points_daily_cap": "int",
     # C3 流水审计开关（points_audit_enabled）与 Q3 同剧合并三开关
     # （series_merge_*）均已于 2026-10-21 摘面板（env 治理，缺省开）；
     # 此处只剩同剧合并的间隔/组数上限两个数值（间隔下限 3600 秒，
@@ -368,6 +374,36 @@ def _validate_vitality_settings(db: Session, settings: dict) -> None:
     # 后果：max < threshold 存入后，所有公益服用户活力值被钳制在 max 以下，
     # 永远达不到观影阈值 → 全员 403 无法观影，且管理员收不到任何提示。
     # 因此合并后的全部错误都要拦截；若库里本就有非法存量值，这次也会一并暴露出来。
+    if errors:
+        first_key = next(iter(errors))
+        raise HTTPException(status_code=400, detail=errors[first_key])
+
+
+def _validate_watch_points_settings(db: Session, settings: dict) -> None:
+    """观影能量配置校验：整数、非负、分钟数不倒挂（非法直接 400，尚未写库）。
+
+    与 _validate_vitality_settings 同款合并口径：本次提交值优先、空值按
+    删除回退默认、未提交按库里现值，合并后整体校验——只校验本次提交的
+    键会让倒挂组合（改一档不改另一档）绕过检查直接存库。
+    """
+    from backend import watch_points as _wp
+
+    if not any(k.startswith("watch_points_") for k in settings):
+        return
+
+    def _final(key: str) -> str:
+        if key in settings:
+            v = str(settings[key] if settings[key] is not None else "").strip()
+            if v:
+                return v
+            return _wp.WATCH_POINTS_DEFAULTS.get(key, "")
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+        if row and (row.value or "").strip():
+            return (row.value or "").strip()
+        return _wp.WATCH_POINTS_DEFAULTS.get(key, "")
+
+    merged = {k: _final(k) for k in _wp.WATCH_POINTS_DEFAULTS}
+    errors = _wp.validate_watch_points_config(merged)
     if errors:
         first_key = next(iter(errors))
         raise HTTPException(status_code=400, detail=errors[first_key])
@@ -467,6 +503,7 @@ def economy_update_settings(
                 raise HTTPException(status_code=400, detail=str(e))
     _validate_checkin_settings(db, request.settings)
     _validate_vitality_settings(db, request.settings)
+    _validate_watch_points_settings(db, request.settings)
     # 配置瘦身第 4 批 4-6：落库走统一写入通道 config_service.save_config
     # （校验→批量落库→写时失效）。以下口径与旧代码逐字一致：
     # - 未知键静默忽略；secret 传空/"******" = 保留原行、不进落库；

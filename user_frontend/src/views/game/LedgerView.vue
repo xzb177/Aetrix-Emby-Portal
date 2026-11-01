@@ -121,6 +121,7 @@ const TYPE_META: Record<string, { label: string; income: boolean | null }> = {
   transfer_out: { label: '转账转出', income: false },
   transfer_in: { label: '转账转入', income: true },
   transfer_fee: { label: '转账手续费', income: false },
+  watch_points: { label: '观影能量', income: true },
 }
 function typeMeta(t: string) {
   return TYPE_META[t] || { label: '其他', income: null }
@@ -139,6 +140,7 @@ const GAME_META: Record<string, { icon: string; title: string }> = {
   transfer_out: { icon: '💸', title: '转账转出' },
   transfer_in: { icon: '💰', title: '转账转入' },
   transfer_fee: { icon: '🧾', title: '转账手续费' },
+  watch_points: { icon: '🎬', title: '观影能量' },
 }
 function gameMeta(t: string) {
   return GAME_META[t] || { icon: '📦', title: typeMeta(t).label }
