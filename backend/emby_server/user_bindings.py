@@ -348,6 +348,70 @@ def binding_115_cookie(db: Session, user_id: int,
     return cookie
 
 
+def binding_quark_cookie(db: Session, user_id: int,
+                         binding_id: int) -> str:
+    """指定绑定行的夸克 Cookie（二期转存/点播取凭据唯一口）。
+
+    与 binding_115_cookie 逐项同口径，只换 provider：
+    - 只认本人行、只认 quark 行：他人行 / 非夸克行按 not_found
+      处理（不泄露他人绑定存在性）；
+    - 凭据行归属不对 → transient 响亮报错，不回落任何共享凭据；
+    - 解密封失败 / 空凭据 → 绑定落 auth_error 后抛 auth_error；
+    - 返回的明文只给调用方当次使用：不得记日志、不得进返回值
+      对外、不得跨绑定复用。
+    """
+    binding = (
+        db.query(em.UserStorageBinding)
+        .filter(em.UserStorageBinding.id == binding_id,
+                em.UserStorageBinding.user_id == user_id)
+        .first()
+    )
+    if binding is None or binding.provider != PROVIDER_QUARK:
+        raise BindingError("not_found", "绑定不存在或不属于当前用户。")
+    cred = _credential_of(db, binding)
+    try:
+        cookie = unseal_secret(cred.sealed_credential or "")
+    except SealedSecretError as exc:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError(
+            "auth_error", BINDING_ERROR_MESSAGES["auth_error"]) from exc
+    if not cookie:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError("auth_error", BINDING_ERROR_MESSAGES["auth_error"])
+    return cookie
+
+
+def absorb_quark_cookie_rotation(db: Session,
+                                 binding: em.UserStorageBinding,
+                                 original_cookie: str,
+                                 current_cookie: str) -> bool:
+    """夸克 Cookie 轮换回写（二期共用口：转存执行器与点播取链共用）。
+
+    夸克每次响应都可能轮换 __puus/__pus：QuarkClient 用后
+    client.cookie 已同步为最新值，与取凭据时的原值不同就必须
+    重新密封落库，否则绑定慢性失效（与一期验活后回写同一纪律，
+    收口到一处实现）。回写失败只记日志返 False——保活优化不许
+    打挂转存/点播主流程；无变化返 False。
+    """
+    if not current_cookie or current_cookie == original_cookie:
+        return False
+    try:
+        cred = _credential_of(db, binding)
+        cred.sealed_credential = seal_secret(current_cookie)
+        db.commit()
+        return True
+    except Exception:  # noqa: BLE001 — 回写失败不拖垮主流程
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.warning("夸克 Cookie 轮换回写失败 binding=%s",
+                       getattr(binding, "id", None), exc_info=True)
+        return False
+
+
 def _credential_of(db: Session,
                    binding: em.UserStorageBinding) -> em.MountCredential:
     cred = (
@@ -903,6 +967,59 @@ def resolve_user115_copy_url(db: Session, user_id: int,
             raise BindingError(kind, message) from exc
         raise BindingError("transient", f"115 直链解析失败：{exc}") from exc
     return url
+
+
+def resolve_user_quark_copy_url(db: Session, user_id: int,
+                                fid: str) -> tuple[str, str]:
+    """用户盘夸克副本取流目标：按该用户自己的 Cookie 现取下载直链。
+
+    与 resolve_user115_copy_url 同一套凭据口径（最早 active
+    绑定、现取现用、不走任何共享缓存），两点不同：
+    - 夸克 CDN 取流校验 Cookie + Referer + UA 三件套，直链绝不
+      能下发客户端 302，只能服务端中继——故返回 (url, cookie)：
+      cookie 是本次用后（已吸收上游轮换）的最新值，调用方拿它
+      组中继请求头，绝不下发、绝不记日志；
+    - fid 直接用转存副本行的 variant_file_id（副本在用户自己
+      盘里，不从条目路径定位）。
+    凭据失效 → BindingError（expired/auth_error），调用方按 409
+    处理，不静默回落共享中继；一过性失败 → transient。
+    """
+    binding = get_active_binding(db, user_id, PROVIDER_QUARK)
+    if binding is None:
+        raise BindingError("not_found", "当前用户没有可用的夸克绑定。")
+    cred = _credential_of(db, binding)
+    try:
+        cookie = unseal_secret(cred.sealed_credential or "")
+    except SealedSecretError as exc:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError(
+            "auth_error", BINDING_ERROR_MESSAGES["auth_error"]) from exc
+    if not cookie:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError(
+            "auth_error", BINDING_ERROR_MESSAGES["auth_error"])
+    client = quarkdrive.QuarkClient(cookie)
+    try:
+        url = client.download_url(fid)
+    except quarkdrive.QuarkAuthError as exc:
+        _mark_failed(db, binding, "expired")
+        db.commit()
+        raise BindingError(
+            "expired",
+            error_message("expired", PROVIDER_QUARK)) from exc
+    except Exception as exc:  # noqa: BLE001 — 分类后决定落态或不改
+        classified = _classify_quark_error(exc)
+        if classified is not None:
+            kind, message = classified
+            _mark_failed(db, binding, kind)
+            db.commit()
+            raise BindingError(kind, message) from exc
+        raise BindingError("transient", f"夸克直链解析失败：{exc}") from exc
+    absorb_quark_cookie_rotation(db, binding, cookie, client.cookie)
+    return url, client.cookie
+
 
 def _pan115_probe_http(url):
     """115 现签地址的探测 HTTP 入口（测试打桩用）。

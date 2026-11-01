@@ -632,6 +632,10 @@ class TransferConfigRequest(BaseModel):
     # 续传恢复＋清单 sha1 采信＋同内容调度合并；须与记账开关
     # 联动才生效，默认开。
     transfer_manifest_takeover_enabled: bool = True
+    # 夸克二期（转存 + 点播中继）：默认开（站内规矩）；关时只绑
+    # 夸克的用户点播被门禁明示挡下、不回落共享。校验在
+    # config_schema 的 transfer 家族里。
+    quark_play_enabled: bool = True
 
 
 @admin_router.get("/transfer-config")
@@ -684,6 +688,7 @@ def transfer_update_config(
                 request.transfer_manifest_accounting_enabled),
             transfer_manifest_takeover_enabled=(
                 request.transfer_manifest_takeover_enabled),
+            quark_play_enabled=request.quark_play_enabled,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -711,7 +716,8 @@ def transfer_update_config(
             "transfer_cross_cloudpull_ttl_sec":
             request.transfer_cross_cloudpull_ttl_sec,
             "transfer_cross_cloudpull_timeout_sec":
-            request.transfer_cross_cloudpull_timeout_sec})
+            request.transfer_cross_cloudpull_timeout_sec,
+            "quark_play_enabled": request.quark_play_enabled})
     db.commit()
     return result
 

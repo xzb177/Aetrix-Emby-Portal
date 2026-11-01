@@ -708,6 +708,7 @@ const transfer = reactive({
   transfer_cross_cloudpull_enabled: false,
   transfer_cross_cloudpull_ttl_sec: 43200,
   transfer_cross_cloudpull_timeout_sec: 3600,
+  quark_play_enabled: true,
 })
 const transferOriginal = reactive({ ...transfer })
 const transferLoading = ref(false)
@@ -725,6 +726,7 @@ function applyTransfer(data: TransferConfig) {
   transfer.transfer_cross_cloudpull_enabled = data.transfer_cross_cloudpull_enabled === true
   transfer.transfer_cross_cloudpull_ttl_sec = Number(data.transfer_cross_cloudpull_ttl_sec) || 43200
   transfer.transfer_cross_cloudpull_timeout_sec = Number(data.transfer_cross_cloudpull_timeout_sec) || 3600
+  transfer.quark_play_enabled = data.quark_play_enabled !== false
   Object.assign(transferOriginal, transfer)
 }
 
@@ -751,7 +753,8 @@ transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_tra
   || transfer.transfer_rebind_waiver_max_uses !== transferOriginal.transfer_rebind_waiver_max_uses
   || transfer.transfer_cross_cloudpull_enabled !== transferOriginal.transfer_cross_cloudpull_enabled
   || transfer.transfer_cross_cloudpull_ttl_sec !== transferOriginal.transfer_cross_cloudpull_ttl_sec
-  || transfer.transfer_cross_cloudpull_timeout_sec !== transferOriginal.transfer_cross_cloudpull_timeout_sec,
+  || transfer.transfer_cross_cloudpull_timeout_sec !== transferOriginal.transfer_cross_cloudpull_timeout_sec
+  || transfer.quark_play_enabled !== transferOriginal.quark_play_enabled,
 )
 
 /** 转存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -1756,6 +1759,18 @@ watch(
                     />
                   </div>
                   <span class="field-hint">开：转存到 115 的文件超过 5 GiB 且秒传未命中时走分片上传；关：这类大文件直接判不支持。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="夸克转存/点播">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.quark_play_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：只绑夸克的用户点播时先转存到本人夸克盘（aetrix-transfer 目录）再经服务器中继播放；关：这类点播直接明示挡下、不回落共享。默认开</span>
                 </div>
               </el-form-item>
               <el-form-item label="115 云下载（形态 B）">

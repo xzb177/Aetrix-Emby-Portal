@@ -15,12 +15,27 @@ drivers/quark_uc 的公开实现
   （user_bindings）负责把变化后的值重新密封落库。
 
 凭据纪律：Cookie 只在本模块与 user_bindings 内经手；日志与异常
-文案绝不带 Cookie 原文。二期（转存/点播）所需的下载、上传全链
-接口调研结论已在调研报告里，本模块一期不实现。
+文案绝不带 Cookie 原文。
+
+二期（2026-11-01）：在验活面之上补转存/点播所需的全链——
+list_dir（分页列目录）、download_info/download_url（取下载直链，
+点播靠它＋Cookie/Referer/UA 三件套走服务端中继，绝不裸发 302）、
+mkdir、以及上传链 upload_pre → upload_hash（秒传判定）→
+逐片 upload_auth + OSS PUT → upload_commit → upload_finish，
+由 upload_file 编排。形态来源标注（诚实口径，无真实账号活体
+验证）：端点路径、信封与 pre/hash/finish 的请求字段以 OpenList
+drivers/quark_uc 公开实现为准（调研报告同上）；upload/auth 的
+请求/响应字段名与 auth_meta 构造为按阿里云 OSS V1 签名口径的
+推测，代码内逐处标注「未活体验证」，解析一律防御式（多候选
+字段名），字段对不上时响亮报错、绝不猜默认值蒙混。
 """
 from __future__ import annotations
 
 import logging
+import mimetypes
+import time
+from email.utils import formatdate
+from xml.sax.saxutils import escape as _xml_escape
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +47,79 @@ QUARK_UA = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 _REQUEST_TIMEOUT = 15.0
+#: OSS 分片 PUT 的超时：单片可达数十 MB，给足余量（仍有界）。
+_UPLOAD_TIMEOUT = 600.0
+
+#: pre 响应缺 part_size 时的缺省分片大小（10 MiB；与 OSS 常规
+#: 分片量级一致）。仅是客户端分片粒度，不影响协议正确性。
+DEFAULT_PART_SIZE = 10 * 1024 * 1024
+#: OSS 分片数上限（协议硬顶）：part_size 过小时按文件大小反推
+#: 下限，保证总片数不超此值（防上游回异常小分片把请求数放大）。
+_MAX_PARTS = 10000
+
+#: 建目录同名冲突的信封文案标记（调研报告实录：
+#: ``file is doloading[同名冲突]``）。命中即「目录已在」，由
+#: 调用方按已存在处理（重列目录验 fid），不当失败。
+_NAME_CONFLICT_HINTS = ("同名冲突", "doloading")
+
+
+def is_name_conflict_error(exc) -> bool:
+    """异常文案是否为建目录同名冲突（见 _NAME_CONFLICT_HINTS）。"""
+    text = str(exc or "")
+    return any(hint in text for hint in _NAME_CONFLICT_HINTS)
+
+
+def _format_type_for(name: str) -> str:
+    """按扩展名猜 MIME（upload/pre 的 format_type）；猜不到回通用型。"""
+    guessed, _ = mimetypes.guess_type(name or "")
+    return guessed or "application/octet-stream"
+
+
+def _oss_date() -> str:
+    """OSS x-oss-date 头值（GMT，RFC 1123）。"""
+    return formatdate(usegmt=True)
+
+
+def _auth_meta(verb: str, bucket: str, obj_key: str, *,
+               content_type: str = "", query: str = ""):
+    """OSS V1 待签串（auth_meta）构造——**未活体验证（推测）**。
+
+    形状按阿里云 OSS V1 签名口径：VERB\\n（Content-MD5 空）\\n
+    Content-Type\\n（Date 空，用 x-oss-date 头替代）\\nx-oss-date
+    + x-oss-user-agent 两条规范化头\\n/bucket/obj_key[?query]。
+    夸克服务端拿 auth_info + 本串回签 auth_key 的确切字段与串
+    格式没有真实账号可验：若活体对不上，失败会响亮落在
+    upload_auth/PUT 的错误里，不会静默错传。
+    返回 (auth_meta, x_oss_date)：PUT 时须把同一个 date 以
+    x-oss-date 头原样带上（签名串里写的是它）。
+    """
+    date = _oss_date()
+    resource = f"/{bucket}/{obj_key}"
+    if query:
+        resource = f"{resource}?{query}"
+    meta = (f"{verb}\n\n{content_type}\n\n"
+            f"x-oss-date:{date}\n"
+            f"x-oss-user-agent:{QUARK_UA}\n"
+            f"{resource}")
+    return meta, date
+
+
+def _finish_fid(data) -> str:
+    """upload/finish 响应里提新文件 fid（多候选，取不到回空串）。
+
+    finish 的确切响应形状未经活体验证：fid 可能在 data 顶层
+    （fid/file_id/id）或 data.file 里。取不到不算失败——调用方
+    以列目录按名核对为最终事实（FMBY discover 口径）。
+    """
+    if not isinstance(data, dict):
+        return ""
+    for source in (data, data.get("file")):
+        if isinstance(source, dict):
+            for key in ("fid", "file_id", "id"):
+                value = source.get(key)
+                if value:
+                    return str(value)
+    return ""
 
 #: 信封 message 里出现这些词 → 登录态问题（定性 expired，与 115 的
 #: 401/403 定性同口径：凭据没死，是登录态过期，重贴 Cookie 即可）。
@@ -111,7 +199,7 @@ def _member_vip_signal(data: dict) -> bool:
 
 
 class QuarkClient:
-    """夸克 Cookie 型客户端（一期仅验活用：check + list_root + 会员三态）。"""
+    """夸克 Cookie 型客户端（一期验活面 + 二期目录/下载/上传全链）。"""
 
     def __init__(self, cookie: str):
         self.cookie = cookie or ""
@@ -186,6 +274,345 @@ class QuarkClient:
         if isinstance(data, dict):
             return data.get("list") or []
         return []
+
+    # ------------------------------------------------------------------
+    # 二期：目录 / 下载 / 上传全链（形态来源见模块 docstring；
+    # 端点与字段以 OpenList 公开实现为准，auth 段为推测、已标注）
+    # ------------------------------------------------------------------
+
+    def list_dir(self, pdir_fid, page_size: int = 100) -> list:
+        """列目录全部分页，归一成 [{fid, name, size, is_dir}]。
+
+        条目原始字段（OpenList 口径）：fid / file_name / size /
+        file（bool，True=文件、False=目录）。归一时多候选字段
+        防御读取（name/dir/is_dir 异名都认），认不出的条目跳过
+        不猜。分页直到短页为止，另设 500 页硬顶防上游异常时
+        死循环。
+        """
+        out = []
+        page = 1
+        while page <= 500:
+            data = self._request("GET", "/file/sort", params={
+                "pdir_fid": str(pdir_fid), "_page": str(page),
+                "_size": str(page_size), "_fetch_total": "1",
+                "fetch_all_file": "1"})
+            entries = []
+            if isinstance(data, dict):
+                entries = data.get("list") or []
+            if not isinstance(entries, list):
+                break
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                fid = str(entry.get("fid") or "")
+                if not fid:
+                    continue
+                if "file" in entry:
+                    is_dir = not bool(entry.get("file"))
+                else:
+                    is_dir = bool(entry.get("dir")
+                                  or entry.get("is_dir"))
+                try:
+                    size = int(entry.get("size") or 0)
+                except (TypeError, ValueError):
+                    size = 0
+                out.append({
+                    "fid": fid,
+                    "name": str(entry.get("file_name")
+                                or entry.get("name") or ""),
+                    "size": size,
+                    "is_dir": is_dir,
+                })
+            if len(entries) < page_size:
+                break
+            page += 1
+        return out
+
+    def download_info(self, fid) -> dict:
+        """文件详情 + 下载信息：POST /file/download {fids:[fid]}。
+
+        返回 data 首条原样 dict（OpenList 口径含 download_url，
+        通常也带 file_name/size）。这同时是本客户端的「文件
+        详情」口：夸克没有独立的单文件详情端点在本调研范围内
+        出现，详情字段以本响应为准（未活体验证）。
+        """
+        data = self._request("POST", "/file/download",
+                             json_body={"fids": [str(fid)]})
+        entry = None
+        if isinstance(data, list):
+            entry = data[0] if data else None
+        elif isinstance(data, dict):
+            entry = data
+        if not isinstance(entry, dict):
+            raise QuarkError("夸克下载信息响应形状异常（未活体验证形态）")
+        return entry
+
+    def download_url(self, fid) -> str:
+        """现取下载直链（点播中继取流用）。
+
+        注意：该 URL 取流时必须带 Cookie + Referer + UA 三件套
+        （夸克 CDN 校验），只许服务端中继用，绝不下发客户端、
+        绝不 302 裸发。
+        """
+        entry = self.download_info(fid)
+        url = str(entry.get("download_url") or entry.get("url") or "")
+        if not url:
+            raise QuarkError("夸克下载信息未带 download_url"
+                             "（未活体验证形态）")
+        return url
+
+    def mkdir(self, pdir_fid, name) -> None:
+        """建目录：POST /file。同名冲突抛 QuarkError（文案命中
+        is_name_conflict_error），调用方按已存在处理。"""
+        self._request("POST", "/file", json_body={
+            "pdir_fid": str(pdir_fid), "file_name": name,
+            "dir_path": "", "dir_init_lock": False})
+
+    # ---- 上传链（OSS 分片；auth 段字段为推测，见逐处标注） ----
+
+    def upload_pre(self, name, size, pdir_fid) -> dict:
+        """预上传：POST /file/upload/pre，归一出上传会话字段。
+
+        请求字段以 OpenList 公开实现为准（ccp_hash_update /
+        file_name / format_type / l_created_at / l_updated_at /
+        pdir_fid / size）。响应字段防御解析：task_id / upload_id
+        / obj_key / bucket 在 data 顶层取，part_size 顶层或
+        data.metadata 里都认；upload_host 在 upload_host / host
+        / endpoint / oss_host 里取——全缺失时响亮报错（不许
+        猜默认主机把字节打到错地方）。auth_info 原样透传给
+        upload_auth。**响应确切嵌套未经活体验证。**
+        """
+        now_ms = int(time.time() * 1000)
+        data = self._request("POST", "/file/upload/pre", json_body={
+            "ccp_hash_update": True,
+            "file_name": name,
+            "format_type": _format_type_for(name),
+            "l_created_at": now_ms,
+            "l_updated_at": now_ms,
+            "pdir_fid": str(pdir_fid),
+            "size": int(size),
+        })
+        if not isinstance(data, dict):
+            raise QuarkError("夸克预上传响应形状异常（未活体验证形态）")
+        meta = data.get("metadata")
+        if not isinstance(meta, dict):
+            meta = {}
+
+        def _pick(*sources_keys):
+            for source, key in sources_keys:
+                value = source.get(key)
+                if value not in (None, ""):
+                    return value
+            return None
+
+        task_id = _pick((data, "task_id"), (meta, "task_id"))
+        obj_key = _pick((data, "obj_key"), (meta, "obj_key"))
+        bucket = _pick((data, "bucket"), (meta, "bucket"))
+        if not task_id or not obj_key or not bucket:
+            raise QuarkError(
+                "夸克预上传响应缺 task_id/obj_key/bucket"
+                "（未活体验证形态，拒绝继续）")
+        part_size_raw = _pick((data, "part_size"), (meta, "part_size"))
+        try:
+            part_size = int(part_size_raw) if part_size_raw else 0
+        except (TypeError, ValueError):
+            part_size = 0
+        if part_size <= 0:
+            part_size = DEFAULT_PART_SIZE
+        size_int = int(size)
+        if size_int > 0:
+            min_part = -(-size_int // _MAX_PARTS)
+            part_size = max(part_size, min_part)
+        upload_host = _pick((data, "upload_host"), (data, "host"),
+                            (data, "endpoint"), (data, "oss_host"),
+                            (meta, "upload_host"), (meta, "host"))
+        return {
+            "task_id": str(task_id),
+            "upload_id": str(_pick((data, "upload_id"),
+                                   (meta, "upload_id")) or ""),
+            "obj_key": str(obj_key),
+            "bucket": str(bucket),
+            "part_size": part_size,
+            "auth_info": _pick((data, "auth_info"),
+                               (meta, "auth_info")),
+            "upload_host": str(upload_host or ""),
+        }
+
+    def upload_hash(self, task_id, md5, sha1) -> bool:
+        """秒传判定：POST /file/update/hash。data.finish 为真即
+        服务端已有同内容，零字节完成（字段以 OpenList 为准）。"""
+        data = self._request("POST", "/file/update/hash", json_body={
+            "task_id": str(task_id), "md5": md5, "sha1": sha1})
+        if isinstance(data, dict):
+            return bool(data.get("finish"))
+        return False
+
+    def upload_auth(self, pre: dict, auth_meta: str) -> str:
+        """取一次 OSS 操作的 Authorization：POST /file/upload/auth。
+
+        **未活体验证（推测）**：请求体按 {task_id, auth_info,
+        auth_meta} 构造，响应 auth 值在 data 本身（字符串）或
+        data.auth_key / authorization / auth 里取，全对不上时
+        响亮报错。
+        """
+        data = self._request("POST", "/file/upload/auth", json_body={
+            "task_id": pre["task_id"],
+            "auth_info": pre.get("auth_info"),
+            "auth_meta": auth_meta,
+        })
+        if isinstance(data, str) and data:
+            return data
+        if isinstance(data, dict):
+            for key in ("auth_key", "authorization", "auth"):
+                value = data.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        raise QuarkError("夸克 upload/auth 响应未带可用 auth 值"
+                         "（未活体验证形态）")
+
+    def _oss_url(self, pre: dict, query: str = "") -> str:
+        host = (pre.get("upload_host") or "").strip()
+        if not host:
+            raise QuarkError(
+                "夸克预上传响应未带上传主机（upload_host/host/"
+                "endpoint 均缺）——该形态未经活体验证，拒绝猜测"
+                "默认主机")
+        host = host.replace("https://", "").replace("http://", "")
+        url = f"https://{pre['bucket']}.{host}/{pre['obj_key']}"
+        if query:
+            url = f"{url}?{query}"
+        return url
+
+    def _oss_send(self, method, url, *, auth, date, content=None,
+                  content_type=None):
+        """OSS 裸请求出口：只带 OSS Authorization（+ 与签名串同
+        值的 x-oss-date），绝不带夸克 Cookie（字节面与会话面
+        分离）。非 2xx 响亮抛 QuarkError。"""
+        headers = {"Authorization": auth, "x-oss-date": date,
+                   "x-oss-user-agent": QUARK_UA}
+        if content_type:
+            headers["Content-Type"] = content_type
+        try:
+            resp = _send(method, url, headers=headers, content=content,
+                         timeout=_UPLOAD_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            raise QuarkError(f"夸克 OSS 请求失败：{exc}") from exc
+        self._absorb_rotated_cookies(resp)
+        if resp.status_code < 200 or resp.status_code >= 300:
+            # OSS 面的 401/403 多半是签名串对不上（auth 段形态
+            # 未活体验证），不定性为用户登录失效——绝不许因此
+            # 把用户绑定误判 expired。抛普通 QuarkError 走重试。
+            raise QuarkError(f"夸克 OSS 返回 HTTP {resp.status_code}")
+        return resp
+
+    def upload_part(self, pre: dict, part_number: int, data: bytes,
+                    auth: str, date: str, content_type: str = "") -> str:
+        """PUT 一片到 OSS，返回 ETag（去引号）。
+
+        content_type 必须与 auth_meta 里签的那个一致（调用方
+        upload_file 统一传文件名推得的 format_type）。
+        """
+        query = (f"partNumber={part_number}"
+                 f"&uploadId={pre['upload_id']}")
+        resp = self._oss_send(
+            "PUT", self._oss_url(pre, query), auth=auth, date=date,
+            content=data,
+            content_type=content_type or None)
+        etag = ""
+        try:
+            etag = (resp.headers.get("ETag") or "").strip().strip('"')
+        except Exception:  # noqa: BLE001 — 无 ETag 由 commit 前兜底
+            etag = ""
+        if not etag:
+            raise QuarkError(
+                f"夸克 OSS 分片 {part_number} 响应未带 ETag，"
+                "无法组装 CompleteMultipartUpload")
+        return etag
+
+    def upload_commit(self, pre: dict, parts: list, auth: str,
+                      date: str) -> None:
+        """CompleteMultipartUpload：POST OSS（body 为分片清单 XML）。
+
+        parts 为 [(part_number, etag), ...]，按片号排序组装。
+        OSS 对本操作可能回 200 + <Error> XML 体，须查体。
+        """
+        items = "".join(
+            "<Part><PartNumber>{}</PartNumber><ETag>\"{}\"</ETag>"
+            "</Part>".format(num, _xml_escape(etag))
+            for num, etag in sorted(parts))
+        body = ('<?xml version="1.0" encoding="UTF-8"?>'
+                "<CompleteMultipartUpload>" + items
+                + "</CompleteMultipartUpload>").encode("utf-8")
+        query = f"uploadId={pre['upload_id']}"
+        resp = self._oss_send(
+            "POST", self._oss_url(pre, query), auth=auth, date=date,
+            content=body, content_type="application/xml")
+        text = ""
+        try:
+            text = resp.text or ""
+        except Exception:  # noqa: BLE001
+            text = ""
+        if "<Error>" in text:
+            raise QuarkError("夸克 OSS CompleteMultipartUpload 回 Error"
+                             "（详见上游响应，未活体验证形态）")
+
+    def upload_finish(self, task_id, obj_key) -> dict:
+        """收尾：POST /file/upload/finish。返回 data 原样（可能
+        带新文件 fid，调用方以目录核对为准、不单信回执）。"""
+        data = self._request("POST", "/file/upload/finish", json_body={
+            "task_id": str(task_id), "obj_key": str(obj_key)})
+        return data if isinstance(data, dict) else {}
+
+    def upload_file(self, reader, name, size, pdir_fid, *,
+                    md5: str = "", sha1: str = "") -> dict:
+        """上传编排：pre →（有 md5+sha1 时）hash 秒传判定 →
+        逐片 auth+PUT → commit → finish。
+
+        reader 须支持 seek/tell/read（transfer 的分段读取器
+        即可）。返回 {"outcome": "rapid"|"uploaded", "fid": str}：
+        fid 只取自 finish 响应（fid/file_id/id 多候选），取不到
+        为空串——调用方必须再列目标目录按名核对（FMBY 口径），
+        不许单凭回执登记。秒传命中时不读 reader 一字节。
+        """
+        size = int(size)
+        pre = self.upload_pre(name, size, pdir_fid)
+        if md5 and sha1:
+            if self.upload_hash(pre["task_id"], md5, sha1):
+                data = self.upload_finish(pre["task_id"],
+                                          pre["obj_key"])
+                return {"outcome": "rapid",
+                        "fid": _finish_fid(data)}
+        part_size = pre["part_size"]
+        parts = []
+        reader.seek(0)
+        offset = 0
+        number = 1
+        while offset < size or (size == 0 and number == 1):
+            chunk = reader.read(min(part_size, size - offset)
+                                if size > 0 else 0)
+            if size > 0 and not chunk:
+                raise QuarkError(
+                    f"夸克上传读取器提前结束：已读 {offset}/{size} 字节")
+            meta, date = _auth_meta(
+                "PUT", pre["bucket"], pre["obj_key"],
+                content_type=_format_type_for(name),
+                query=(f"partNumber={number}"
+                       f"&uploadId={pre['upload_id']}"))
+            auth = self.upload_auth(pre, meta)
+            etag = self.upload_part(pre, number, chunk, auth, date,
+                                    content_type=_format_type_for(name))
+            parts.append((number, etag))
+            offset += len(chunk)
+            number += 1
+            if size == 0:
+                break
+        meta, date = _auth_meta(
+            "POST", pre["bucket"], pre["obj_key"],
+            query=f"uploadId={pre['upload_id']}")
+        auth = self.upload_auth(pre, meta)
+        self.upload_commit(pre, parts, auth, date)
+        data = self.upload_finish(pre["task_id"], pre["obj_key"])
+        return {"outcome": "uploaded", "fid": _finish_fid(data)}
 
     def member(self):
         """GET /member：账号会员与容量信息（参数与 OpenList 一致）。

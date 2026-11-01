@@ -346,6 +346,11 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     # 本开关无数据可依、整步回落）。默认开由 transfer_variant
     # .manifest_takeover_enabled 的读取默认兜底。
     "transfer_manifest_takeover_enabled": ("bool",),
+    # 夸克二期（转存 + 点播中继）开关（2026-11-01）：默认开由
+    # transfer_variant.quark_play_enabled 的读取默认兜底（无行
+    # =True）；关 = 只绑夸克的用户点播在门禁 failed 明示、不
+    # 回落共享。纯 SystemConfig 键，不进 env.example。
+    "quark_play_enabled": ("bool",),
 }
 
 # Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的

@@ -74,6 +74,13 @@ BYOS115_DIRECT = "byos115_direct"
 #: 302 直链形态不同。只在条目是 byos:// 路径、路径绑定是该用户
 #: active 的 Drive 绑定且条目有 drive_file_id 时才进清单。
 BYOS_DRIVE_RELAY = "byos_drive_relay"
+#: 夸克二期：绑定用户自己的夸克副本中继（服务端凭该用户 Cookie
+#: 现取直链后中继出流——夸克 CDN 校验 Cookie/Referer/UA 三件套，
+#: 不能像 115 那样 302 让播放器自拉，故诚实申报为中继
+#: is_remote=False / needs_relay=True）。本变体只作 play_start
+#: 打点口径：转存副本走主线源出流（与 115 副本同款，不进
+#: list_variants 显式清单），不许拿它当可选变体下发。
+BYOS_QUARK_RELAY = "byos_quark_relay"
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,9 @@ _VARIANTS: dict[str, Variant] = {
     # 中继形态：字节过服务器（凭用户令牌取流），故 is_remote=False /
     # needs_relay=True——与 drive_relay 同形，只是凭据换成用户自己的。
     BYOS_DRIVE_RELAY: Variant(BYOS_DRIVE_RELAY, "我的 Drive 中继", "Http", False, True),
+    # 中继形态：字节过服务器（凭用户 Cookie 现取链取流），故
+    # is_remote=False / needs_relay=True——与 drive 中继同形。
+    BYOS_QUARK_RELAY: Variant(BYOS_QUARK_RELAY, "我的夸克中继", "Http", False, True),
 }
 
 
@@ -311,7 +321,7 @@ def compute_readiness(has_stream_url: bool, transfer_verdict=None) -> str:
 
     由“有没有流地址＋转存准备状态”共同算出（requires_transfer
     已由门禁 verdict 编码：preparing/failed 就是“需要转存且未就绪”，
-    proceed/serve_115_copy 就是“转存要求已满足”，不再另设第四输入）：
+    proceed/serve_115_copy/serve_quark_copy 就是“转存要求已满足”，不再另设第四输入）：
     - verdict failed → ``failed``（取流报 409/503，明文，不静默改走）；
     - verdict preparing → ``preparing``（清单保留、点不了）；
     - verdict error → ``unavailable``（门禁本身不可用，取流 503）；
