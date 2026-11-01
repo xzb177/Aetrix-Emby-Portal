@@ -527,8 +527,12 @@ def test_gate_failed_dead_job(db, monkeypatch):
     job.error_kind = "dead"
     db.commit()
     gate = tv.ensure_user_copy_gate(db, item, _user())
+    # 2026-11-01 起同 provider 终态失败带 detail（与跨 provider
+    # 分支同构）：本行无 error_detail 时回落通用失败句，不再裸回。
     assert gate == {"verdict": "failed", "reason": "dead",
-                    "job_id": job.id}
+                    "job_id": job.id,
+                    "detail": "转存到你的谷歌盘失败，不走共享播放："
+                              "请稍后重试或联系管理员"}
 
 
 def test_gate_done_job_copy_gone_rebuilds(db, monkeypatch):
