@@ -697,6 +697,37 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
 
     # 占位与发奖在同一个事务里（本函数不提交，由调用方提交）；
     # 中间崩溃会一起回滚，不会出现「码烧了、会员没到账」
+    if code.code_type == CODE_TYPE_WHITELIST:
+        # 白名单码（2026-11-01 修复）：语义是「账号置为长期有效」，与
+        # reward_type 无关。此前按 reward_type 分派只永久化其中一处——
+        # subscription 型只有订阅（资格照旧到期、查看行根本不发）、
+        # welfare 型没有订阅、points/discount 型白名单语义全丢——
+        # 用户实测没生效。三处一起落：该服订阅长期（days=-1 →
+        # PERMANENT_DAYS）＋查看行永久＋公益资格永久。
+        # 事务口径照资格码分支：不提交的两步先 flush，grant_welfare
+        # （全站唯一自提交的发放口）放最后一步、一次提交全部；它耗尽
+        # CAS 重试抛 RuntimeError 时整事务已回滚（占位一并撤销）。
+        grant_membership_days(db, user, days, target)
+        _grant_bundled_view_unlock(db, user, target, 0)
+        db.flush()
+        from backend.emby_server.portal import grant_welfare
+
+        try:
+            grant_welfare(
+                db, user, channel="code_redeem", days=0,
+                granted_by=code.created_by)
+        except RuntimeError:
+            return {"success": False, "message": "发放繁忙，请稍后重试"}
+        type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
+        return {
+            "success": True,
+            "message": f"{type_name}核销成功，账号已置为长期有效（公益资格、查看凭证与会员均长期有效）",
+            "code_type": code.code_type,
+            "reward_type": reward_type,
+            "days": days,
+            "realm_id": target,
+            "realm_name": target_name,
+        }
     if reward_type == REWARD_WELFARE:
         # 资格码：发公益资格（grant_welfare 全站单一发放入口）＋可选打包查看行。
         # 天数口径换算：码面 -1（永久）→ grant_welfare 的 0（永不过期）。
@@ -787,6 +818,132 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         "realm_name": target_name,
         "end_date": sub.end_date.isoformat(),
     }
+
+
+# ==================== 白名单账号名单 / 回收（2026-11-01） ====================
+
+# 订阅 end_date 距今超过这个天数视为「长期」（PERMANENT_DAYS=36500 近似
+# 口径的一半）：核销白名单码落的订阅是 +36500 天，正常续费/购买永远到不了
+# 50 年量级，两者不会混淆。
+LONGTERM_SUB_MIN_DAYS = 18250
+
+
+def _whitelist_status(db: Session, user: models.WebUser, now: datetime) -> dict:
+    """某账号当前三处「永久」状态（判定与全站各口径一致，只读组装）。"""
+    view_permanent = (
+        db.query(models.EmbyViewUnlock.id)
+        .filter(models.EmbyViewUnlock.user_id == user.id,
+                models.EmbyViewUnlock.expires_at.is_(None))
+        .first() is not None
+    )
+    sub_longterm = (
+        db.query(models.UserSubscription.id)
+        .filter(models.UserSubscription.user_id == user.id,
+                models.UserSubscription.status == "active",
+                models.UserSubscription.end_date
+                > now + timedelta(days=LONGTERM_SUB_MIN_DAYS))
+        .first() is not None
+    )
+    welfare_permanent = bool(user.is_welfare) and user.welfare_expires_at is None
+    return {
+        "welfare_permanent": welfare_permanent,
+        "view_permanent": view_permanent,
+        "subscription_longterm": sub_longterm,
+        "is_permanent_active": welfare_permanent and view_permanent and sub_longterm,
+    }
+
+
+def whitelist_accounts(db: Session) -> list:
+    """已核销白名单码的账号名单（管理端查看/回收用）。
+
+    来源只认核销痕迹：CodeRedemption 核销记录为主，RegistrationCode
+    的 used_by CSV 兜底（核销记录表上线前的老记录）。用户不存在（已删号）
+    的痕迹跳过。状态按当前三处实际值现算，不存第二份状态。
+    """
+    codes_by_id = {
+        c.id: c
+        for c in db.query(models.RegistrationCode).filter(
+            models.RegistrationCode.code_type == CODE_TYPE_WHITELIST).all()
+    }
+    if not codes_by_id:
+        return []
+    found = {}  # user_id -> (code, redeemed_at)
+    rows = (
+        db.query(models.CodeRedemption)
+        .filter(models.CodeRedemption.code_kind == REDEMPTION_KIND_REG,
+                models.CodeRedemption.code_id.in_(list(codes_by_id)))
+        .all()
+    )
+    for r in rows:
+        found.setdefault(r.user_id, (codes_by_id[r.code_id], r.created_at))
+    for c in codes_by_id.values():
+        for part in str(c.used_by or "").split(","):
+            part = part.strip()
+            if part.isdigit():
+                found.setdefault(int(part), (c, None))
+    now = datetime.now()
+    out = []
+    for user_id in sorted(found):
+        user = db.query(models.WebUser).filter(
+            models.WebUser.id == user_id).first()
+        if user is None:
+            continue
+        code, redeemed_at = found[user_id]
+        row = {
+            "user_id": user.id,
+            "username": user.username,
+            "code": code.code,
+            "redeemed_at": redeemed_at.isoformat() if redeemed_at else None,
+        }
+        row.update(_whitelist_status(db, user, now))
+        out.append(row)
+    return out
+
+
+def revoke_whitelist_account(db: Session, user_id: int) -> Optional[dict]:
+    """回收某账号的永久资格：三处「永久」表示一并到期（不提交，调用方提交）。
+
+    只动永久形态的那几行：资格 expires 为空才填到期、查看行 expires
+    为空才填到期、订阅只处理长期（>50 年）的那条；用户正常购买/续费的
+    有限期权益不在回收范围。返回回收后的名单行；用户不存在返回 None。
+    """
+    user = db.query(models.WebUser).filter(
+        models.WebUser.id == user_id).first()
+    if user is None:
+        return None
+    now = datetime.now()
+    past = now - timedelta(seconds=1)
+    if user.is_welfare and user.welfare_expires_at is None:
+        user.welfare_expires_at = past
+    for row in (db.query(models.EmbyViewUnlock)
+                .filter(models.EmbyViewUnlock.user_id == user_id,
+                        models.EmbyViewUnlock.expires_at.is_(None)).all()):
+        row.expires_at = past
+    for sub in (db.query(models.UserSubscription)
+                .filter(models.UserSubscription.user_id == user_id,
+                        models.UserSubscription.status == "active",
+                        models.UserSubscription.end_date
+                        > now + timedelta(days=LONGTERM_SUB_MIN_DAYS)).all()):
+        sub.end_date = past
+    db.flush()
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate(user_id=user_id)
+    code_str = None
+    redeemed_at = None
+    for item in whitelist_accounts(db):
+        if item["user_id"] == user_id:
+            code_str = item["code"]
+            redeemed_at = item["redeemed_at"]
+            break
+    result = {
+        "user_id": user.id,
+        "username": user.username,
+        "code": code_str,
+        "redeemed_at": redeemed_at,
+    }
+    result.update(_whitelist_status(db, user, datetime.now()))
+    return result
 
 
 def classify_invalid_code(db: Session, user: Optional[models.WebUser], raw: str) -> Optional[dict]:

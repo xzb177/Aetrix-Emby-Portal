@@ -30,9 +30,12 @@ import {
   deleteRegistrationCode,
   fetchCodeList,
   fetchCodeStats,
+  fetchWhitelistAccounts,
   generateCodes,
   patchRegistrationCode,
+  revokeWhitelistAccount,
 } from '@/api/admin'
+import type { WhitelistAccount } from '@/api/admin'
 import type { CodeStats, RegistrationCode } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
@@ -172,8 +175,47 @@ async function load() {
   }
 }
 
+// ---------- 白名单账号（核销过白名单码的永久账号） ----------
+const whitelistAccounts = ref<WhitelistAccount[]>([])
+const whitelistLoading = ref(false)
+const revokeBusyId = ref<number | null>(null)
+
+async function loadWhitelist() {
+  whitelistLoading.value = true
+  try {
+    const res = await fetchWhitelistAccounts()
+    whitelistAccounts.value = res.accounts
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理；名单加载失败不挡码表
+  } finally {
+    whitelistLoading.value = false
+  }
+}
+
+async function onRevokeWhitelist(row: WhitelistAccount) {
+  try {
+    await ElMessageBox.confirm(
+      `回收「${row.username}」的永久资格？公益资格、查看凭证与长期订阅会一并到期；` +
+      '该账号自己购买/续费的有限期权益不受影响。',
+      '回收白名单',
+      { type: 'warning', confirmButtonText: '回收', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  revokeBusyId.value = row.user_id
+  try {
+    await revokeWhitelistAccount(row.user_id)
+    ElMessage.success(`已回收 ${row.username} 的永久资格`)
+    await loadWhitelist()
+  } finally {
+    revokeBusyId.value = null
+  }
+}
+
 onMounted(() => {
   load()
+  loadWhitelist()
 })
 
 // 关键字搜索防抖：输入停 400ms 自动查询（回车 / 「查询」按钮仍然立即查）
@@ -631,6 +673,43 @@ function usedByNames(row: RegistrationCode): string {
         </template>
       </DataTable>
     </SectionCard>
+
+    <SectionCard title="白名单账号" :icon="ShieldAlert">
+      <p class="whitelist-hint">
+        核销过白名单码的账号：公益资格、查看凭证与会员订阅均为长期有效、不用续费。
+        回收后三处一并到期（账号自己购买/续费的有限期权益不受影响）。
+      </p>
+      <el-table v-loading="whitelistLoading" :data="whitelistAccounts" size="small" empty-text="暂无白名单账号">
+        <el-table-column prop="username" label="账号" min-width="140" />
+        <el-table-column prop="code" label="核销的白名单码" min-width="170" />
+        <el-table-column label="公益资格" width="100">
+          <template #default="{ row }">{{ row.welfare_permanent ? '永久' : '—' }}</template>
+        </el-table-column>
+        <el-table-column label="查看凭证" width="100">
+          <template #default="{ row }">{{ row.view_permanent ? '永久' : '—' }}</template>
+        </el-table-column>
+        <el-table-column label="会员订阅" width="100">
+          <template #default="{ row }">{{ row.subscription_longterm ? '长期' : '—' }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">{{ row.is_permanent_active ? '永久生效中' : '已回收' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="100">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.is_permanent_active"
+              size="small"
+              type="danger"
+              plain
+              :loading="revokeBusyId === row.user_id"
+              @click="onRevokeWhitelist(row)"
+            >
+              回收
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </SectionCard>
   </div>
 </template>
 
@@ -639,6 +718,12 @@ function usedByNames(row: RegistrationCode): string {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
+}
+
+.whitelist-hint {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--au-text-3);
 }
 
 /* 注册模式搬家提示：只留一行跳转，不留第二处写入口 */
