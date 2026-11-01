@@ -216,6 +216,25 @@ export const patchRegistrationCode = (id: number, data: { is_active?: boolean; n
 export const deleteRegistrationCode = (id: number) =>
   del<{ success: boolean; message: string }>(`/registration-codes/${id}`)
 
+/** 白名单账号：核销过白名单码的账号与三处永久状态 */
+export interface WhitelistAccount {
+  user_id: number
+  username: string
+  code: string | null
+  redeemed_at: string | null
+  welfare_permanent: boolean
+  view_permanent: boolean
+  subscription_longterm: boolean
+  is_permanent_active: boolean
+}
+
+export const fetchWhitelistAccounts = () =>
+  get<{ success: boolean; accounts: WhitelistAccount[] }>('/registration-codes/whitelist-accounts')
+
+export const revokeWhitelistAccount = (userId: number) =>
+  post<{ success: boolean; account: WhitelistAccount }>(
+    `/registration-codes/whitelist-accounts/${userId}/revoke`, {})
+
 // ==================== 设备风控 =============
 export const fetchDevices = (params: {
   user_id?: number

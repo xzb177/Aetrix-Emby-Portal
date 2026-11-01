@@ -493,6 +493,31 @@ def delete_code(
     return {"success": True, "message": "卡码已删除"}
 
 
+@admin_ops_router.get("/registration-codes/whitelist-accounts")
+def list_whitelist_accounts(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """白名单账号名单：核销过白名单码的账号与三处永久状态（codes.whitelist_accounts）"""
+    return {"success": True, "accounts": codes.whitelist_accounts(db)}
+
+
+@admin_ops_router.post("/registration-codes/whitelist-accounts/{user_id}/revoke")
+def revoke_whitelist_account(
+    user_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """回收某账号的永久资格（三处永久表示一并到期，有限期权益不动）"""
+    row = codes.revoke_whitelist_account(db, user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _audit(db, current_admin, "revoke_whitelist_account", "web_user", user_id,
+           {"username": row["username"]})
+    db.commit()
+    return {"success": True, "account": row}
+
+
 # ==================== 设备风控 ====================
 
 
