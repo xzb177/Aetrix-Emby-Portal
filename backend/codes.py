@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -718,6 +719,14 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
                 granted_by=code.created_by)
         except RuntimeError:
             return {"success": False, "message": "发放繁忙，请稍后重试"}
+        # 创世编号：成为白名单即按先后落号（存量未落号的一并按痕迹
+        # 顺序补齐，见 ensure_whitelist_serials）。编号是展示向加分项，
+        # 落号失败不许拖垮已到账的核销——异常只记日志，个人页读时再补。
+        try:
+            ensure_whitelist_serials(db)
+        except Exception:
+            logger.warning(
+                "白名单创世编号落号失败 user_id=%s", user.id, exc_info=True)
         type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
         return {
             "success": True,
@@ -989,6 +998,108 @@ def revoke_whitelist_account(db: Session, user_id: int) -> Optional[dict]:
     }
     result.update(_whitelist_status(db, user, datetime.now()))
     return result
+
+
+# ==================== 白名单创世编号 / 专属身份（2026-11-02） ====================
+
+# 白名单固定专属称号（独一无二体验包·身份组：本期只落白名单这一个
+# 固定称号的展示，不建整套称号系统）。
+WHITELIST_TITLE = "创世元老"
+
+
+def ensure_whitelist_serials(db: Session) -> dict:
+    """给所有已有白名单核销痕迹、但还没有创世编号的账号补号（幂等）。
+
+    顺序 = 成为白名单的先后：以每人最早一次核销时间（CodeRedemption）
+    为准；只有 used_by 老痕迹（无核销记录行）的按码创建时间排；同刻以
+    user_id 定序。已分配的编号永不变更、永不复用（回收不放号，本函数
+    只增不改）。本函数自提交（与 grant_welfare 的自提交口径一致）；
+    并发下靠 whitelist_serials 的 user_id / serial 双唯一约束兜底，
+    撞约束整体回滚后按最新状态重算，最多三轮；三轮未成则返回当前
+    已落库状态，剩余的下次调用再补，不抛错拖垮主流程。
+    返回 {user_id: serial}（含此前已分配的）。
+    """
+    for _attempt in range(3):
+        traces = _whitelist_traces(db)
+        if not traces:
+            return {}
+        existing = {
+            row.user_id: row.serial
+            for row in db.query(models.WhitelistSerial).all()
+        }
+        missing = [uid for uid in traces if uid not in existing]
+        if not missing:
+            return existing
+        # 每人最早一次核销时间（同一人多次核销时 _whitelist_traces 的
+        # setdefault 取到哪次不确定，编号顺序只认最早那次，单独现算）
+        code_ids = {
+            c.id for c in db.query(models.RegistrationCode).filter(
+                models.RegistrationCode.code_type == CODE_TYPE_WHITELIST).all()
+        }
+        earliest = {}
+        if code_ids:
+            for uid, first_at in (
+                db.query(models.CodeRedemption.user_id,
+                         func.min(models.CodeRedemption.created_at))
+                .filter(models.CodeRedemption.code_kind == REDEMPTION_KIND_REG,
+                        models.CodeRedemption.code_id.in_(list(code_ids)))
+                .group_by(models.CodeRedemption.user_id).all()
+            ):
+                earliest[uid] = first_at
+
+        def _sort_key(uid):
+            code, redeemed_at = traces[uid]
+            when = earliest.get(uid) or redeemed_at or code.created_at
+            return (when or datetime.min, uid)
+
+        missing.sort(key=_sort_key)
+        next_serial = (max(existing.values()) if existing else 0) + 1
+        try:
+            for uid in missing:
+                db.add(models.WhitelistSerial(
+                    user_id=uid, serial=next_serial))
+                existing[uid] = next_serial
+                next_serial += 1
+            db.commit()
+            return existing
+        except IntegrityError:
+            db.rollback()
+    return {
+        row.user_id: row.serial
+        for row in db.query(models.WhitelistSerial).all()
+    }
+
+
+def whitelist_serial_for(db: Session, user_id) -> Optional[int]:
+    """某账号已分配的创世编号（裸查，不看当前是否生效）；未分配返回 None。"""
+    if user_id is None:
+        return None
+    row = (db.query(models.WhitelistSerial)
+           .filter(models.WhitelistSerial.user_id == user_id).first())
+    return row.serial if row is not None else None
+
+
+def whitelist_identity_payload(db: Session, user: models.WebUser) -> Optional[dict]:
+    """个人页展示用的白名单专属身份（徽章/称号/创世编号）；非生效白名单返回 None。
+
+    判定只复用 is_whitelist_account（全站唯一口径，不另立名单）；
+    编号缺失时先按痕迹顺序补号再读，保证存量用户首次打开个人页
+    就拿到正确编号。编号行在、但账号已被回收时返回 None（只下线
+    展示，号保留不放出）。
+    """
+    if user is None or not is_whitelist_account(db, user):
+        return None
+    serial = whitelist_serial_for(db, user.id)
+    if serial is None:
+        ensure_whitelist_serials(db)
+        serial = whitelist_serial_for(db, user.id)
+    if serial is None:
+        return None
+    return {
+        "serial": serial,
+        "title": WHITELIST_TITLE,
+        "label": f"No.{serial}",
+    }
 
 
 def classify_invalid_code(db: Session, user: Optional[models.WebUser], raw: str) -> Optional[dict]:

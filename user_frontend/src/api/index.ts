@@ -192,6 +192,13 @@ export interface WornBadge {
   icon: string
 }
 
+/** 白名单专属身份：创世编号 + 固定专属称号 + 展示标签（No.N）；非白名单为 null，个人页不渲染 */
+export interface WhitelistIdentity {
+  serial: number
+  title: string
+  label: string
+}
+
 export interface AuthUser {
   id: number
   username: string
@@ -212,6 +219,8 @@ export interface AuthUser {
   realm_access_note?: string
   /** 佩戴中的成就徽章；没戴为 null */
   worn_badge?: WornBadge | null
+  /** 白名单专属身份（创世编号+专属称号）；非白名单为 null */
+  whitelist_identity?: WhitelistIdentity | null
   created_at?: string | null
 }
 
