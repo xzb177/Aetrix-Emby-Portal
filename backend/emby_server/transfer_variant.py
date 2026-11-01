@@ -1819,6 +1819,23 @@ _TERMINAL_JOB_KINDS = {
     "file_only_copy_unavailable",
 }
 
+#: 运维处置型取消的独立终态类别（预见层 v2 第一层，2026-11-01）。
+#: 2026-10-29 授权政策切换时，运维一条批量 SQL 把 293 单直接写成
+#: failed/dead，事后复核（transfer-failure-classification-review）
+#: 证实该窗口系统自身判死为 0——dead 类被运维处置占满，失败率与
+#: 判死耗时基线全被污染。此后操作者发起的取消（管理端转存任务
+#: 取消口，全仓唯一的代码取消入口）终态一律落本类别：status 仍
+#: 为 cancelled（终态语义不变），error_kind = ops_cancelled；
+#: 一切失败统计（失败计数、失败率、判死耗时、基线类统计）必须
+#: 剔除本类别，哪怕某行以 failed 形态带着本类别出现（运维处置
+#: 型写入的防御口径）。系统判死与用户侧类别逐字不变。
+OPS_CANCELLED_KIND = "ops_cancelled"
+
+
+def is_ops_cancelled(job) -> bool:
+    """任务行是否运维处置型取消（只认 error_kind，类别唯一口径）。"""
+    return (getattr(job, "error_kind", "") or "") == OPS_CANCELLED_KIND
+
 #: 已退役的 unsupported 失败签名（2026-10-30 PR-A 存量自愈）。
 #: 失败文案是当时代码自己写的：#1539 分片上线前的存量行写的是
 #: 「多段上传需 initupload OSS 协议（未实现）」——那是「能力没造

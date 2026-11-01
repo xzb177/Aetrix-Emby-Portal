@@ -118,7 +118,9 @@ def test_cancel_pending_job(db):
     assert res["cancelled"] is True
     db.refresh(job)
     assert job.status == "cancelled"
-    assert job.error_kind == "cancelled"
+    # 操作者发起的取消落独立类别 ops_cancelled（2026-11-01 统计
+    # 口径单）：不再与系统终态共用类别，失败统计一律剔除。
+    assert job.error_kind == "ops_cancelled"
     assert job.next_retry_at is None
     logs = db.query(base_models.AdminLog).all()
     assert len(logs) == 1
