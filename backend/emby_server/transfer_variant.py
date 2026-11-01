@@ -3837,6 +3837,9 @@ def _series_preheat_strong_signal(db, user_id, anchor):
                 .filter(em.UserMediaData.user_id == user_id,
                         em.MediaItem.series_id == series_id,
                         em.MediaItem.item_type == "episode",
+                        # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                        # 必须自己带 deleted_at 条件，否则已下架集会顶起预热强信号。
+                        em.MediaItem.deleted_at.is_(None),
                         em.UserMediaData.last_played_at.isnot(None),
                         em.UserMediaData.last_played_at >= (
                             now - timedelta(days=14)))

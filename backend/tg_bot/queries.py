@@ -338,6 +338,9 @@ def watch_duration_rank(db, period: str, limit: int = 10) -> list[dict]:
         .filter(
             em.PlaybackSession.start_time >= start_utc,
             em.PlaybackSession.user_id.isnot(None),
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则已下架条目会进时长榜。
+            em.MediaItem.deleted_at.is_(None),
         )
         .all()
     )

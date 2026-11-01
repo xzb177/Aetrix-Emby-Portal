@@ -118,6 +118,9 @@ def _recently_updated_items(db, limit: int = 20) -> list[dict]:
             em.MediaItem.item_type.in_(("movie", "series")),
             em.MediaItem.merged_into_id.is_(None),
             em.MediaItem.is_hidden == False,  # noqa: E712  # PA-011
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则已下架条目会进最近更新。
+            em.MediaItem.deleted_at.is_(None),
         )
     )
     if gate_enabled():

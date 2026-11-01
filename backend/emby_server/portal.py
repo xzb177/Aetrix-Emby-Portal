@@ -932,6 +932,9 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
             UMD.hide_from_resume == False,  # noqa: E712 — L9：已藏的不出
             MI.item_type.in_(["movie", "episode"]),
             MI.is_hidden == False,  # noqa: E712
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则已下架条目会进门户续看。
+            MI.deleted_at.is_(None),
         )
     )
     if identity_gate.phase2_enabled():
@@ -1035,7 +1038,10 @@ def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_emby_u
         db.query(em.MediaItem)
         .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
         .filter(em.UserMediaData.user_id == request_user.id,
-                em.UserMediaData.is_favorite == True)  # noqa: E712
+                em.UserMediaData.is_favorite == True,  # noqa: E712
+                # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                # 必须自己带 deleted_at 条件，否则已下架条目会进门户收藏。
+                em.MediaItem.deleted_at.is_(None))
         .order_by(em.UserMediaData.updated_at.desc())
     )
     if identity_gate.phase2_enabled():
@@ -1284,7 +1290,10 @@ def get_watch_stats(request_user: models.WebUser = Depends(get_admin_or_emby_use
     sessions = (
         db.query(em.PlaybackSession, em.MediaItem)
         .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
-        .filter(em.PlaybackSession.user_id == request_user.id)
+        .filter(em.PlaybackSession.user_id == request_user.id,
+                # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                # 必须自己带 deleted_at 条件，否则已下架条目会进观看统计。
+                em.MediaItem.deleted_at.is_(None))
         .order_by(em.PlaybackSession.last_update_at.desc())
         .limit(20)
         .all()
@@ -1520,6 +1529,9 @@ def get_my_sessions(request_user: models.WebUser = Depends(get_admin_or_emby_use
         .filter(
             em.PlaybackSession.user_id == request_user.id,
             em.PlaybackSession.ended_at.is_(None),
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则已下架条目会进正在播放会话。
+            em.MediaItem.deleted_at.is_(None),
         )
         .order_by(em.PlaybackSession.last_update_at.desc())
         .all()
@@ -1607,14 +1619,19 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             func.max(sess.last_update_at).label("max_at"),
         )
         .join(em.MediaItem, em.MediaItem.id == sess.item_id)
-        .filter(sess.user_id == request_user.id, *item_filter)
+        .filter(sess.user_id == request_user.id, *item_filter,
+                # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                # 必须自己带 deleted_at 条件，否则已下架条目会进历史聚合。
+                em.MediaItem.deleted_at.is_(None))
         .group_by(sess.item_id)
         .subquery()
     )
     total = (
         db.query(func.count(sess.id))
         .join(em.MediaItem, em.MediaItem.id == sess.item_id)
-        .filter(sess.user_id == request_user.id, *item_filter)
+        .filter(sess.user_id == request_user.id, *item_filter,
+                # PA-037：同上，联结查询必须自己带 deleted_at 条件。
+                em.MediaItem.deleted_at.is_(None))
         .scalar()
         or 0
     )
@@ -1637,6 +1654,9 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
         .select_from(latest)
         .join(em.MediaItem, em.MediaItem.id == latest.c.item_id)
         .outerjoin(_series, _series.id == em.MediaItem.series_id)
+        # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+        # 必须自己带 deleted_at 条件，否则已下架条目会虚增历史总数。
+        .filter(em.MediaItem.deleted_at.is_(None))
         .scalar()
         or 0
     )
@@ -1660,7 +1680,10 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
                     latest.c.max_at == sess.last_update_at,
                 ),
             )
-            .filter(sess.user_id == request_user.id, *item_filter)
+            .filter(sess.user_id == request_user.id, *item_filter,
+                    # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                    # 必须自己带 deleted_at 条件，否则已下架条目会进历史列表。
+                    em.MediaItem.deleted_at.is_(None))
             .order_by(latest.c.max_at.desc(), sess.id.desc())
             .offset(chunk_idx * _CHUNK)
             .limit(_CHUNK)
@@ -2876,7 +2899,10 @@ def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session =
         db.query(em.PlaybackSession, models.WebUser, em.MediaItem)
         .join(models.WebUser, models.WebUser.id == em.PlaybackSession.user_id)
         .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
-        .filter(em.PlaybackSession.ended_at.is_(None))
+        .filter(em.PlaybackSession.ended_at.is_(None),
+                # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                # 必须自己带 deleted_at 条件，否则已下架条目会进管理会话监控。
+                em.MediaItem.deleted_at.is_(None))
         .order_by(em.PlaybackSession.last_update_at.desc())
         .all()
     )

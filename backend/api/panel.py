@@ -618,6 +618,9 @@ def panel_letter(
             em.PlaybackSession.user_id == user.id,
             em.PlaybackSession.start_time >= yesterday_start,
             em.PlaybackSession.start_time < today_start,
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则已下架条目会进昨日信。
+            em.MediaItem.deleted_at.is_(None),
         )
         .all()
     )
@@ -767,7 +770,10 @@ def panel_collector(
         em.MediaItem.duration_ticks,
     ).join(
         em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id
-    ).filter(em.PlaybackSession.user_id == user.id).all()
+    ).filter(em.PlaybackSession.user_id == user.id,
+             # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+             # 必须自己带 deleted_at 条件，否则已下架条目会虚增馆灵小时。
+             em.MediaItem.deleted_at.is_(None)).all()
     total_secs = sum(playback_seconds(r) for r in _sess_rows)
     total_hours = total_secs / 3600
     # r45：直接复用 _read_pet_stages（横切只许一套）——原来这里另起一套内联解析，

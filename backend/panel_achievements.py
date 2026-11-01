@@ -157,7 +157,10 @@ def user_tastes(db: Session, user_id: int) -> dict:
     rows = (
         db.query(em.PlaybackSession, em.MediaItem)
         .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
-        .filter(em.PlaybackSession.user_id == user_id)
+        .filter(em.PlaybackSession.user_id == user_id,
+                # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                # 必须自己带 deleted_at 条件，否则已下架条目会进口味统计。
+                em.MediaItem.deleted_at.is_(None))
         .order_by(em.PlaybackSession.last_update_at.desc())
         .limit(5000)
         .all()
@@ -211,6 +214,9 @@ def evaluate(user_id: int, db: Session) -> list:
         .filter(
             em.PlaybackSession.user_id == user_id,
             em.PlaybackSession.start_time >= cutoff,
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则已下架条目会进成就评估。
+            em.MediaItem.deleted_at.is_(None),
         )
         .all()
     )
