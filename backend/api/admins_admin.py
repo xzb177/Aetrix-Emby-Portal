@@ -229,6 +229,15 @@ def update_admin(
         if not payload.is_active and admin_roles.role_of(user) == admin_roles.ROLE_SUPER:
             if _locked_loginable_super_count(db) <= 1:
                 raise HTTPException(status_code=400, detail="至少要保留一个可登录的超级管理员：请先给别的账号授予超级管理员")
+        # PA-002（完美审计 R1·B1）：本分支已保证 is_active 发生翻转；停用时同事务
+        # 批量吊销该用户全部 Emby 客户端令牌并 token_version+1（复用 share_guard._disable_user 写法）。
+        # 恢复启用不自动恢复任何旧会话。
+        if not payload.is_active:
+            from backend.emby_server import models as emby_models
+            db.query(emby_models.EmbyApiToken).filter(
+                emby_models.EmbyApiToken.user_id == user.id
+            ).update({emby_models.EmbyApiToken.is_revoked: True}, synchronize_session=False)
+            user.token_version = int(user.token_version or 0) + 1
         user.is_active = bool(payload.is_active)
         changed["is_active"] = bool(payload.is_active)
 

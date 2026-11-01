@@ -671,6 +671,12 @@ def set_emby_password(
 
     try:
         ensure_emby_credentials(db, request_user, password=req.password)
+        # PA-001（完美审计 R1·B1）：接线员页改播放密码必须同时吊销该用户全部
+        # Emby 客户端令牌——与自助改密/管理员重置/管理员自改密同口径（A-085）。
+        # 只改播放密码，不 bump 门户 token_version，门户 JWT 会话保持。
+        db.query(em.EmbyApiToken).filter(
+            em.EmbyApiToken.user_id == request_user.id
+        ).update({em.EmbyApiToken.is_revoked: True}, synchronize_session=False)
         db.commit()
     except IntegrityError:
         db.rollback()
