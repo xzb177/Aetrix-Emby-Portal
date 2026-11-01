@@ -102,6 +102,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -153,6 +154,15 @@ PAGE_RETRY_BACKOFF_DEFAULT = 2
 #: 默认页大小 SystemConfig 键（O-05）：钳 [10, 500]，无行/非法
 #: 回落 DEFAULT_PAGE_SIZE。
 KEY_DEFAULT_PAGE_SIZE = "upstream_aggregate_default_page_size"
+
+#: 拉取并发 SystemConfig 键（2026-11-01 加速）：逐库拉取时预取
+#: 后续页的有界并发数，默认 4、钳 [1, 16]，无行/非法回落默认。
+#: 只改请求时序（页序与计数口径不变，见 _PrefetchingPageFetcher），
+#: 且只对全量拉取生效——增量拉取带水位早停，恒串行（预取会越界
+#: 多拉本该停下的页）。上游刚从不可用恢复时把并发调回 1 即回
+#: 旧串行行为。纯 SystemConfig 键，不进 env.example（#1527 先例）。
+KEY_FETCH_CONCURRENCY = "upstream_aggregate_fetch_concurrency"
+FETCH_CONCURRENCY_DEFAULT = 4
 
 #: 增量拉取总开关 env 键（定时轮用）：默认开（不配即开），配
 #: ``0`` 一键回退为每轮全量（旧行为）。只管定时轮的 kind 决策
@@ -321,6 +331,17 @@ def configured_default_page_size(db=None) -> int:
     if configured is not None:
         return max(10, min(500, configured))
     return DEFAULT_PAGE_SIZE
+
+
+def configured_fetch_concurrency(db=None) -> int:
+    """聚合拉取并发：SystemConfig > 默认 4，钳 [1, 16]。
+
+    与 config_schema 的注册范围同口径；1 = 串行（旧行为）。
+    """
+    configured = _system_config_int(db, KEY_FETCH_CONCURRENCY)
+    if configured is not None:
+        return max(1, min(16, configured))
+    return FETCH_CONCURRENCY_DEFAULT
 
 
 def _page_retry_config(db):
@@ -609,6 +630,77 @@ def _page_fetcher(source, api_key, get, *, parent_id=None,
     return fetch_page
 
 
+class _PrefetchingPageFetcher:
+    """给串行取页回调套上有界预取：只改请求时序，不改结果语义。
+
+    ``agg.iter_emby_pages`` 按 start 递增逐页消费，本类在消费
+    当前页时用线程池提前拉后面 ``concurrency - 1`` 页，页序、
+    每页内容、错误映射与串行逐字一致：
+
+    - 预取范围不越已知总量：首个响应回的 TotalRecordCount
+      之后，只提交 start < total 的页——总量准确时期望请求页
+      集合与串行分毫不差（不多拉一页）；总量缺失/为 0 时不
+      预取（回落串行取页，空页终止纪律不被投机请求破坏）；
+    - 某页实际条数与 limit 不符（上游总量说谎）时，下一个
+      start 对不上预取键——丢弃全部预取、从该页同步重锚，
+      行为回落串行；
+    - 页错误（凭据/额度/不可用）在预取线程里先存进 Future，
+      消费到该页时才抛出——与串行在同一点失败，已产出的前面
+      记录不受影响；
+    - 只许全量拉取用：增量拉取的 on_page 早停靠「不发出下一
+      页请求」成立，预取会越界，调用方对 sort_by 场景不套本类。
+    """
+
+    def __init__(self, fetch_page, concurrency: int):
+        self._fetch_page = fetch_page
+        self._concurrency = max(1, int(concurrency))
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._concurrency,
+            thread_name_prefix="upstream-agg-fetch")
+        self._futures: Dict[int, object] = {}
+        self._total: Optional[int] = None
+
+    def __call__(self, start: int, limit: int) -> dict:
+        future = self._futures.pop(start, None)
+        if future is not None:
+            body = future.result()
+        else:
+            self._drop_pending()
+            body = self._fetch_page(start, limit)
+        self._note_total(body)
+        self._refill(start, limit)
+        return body
+
+    def _note_total(self, body) -> None:
+        if isinstance(body, dict):
+            total = body.get("TotalRecordCount")
+            if isinstance(total, int) and total > 0:
+                self._total = total
+
+    def _refill(self, current_start: int, limit: int) -> None:
+        if self._total is None:
+            return
+        nxt = current_start + limit
+        while len(self._futures) < self._concurrency - 1:
+            if nxt >= self._total:
+                break
+            if nxt in self._futures:
+                nxt += limit
+                continue
+            self._futures[nxt] = self._executor.submit(
+                self._fetch_page, nxt, limit)
+            nxt += limit
+
+    def _drop_pending(self) -> None:
+        for future in self._futures.values():
+            future.cancel()
+        self._futures.clear()
+
+    def close(self) -> None:
+        self._drop_pending()
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
 def fetch_upstream_libraries(source, *, http_get=None,
                              http_post=None, api_key=None) -> List[dict]:
     """取上游库清单（Emby /Library/MediaFolders）。
@@ -706,7 +798,8 @@ def iter_upstream_records_for_parent(
         retries: int = PAGE_RETRIES_DEFAULT,
         backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT,
         sort_by: Optional[str] = None,
-        on_page: Optional[Callable] = None):
+        on_page: Optional[Callable] = None,
+        fetch_concurrency: int = 1):
     """按 ParentId 流式拉回某上游库的目录记录（逐库分窗的核心）。
 
     只产出、不攒 list、不设单库总量上限：总量上限曾把真实大库
@@ -719,6 +812,11 @@ def iter_upstream_records_for_parent(
     ``sort_by`` / ``on_page`` 是增量拉取的两个口子（缺省都不
     给 = 历史行为逐字不变）：sort_by 透传给取页器（倒序），
     on_page 透传给 ``agg.iter_emby_pages``（逐页回调 + 早停）。
+
+    ``fetch_concurrency``（2026-11-01 加速）：>1 时给取页回调
+    套 _PrefetchingPageFetcher 有界预取（只改时序、页序与计数
+    不变）；带 ``sort_by`` 的增量拉取恒不套（水位早停语义，
+    见 KEY_FETCH_CONCURRENCY）。缺省 1 = 串行旧行为。
     """
     if page_size <= 0:
         raise ValueError("page_size must be positive")
@@ -730,10 +828,18 @@ def iter_upstream_records_for_parent(
     fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id,
                                retries=retries, backoff_sec=backoff_sec,
                                sort_by=sort_by)
-    yield from agg.iter_emby_pages(
-        fetch_page, source_id=str(source.id),
-        category_id=str(parent_id), page_size=page_size,
-        on_page=on_page)
+    prefetcher = None
+    if fetch_concurrency > 1 and not sort_by:
+        prefetcher = _PrefetchingPageFetcher(fetch_page, fetch_concurrency)
+        fetch_page = prefetcher
+    try:
+        yield from agg.iter_emby_pages(
+            fetch_page, source_id=str(source.id),
+            category_id=str(parent_id), page_size=page_size,
+            on_page=on_page)
+    finally:
+        if prefetcher is not None:
+            prefetcher.close()
 
 
 def iter_record_windows(records, window_size):
@@ -1173,6 +1279,7 @@ def run_manual_aggregation(db: Session, source, *,
     if page_size is None:
         page_size = configured_default_page_size(db)
     page_retries, page_backoff = _page_retry_config(db)
+    fetch_concurrency = configured_fetch_concurrency(db)
     api_key = _resolve_api_key(source, http_post=http_post)
     libraries = fetch_upstream_libraries(
         source, http_get=http_get, http_post=http_post, api_key=api_key)
@@ -1280,7 +1387,8 @@ def run_manual_aggregation(db: Session, source, *,
                 retries=page_retries, backoff_sec=page_backoff,
                 sort_by=(INCREMENTAL_SORT_FIELD if lib_incremental
                          else None),
-                on_page=_on_page)
+                on_page=_on_page,
+                fetch_concurrency=fetch_concurrency)
             for window in iter_record_windows(record_iter, WINDOW_RECORDS):
                 for _record in window:
                     seen_upstream_ids.add(
@@ -1296,26 +1404,28 @@ def run_manual_aggregation(db: Session, source, *,
                     db, items)
                 written = 0
                 write_invalid = 0
+                # 写映射攒批（2026-11-01 加速）：整窗一次批量
+                # upsert，替代逐对 SELECT+flush（实测 3100 对
+                # = 6200 条 SQL）。单对兜底口径不变：批量版先
+                # 纯校验把非法对隔离出来（现实触发面是集号非
+                # 法，如上游给出负数 IndexNumber），逐对计未配
+                # 对并继续，绝不让一颗坏数据打死整窗 / 整库 /
+                # 整轮（2026-11-01 集号 0 打死整轮的生产教训）；
+                # 兜底只限校验类非法，其余异常照旧上抛。
                 for pair in pairs:
                     pair["library_id"] = lib_id
                     pair["library_name"] = lib_name
-                    try:
-                        row = uim.record_mapping(
-                            db, local_item_id=pair["local_item_id"],
-                            source_id=source.id,
-                            upstream_item_id=pair["upstream_item_id"],
-                            confidence=pair["confidence"],
-                            evidence=pair["evidence"],
-                            episode_index=pair["episode_index"])
-                    except ValueError:
-                        # 单对兜底：record_mapping 的校验类 ValueError
-                        #（现实触发面是集号非法，如上游给出负数
-                        # IndexNumber）只丢这一对、计未配对并继续，
-                        # 绝不让一颗坏数据打死整窗 / 整库 / 整轮
-                        #（2026-11-01 集号 0 打死整轮的生产教训）。
-                        # record_mapping 的校验全部在 flush 之前，
-                        # 抛出时 session 未被污染，不需要 rollback。
-                        # 兜底只限这一种异常，其余异常照旧上抛。
+                mapping_rows, mapping_invalid = \
+                    uim.record_mappings_batch(db, [
+                        dict(local_item_id=pair["local_item_id"],
+                             source_id=source.id,
+                             upstream_item_id=pair["upstream_item_id"],
+                             confidence=pair["confidence"],
+                             evidence=pair["evidence"],
+                             episode_index=pair["episode_index"])
+                        for pair in pairs])
+                for pair_index, pair in enumerate(pairs):
+                    if pair_index in mapping_invalid:
                         write_invalid += 1
                         pair["written"] = False
                         logger.warning(
@@ -1326,8 +1436,8 @@ def run_manual_aggregation(db: Session, source, *,
                             pair["upstream_item_id"],
                             pair["episode_index"])
                         continue
-                    pair["written"] = row is not None
-                    if row is not None:
+                    pair["written"] = mapping_rows[pair_index] is not None
+                    if mapping_rows[pair_index] is not None:
                         written += 1
                 if write_invalid:
                     unpaired["episode_index_invalid"] = (

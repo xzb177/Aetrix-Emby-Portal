@@ -416,6 +416,11 @@ DRIVE_API_CONFIG_SCHEMA: dict[str, tuple] = {
 # 键，不进 env.example（#1527 先例）。
 UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     "upstream_aggregate_default_page_size": ("int", 10, 500),
+    # 拉取有界并发（2026-11-01 加速）：逐库拉取预取后续页的并发
+    # 数，默认 4；1 = 串行旧行为。只改请求时序（页序/计数不变），
+    # 增量轮恒串行不读它。读取唯一实现 upstream_aggregate_run
+    # .configured_fetch_concurrency，钳制同此范围。
+    "upstream_aggregate_fetch_concurrency": ("int", 1, 16),
     "upstream_aggregate_page_retries": ("int", 0, 5),
     "upstream_aggregate_page_retry_backoff_sec": ("int", 0, 30),
     "upstream_aggregate_heartbeat_stale_sec": ("int", 30, 3600),

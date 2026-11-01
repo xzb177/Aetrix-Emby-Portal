@@ -169,6 +169,228 @@ def _usable_row_by_guid(db: Session, guid: str):
     return row
 
 
+class _GuidRowCache:
+    """按 guid 取「可用行」的批量预取缓存（语义同 _usable_row_by_guid）。
+
+    进库一窗要按 guid 查上千行（剧/集逐条），逐条是 1–2 条
+    SQL/行（聚合加速剖析，2026-11-01）。本类先把本窗需要的
+    guid 一次 IN 查齐（含软删行，include_deleted 绕全局钩子），
+    再在内存里按与 _usable_row_by_guid 逐字相同的步骤规整：
+    软删未合并 → 复活（清 deleted_at / is_hidden + flush +
+    日志）；已合并 → 跟随 merged_into_id（跟随目标按「未软删」
+    口径取，与原版普通 query 同义，上限 8 跳，目标不存在停在
+    当前行）。未预取的 guid 回落 _usable_row_by_guid 单查兜底；
+    本窗新建的行经 put() 登记，后续按 guid 取用直接命中（原版
+    靠 flush 后再查同样可见，口径一致）。
+    """
+
+    def __init__(self, db: Session):
+        self._db = db
+        self._raw: Dict[str, object] = {}
+        self._resolved: Dict[str, object] = {}
+        self._alive_by_id: Dict[int, object] = {}
+
+    def prefetch(self, guids: Iterable) -> None:
+        want = [g for g in dict.fromkeys(guids or ())
+                if g and g not in self._resolved and g not in self._raw]
+        if not want:
+            return
+        with soft_delete.include_deleted():
+            rows = (self._db.query(em.MediaItem)
+                    .filter(em.MediaItem.guid.in_(want)).all())
+        for row in rows:
+            self._raw[row.guid] = row
+        for guid in want:
+            self._resolved[guid] = self._resolve(self._raw.get(guid))
+
+    def get(self, guid: str):
+        if guid in self._resolved:
+            return self._resolved[guid]
+        row = _usable_row_by_guid(self._db, guid)
+        self._resolved[guid] = row
+        return row
+
+    def put(self, guid: str, row) -> None:
+        self._raw[guid] = row
+        self._resolved[guid] = row
+
+    def _resolve(self, row):
+        if row is None:
+            return None
+        if row.deleted_at is not None and row.merged_into_id is None:
+            row.deleted_at = None
+            row.is_hidden = False
+            self._db.flush()
+            logger.info("上游托管行复活 guid=%s local_item_id=%s",
+                        row.guid, row.id)
+        hops = 0
+        while row.merged_into_id is not None and hops < 8:
+            target = self._follow_target(row.merged_into_id)
+            if target is None:
+                return row
+            row = target
+            hops += 1
+        return row
+
+    def _follow_target(self, item_id: int):
+        """合并跟随的目标行：未软删口径（与原版普通 query 一致）。
+
+        跟随是低频路径（只有已合并行才走），按 id 逐个查并缓存，
+        不为它再建一套批量索引。
+        """
+        if item_id in self._alive_by_id:
+            return self._alive_by_id[item_id]
+        row = (self._db.query(em.MediaItem)
+               .filter(em.MediaItem.id == item_id).first())
+        self._alive_by_id[item_id] = row
+        return row
+
+
+class _SeriesLocator:
+    """进库一窗的剧行定位批量索引（步骤与判据同 _resolve_series_row）。
+
+    _resolve_series_row 逐集定位的成本（2026-11-01 剖析实测）：
+    配对行/映射行按 id 逐个查，无 SeriesId 时标题回落把本源
+    托管剧与全部本地活剧全表拉回 Python 比对——一窗 500 集
+    约 2700 条 SELECT、回落集单集 44ms 起（800 剧规模，随本地
+    剧总数线性涨）。本类在窗内把四样各预取一次：配对剧行
+    （按 id IN）、SeriesId→映射（按 sid IN、id 序取首行）、
+    本源托管剧标题索引、本地活剧标题索引（后两样懒建，建时
+    本窗第一遍新建的剧行已 flush、照样入索引）。定位步骤顺序
+    与 _resolve_series_row 逐字相同（配对 → 映射 → 托管 guid
+    → 本窗结论 → 托管标题唯一 → 本地标题唯一）；预取未覆盖
+    的零星 id（本窗结论里的 local_id）回落逐个查兜底。
+    """
+
+    def __init__(self, db: Session, source, guid_cache: _GuidRowCache):
+        self._db = db
+        self._source = source
+        self._guid_cache = guid_cache
+        self._paired_rows: Dict[int, object] = {}
+        self._mapping_local: Dict[str, int] = {}
+        self._mapping_rows: Dict[int, object] = {}
+        self._ctx_rows: Dict[int, object] = {}
+        self._hosted_by_title: Optional[Dict[str, list]] = None
+        self._local_by_title: Optional[Dict[str, list]] = None
+
+    def prime(self, pairs, items) -> None:
+        """按本窗 pairs 与 items 预取配对剧行与 SeriesId 映射。"""
+        paired_ids = sorted({
+            p["local_item_id"] for p in (pairs or ())
+            if p.get("item_type") == "Series" and p.get("local_item_id")})
+        if paired_ids:
+            for row in (self._db.query(em.MediaItem)
+                        .filter(em.MediaItem.id.in_(paired_ids),
+                                em.MediaItem.merged_into_id.is_(None))
+                        .all()):
+                self._paired_rows[row.id] = row
+        sids = sorted({
+            (getattr(item, "series_upstream_id", None) or "").strip()
+            for item in (items or ())
+            if (getattr(item, "item_type", "") or "") == "Episode"})
+        sids = [sid for sid in sids if sid]
+        if sids:
+            for mapping in (self._db.query(em.UpstreamItemMapping)
+                            .filter(
+                                em.UpstreamItemMapping.source_id
+                                == self._source.id,
+                                em.UpstreamItemMapping.upstream_item_id
+                                .in_(sids))
+                            .order_by(em.UpstreamItemMapping.id)
+                            .all()):
+                self._mapping_local.setdefault(
+                    mapping.upstream_item_id, mapping.local_item_id)
+            local_ids = sorted(set(self._mapping_local.values()))
+            if local_ids:
+                for row in (self._db.query(em.MediaItem)
+                            .filter(em.MediaItem.id.in_(local_ids),
+                                    em.MediaItem.item_type == "series",
+                                    em.MediaItem.merged_into_id.is_(None))
+                            .all()):
+                    self._mapping_rows[row.id] = row
+
+    def resolve(self, item, series_ctx: Dict,
+                paired_series_local: Dict[str, int]):
+        """定位一集所属剧行：步骤与 _resolve_series_row 逐字同序。"""
+        sid = (getattr(item, "series_upstream_id", None) or "").strip()
+        if sid:
+            local_id = paired_series_local.get(sid)
+            if local_id:
+                row = self._paired_rows.get(local_id)
+                if row is not None:
+                    return row
+            mapped_local = self._mapping_local.get(sid)
+            if mapped_local:
+                row = self._mapping_rows.get(mapped_local)
+                if row is not None:
+                    return row
+            row = self._guid_cache.get(
+                hosted_guid(self._source.id, sid))
+            if (row is not None and row.item_type == "series"
+                    and row.merged_into_id is None):
+                return row
+        title_key = agg._normalize_title(
+            getattr(item, "series_name", "") or "")
+        if title_key:
+            entry = series_ctx.get(title_key)
+            if entry is not None:
+                if entry.get("hopeless"):
+                    return None
+                if entry.get("row") is not None:
+                    return entry["row"]
+                if entry.get("local_id"):
+                    return self._ctx_row(entry["local_id"])
+                return None
+            hosted = self._hosted_title_index().get(title_key) or []
+            if len(hosted) == 1:
+                return hosted[0]
+            if len(hosted) > 1:
+                return None
+            locals_ = self._local_title_index().get(title_key) or []
+            if len(locals_) == 1:
+                return locals_[0]
+        return None
+
+    def _ctx_row(self, local_id: int):
+        if local_id in self._ctx_rows:
+            return self._ctx_rows[local_id]
+        row = (self._db.query(em.MediaItem).filter(
+            em.MediaItem.id == local_id,
+            em.MediaItem.merged_into_id.is_(None)).first())
+        self._ctx_rows[local_id] = row
+        return row
+
+    def _hosted_title_index(self) -> Dict[str, list]:
+        if self._hosted_by_title is None:
+            index: Dict[str, list] = {}
+            for row in (self._db.query(em.MediaItem)
+                        .filter(em.MediaItem.item_type == "series",
+                                em.MediaItem.upstream_source_id
+                                == self._source.id,
+                                em.MediaItem.merged_into_id.is_(None))
+                        .all()):
+                key = agg._normalize_title(row.name or "")
+                if key:
+                    index.setdefault(key, []).append(row)
+            self._hosted_by_title = index
+        return self._hosted_by_title
+
+    def _local_title_index(self) -> Dict[str, list]:
+        if self._local_by_title is None:
+            index: Dict[str, list] = {}
+            for row in (self._db.query(em.MediaItem)
+                        .filter(em.MediaItem.item_type == "series",
+                                em.MediaItem.merged_into_id.is_(None),
+                                em.MediaItem.is_hidden == False)  # noqa: E712
+                        .all()):
+                key = agg._normalize_title(
+                    row.scan_title or row.name or "")
+                if key:
+                    index.setdefault(key, []).append(row)
+            self._local_by_title = index
+        return self._local_by_title
+
+
 def _resolve_target_library(db: Session, upstream_library_name: str):
     """按上游库名找本地同名库：只认非虚拟库，同名多个取 id 最小。
 
@@ -364,7 +586,19 @@ def import_unpaired_movies(db: Session, source, items: Iterable,
     paired = set(paired_upstream_ids or ())
     target_library = None
     target_resolved = False
-    for item in items or ():
+    # 批量化（2026-11-01 加速）：候选线路的 guid 一次预取、映射
+    # 攒批在函数末尾一次写——替代逐条 _usable_row_by_guid +
+    # record_mapping（语义见 _GuidRowCache / record_mappings_batch）。
+    items = list(items or ())
+    guid_cache = _GuidRowCache(db)
+    guid_cache.prefetch(
+        hosted_guid(source.id, line.upstream_item_id)
+        for item in items
+        if (getattr(item, "item_type", "") or "") == "Movie"
+        for line in (getattr(item, "lines", None) or [])
+        if str(getattr(line, "source_id", "")) == str(source.id))
+    mapping_entries: List[dict] = []
+    for item in items:
         if (getattr(item, "item_type", "") or "") != "Movie":
             continue
         tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
@@ -398,7 +632,7 @@ def import_unpaired_movies(db: Session, source, items: Iterable,
         local_row = None
         for line in source_lines:
             guid = hosted_guid(source.id, line.upstream_item_id)
-            row = _usable_row_by_guid(db, guid)
+            row = guid_cache.get(guid)
             if row is None:
                 if limit is not None and stats["imported"] >= limit:
                     stats["limited"] += 1
@@ -417,6 +651,7 @@ def import_unpaired_movies(db: Session, source, items: Iterable,
                 )
                 db.add(row)
                 db.flush()
+                guid_cache.put(guid, row)
                 stats["imported"] += 1
                 logger.info(
                     "上游独有电影进库 source_id=%s upstream_item_id=%s "
@@ -427,11 +662,29 @@ def import_unpaired_movies(db: Session, source, items: Iterable,
                 stats["existing"] += 1
             local_row = local_row or row
             # 同作品多线路共用一行：映射逐条挂到同一本地行。
-            uim.record_mapping(
-                db, local_item_id=local_row.id, source_id=source.id,
+            mapping_entries.append(dict(
+                local_item_id=local_row.id, source_id=source.id,
                 upstream_item_id=line.upstream_item_id,
-                confidence=IMPORT_CONFIDENCE, evidence=IMPORT_EVIDENCE)
+                confidence=IMPORT_CONFIDENCE, evidence=IMPORT_EVIDENCE))
+    _flush_mapping_entries(db, mapping_entries)
     return stats
+
+
+def _flush_mapping_entries(db: Session, mapping_entries: List[dict]) -> None:
+    """进库映射攒批落库：非法条目按旧逐条口径抛 ValueError 中止本窗。
+
+    条目都是进库内部构造的（id 来自已落库行、集号来自聚合），
+    唯一现实非法形态是上游给负数集号——旧实现在逐条
+    record_mapping 处抛 ValueError、整窗进库中止（run 层捕获
+    记日志、统计丢弃）；批量版在落库前整批校验、同形态抛出，
+    中止口径不变（已建行靠 guid 幂等下窗续上）。
+    """
+    if not mapping_entries:
+        return
+    _results, invalid = uim.record_mappings_batch(db, mapping_entries)
+    if invalid:
+        raise ValueError(
+            f"进库映射批量写入含非法条目 indexes={sorted(invalid)}")
 
 
 # ---------------------------------------------------------------------------
@@ -617,13 +870,23 @@ def _resolve_series_row(db: Session, source, item, series_ctx: Dict,
 
 def _ensure_hosted_season(db: Session, source, series_row,
                           season_number: int, budget: _Limit,
-                          stats: Dict[str, object]):
+                          stats: Dict[str, object],
+                          season_cache: Optional[Dict] = None,
+                          guid_cache: Optional[_GuidRowCache] = None):
     """保证 (剧行, 季号) 的季行存在（幂等键与 scanner 同口径）。
 
     已有活季行（本地剧自带的优先）直接复用；没有才合成托管季行
     （打托管标记：扫描豁免、开关可见性、生命周期级联都靠它）。
     限额不足返回 None（调用方把该集计 limited）。
+
+    ``season_cache``（进库一窗批量化）：{(剧行 id, 季号): 行}
+    命中直接用——同一窗里同季不会增删，逐集重查是纯浪费（旧
+    实现每集 1 查）；未传时逐字旧行为。``guid_cache`` 同理替
+    代季 guid 的逐条查。
     """
+    cache_key = (series_row.id, season_number)
+    if season_cache is not None and cache_key in season_cache:
+        return season_cache[cache_key]
     row = (db.query(em.MediaItem)
            .filter(em.MediaItem.item_type == "season",
                    em.MediaItem.series_id == series_row.id,
@@ -632,12 +895,17 @@ def _ensure_hosted_season(db: Session, source, series_row,
            .order_by(em.MediaItem.id)
            .first())
     if row is not None:
+        if season_cache is not None:
+            season_cache[cache_key] = row
         return row
     guid = hosted_season_guid(source.id, series_row.id, season_number)
-    row = _usable_row_by_guid(db, guid)
+    row = (guid_cache.get(guid) if guid_cache is not None
+           else _usable_row_by_guid(db, guid))
     if row is not None:
         if (row.series_id == series_row.id
                 and row.season_number == season_number):
+            if season_cache is not None:
+                season_cache[cache_key] = row
             return row
         # guid 锚（剧行 id + 季号）对不上 = 数据异常，绝不硬挂。
         logger.warning(
@@ -654,6 +922,10 @@ def _ensure_hosted_season(db: Session, source, series_row,
         upstream_source_id=source.id, probe_status="done")
     db.add(row)
     db.flush()
+    if guid_cache is not None:
+        guid_cache.put(guid, row)
+    if season_cache is not None:
+        season_cache[cache_key] = row
     stats["seasons_created"] += 1
     stats["imported"] += 1
     return row
@@ -727,6 +999,20 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
     budget = _Limit(limit)
     if series_budget is None:
         series_budget = _SeriesBudget(series_limit)
+    # 批量化（2026-11-01 加速）：本窗全部线路 guid 一次预取、
+    # 剧行定位走批量索引、季行按 (剧, 季) 缓存、映射攒批末尾
+    # 一次写——替代逐集 _usable_row_by_guid / _resolve_series_row
+    # 逐步查 / record_mapping 逐条写（语义见 _GuidRowCache /
+    # _SeriesLocator / record_mappings_batch，各自带旧路兜底）。
+    guid_cache = _GuidRowCache(db)
+    guid_cache.prefetch(
+        hosted_guid(source.id, line.upstream_item_id)
+        for item in items
+        for line in _source_lines(item, source.id))
+    locator = _SeriesLocator(db, source, guid_cache)
+    locator.prime(pairs, items)
+    season_cache: Dict[tuple, object] = {}
+    mapping_entries: List[dict] = []
     target_library = None
     target_resolved = False
 
@@ -780,9 +1066,9 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
             _ctx_note(series_ctx, title_key, {"hopeless": True})
             continue
         line_ids = {line.upstream_item_id for line in source_lines}
-        if not any(_usable_row_by_guid(
-                db, hosted_guid(source.id, lid)) is not None
-                for lid in line_ids) \
+        if not any(guid_cache.get(hosted_guid(source.id, lid))
+                   is not None
+                   for lid in line_ids) \
                 and not series_budget.can_admit(line_ids):
             # 剧数限额已满且本剧确是新剧（任一线路都无既有托管
             # 行）：整树拒绝——登记拒绝集，其集随后按 SeriesId
@@ -795,7 +1081,7 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
         local_row = None
         for line in source_lines:
             guid = hosted_guid(source.id, line.upstream_item_id)
-            row = _usable_row_by_guid(db, guid)
+            row = guid_cache.get(guid)
             if row is None:
                 if not budget.take():
                     stats["limited"] += 1
@@ -811,6 +1097,7 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
                     probe_status="done")
                 db.add(row)
                 db.flush()
+                guid_cache.put(guid, row)
                 stats["imported"] += 1
                 stats["series_imported"] += 1
                 series_budget.register_admitted(line_ids, row.id)
@@ -822,10 +1109,10 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
             elif local_row is None:
                 stats["existing"] += 1
             local_row = local_row or row
-            uim.record_mapping(
-                db, local_item_id=local_row.id, source_id=source.id,
+            mapping_entries.append(dict(
+                local_item_id=local_row.id, source_id=source.id,
                 upstream_item_id=line.upstream_item_id,
-                confidence=IMPORT_CONFIDENCE, evidence=IMPORT_EVIDENCE)
+                confidence=IMPORT_CONFIDENCE, evidence=IMPORT_EVIDENCE))
         if local_row is not None:
             _ctx_note(series_ctx, title_key, {"row": local_row})
 
@@ -854,8 +1141,8 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
             stats["no_position"] += 1
             continue
         episode_number = next(iter(ep_numbers))
-        series_row = _resolve_series_row(
-            db, source, item, series_ctx, paired_series_local)
+        series_row = locator.resolve(
+            item, series_ctx, paired_series_local)
         if series_row is None:
             stats["no_series"] += 1
             continue
@@ -866,7 +1153,8 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
         bypass_limit = series_budget.is_admitted(sid, series_row.id)
         season_row = _ensure_hosted_season(
             db, source, series_row, season_number,
-            _Limit(None) if bypass_limit else budget, stats)
+            _Limit(None) if bypass_limit else budget, stats,
+            season_cache=season_cache, guid_cache=guid_cache)
         if season_row is None:
             stats["limited"] += 1
             continue
@@ -875,7 +1163,7 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
         local_row = None
         for line in source_lines:
             guid = hosted_guid(source.id, line.upstream_item_id)
-            row = _usable_row_by_guid(db, guid)
+            row = guid_cache.get(guid)
             if row is None:
                 if not bypass_limit and not budget.take():
                     stats["limited"] += 1
@@ -896,6 +1184,7 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
                     probe_status="done")
                 db.add(row)
                 db.flush()
+                guid_cache.put(guid, row)
                 stats["imported"] += 1
                 stats["episodes_imported"] += 1
                 logger.info(
@@ -907,11 +1196,12 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
             elif local_row is None:
                 stats["existing"] += 1
             local_row = local_row or row
-            uim.record_mapping(
-                db, local_item_id=local_row.id, source_id=source.id,
+            mapping_entries.append(dict(
+                local_item_id=local_row.id, source_id=source.id,
                 upstream_item_id=line.upstream_item_id,
                 confidence=IMPORT_CONFIDENCE, evidence=IMPORT_EVIDENCE,
-                episode_index=episode_number)
+                episode_index=episode_number))
+    _flush_mapping_entries(db, mapping_entries)
     return stats
 
 

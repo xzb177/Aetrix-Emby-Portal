@@ -1792,6 +1792,18 @@ export const fetchUpstreamDetailLineConfig = () =>
 export const updateUpstreamDetailLineConfig = (enabled: boolean) =>
   put<UpstreamDetailLineConfig>(`${E}/upstream-detail-line-config`, { enabled })
 
+/** 聚合拉取并发（2026-11-01 加速）：逐库拉取时预取后续页的并发
+ * 数，默认 4、范围 1–16；只改请求时序不改结果，1 = 串行旧行为。 */
+export interface UpstreamFetchConcurrencyConfig {
+  concurrency: number
+}
+
+export const fetchUpstreamFetchConcurrencyConfig = () =>
+  get<UpstreamFetchConcurrencyConfig>(`${E}/upstream-fetch-concurrency-config`)
+
+export const updateUpstreamFetchConcurrencyConfig = (concurrency: number) =>
+  put<UpstreamFetchConcurrencyConfig>(`${E}/upstream-fetch-concurrency-config`, { concurrency })
+
 /** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。
  *  只做手动触发，不做自动调度、不做自动播放兜底。
  *  POST 立刻返回任务（queued），聚合在后台跑；用

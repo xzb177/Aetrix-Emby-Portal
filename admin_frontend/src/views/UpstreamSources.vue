@@ -22,8 +22,10 @@ import {
   enableUpstreamSource,
   fetchUpstreamAggregateTask,
   fetchUpstreamDetailLineConfig,
+  fetchUpstreamFetchConcurrencyConfig,
   fetchUpstreamSources,
   updateUpstreamDetailLineConfig,
+  updateUpstreamFetchConcurrencyConfig,
   updateUpstreamSource,
 } from '@/api/admin'
 import type {
@@ -188,6 +190,35 @@ async function onDetailLineToggle(value: boolean) {
     detailLineEnabled.value = !value
   } finally {
     detailLineSaving.value = false
+  }
+}
+
+// 聚合拉取并发（2026-11-01 加速）：默认 4、范围 1–16；只改逐库
+// 拉取的请求时序、不改结果。上游不稳时调回 1 即回串行旧行为。
+const fetchConcurrency = ref(4)
+const fetchConcurrencySaving = ref(false)
+
+async function loadFetchConcurrencyConfig() {
+  try {
+    const res = await fetchUpstreamFetchConcurrencyConfig()
+    fetchConcurrency.value = res.concurrency
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+  }
+}
+
+async function onFetchConcurrencyChange(value: number | undefined) {
+  if (value == null) return
+  fetchConcurrencySaving.value = true
+  try {
+    const res = await updateUpstreamFetchConcurrencyConfig(value)
+    fetchConcurrency.value = res.concurrency
+    ElMessage.success(`聚合拉取并发已设为 ${res.concurrency}`)
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+    void loadFetchConcurrencyConfig()
+  } finally {
+    fetchConcurrencySaving.value = false
   }
 }
 
@@ -394,6 +425,7 @@ async function removeSource(source: UpstreamSource) {
 onMounted(() => {
   void loadSources()
   void loadDetailLineConfig()
+  void loadFetchConcurrencyConfig()
 })
 onUnmounted(() => {
   aggregatePageToken += 1
@@ -492,6 +524,27 @@ onUnmounted(() => {
           active-text="开启"
           inactive-text="关闭"
           @change="onDetailLineToggle"
+        />
+      </div>
+    </SectionCard>
+    <SectionCard title="聚合拉取">
+      <div class="detail-line-row">
+        <div>
+          <div>拉取并发</div>
+          <div class="detail-line-hint">
+            聚合逐库拉取时预取后续页的并发数，默认 4，范围 1–16。
+            只改变请求时序、不改变聚合结果；上游不稳定时调回 1
+            即回到串行拉取。增量拉取恒串行，不受此项影响。
+          </div>
+        </div>
+        <el-input-number
+          :model-value="fetchConcurrency"
+          :min="1"
+          :max="16"
+          :step="1"
+          :disabled="fetchConcurrencySaving"
+          controls-position="right"
+          @change="onFetchConcurrencyChange"
         />
       </div>
     </SectionCard>
