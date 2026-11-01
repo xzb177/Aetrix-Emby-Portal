@@ -27,6 +27,91 @@ def _bound_user(db, tg_user: dict):
     return resolve(db, int(tg_user.get("id") or 0))
 
 
+# ---------------- 白名单专属版式（2026-11-02 体验包·机器人面板单） ----------------
+
+#: 白名单专属称号：全站最高档、不可购买，只对生效中的白名单账号展示。
+WHITELIST_TITLE = "创世守护者"
+
+# 创世编号的只读探查面：编号由身份组单落库，本单不落库、不编号——
+# user 属性、codes helper、codes 名单行三处任一有值就展示，都没有时
+# 只显示称号行（编号字段未落地不阻塞本单）。
+_SERIAL_ATTRS = ("whitelist_no", "whitelist_serial", "whitelist_genesis_no",
+                 "genesis_no")
+_SERIAL_FUNCS = ("whitelist_serial", "whitelist_number",
+                 "whitelist_genesis_number", "whitelist_genesis_no")
+_SERIAL_ROW_KEYS = ("serial", "number", "seq", "whitelist_no",
+                    "whitelist_serial", "genesis_no")
+
+
+def _coerce_serial(value):
+    if not value:
+        return None
+    try:
+        return int(value) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _whitelist_serial(db, user):
+    """创世编号只读：三处探查面任一命中即返回，都没有返回 None。"""
+    for attr in _SERIAL_ATTRS:
+        serial = _coerce_serial(getattr(user, attr, None))
+        if serial is not None:
+            return serial
+    try:
+        from backend import codes as _codes
+    except Exception:
+        return None
+    for name in _SERIAL_FUNCS:
+        fn = getattr(_codes, name, None)
+        if callable(fn):
+            try:
+                serial = _coerce_serial(fn(db, user))
+            except Exception:
+                serial = None
+            if serial is not None:
+                return serial
+    try:
+        for row in _codes.whitelist_accounts(db):
+            if row.get("user_id") == user.id:
+                for key in _SERIAL_ROW_KEYS:
+                    serial = _coerce_serial(row.get(key))
+                    if serial is not None:
+                        return serial
+    except Exception:
+        pass
+    return None
+
+
+def _whitelist_identity(db, user):
+    """白名单专属身份快照：非白名单返回 None，白名单返回 {称号, 编号}。
+
+    判定唯一口径 backend.codes.is_whitelist_account（核销痕迹＋三处永久
+    现算，#1668 名单／#1670 活力豁免同一来源），面板不另立第二套名单。
+    判定异常时回落普通版式：展示层不许因专属版式把整个面板打挂。
+    """
+    if user is None:
+        return None
+    try:
+        from backend import codes as _codes
+
+        if not _codes.is_whitelist_account(db, user):
+            return None
+    except Exception:
+        logger.debug("白名单判定失败，面板回落普通版式 user=%s",
+                     getattr(user, "id", None), exc_info=True)
+        return None
+    return {"title": WHITELIST_TITLE, "serial": _whitelist_serial(db, user)}
+
+
+def _whitelist_rows(identity) -> list[str]:
+    """专属行：称号行＋编号行（编号未落地时只有称号行）。"""
+    rows = [layout.row("👑", "专属称号", f"<b>{_esc(identity['title'])}</b>")]
+    if identity.get("serial"):
+        rows.append(layout.row("🔢", "创世编号", f"No.{identity['serial']}"))
+    return rows
+
+
 def _achievement_summary(db, user_id: int):
     """账号成就：返回（已解锁定义行（按 sort 排序，仅 enabled 定义），enabled 定义总数）。
 
@@ -338,6 +423,11 @@ def user_panel(db, user, display_name: str | None = None) -> str:
         layout.row("📅", "连签天数", streak_text),
         layout.row("🏅", "成就进度", f"{len(shown_ach)}/{total_ach}"),
     ]
+    identity = _whitelist_identity(db, user)
+    if identity is not None:
+        # 白名单专属版式：专属问候＋称号/编号行紧跟用户编号行，其余照旧。
+        rows[1:1] = _whitelist_rows(identity)
+        return layout.card(layout.title("欢迎回来，创世守护者！", greet), rows)
     return layout.card(layout.title("欢迎进入用户面板！", greet), rows)
 
 
@@ -377,6 +467,10 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
         layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
         layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
     ]
+    identity = _whitelist_identity(db, user)
+    if identity is not None:
+        # 白名单专属版式：称号/编号行紧跟账号名称行，其余行照旧。
+        rows[2:2] = _whitelist_rows(identity)
     vitality = getattr(user, "vitality", None)
     if vitality is not None:
         cap, _threshold = _vitality_config(db)
@@ -428,6 +522,8 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
             blocked = "，已停用" if device.is_blocked else ""
             rows.append(layout.row(
                 "📱", "最近设备", f"{label}：{seen}{blocked}"))
+    if identity is not None:
+        return layout.card(layout.title("专属账号中心！", user.username), rows)
     return layout.card(layout.title("账号中心！", user.username), rows)
 
 
