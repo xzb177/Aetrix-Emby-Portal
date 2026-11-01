@@ -182,7 +182,9 @@ def _summarize_new_items(
 
     # --- 新剧 / 新电影：总数 + 前 N 条详情 ---
     sm_q = db.query(MI).filter(*base, MI.item_type.in_(["series", "movie"]))
-    sm_total = sm_q.count()
+    # PA-035：不用 Query.count()（子查询包装会绕过软删钩子，明细排掉
+    # 下架行、总数却算进去），改 with_entities(func.count) 与明细同口径。
+    sm_total = sm_q.with_entities(func.count()).scalar() or 0
     sm_rows = (
         sm_q.order_by(MI.date_added).limit(MAX_ITEMS).all()
     )
