@@ -356,6 +356,25 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     # transfer_variant.coerce_paused_categories（保存侧 strict、
     # 非法 400），注册为 ("str",) 只管落库形态；空/缺行 = 不暂停。
     "transfer_paused_categories": ("str",),
+    # 指纹沉淀（2026-11-01 转存等待压缩期三）：读取唯一实现在
+    # transfer_sediment（sediment_enabled / tier_enabled /
+    # daily_budget_bytes 等，热读 fail-safe），范围与读取侧钳制
+    # 同口径。总开关默认开、需求/追剧档默认开、热门/新入库档
+    # 默认关（本期只有开关位、不选片），默认均由读取侧兜底
+    # （无行=默认）；fused 是转化率熔断的运行时状态键（触发时
+    # 由 worker 落 true，管理员清回 false 恢复）。纯
+    # SystemConfig 键，不进 env.example（#1527 先例）。
+    "transfer_sediment_enabled": ("bool",),
+    "transfer_sediment_tier_demand_enabled": ("bool",),
+    "transfer_sediment_tier_watching_enabled": ("bool",),
+    "transfer_sediment_tier_hot_enabled": ("bool",),
+    "transfer_sediment_tier_new_enabled": ("bool",),
+    "transfer_sediment_daily_budget_gib": ("int", 1, 10000),
+    "transfer_sediment_interval_sec": ("int", 300, 86400),
+    "transfer_sediment_max_items_per_round": ("int", 1, 200),
+    "transfer_sediment_fuse_window_days": ("int", 7, 90),
+    "transfer_sediment_fuse_unconsumed_ratio": ("float", 0.1, 1.0),
+    "transfer_sediment_fused": ("bool",),
 }
 
 # Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的

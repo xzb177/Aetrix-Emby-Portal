@@ -2973,6 +2973,36 @@ class TmdbDatasetItem(Base):
     last_synced_at = Column(DateTime, default=datetime.now)
 
 
+class TransferSedimentRecord(Base):
+    """指纹沉淀记账行（转存等待压缩期三，2026-11-01）。
+
+    注意：这不是哈希登记表——可信哈希的唯一登记面是 MediaItem
+    的 content_hash/content_hash_algo（写入走 transfer_variant
+    ._persist_item_sha1，与秒传接力 #1538/#1559 同一套）。本表
+    只记沉淀作业的账：哪份内容、哪一档信号、何时沉淀、整遍读
+    源读了多少字节、之后有没有被真实转存/探针消费（consumed_at
+    由 transfer_sediment.refresh_consumption 回填）。日预算与转
+    化率熔断都以本表为据；表删光也只是丢账目，不丢任何指纹
+    资产。
+    """
+
+    __tablename__ = "emby_transfer_sediment_records"
+    __table_args__ = (
+        Index("ix_sediment_created", "created_at"),
+        Index("ix_sediment_item", "item_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, nullable=False)
+    drive_file_id = Column(String(64))
+    sha1 = Column(String(40))
+    # 选片档位：demand（需求驱动）| watching（追剧续集）
+    tier = Column(String(20), nullable=False)
+    bytes_read = Column(BigInteger, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    consumed_at = Column(DateTime)
+
+
 class TmdbDatasetMeta(Base):
     """302 Next A1：数据集新鲜度（单行，id=1）。
 

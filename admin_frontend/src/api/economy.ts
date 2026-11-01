@@ -444,6 +444,28 @@ export interface TransferConfig {
   quark_play_enabled: boolean
   /** 类别级熔断规则（JSON 数组文本 [{provider, error_kind}]；error_kind="*" = 该 provider 全部类别；默认 "[]" = 不暂停） */
   transfer_paused_categories: string
+  /** 指纹沉淀总开关（默认开；关 = 闲时不再提前算指纹，已沉淀的指纹不受影响） */
+  transfer_sediment_enabled: boolean
+  /** 沉淀需求档（默认开：近期有转存单在等的未登记内容优先沉淀） */
+  transfer_sediment_tier_demand_enabled: boolean
+  /** 沉淀追剧档（默认开：按播放历史给在追剧的后续集提前沉淀，只在转存队列空闲时跑） */
+  transfer_sediment_tier_watching_enabled: boolean
+  /** 沉淀热门档（默认关；本期只有开关位、尚未实现选片） */
+  transfer_sediment_tier_hot_enabled: boolean
+  /** 沉淀新入库档（默认关；本期只有开关位、尚未实现选片） */
+  transfer_sediment_tier_new_enabled: boolean
+  /** 沉淀每日读源字节预算（GiB）（默认 200，范围 1~10000；烧完当日停） */
+  transfer_sediment_daily_budget_gib: number
+  /** 沉淀轮次间隔（秒）（默认 1800，范围 300~86400） */
+  transfer_sediment_interval_sec: number
+  /** 沉淀每轮最多处理条数（默认 20，范围 1~200） */
+  transfer_sediment_max_items_per_round: number
+  /** 转化率熔断观察窗口（天）（默认 30，范围 7~90） */
+  transfer_sediment_fuse_window_days: number
+  /** 转化率熔断未消费比例阈值（默认 0.7，范围 0.1~1；窗口内沉淀超过该比例无人用则自动停沉淀） */
+  transfer_sediment_fuse_unconsumed_ratio: number
+  /** 沉淀熔断状态（运行时落值：true = 已熔断停摆；管理员清回 false 恢复） */
+  transfer_sediment_fused: boolean
 }
 
 export type TransferConfigPayload = TransferConfig
