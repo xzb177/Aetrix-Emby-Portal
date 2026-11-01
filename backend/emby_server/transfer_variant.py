@@ -1796,7 +1796,12 @@ def _cross_preparing_detail(source_provider, dest_provider):
 
 
 def _cross_failed_detail(dest_provider, job):
-    """跨 provider 失败文案：带任务行上的人话原因，不只给笼统失败。"""
+    """转存失败文案：带任务行上的人话原因，不只给笼统失败。
+
+    跨 provider 分支与同 provider 分支共用一套：同 provider 时
+    dest_provider 即条目 provider，目标盘就是该 provider 的
+    用户盘，文案形态完全同构。
+    """
     reason = (getattr(job, "error_detail", "") or "").strip()
     if reason:
         return f"转存到你的{_provider_label(dest_provider)}失败：{reason}"
@@ -3160,11 +3165,31 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                     return _retrigger_failed_job(
                         db, item, user_id, provider, job)
                 elif job.error_kind in _TERMINAL_JOB_KINDS:
+                    # 终态失败：明示 failed 并透传原因（与跨 provider
+                    # 分支同构，共用 _cross_failed_detail）。此前这里
+                    # 不带 detail，取流只能回笼统失败句。
                     return {"verdict": "failed", "reason": job.error_kind,
-                            "job_id": job.id}
+                            "job_id": job.id,
+                            "detail": _cross_failed_detail(provider, job)}
+                elif (job.error_kind in _AUTH_TERMINAL_KINDS
+                        or job.error_kind == "insufficient_space"):
+                    # 同为终态——口径对齐代码既有定义，不新造分类：
+                    # no_binding 在 _AUTH_TERMINAL_KINDS 里（只经
+                    # _fail_job 落行、认领前复核秒判终态，detail 本
+                    # 就含重绑指引）；insufficient_space 是
+                    # _SpaceInsufficient 明定的终态（只经 _fail_job、
+                    # 绝不转重试，清空间前等多久都不会自愈）。此前
+                    # 两者落到下面的 preparing/throttled 且不带
+                    # detail，空间不足被包装成「转存准备中」让用户
+                    # 永远干等（2026-11-01 生产单 1714 实证）。改判
+                    # failed 并透传原因，文案与跨分支共用同一套。
+                    return {"verdict": "failed", "reason": job.error_kind,
+                            "job_id": job.id,
+                            "detail": _cross_failed_detail(provider, job)}
                 else:
-                    # no_binding / no_source_fid：原因可能自愈（重绑/
-                    # 重扫），但节流窗内不重复建，呈准备中 + 节流说明。
+                    # 其余未归类 kind（如 no_source_fid）：原因可能
+                    # 自愈（重扫补 fid），但节流窗内不重复建，呈
+                    # 准备中 + 节流说明（维持旧形）。
                     return {"verdict": "preparing", "reason": "throttled",
                             "job_id": job.id}
             if job.status == "done":
