@@ -35,6 +35,20 @@ _cross_failed_detail 则会透传「转存到你的{目标}失败：{原因}」�
 ⑦ 跨 provider 分支 failed/insufficient_space 仍 preparing/
    throttled（本单不动跨分支的锚）。
 
+PA-004（2026-11-02 审计 R3·B3）：跨 provider 分支漏了 1714
+同款修复，failed/no_binding 与 failed/insufficient_space 跨单
+被包装成 preparing/throttled 且重绑后仍不自愈。本单起 ⑦ 锚
+作废，跨分支与同分支同口径：
+⑧ 跨 provider failed/no_binding（认领前复核 wording）→ failed
+   + detail 含重绑指引；
+⑨ 跨 provider failed/no_binding（115→Drive 执行器 wording）
+   → failed + detail 含重绑指引；
+⑩ 跨 provider failed/insufficient_space → failed + detail 含
+   空间不足原文；
+⑪ 锚：跨 provider failed/auth_error 与 failed/dead 行为不变
+   （仍 failed + detail）；跨 provider failed/retriable 未耗尽
+   仍走重触发回 preparing。
+
 全部离线：sqlite 内存库；monkeypatch 一律 patch 类/模块属性；
 fixture 自带 store 缓存失效，不依赖其它测试文件的状态。
 """
@@ -81,6 +95,11 @@ SPACE_DETAIL = (
 #: 工人落 no_binding 时的原文（_fail_job 各执行器同口径，含重绑指引）。
 NO_BINDING_DETAIL = (
     "用户 Drive 绑定已失效或不存在（任务创建后解绑，"
+    "不重试；重绑后下次播放节流窗外可重建）")
+#: 认领前复核落 no_binding 时的原文（_fail_user_jobs_without_binding，
+#: 目标盘 label 随 dest 前缀而变，含重绑指引）。
+NO_BINDING_PRECHECK_DETAIL = (
+    "用户115 网盘绑定已失效或不存在（认领前复核，"
     "不重试；重绑后下次播放节流窗外可重建）")
 #: 终态集既有 kind 的原文示例。
 DEAD_DETAIL = "源文件已不存在或无权访问（copy 404）"
@@ -175,6 +194,14 @@ def _cross_setup(db, monkeypatch):
     _mount(db, 3, "drive", "drive:drive1")
     item = _item(db)
     _binding(db, 7, provider="pan115")
+    return item
+
+
+def _cross115_setup(db, monkeypatch):
+    """只绑 Drive 的用户播 115 条目 → 门禁跨 provider 分支（反向）。"""
+    _enable(monkeypatch)
+    item = _item(db, file_path="115:/电影/a.mkv")
+    _binding(db, 7, provider="drive")
     return item
 
 
@@ -299,16 +326,103 @@ def test_gate_same_failed_retriable_retriggers_preparing(db, monkeypatch):
     assert new_job.status == "pending" and new_job.trigger == "playback"
 
 
-# ---------- ⑦ 锚：跨 provider 分支不动 ----------
+# ---------- ⑧ PA-004：跨 provider no_binding（认领前复核） ----------
 
-def test_gate_cross_failed_insufficient_space_still_preparing(
+def test_gate_cross_failed_no_binding_precheck_failed_with_rebind_detail(
+        db, monkeypatch):
+    item = _cross_setup(db, monkeypatch)
+    job = _job(db, item.id, 7, status="failed", trigger="playback",
+               error_kind="no_binding",
+               error_detail=NO_BINDING_PRECHECK_DETAIL,
+               created_at=datetime.now() - timedelta(minutes=5))
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "failed"
+    assert gate["reason"] == "no_binding"
+    assert gate["job_id"] == job.id
+    assert gate["detail"] == (
+        f"转存到你的115 网盘失败：{NO_BINDING_PRECHECK_DETAIL}")
+    assert "重绑" in gate["detail"]
+    assert db.query(em.TransferJob).count() == 1  # 不重复建单
+    exc = _raise(gate)
+    assert exc.status_code == 409
+    assert "重绑" in exc.detail
+
+
+# ---------- ⑨ PA-004：跨 provider no_binding（115→Drive 执行器） ----------
+
+def test_gate_cross_failed_no_binding_executor_failed_with_rebind_detail(
+        db, monkeypatch):
+    item = _cross115_setup(db, monkeypatch)
+    job = _job(db, item.id, 7, provider="pan115", dest="userdrive:7",
+               status="failed", trigger="playback",
+               error_kind="no_binding", error_detail=NO_BINDING_DETAIL,
+               created_at=datetime.now() - timedelta(minutes=5))
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "failed"
+    assert gate["reason"] == "no_binding"
+    assert gate["job_id"] == job.id
+    assert gate["detail"] == f"转存到你的谷歌盘失败：{NO_BINDING_DETAIL}"
+    assert "重绑" in gate["detail"]
+    assert db.query(em.TransferJob).count() == 1
+    exc = _raise(gate)
+    assert exc.status_code == 409
+    assert "重绑" in exc.detail
+
+
+# ---------- ⑩ PA-004：跨 provider 空间不足 ----------
+
+def test_gate_cross_failed_insufficient_space_failed_with_detail(
         db, monkeypatch):
     item = _cross_setup(db, monkeypatch)
     job = _job(db, item.id, 7, status="failed", trigger="prefetch",
-               error_kind="insufficient_space", error_detail=SPACE_DETAIL)
+               error_kind="insufficient_space", error_detail=SPACE_DETAIL,
+               created_at=datetime.now() - timedelta(minutes=5))
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "failed"
+    assert gate["reason"] == "insufficient_space"
+    assert gate["job_id"] == job.id
+    assert gate["detail"] == f"转存到你的115 网盘失败：{SPACE_DETAIL}"
+    assert db.query(em.TransferJob).count() == 1
+    exc = _raise(gate)
+    assert exc.status_code == 409
+    assert "空间不足" in exc.detail
+    assert "16491976779" in exc.detail
+
+
+# ---------- ⑪ 锚：跨 provider 终态 / retriable 行为不变 ----------
+
+def test_gate_cross_failed_terminal_kinds_still_failed_with_detail(
+        db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    _binding(db, 7, provider="pan115")
+    for kind, detail in (("auth_error", "115 Cookie 已失效"),
+                         ("dead", DEAD_DETAIL)):
+        item = _item(db)
+        job = _job(db, item.id, 7, status="failed", trigger="playback",
+                   error_kind=kind, error_detail=detail,
+                   created_at=datetime.now() - timedelta(minutes=5))
+        gate = tv.ensure_user_copy_gate(db, item, _user())
+        assert gate["verdict"] == "failed"
+        assert gate["reason"] == kind
+        assert gate["job_id"] == job.id
+        assert gate["detail"] == f"转存到你的115 网盘失败：{detail}"
+        exc = _raise(gate)
+        assert exc.status_code == 409
+        assert detail in exc.detail
+
+
+def test_gate_cross_failed_retriable_retriggers_preparing(
+        db, monkeypatch):
+    item = _cross_setup(db, monkeypatch)
+    old = _job(db, item.id, 7, status="failed", trigger="prefetch",
+               error_kind="retriable", error_detail="Drive API 503 临时失败",
+               created_at=datetime.now() - timedelta(minutes=5))
     gate = tv.ensure_user_copy_gate(db, item, _user())
     assert gate["verdict"] == "preparing"
-    assert gate["reason"] == "throttled"
-    assert gate["job_id"] == job.id
-    assert "正在转存到你的115 网盘" in gate["detail"]
-    assert db.query(em.TransferJob).count() == 1
+    assert gate["reason"] == "job_retriggered"
+    assert gate["job_id"] != old.id
+    assert db.query(em.TransferJob).count() == 2
+    new_job = db.query(em.TransferJob).order_by(
+        em.TransferJob.id.desc()).first()
+    assert new_job.status == "pending" and new_job.trigger == "playback"
