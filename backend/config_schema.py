@@ -351,6 +351,11 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     # =True）；关 = 只绑夸克的用户点播在门禁 failed 明示、不
     # 回落共享。纯 SystemConfig 键，不进 env.example。
     "quark_play_enabled": ("bool",),
+    # 类别级熔断（2026-11-01 预见层 v2 第一层）：JSON 规则数组
+    # [{provider, error_kind}] 的 canonical 文本。结构校验在
+    # transfer_variant.coerce_paused_categories（保存侧 strict、
+    # 非法 400），注册为 ("str",) 只管落库形态；空/缺行 = 不暂停。
+    "transfer_paused_categories": ("str",),
 }
 
 # Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的

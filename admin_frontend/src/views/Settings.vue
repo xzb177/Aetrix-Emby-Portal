@@ -709,6 +709,7 @@ const transfer = reactive({
   transfer_cross_cloudpull_ttl_sec: 43200,
   transfer_cross_cloudpull_timeout_sec: 3600,
   quark_play_enabled: true,
+  transfer_paused_categories: '[]',
 })
 const transferOriginal = reactive({ ...transfer })
 const transferLoading = ref(false)
@@ -727,6 +728,8 @@ function applyTransfer(data: TransferConfig) {
   transfer.transfer_cross_cloudpull_ttl_sec = Number(data.transfer_cross_cloudpull_ttl_sec) || 43200
   transfer.transfer_cross_cloudpull_timeout_sec = Number(data.transfer_cross_cloudpull_timeout_sec) || 3600
   transfer.quark_play_enabled = data.quark_play_enabled !== false
+  transfer.transfer_paused_categories = typeof data.transfer_paused_categories === 'string'
+    ? data.transfer_paused_categories : '[]'
   Object.assign(transferOriginal, transfer)
 }
 
@@ -754,7 +757,8 @@ transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_tra
   || transfer.transfer_cross_cloudpull_enabled !== transferOriginal.transfer_cross_cloudpull_enabled
   || transfer.transfer_cross_cloudpull_ttl_sec !== transferOriginal.transfer_cross_cloudpull_ttl_sec
   || transfer.transfer_cross_cloudpull_timeout_sec !== transferOriginal.transfer_cross_cloudpull_timeout_sec
-  || transfer.quark_play_enabled !== transferOriginal.quark_play_enabled,
+  || transfer.quark_play_enabled !== transferOriginal.quark_play_enabled
+  || transfer.transfer_paused_categories !== transferOriginal.transfer_paused_categories,
 )
 
 /** 转存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -798,6 +802,13 @@ async function saveTransferCore(): Promise<boolean> {
   if (!Number.isInteger(transfer.transfer_cross_cloudpull_timeout_sec)
     || transfer.transfer_cross_cloudpull_timeout_sec < 60 || transfer.transfer_cross_cloudpull_timeout_sec > 21600) {
     ElMessage.error('云下载轮询超时需在 60~21600 秒之间')
+    return false
+  }
+  try {
+    const pausedRules = JSON.parse(transfer.transfer_paused_categories || '[]')
+    if (!Array.isArray(pausedRules)) throw new Error('not-array')
+  } catch {
+    ElMessage.error('类别级熔断规则必须是 JSON 数组，如 [{"provider": "drive", "error_kind": "*"}]')
     return false
   }
   try {
@@ -1771,6 +1782,19 @@ watch(
                     />
                   </div>
                   <span class="field-hint">开：只绑夸克的用户点播时先转存到本人夸克盘（aetrix-transfer 目录）再经服务器中继播放；关：这类点播直接明示挡下、不回落共享。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="类别级熔断（停派）">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input
+                      v-model="transfer.transfer_paused_categories"
+                      type="textarea"
+                      :rows="3"
+                      placeholder='[{"provider": "drive", "error_kind": "*"}]'
+                    />
+                  </div>
+                  <span class="field-hint">按「源 provider＋失败类别」暂停派发：JSON 数组，每条 {"provider": "drive/pan115/quark", "error_kind": "失败类别，* 表示全部类别"}；命中的任务留在排队中不执行、不计次，改回 [] 即恢复派发。默认 [] 不暂停</span>
                 </div>
               </el-form-item>
               <el-form-item label="115 云下载（形态 B）">
