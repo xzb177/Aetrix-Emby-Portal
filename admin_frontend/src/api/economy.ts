@@ -422,6 +422,12 @@ export interface TransferConfig {
   transfer_cross_lane_concurrency: number
   /** 探针道单轮认领上限：指纹已登记的跨单先只试秒传、不占搬字节在途（默认 4，范围 1~16） */
   transfer_probe_lane_concurrency: number
+  /** 剧集预热总开关（默认开；关 = 播完不再给后续集建预热） */
+  transfer_series_preheat_enabled: boolean
+  /** 剧集预热搬字节独立日帽：强信号时每人每天最多建几张搬字节预热单（默认 2，范围 1~16；与 prefetch 帽分开计） */
+  transfer_series_preheat_daily_max: number
+  /** 剧集预热候选集数：播完一集后给同季后续几集建预热（默认 3，范围 1~10） */
+  transfer_series_preheat_next_count: number
   /** 跨单 aging 提权阈值（秒）：慢组跨单排队超过该秒数后按点播组待遇参与挑选，防无限期饿死（默认 1800，范围 60~86400） */
   transfer_cross_aging_sec: number
   /** 转存执行道并发（默认 8，范围 1~32） */

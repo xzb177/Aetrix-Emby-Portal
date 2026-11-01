@@ -615,6 +615,12 @@ class TransferConfigRequest(BaseModel):
     # config_schema 的 transfer 家族（1~16）；探针只试秒传、
     # 不占跨 provider 在途上限。
     transfer_probe_lane_concurrency: int = 4
+    # 剧集预热（2026-11-01 期四）：总开关默认开；搬字节预热独立
+    # 日帽默认 2（与 prefetch 帽分开计）；候选集数默认 3。范围钳在
+    # config_schema 的 transfer 家族（日帽 1~16、集数 1~10）。
+    transfer_series_preheat_enabled: bool = True
+    transfer_series_preheat_daily_max: int = 2
+    transfer_series_preheat_next_count: int = 3
     transfer_cross_aging_sec: int = 1800
     transfer_fast_lane_concurrency: int = 8
     transfer_per_owner_inflight: int = 2
@@ -719,6 +725,12 @@ def transfer_update_config(
                 request.transfer_cross_lane_concurrency),
             transfer_probe_lane_concurrency=(
                 request.transfer_probe_lane_concurrency),
+            transfer_series_preheat_enabled=(
+                request.transfer_series_preheat_enabled),
+            transfer_series_preheat_daily_max=(
+                request.transfer_series_preheat_daily_max),
+            transfer_series_preheat_next_count=(
+                request.transfer_series_preheat_next_count),
             transfer_cross_aging_sec=(
                 request.transfer_cross_aging_sec),
             transfer_fast_lane_concurrency=(
@@ -754,6 +766,12 @@ def transfer_update_config(
             request.transfer_cross_lane_concurrency,
             "transfer_probe_lane_concurrency":
             request.transfer_probe_lane_concurrency,
+            "transfer_series_preheat_enabled":
+            request.transfer_series_preheat_enabled,
+            "transfer_series_preheat_daily_max":
+            request.transfer_series_preheat_daily_max,
+            "transfer_series_preheat_next_count":
+            request.transfer_series_preheat_next_count,
             "transfer_cross_aging_sec":
             request.transfer_cross_aging_sec,
             "transfer_fast_lane_concurrency":
