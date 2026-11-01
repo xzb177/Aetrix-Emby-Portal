@@ -389,31 +389,91 @@ def cross_aging_sec(db=None):
 
 
 # ---------------------------------------------------------------------------
-# 探针道 · 期一（2026-11-01 转存等待压缩 期一；
+# 探针道（2026-11-01 转存等待压缩 期一＋期二；
 # reports/transfer-wait-compression-design-20261101.md）
 #
 # 秒传试探原本没有独立调度身份：它只是跨单被认领后执行器的
 # 第一步，认领被 cross_cap 全局卡死、点播当场先办又明文排除
 # 跨单——指纹已登记的单本体秒级，却要在搬字节队列后面干等。
-# 期一先做纯调度：claim_due_jobs 的 _pick_candidates 里可探针
-# 单（条目有可信 sha1 或清单 sha1 的跨 Drive→115 单）优先占用
-# 跨槽、跨槽为它保留至少 1 槽（开关
-# transfer_probe_priority_enabled，关 = 回现行排序逐字不变）。
-# 期二（独立探针道认领 + probe_only 执行 + 点播当场探针）在
-# 后续提交接入。全部纯 SystemConfig 键，不进 env.example
-# （#1527 先例）；读取口径 fail-safe：读不到/非法回默认。
-# 跨 provider 并发（cross_cap）不动——不靠加搬运槽解决问题。
+# 本节给「可探针单」（条目有可信 sha1 或清单 sha1 的跨
+# Drive→115 单）两条待遇：
+# - 期一（纯调度）：claim_due_jobs 的 _pick_candidates 里可探针
+#   单优先占用跨槽、跨槽为它保留至少 1 槽（开关
+#   transfer_probe_priority_enabled，关 = 回现行排序逐字不变）；
+# - 期二（探针道）：独立认领 claim_probe_jobs（不占跨槽、
+#   _running_cross_count 排除 probe: 认领行）+ probe_only 执行
+#   （只试 initupload，未命中/失败以 probe_miss 释放回 pending，
+#   不烧 attempts、不写终态）+ 点播当场探针（inline 跨单排除
+#   仅对探针破例，预算 play_inline_probe_budget_sec 默认 15s）。
+# 全部纯 SystemConfig 键，不进 env.example（#1527 先例）；读取
+# 口径与跨道两键同款 fail-safe：读不到/非法回默认，绝不因配置
+# 读取把工人/点播打停。跨 provider 并发（cross_cap）不动——
+# 探针道不靠加搬运槽解决问题。
 # ---------------------------------------------------------------------------
+
+#: 探针道总开关 SystemConfig 键；默认开。关 = 探针清扫与点播
+#: 当场探针全停，单回现行队列（期一优先排序由其自己的开关管）。
+KEY_TRANSFER_PROBE_ENABLED = "transfer_probe_enabled"
 
 #: 期一优先排序开关 SystemConfig 键；默认开。关 = _pick_candidates
 #: 不做可探针分层，排序与现行逐字一致。
 KEY_TRANSFER_PROBE_PRIORITY_ENABLED = "transfer_probe_priority_enabled"
+
+#: 探针道单轮认领上限 SystemConfig 键；默认 4，钳 [1, 16]。
+#: 探针是秒级小请求（initupload 1–2 次 + sign_check 稀疏读），
+#: 不占跨槽、不搬字节；此数只约束工人每轮探针清扫的批量与
+#: 线程池宽度，防突发把 115 API 打满。
+KEY_TRANSFER_PROBE_LANE_CONCURRENCY = "transfer_probe_lane_concurrency"
+TRANSFER_PROBE_LANE_DEFAULT = 4
+
+#: 探针节流（秒）SystemConfig 键；默认 300，钳 [30, 3600]：
+#: 一单被探针试过后 last_probe_at 起此窗内不再重复探（防探针
+#: 风暴）；只约束探针道自身，普通认领不读 last_probe_at，
+#: 未命中单被搬字节道认领零延迟。
+KEY_TRANSFER_PROBE_RECHECK_SEC = "transfer_probe_recheck_sec"
+TRANSFER_PROBE_RECHECK_DEFAULT = 300
+
+#: 点播当场探针预算（秒）SystemConfig 键；默认 15，钳 [1, 60]：
+#: 与当场搬运的 20 秒预算分开计——探针是秒级动作，15 秒足够
+#: initupload + 目录核对；超时不取消（后台线程自会收尾），
+#: 请求侧照旧回 preparing。
+KEY_PLAY_INLINE_PROBE_BUDGET_SEC = "play_inline_probe_budget_sec"
+PLAY_INLINE_PROBE_BUDGET_DEFAULT = 15
+
+
+def probe_enabled(db=None):
+    """探针道总开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(db, KEY_TRANSFER_PROBE_ENABLED, True)
 
 
 def probe_priority_enabled(db=None):
     """期一可探针优先排序开关：SystemConfig 热读，默认开。"""
     return _system_config_bool(
         db, KEY_TRANSFER_PROBE_PRIORITY_ENABLED, True)
+
+
+def probe_lane_concurrency(db=None):
+    """探针道单轮认领上限：SystemConfig > 默认 4，钳 [1, 16]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_PROBE_LANE_CONCURRENCY)
+    if configured is not None:
+        return max(1, min(16, configured))
+    return TRANSFER_PROBE_LANE_DEFAULT
+
+
+def probe_recheck_sec(db=None):
+    """探针节流窗（秒）：SystemConfig > 默认 300，钳 [30, 3600]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_PROBE_RECHECK_SEC)
+    if configured is not None:
+        return max(30, min(3600, configured))
+    return TRANSFER_PROBE_RECHECK_DEFAULT
+
+
+def play_inline_probe_budget_sec(db=None):
+    """点播当场探针预算（秒）：SystemConfig > 默认 15，钳 [1, 60]。"""
+    configured = _system_config_int(db, KEY_PLAY_INLINE_PROBE_BUDGET_SEC)
+    if configured is not None:
+        return max(1, min(60, configured))
+    return PLAY_INLINE_PROBE_BUDGET_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +767,7 @@ def transfer_config_payload(db):
     return {
         "cross_provider_transfer_enabled": cross_provider_enabled(db),
         "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
+        "transfer_probe_lane_concurrency": probe_lane_concurrency(db),
         "transfer_cross_aging_sec": cross_aging_sec(db),
         "transfer_fast_lane_concurrency": lane_concurrency(db),
         "transfer_per_owner_inflight": per_owner_inflight(db),
@@ -733,6 +794,7 @@ def transfer_config_payload(db):
 
 def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_cross_lane_concurrency=None,
+                          transfer_probe_lane_concurrency=None,
                           transfer_cross_aging_sec=None,
                           transfer_fast_lane_concurrency=None,
                           transfer_per_owner_inflight=None,
@@ -771,6 +833,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if transfer_cross_lane_concurrency is not None:
         values[KEY_TRANSFER_CROSS_LANE_CONCURRENCY] = str(
             transfer_cross_lane_concurrency)
+    if transfer_probe_lane_concurrency is not None:
+        values[KEY_TRANSFER_PROBE_LANE_CONCURRENCY] = str(
+            transfer_probe_lane_concurrency)
     if transfer_cross_aging_sec is not None:
         values[KEY_TRANSFER_CROSS_AGING_SEC] = str(
             transfer_cross_aging_sec)
@@ -3725,9 +3790,75 @@ def claim_and_execute_inline(job_id, session_factory=None,
     return _execute_claimed_job(job_id, session_factory, drive_api_factory)
 
 
+def _inline_probe_eligible(db, job):
+    """点播当场探针合格性：_inline_job_eligible 的跨单镜像——
+    它排除跨单（分钟级搬字节不当场跑），本判定只收跨单里的
+    「可探针」子集（探针是秒级小请求，不搬字节）：
+
+    - trigger 必须 playback、owner_scope 必须 user（同当场口径）；
+    - 必须是跨 Drive→115 单且条目可探针（_job_is_probeable，
+      含探针节流：刚被工人探针试过的单不在请求里重复探）；
+    - 目标盘绑定必须生效（无绑定时探针只会落 no_binding，
+      不当场跑，工人口径不变）。
+    """
+    if job is None:
+        return False
+    if (getattr(job, "trigger", "") or "") != "playback":
+        return False
+    if (getattr(job, "owner_scope", "") or "") != "user":
+        return False
+    if not probe_enabled(db) or not cross_provider_enabled(db):
+        return False
+    if not _job_is_probeable(db, job, now=datetime.now()):
+        return False
+    try:
+        user_id = int((getattr(job, "owner_ref", "") or "").strip())
+    except (TypeError, ValueError):
+        return False
+    return _active_binding(db, user_id, "pan115") is not None
+
+
+def claim_and_probe_inline(job_id, session_factory=None,
+                           drive_api_factory=None):
+    """点播当场探针（同步，调用方须放线程里跑）：合格性 → 原子
+    探针认领 → 只试秒传（_execute_probe_job）。
+
+    返回 done / probe_miss / failed（执行器终态）/ not_claimed /
+    ineligible / missing / error。绝不抛异常——当场探针出什么
+    问题都不能把点播请求打成 500，回 preparing 让工人兜底。
+    """
+    if session_factory is None:
+        from backend.database import SessionLocal
+        session_factory = SessionLocal
+    if drive_api_factory is None:
+        drive_api_factory = DriveApiClient
+    db = session_factory()
+    try:
+        job = (db.query(em.TransferJob)
+               .filter(em.TransferJob.id == job_id).first())
+        if job is None:
+            return "missing"
+        if not _inline_probe_eligible(db, job):
+            return "ineligible"
+        if not claim_probe_job(db, job_id):
+            return "not_claimed"
+    except Exception:
+        logger.warning("点播当场探针：认领失败 job=%s", job_id,
+                       exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return "error"
+    finally:
+        db.close()
+    return _execute_probe_job(job_id, session_factory, drive_api_factory)
+
+
 def _play_inline_config():
     """当场先办配置快照（独立短会话热读）：{enabled, budget_sec,
-    concurrency}。读失败 fail-safe 回默认（开 / 20 秒 / 4）——
+    concurrency, probe_enabled, probe_budget_sec}。读失败
+    fail-safe 回默认（开 / 20 秒 / 4 / 探针开 / 15 秒）——
     配置读不到时不悄悄关掉救播放的路（与同类开关同口径）。"""
     try:
         from backend.database import SessionLocal
@@ -3735,13 +3866,53 @@ def _play_inline_config():
         try:
             return {"enabled": play_inline_enabled(db),
                     "budget_sec": play_inline_budget_sec(db),
-                    "concurrency": play_inline_concurrency(db)}
+                    "concurrency": play_inline_concurrency(db),
+                    "probe_enabled": probe_enabled(db),
+                    "probe_budget_sec": play_inline_probe_budget_sec(db)}
         finally:
             db.close()
     except Exception:
         return {"enabled": True,
                 "budget_sec": PLAY_INLINE_TRANSFER_BUDGET_DEFAULT,
-                "concurrency": PLAY_INLINE_TRANSFER_CONCURRENCY_DEFAULT}
+                "concurrency": PLAY_INLINE_TRANSFER_CONCURRENCY_DEFAULT,
+                "probe_enabled": True,
+                "probe_budget_sec": PLAY_INLINE_PROBE_BUDGET_DEFAULT}
+
+
+async def _try_inline_probe(gate, gate_callable, job_id, *,
+                            budget_sec,
+                            session_factory=None,
+                            drive_api_factory=None):
+    """点播当场探针一跳：命中返回重查后的新 gate；其余一切情况
+    返回 None（调用方照旧走现行路径）。绝不抛异常。
+
+    探针执行放线程跑并 shield：预算内没回来只说明探针慢（目录
+    核对等），请求侧不等——后台线程会把单收尾（命中 done /
+    未命中释放），下一次点播/工人轮次自然接上。
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(
+        claim_and_probe_inline, job_id,
+        session_factory=session_factory,
+        drive_api_factory=drive_api_factory))
+    try:
+        outcome = await asyncio.wait_for(
+            asyncio.shield(task), timeout=budget_sec)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.info("[byos] play_inline_probe_timeout job=%s "
+                    "budget_sec=%s", job_id, budget_sec)
+        return None
+    except Exception:
+        logger.warning("点播当场探针异常 job=%s", job_id, exc_info=True)
+        return None
+    logger.info("[byos] play_inline_probe_outcome job=%s outcome=%s",
+                job_id, outcome)
+    if outcome != "done":
+        return None
+    try:
+        new_gate = await gate_callable()
+    except Exception:  # noqa: BLE001 — 重查失败不改 verdict
+        return None
+    return new_gate or gate
 
 
 async def maybe_run_play_inline(initial_gate, gate_callable, *,
@@ -3776,6 +3947,21 @@ async def maybe_run_play_inline(initial_gate, gate_callable, *,
     cfg = await asyncio.to_thread(_play_inline_config)
     if not cfg["enabled"]:
         return gate
+    # 期二点播当场探针：跨 Drive→115 且可探针的单先当场只试
+    # 秒传（预算 probe_budget_sec，默认 15 秒）——命中即同请求
+    # 重查门禁放行；未命中/不适用/超时一律落回下方现行当场搬运
+    # 判定（跨单在那里仍被排除、回 preparing，工人口径不变）。
+    # 超时不取消：已认领的探针在后台线程自会收尾（命中落
+    # done、未命中释放），与当场搬运的 shield 口径一致。
+    if cfg.get("probe_enabled"):
+        probe_gate = await _try_inline_probe(
+            gate, gate_callable, job_id,
+            budget_sec=cfg.get("probe_budget_sec")
+            or PLAY_INLINE_PROBE_BUDGET_DEFAULT,
+            session_factory=session_factory,
+            drive_api_factory=drive_api_factory)
+        if probe_gate is not None:
+            return probe_gate
     if not _inline_try_acquire(cfg["concurrency"]):
         logger.info("[byos] play_inline_skipped job=%s reason=no_slot",
                     job_id)
@@ -5275,6 +5461,53 @@ def _trusted_item_sha1(item, source_size):
     return value
 
 
+def _job_probeable_sha1(db, job):
+    """任务行此刻是否「可探针」：可直接试秒传的 sha1 或 ""。
+
+    判定口径与执行器预检段一致：条目可信 sha1
+    （_trusted_item_sha1）优先；其次清单接管生效时的清单 sha1
+    （manifest_trusted_sha1）。只读条目行/清单行字段，不查外
+    部服务；任何异常回 ""（不可探针——安全方向：漏判只是走
+    现行搬字节道，绝不误判去探一份没有指纹的内容）。"""
+    try:
+        item = (db.query(em.MediaItem)
+                .filter(em.MediaItem.id == job.item_id,
+                        em.MediaItem.deleted_at.is_(None))
+                .first())
+        if item is None:
+            return ""
+        size = _to_int(getattr(item, "size", None))
+        sha1 = _trusted_item_sha1(item, size)
+        if sha1:
+            return sha1
+        if manifest_accounting_enabled(db) and manifest_takeover_active(db):
+            key = _cross_content_key(job, item)
+            if key:
+                from backend.emby_server import transfer_manifest as _tm
+                return _tm.manifest_trusted_sha1(db, key, size) or ""
+        return ""
+    except Exception:  # noqa: BLE001 — 判定失败按不可探针处理
+        return ""
+
+
+def _job_is_probeable(db, job, now=None):
+    """探针道候选判定：跨 Drive→115 的 user 单 + 未被探针节流
+    + 有可探针 sha1。115→Drive 与夸克方向无 initupload 式指纹
+    认领，不进探针道（方案 §4 附带说明）。"""
+    if not _is_cross_job(job):
+        return False
+    dest = (getattr(job, "dest_drive_id", "") or "").strip()
+    if not dest.startswith("pan115:"):
+        return False
+    if (getattr(job, "owner_scope", "") or "") != "user":
+        return False
+    last = getattr(job, "last_probe_at", None)
+    if last is not None and now is not None:
+        if (now - last).total_seconds() < probe_recheck_sec(db):
+            return False
+    return bool(_job_probeable_sha1(db, job))
+
+
 def _persist_item_sha1(db, item, sha1_hex, *, origin):
     """把整文件 sha1 沉淀进 emby_items.content_hash（秒传资格）。
 
@@ -6428,7 +6661,7 @@ def _try_cloudpull_lane(db, job, item, client, dest_cid, size,
     return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
 
 
-def _run_cross_drive_to_115(db, job, item, drive_api):
+def _run_cross_drive_to_115(db, job, item, drive_api, probe_only=False):
     """跨 provider Drive→115：先试秒传，未命中/无哈希再全量搬字节。
 
     秒传（initupload，2026-10-30 整套）：条目有可信 sha1 且开关
@@ -6462,6 +6695,15 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     明确回落本函数的搬字节老路（error_kind=cloudpull_failed 只
     作瞬时标记 + transfer_cloudpull outcome 日志），绝不因
     cloudpull 失败直接判 job failed。
+    probe_only=True（期二探针道）：只跑秒传接力预检段——命中
+    走与普通路逐字一致的收尾（目录核对＋登记＋done）；未命中、
+    无可信 sha1、秒传开关关、以及探针途中的网络/凭据失败一律
+    返回 outcome="probe_miss"（响亮记 transfer_probe 日志），
+    由调用方释放回 pending 等普通认领，绝不在探针里烧
+    attempts 或落重试/终态。结构性事实（no_binding、源已死
+    dead、无源盘 no_drive、大小未知 unsupported）与普通路同
+    口径落终态，不在探针里改判。字节搬运段（哈希遍、
+    cloudpull、simple/multipart）在 probe_only 下一行不跑。
     """
     from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
     from backend.emby_server import user_bindings as ub
@@ -6477,6 +6719,14 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     try:
         cookie = ub.binding_115_cookie(db, user_id, binding.id)
     except ub.BindingError as exc:
+        if probe_only:
+            # 探针取不到 Cookie（凭据侧故障）：响亮记日志 + 按
+            # 未命中释放，终态口径留给普通执行路同点判定。
+            logger.warning(
+                "transfer_probe outcome=error job=%s item=%s "
+                "stage=cookie kind=%s err=%s（释放回队列）",
+                job.id, item.id, exc.kind, exc)
+            return {"job_id": job.id, "outcome": "probe_miss"}
         if exc.kind == "auth_error":
             return _fail_job(db, job, "auth_error", str(exc))
         if exc.kind == "not_found":
@@ -6494,6 +6744,12 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     except (_NotFound, _Forbidden) as exc:
         return _fail_job(db, job, "dead", f"Drive 源已死/无权：{exc}")
     except Exception as exc:
+        if probe_only:
+            logger.warning(
+                "transfer_probe outcome=error job=%s item=%s "
+                "stage=get_file err=%s（释放回队列）",
+                job.id, item.id, exc)
+            return {"job_id": job.id, "outcome": "probe_miss"}
         return {"job_id": job.id,
                 "outcome": _schedule_retry(db, job, exc)}
     if not size:
@@ -6550,7 +6806,9 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
     # 下面所有接线点据此短路，行为与此前逐字一致。
     _tman = None
     _recorder = None
-    if manifest_accounting_enabled(db):
+    if manifest_accounting_enabled(db) and not probe_only:
+        # probe_only 不搬字节：记账句柄（为字节程攒块清单而设）
+        # 不建，探针的清单 sha1 查询走下方独立只读口。
         try:
             from backend.emby_server import transfer_manifest as _tman
             _recorder = _tman.begin_recorder(db, _content_key, size)
@@ -6559,6 +6817,18 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
         except Exception:  # noqa: BLE001 — 记账接线失败不打挂搬运
             _tman = None
             _recorder = None
+    if (probe_only and not stored_sha1
+            and manifest_accounting_enabled(db)
+            and manifest_takeover_active(db)):
+        # 探针口径的清单 sha1：只读查询，与普通路接管采信同源。
+        try:
+            from backend.emby_server import transfer_manifest as _tm2
+            _probe_manifest_sha1 = _tm2.manifest_trusted_sha1(
+                db, _content_key, size)
+            if _probe_manifest_sha1:
+                stored_sha1 = _probe_manifest_sha1
+        except Exception:  # noqa: BLE001 — 查不到按无指纹处理
+            pass
     if (not stored_sha1 and _tman is not None
             and manifest_takeover_active(db)):
         # 换代线 step 4 接管：清单已 complete 的整文件 sha1 直接
@@ -6572,6 +6842,13 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
             logger.info(
                 "transfer_manifest outcome=sha1_trusted job=%s "
                 "item=%s size=%s", job.id, item.id, size)
+    if probe_only and not stored_sha1:
+        # 探针道只收已有指纹的单（认领侧已过滤）；走到这里说明
+        # 指纹在建单后失效（条目大小变更等）——按未命中释放，
+        # 绝不在探针里为算哈希整遍读源（那是搬字节道的活）。
+        logger.info("transfer_probe outcome=miss job=%s item=%s "
+                    "reason=no_trusted_sha1", job.id, item.id)
+        return {"job_id": job.id, "outcome": "probe_miss"}
     if (not stored_sha1 and size > _115_SIMPLE_UPLOAD_LIMIT
             and pan115_multipart_upload_enabled(db)):
         # initupload（秒传与分片共用）以整文件 sha1 为必填入参：
@@ -6614,20 +6891,48 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
         logger.info("transfer_relay outcome=skip item=%s job=%s "
                     "provider=pan115 owner=%s reason=switch_off",
                     item.id, job.id, uid)
+    if probe_only and not rapid_enabled:
+        logger.info("transfer_probe outcome=miss job=%s item=%s "
+                    "reason=rapid_switch_off", job.id, item.id)
+        return {"job_id": job.id, "outcome": "probe_miss"}
     if stored_sha1 and rapid_enabled:
         try:
             client, dest_cid = _open_client()
         except Pan115AuthError as exc:
+            if probe_only:
+                logger.warning(
+                    "transfer_probe outcome=error job=%s item=%s "
+                    "stage=open_client err=%s（释放回队列）",
+                    job.id, item.id, exc)
+                return {"job_id": job.id, "outcome": "probe_miss"}
             return _auth_fail(exc)
         except Exception as exc:
+            if probe_only:
+                logger.warning(
+                    "transfer_probe outcome=error job=%s item=%s "
+                    "stage=open_client err=%s（释放回队列）",
+                    job.id, item.id, exc)
+                return {"job_id": job.id, "outcome": "probe_miss"}
             return {"job_id": job.id,
                     "outcome": _schedule_retry(db, job, exc)}
         try:
             rapid = client.rapid_upload(name, size, stored_sha1, dest_cid,
                                         range_reader=_raw_fetch)
         except Pan115AuthError as exc:
+            if probe_only:
+                logger.warning(
+                    "transfer_probe outcome=error job=%s item=%s "
+                    "stage=rapid_upload err=%s（释放回队列）",
+                    job.id, item.id, exc)
+                return {"job_id": job.id, "outcome": "probe_miss"}
             return _auth_fail(exc)
         except _CrossAuthError as exc:
+            if probe_only:
+                logger.warning(
+                    "transfer_probe outcome=error job=%s item=%s "
+                    "stage=rapid_upload err=%s（释放回队列）",
+                    job.id, item.id, exc)
+                return {"job_id": job.id, "outcome": "probe_miss"}
             # SA 源凭据失效（sign_check 取区间时）：只记任务失败，
             # 绝不落用户 115 绑定（与全量路同口径）。
             return _fail_job(db, job, "auth_error", str(exc))
@@ -6647,6 +6952,22 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         outcome, item.id, job.id, uid)
             if outcome == "hit":
                 rapid_fid = (rapid or {}).get("fid") or ""
+    if probe_only:
+        # 探针裁决点：命中落下方现行收尾（目录核对＋登记＋done，
+        # 与普通路命中收尾逐字一致）；其余一律 probe_miss 释放，
+        # 不进 cloudpull、不进搬字节段——协议异常（rapid 恒
+        # None）记 outcome=error 响亮告警，未命中记 outcome=miss。
+        if rapid_fid is None:
+            if rapid is None:
+                logger.warning(
+                    "transfer_probe outcome=error job=%s item=%s "
+                    "stage=rapid_upload（释放回队列）", job.id, item.id)
+            else:
+                logger.info("transfer_probe outcome=miss job=%s "
+                            "item=%s", job.id, item.id)
+            return {"job_id": job.id, "outcome": "probe_miss"}
+        logger.info("transfer_probe outcome=hit job=%s item=%s",
+                    job.id, item.id)
     if rapid_fid is None and cross_cloudpull_enabled(db):
         # 形态 B 云下载 lane（2026-10-30 立项，默认关）：接力未
         # 命中后、搬字节之前，让用户本人的 115 自己拉现铸的签名
@@ -7117,17 +7438,21 @@ def _run_cross_115_to_drive(db, job, item):
     return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
 
 
-def _run_cross_job(db, job, item, drive_api):
+def _run_cross_job(db, job, item, drive_api, probe_only=False):
     """跨 provider 任务分发：按 dest_drive_id 定方向（不按 provider）。
 
     dest pan115: 开头 → Drive→115；dest userdrive: 开头 → 115→Drive；
     dest quark: 开头 → 任一源→用户夸克盘（二期，执行面在
     transfer_quark，延迟导入避免模块环）；其它 dest（理论上
     到不了，_is_cross_job 已过滤）→ unsupported。
+    probe_only 只对 Drive→115 方向有意义（其余方向无指纹认领
+    通道），调用方（run_probe_job_once）已按方向过滤，不会
+    把探针送进其它执行器。
     """
     dest = (getattr(job, "dest_drive_id", "") or "").strip()
     if dest.startswith("pan115:"):
-        return _run_cross_drive_to_115(db, job, item, drive_api)
+        return _run_cross_drive_to_115(db, job, item, drive_api,
+                                       probe_only=probe_only)
     if dest.startswith("userdrive:"):
         return _run_cross_115_to_drive(db, job, item)
     if dest.startswith("quark:"):
@@ -7603,7 +7928,11 @@ def _running_counts_by_owner(db, now=None):
 
 
 def _running_cross_count(db, now=None):
-    """当前 running（租约未过期）的跨 provider 单数：跨道上限计数。"""
+    """当前 running（租约未过期）的跨 provider 单数：跨道上限计数。
+
+    探针道认领的行（claimed_by 带 probe: 前缀）不计：探针只试
+    秒传、不搬字节，不占跨槽（期二口径）；探针行被普通认领接
+    手时 claimed_by 改写为工人标识，自然回到计数内。"""
     now = now or datetime.now()
     rows = (db.query(em.TransferJob)
             .filter(em.TransferJob.status == "running")
@@ -7611,7 +7940,8 @@ def _running_cross_count(db, now=None):
                 (em.TransferJob.lease_expires_at.is_(None))
                 | (em.TransferJob.lease_expires_at > now))
             .all())
-    return sum(1 for row in rows if _is_cross_job(row))
+    return sum(1 for row in rows if _is_cross_job(row)
+               and not (row.claimed_by or "").startswith(_PROBE_CLAIMED_BY_PREFIX))
 
 
 def _is_aged_cross(job, now, cross_aging_sec):
@@ -7805,35 +8135,6 @@ def _fail_user_jobs_without_binding(db, jobs):
     return kept
 
 
-def _job_probeable_sha1(db, job):
-    """任务行此刻是否「可探针」：可直接试秒传的 sha1 或 ""。
-
-    判定口径与执行器预检段一致：条目可信 sha1
-    （_trusted_item_sha1）优先；其次清单接管生效时的清单 sha1
-    （manifest_trusted_sha1）。只读条目行/清单行字段，不查外
-    部服务；任何异常回 ""（不可探针——安全方向：漏判只是走
-    现行搬字节道，绝不误判去探一份没有指纹的内容）。"""
-    try:
-        item = (db.query(em.MediaItem)
-                .filter(em.MediaItem.id == job.item_id,
-                        em.MediaItem.deleted_at.is_(None))
-                .first())
-        if item is None:
-            return ""
-        size = _to_int(getattr(item, "size", None))
-        sha1 = _trusted_item_sha1(item, size)
-        if sha1:
-            return sha1
-        if manifest_accounting_enabled(db) and manifest_takeover_active(db):
-            key = _cross_content_key(job, item)
-            if key:
-                from backend.emby_server import transfer_manifest as _tm
-                return _tm.manifest_trusted_sha1(db, key, size) or ""
-        return ""
-    except Exception:  # noqa: BLE001 — 判定失败按不可探针处理
-        return ""
-
-
 def claim_due_jobs(db, now=None, limit=None, worker_id=None):
     """认领到期任务：租约回收 → 公平挑单 → 原子认领，返回 job id 列表。
 
@@ -7951,6 +8252,234 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
     db.commit()
     _log_claim_pick(worker_id, picked, claimed, running_counts, now)
     return claimed
+
+
+# ---------------------------------------------------------------------------
+# 探针道认领/执行（期二）：只试秒传的轻量道，不占跨槽
+# ---------------------------------------------------------------------------
+
+#: 探针道认领标记：claimed_by 前缀。_running_cross_count 据它
+#: 把探针行排除在跨槽计数外；租约回收/心跳不读它，口径不变。
+_PROBE_CLAIMED_BY_PREFIX = "probe:"
+
+
+def claim_probe_jobs(db, now=None, limit=None, worker_id=None):
+    """探针道认领：只挑可探针的跨 Drive→115 pending 单。
+
+    与 claim_due_jobs 的关系：同一原子认领原语（条件 UPDATE、
+    rowcount 定胜负——与 claim_due_jobs 的等价路径同款）、同一
+    类别级熔断过滤与 no_binding 认领前复核；不同在于不查跨槽
+    占用（探针不占跨槽）、不套 per-owner 在飞上限与公平轮转
+    （探针是秒级小请求，候选按 id 序取到 limit 为止），认领行
+    打 probe: 标记并落 claimed_at/last_probe_at。
+    探针道或跨 provider 任一总开关关时恒回 []。"""
+    if not probe_enabled(db) or not cross_provider_enabled(db):
+        return []
+    from sqlalchemy import text
+    now = now or datetime.now()
+    limit = limit if limit is not None else probe_lane_concurrency(db)
+    worker_id = worker_id or (_PROBE_CLAIMED_BY_PREFIX + _WORKER_ID)
+    reclaim_expired_leases(db, now=now)
+    due = (db.query(em.TransferJob)
+           .filter(em.TransferJob.status == "pending",
+                   (em.TransferJob.next_retry_at.is_(None))
+                   | (em.TransferJob.next_retry_at <= now))
+           .order_by(em.TransferJob.id)
+           .limit(200)
+           .all())
+    if not due:
+        return []
+    paused_rules = transfer_paused_categories(db)
+    if paused_rules:
+        due = [j for j in due if not job_category_paused(j, paused_rules)]
+        if not due:
+            return []
+    due = _fail_user_jobs_without_binding(db, due)
+    picked = []
+    for job in due:
+        if len(picked) >= limit:
+            break
+        if _job_is_probeable(db, job, now=now):
+            picked.append(job)
+    if not picked:
+        return []
+    lease_until = now + timedelta(seconds=worker_lease_sec())
+    claimed = []
+    for job in picked:
+        result = db.execute(
+            text("UPDATE emby_transfer_jobs SET status='running', "
+                 "lease_expires_at=:lease, claimed_by=:worker, "
+                 "claimed_at=:now, last_probe_at=:now "
+                 "WHERE id=:jid AND status='pending'"),
+            {"lease": lease_until, "worker": worker_id, "jid": job.id,
+             "now": now})
+        if result.rowcount == 1:
+            claimed.append(job.id)
+    db.commit()
+    if claimed:
+        logger.info("转存探针认领 probe_pick worker=%s jobs=%s",
+                    worker_id, claimed)
+    return claimed
+
+
+def claim_probe_job(db, job_id, worker_id=None, now=None):
+    """单单探针认领（点播当场探针用）：与 claim_probe_jobs 同
+    口径的单行版——类别级熔断命中直接不认领；条件 UPDATE 原子
+    认领，rowcount==1 才算领到（已被领走/已终态/退避期回 0）。"""
+    from sqlalchemy import text
+    now = now or datetime.now()
+    worker_id = worker_id or (_PROBE_CLAIMED_BY_PREFIX
+                              + _INLINE_WORKER_ID)
+    _job_row = (db.query(em.TransferJob)
+                .filter(em.TransferJob.id == job_id).first())
+    if _job_row is not None and job_category_paused(
+            _job_row, transfer_paused_categories(db)):
+        return False
+    lease_until = now + timedelta(seconds=worker_lease_sec())
+    result = db.execute(
+        text("UPDATE emby_transfer_jobs SET status='running', "
+             "lease_expires_at=:lease, claimed_by=:worker, "
+             "claimed_at=:now, last_probe_at=:now "
+             "WHERE id=:jid AND status='pending' "
+             "AND (next_retry_at IS NULL OR next_retry_at <= :now)"),
+        {"lease": lease_until, "worker": worker_id, "jid": job_id,
+         "now": now})
+    db.commit()
+    return result.rowcount == 1
+
+
+def _release_probe_job(db, job, now=None):
+    """探针未命中/失败释放：回 pending 等普通认领接手。
+
+    红线：不烧 attempts（本函数绝不写 attempts）、不写
+    error_kind/error_detail、不置 failed；next_retry_at 清空，
+    普通认领零延迟接手（节流只管探针道自身，靠 last_probe_at）。"""
+    now = now or datetime.now()
+    job.status = "pending"
+    job.last_probe_at = now
+    job.next_retry_at = None
+    job.lease_expires_at = None
+    job.claimed_by = None
+    db.commit()
+
+
+def run_probe_job_once(db, job, drive_api):
+    """探针执行入口：只试秒传，返回 {"job_id", "outcome"}。
+
+    outcome：done（命中且现行收尾完成）/ probe_miss（未命中或
+    探针失败，调用方释放回 pending）/ failed（执行器既有终态
+    口径——no_binding 等结构性事实，与普通执行一致，不在探
+    针里改判）。不走 run_transfer_job_once：它在分发前
+    attempts+=1 且带调度合并让路，探针一概不沾；直接调跨
+    执行器的 probe_only 模式。条目缺失/无 fid 不是探针能判
+    的终态，按 probe_miss 释放、留给普通执行路落 item_gone。"""
+    item = None
+    if job.item_id is not None:
+        item = (db.query(em.MediaItem)
+                .filter(em.MediaItem.id == job.item_id,
+                        em.MediaItem.deleted_at.is_(None))
+                .first())
+    if item is None or not (getattr(item, "drive_file_id", "")
+                            or "").strip():
+        logger.warning("transfer_probe outcome=error job=%s "
+                       "reason=item_missing（释放回队列）", job.id)
+        return {"job_id": job.id, "outcome": "probe_miss"}
+    if not _is_cross_job(job) or not (
+            getattr(job, "dest_drive_id", "") or "").startswith("pan115:"):
+        logger.warning("transfer_probe outcome=error job=%s "
+                       "reason=not_probe_lane（释放回队列）", job.id)
+        return {"job_id": job.id, "outcome": "probe_miss"}
+    return _run_cross_drive_to_115(db, job, item, drive_api,
+                                   probe_only=True)
+
+
+def _execute_probe_job(job_id, session_factory, drive_api_factory):
+    """执行一单已探针认领的任务（独立会话）：命中 done；未命中
+    释放回 pending；执行器终态（failed）只清租约。任何异常都
+    释放回 pending 并响亮记日志——绝不让单子卡在探针态（租约
+    回收只是最后兜底）。返回 outcome 字符串。探针是秒级动作，
+    不起心跳线程（租约 300 秒远大于探针时长）。"""
+    db = session_factory()
+    try:
+        job = db.query(em.TransferJob).filter(
+            em.TransferJob.id == job_id).first()
+        if job is None:
+            return "missing"
+        try:
+            result = run_probe_job_once(db, job, drive_api_factory())
+        except Exception:
+            logger.warning("转存探针执行异常 job=%s（释放回队列）",
+                           job_id, exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            fresh = db.query(em.TransferJob).filter(
+                em.TransferJob.id == job_id).first()
+            if fresh is not None and fresh.status == "running":
+                _release_probe_job(db, fresh)
+            return "probe_miss"
+        outcome = result.get("outcome", "")
+        fresh = db.query(em.TransferJob).filter(
+            em.TransferJob.id == job_id).first()
+        if fresh is not None:
+            if outcome == "probe_miss" and fresh.status == "running":
+                _release_probe_job(db, fresh)
+            else:
+                # done/failed：执行器已落终态，这里只清租约
+                # （与 _execute_claimed_job 同口径）。
+                fresh.lease_expires_at = None
+                fresh.claimed_by = None
+                db.commit()
+        if outcome == "done":
+            # 与普通执行同口径：本人副本就绪即刷新交付计划
+            # （fail-open，见 _execute_claimed_job 同段）。
+            try:
+                from backend.emby_server import delivery_plan as _dp
+                _dp.refresh_plan_for_job(db, job)
+            except Exception:  # noqa: BLE001 — 刷新失败不影响结果
+                logger.warning("交付计划刷新失败 job=%s", job_id,
+                               exc_info=True)
+        return outcome
+    finally:
+        db.close()
+
+
+def process_probe_round(session_factory, drive_api_factory, now=None,
+                        limit=None):
+    """探针清扫一轮：认领可探针单并逐个只试秒传。
+
+    认领批量 = transfer_probe_lane_concurrency（默认 4），池宽
+    同值并发执行（独立会话，与工人执行同款线程安全口径）；
+    不走 process_claimed_round 的滑动窗口补认领——探针不占跨
+    槽、不与搬字节轮次互相等待。守护主循环每轮先跑本清扫再
+    跑普通认领轮。返回统计 dict。"""
+    now = now or datetime.now()
+    db = session_factory()
+    try:
+        claimed = claim_probe_jobs(db, now=now, limit=limit)
+        lane = probe_lane_concurrency(db)
+    finally:
+        db.close()
+    if not claimed:
+        return {"processed": 0, "hit": 0, "miss": 0, "claimed": []}
+    outcomes = []
+    if len(claimed) == 1 or lane <= 1:
+        for job_id in claimed:
+            outcomes.append(_execute_probe_job(
+                job_id, session_factory, drive_api_factory))
+    else:
+        with ThreadPoolExecutor(max_workers=min(lane, len(claimed)),
+                                thread_name_prefix="transfer-probe") as pool:
+            futures = [pool.submit(_execute_probe_job, job_id,
+                                   session_factory, drive_api_factory)
+                       for job_id in claimed]
+            for fut in futures:
+                outcomes.append(fut.result())
+    return {"processed": len(outcomes),
+            "hit": outcomes.count("done"),
+            "miss": outcomes.count("probe_miss"),
+            "claimed": claimed}
 
 
 def queue_stats(db, now=None):
@@ -8365,6 +8894,16 @@ def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
     while not stop.is_set():
         try:
             if master_enabled():
+                # 探针道清扫（期二）：每轮先跑——可探针单不经
+                # 跨槽认领，命中即 done、未命中释放回队列由下方
+                # 普通认领轮接手；清扫异常只跳过本轮探针，绝不
+                # 炸主循环（普通认领轮照常）。
+                try:
+                    process_probe_round(session_factory,
+                                        drive_api_factory)
+                except Exception:
+                    logger.warning("转存探针清扫异常，已跳过本轮",
+                                   exc_info=True)
                 stats = process_claimed_round(
                     session_factory, drive_api_factory)
                 if stats["claimed"]:
@@ -8439,7 +8978,10 @@ __all__ = [
     "worker_concurrency", "worker_per_user_max", "worker_lease_sec",
     "lane_concurrency", "per_owner_inflight",
     "cross_provider_enabled", "cross_lane_concurrency",
-    "probe_priority_enabled",
+    "probe_enabled", "probe_priority_enabled", "probe_lane_concurrency",
+    "probe_recheck_sec", "play_inline_probe_budget_sec",
+    "claim_probe_jobs", "claim_probe_job", "run_probe_job_once",
+    "process_probe_round", "claim_and_probe_inline",
     "transfer_config_payload", "write_transfer_config",
     "worker_sweep_sec", "notify_transfer_wakeup", "pause_user_queue",
     "is_user_paused", "reclaim_expired_leases", "claim_due_jobs",
