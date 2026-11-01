@@ -24,6 +24,12 @@
 - ``UPSTREAM_AGGREGATE_SCHEDULE_INTERVAL_SEC``：默认 21600 秒（6 小时，
   与苹果 CMS 同步同频的低频起步值）；非法/缺失回落默认；低于 60 秒
   钳制到 60 秒，防止误配过短间隔反复刷上游。
+- ``UPSTREAM_AGGREGATE_STARTUP_FRESH_SEC``：启动首轮新鲜度门（秒，
+  默认 10800 = 3 小时）：调度循环的第一轮（进程启动后那轮）先查
+  本地任务表，某源距上次聚合成功结束不足门限时整源跳过不入队
+  （记 skipped/startup_fresh，零上游请求）——部署重启再频繁也不
+  重复拉；后续到点轮次不受此门影响。配 0 关闭本门（启动首轮
+  照常入队）；非法/缺失回落默认。
 
 单源失败隔离与调度日志：
 - 每源入队异常（DB 错等）只记该源 failed、继续下一源；入队本身
@@ -43,6 +49,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from datetime import datetime
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -59,6 +66,14 @@ DEFAULT_SCHEDULE_INTERVAL_SEC = 21600.0
 
 #: 间隔下限（秒）：低于此值钳制，防止误配把上游刷爆。
 MIN_SCHEDULE_INTERVAL_SEC = 60.0
+
+#: 启动首轮新鲜度门 env 键（秒）。
+STARTUP_FRESH_ENV = "UPSTREAM_AGGREGATE_STARTUP_FRESH_SEC"
+
+#: 新鲜度门默认门限（秒）：3 小时。部署常在几分钟到几小时内连
+#: 发，门限取间隔（6 小时）的一半：够挡住密集重启的重复拉取，
+#: 又不至于把正常的到点轮次拖太久（到点轮次本就不受门管）。
+DEFAULT_STARTUP_FRESH_SEC = 10800.0
 
 _scheduler_thread: threading.Thread | None = None
 _scheduler_lock = threading.Lock()
@@ -90,8 +105,35 @@ def schedule_interval_sec(explicit: Optional[float] = None) -> float:
     return max(MIN_SCHEDULE_INTERVAL_SEC, value)
 
 
+def startup_fresh_sec(explicit: Optional[float] = None) -> float:
+    """启动首轮新鲜度门门限（秒）：显式值优先，否则读 env。
+
+    返回 0 表示门关（配 0 或负数）；非法/缺失/NaN 回落默认。
+    与间隔不同，这里不钳下限：门限本就是「多久内算新鲜」，
+    配小是部署方的正当选择。
+    """
+    if explicit is not None:
+        try:
+            value = float(explicit)
+        except (TypeError, ValueError):
+            return DEFAULT_STARTUP_FRESH_SEC
+        if value != value:  # NaN
+            return DEFAULT_STARTUP_FRESH_SEC
+        return max(0.0, value)
+    try:
+        value = float(os.getenv(STARTUP_FRESH_ENV,
+                                str(DEFAULT_STARTUP_FRESH_SEC)) or
+                      str(DEFAULT_STARTUP_FRESH_SEC))
+    except (TypeError, ValueError):
+        return DEFAULT_STARTUP_FRESH_SEC
+    if value != value:  # NaN
+        return DEFAULT_STARTUP_FRESH_SEC
+    return max(0.0, value)
+
+
 def run_scheduled_aggregation(*, session_factory=None, enqueue_fn=None,
-                              list_sources_fn=None) -> list:
+                              list_sources_fn=None,
+                              freshness_gate_fn=None) -> list:
     """跑一轮定时聚合：对每源入队，返回每源的结果列表（单源异常隔离）。
 
     依赖一律可注入（测试不碰真实 DB、不发真实请求）：
@@ -109,6 +151,13 @@ def run_scheduled_aggregation(*, session_factory=None, enqueue_fn=None,
     ``reason``（source_disabled / source_type_not_supported /
     task_active）。列源本身失败时返回空列表并记日志，不抛错
     （调度线程不因此死掉）。
+
+    ``freshness_gate_fn(source) -> bool``（启动首轮专用，见
+    :func:`run_startup_aggregation`）：返回 True 表示该源「刚
+    成功过」需跳过本轮，记 ``skipped`` / ``startup_fresh``、
+    不调用入队（零上游请求，被跳过的轮次根本不产生任务行）。
+    门函数自身抛错按不新鲜处理（fail-open：宁可多跑一轮，
+    不让门故障把调度饿死），异常只记日志。
 
     注意：本函数不直接跑聚合、不发上游请求。凭据失效等要打到
     上游才知道的错误落在任务行上，由任务查询口带回（与手动口
@@ -159,6 +208,21 @@ def run_scheduled_aggregation(*, session_factory=None, enqueue_fn=None,
             results.append({"source_id": source_id, "status": "skipped",
                             "reason": "source_type_not_supported"})
             continue
+        if freshness_gate_fn is not None:
+            try:
+                fresh = bool(freshness_gate_fn(source))
+            except Exception:  # noqa: BLE001 - 门故障不许饿死调度
+                logger.exception(
+                    "上游聚合启动新鲜度门判断失败（按不新鲜继续）"
+                    " source_id=%s", source_id)
+                fresh = False
+            if fresh:
+                logger.info("上游聚合定时调度跳过刚成功过的源"
+                            "（启动新鲜度门） source_id=%s", source_id)
+                results.append({"source_id": source_id,
+                                "status": "skipped",
+                                "reason": "startup_fresh"})
+                continue
         # 单源隔离：入队异常只记该源 failed，不毁整轮；非 dict 返回
         # 记 failed，不许谎报 queued。
         try:
@@ -191,12 +255,58 @@ def run_scheduled_aggregation(*, session_factory=None, enqueue_fn=None,
     return results
 
 
+def run_startup_aggregation(*, session_factory=None, enqueue_fn=None,
+                            list_sources_fn=None, last_success_fn=None) -> list:
+    """调度循环的**启动首轮**：带新鲜度门的一轮调度。
+
+    与 :func:`run_scheduled_aggregation` 的唯一区别是逐源多一道
+    门：某源距上次聚合成功结束不足 ``UPSTREAM_AGGREGATE_
+    STARTUP_FRESH_SEC``（默认 3 小时）时整源跳过不入队——只查
+    本地任务表、零上游请求，部署重启再频繁也不重复拉。门限为
+    0 时门关、行为与普通轮逐字一致。
+
+    ``last_success_fn(source)`` 可注入（测试用）：默认实现自开
+    会话查任务表（``upstream_aggregate_jobs.
+    last_succeeded_finished_at``），惰性 import。
+    """
+    threshold = startup_fresh_sec()
+    gate_fn = None
+    if threshold > 0:
+        if last_success_fn is None:
+            def _default_last_success(source):
+                from backend.database import SessionLocal
+                from backend.emby_server import upstream_aggregate_jobs as uaj
+
+                factory = session_factory or SessionLocal
+                db = factory()
+                try:
+                    return uaj.last_succeeded_finished_at(db, source.id)
+                finally:
+                    db.close()
+
+            last_success_fn = _default_last_success
+
+        def _gate(source):
+            last = last_success_fn(source)
+            if last is None:
+                return False
+            return (datetime.now() - last).total_seconds() < threshold
+
+        gate_fn = _gate
+    return run_scheduled_aggregation(
+        session_factory=session_factory, enqueue_fn=enqueue_fn,
+        list_sources_fn=list_sources_fn, freshness_gate_fn=gate_fn)
+
+
 def run_scheduler_loop(stop_event=None, *, run_once=None,
                        interval_sec: Optional[float] = None) -> None:
     """调度循环：先跑一轮，再按间隔等，停表置位即退出。
 
-    ``run_once`` 未传时走 :func:`run_scheduled_aggregation`（生产路径）；
-    等待用 ``stop_event.wait(interval)``（无 stop_event 时用
+    ``run_once`` 未传时走生产路径：**首轮**走
+    :func:`run_startup_aggregation`（带启动新鲜度门，刚成功过
+    的源不重复入队），后续到点轮走
+    :func:`run_scheduled_aggregation`；等待用
+    ``stop_event.wait(interval)``（无 stop_event 时用
     ``time.sleep``），使停机不用等满一个间隔。
     单轮异常已在 ``run_scheduled_aggregation`` 内隔离；注入的 ``run_once``
     抛异常时本循环记日志后继续，不让调度线程悄悄死掉。
@@ -204,14 +314,21 @@ def run_scheduler_loop(stop_event=None, *, run_once=None,
     import time
 
     interval = schedule_interval_sec(interval_sec)
-    do_run = run_once if run_once is not None else run_scheduled_aggregation
+    first_round = True
     while True:
         if stop_event is not None and stop_event.is_set():
             return
+        if run_once is not None:
+            do_run = run_once
+        elif first_round:
+            do_run = run_startup_aggregation
+        else:
+            do_run = run_scheduled_aggregation
         try:
             do_run()
         except Exception:
             logger.exception("上游聚合定时调度整轮失败（下一轮继续）")
+        first_round = False
         if stop_event is not None:
             if stop_event.wait(interval):
                 return

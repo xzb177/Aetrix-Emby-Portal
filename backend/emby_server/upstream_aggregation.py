@@ -152,6 +152,12 @@ class UpstreamCatalogRecord:
     # 进库二期单集回查所属剧的身份级依据（靠它查映射/托管剧行，
     # 不靠剧名猜）。Movie / Series 记录恒为空。放末尾保位置构造兼容。
     series_upstream_id: str = ""
+    # 增量拉取排序时间戳原文（Emby ``DateLastContentAdded``，缺失
+    # 回落 ``DateCreated``）：增量轮按此字段倒序拉、水位线比对用
+    # 它。只存原文串，解析/比较归拉取方（upstream_aggregate_run）；
+    # 两字段都缺时为 None，该记录不参与水位计算（拉取方按未证明
+    # 已旧处理，不据此早停）。放末尾保位置构造兼容。
+    last_content_added_at: Optional[str] = None
 
 
 def _provider_id(provider_ids: object, *names: str) -> Optional[str]:
@@ -171,6 +177,21 @@ def _as_int(value: object) -> Optional[int]:
         return value
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value.strip())
+    return None
+
+
+def _raw_timestamp(raw: dict) -> Optional[str]:
+    """取增量排序时间戳原文：DateLastContentAdded 优先、DateCreated 兜底。
+
+    DateLastContentAdded 是 Emby 的「内容最近入库时间」：新条目
+    入库即赋值，剧集新增集时所属剧的该值同步刷新（本站 compat
+    层 Items 实现同口径，见 api.py 的 _date_last_content_added）。
+    非字符串/空值按缺失处理（返回 None）。
+    """
+    for key in ("DateLastContentAdded", "DateCreated"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return None
 
 
@@ -218,6 +239,7 @@ def parse_emby_item(
         episode_number=_as_int(raw.get("IndexNumber")),
         versions=tuple(versions),
         series_upstream_id=str(raw.get("SeriesId") or ""),
+        last_content_added_at=_raw_timestamp(raw),
     )
 
 
@@ -251,12 +273,18 @@ def iter_emby_pages(
     source_id: str,
     category_id: str = "",
     page_size: int,
+    on_page: Optional[Callable[[List[UpstreamCatalogRecord], int], bool]] = None,
 ) -> Iterable[UpstreamCatalogRecord]:
     """按 Emby StartIndex/Limit 分页拉取（传输由调用方注入）。
 
     调用方须保证 ``fetch_page`` 已授权、已过 SSRF 校验；本模块
     不发 HTTP。某页返回 0 条即停（防上游 TotalRecordCount 说谎
     导致死循环）；TotalRecordCount 为 0 时只拉首轮即停。
+
+    ``on_page``（增量拉取用）：每取到一页后以（本页记录，
+    TotalRecordCount）回调一次，返回 True 表示本页处理完即停
+    （不再取下一页）；该页记录照常产出。缺省 None 时行为与
+    历史口径逐字一致。回调异常照常上抛（与取页失败同路）。
     """
     if page_size <= 0:
         raise ValueError("page_size must be positive")
@@ -266,7 +294,10 @@ def iter_emby_pages(
         records, total = parse_emby_items_page(
             page, source_id=source_id, category_id=category_id
         )
+        stop_after = bool(on_page(records, total)) if on_page else False
         yield from records
+        if stop_after:
+            break
         if not records:
             break
         start += len(records)

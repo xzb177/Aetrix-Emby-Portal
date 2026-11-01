@@ -192,6 +192,73 @@ def claim_poll_sec(db) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 轮次种类决策（定时增量拉取）：上次成功 / 上次全量成功 / kind
+# ---------------------------------------------------------------------------
+
+def last_succeeded_finished_at(db, source_id: int) -> Optional[datetime]:
+    """某源最近一轮成功（任意 kind）的结束时刻；无成功记录给 None。
+
+    调度启动新鲜度门用它判「刚成功过不久」（只查本地任务表，
+    不发任何上游请求）。
+    """
+    return (db.query(func.max(em.UpstreamAggregateTask.finished_at))
+            .filter(em.UpstreamAggregateTask.source_id == source_id,
+                    em.UpstreamAggregateTask.status == "succeeded")
+            .scalar())
+
+
+def last_full_succeeded_finished_at(db,
+                                    source_id: int) -> Optional[datetime]:
+    """某源最近一轮**全量**成功的结束时刻；无则 None。
+
+    kind 记在任务 result_json 里（增量轮为 ``incremental``）；
+    本功能上线前的历史行没有 kind 字段——它们本来就是全量，
+    按全量计。从新到旧扫最近若干条成功行即可（全量兜底间隔
+    以天计，成功行保留期 30 天，扫 200 条绰绰有余）。
+    """
+    rows = (db.query(em.UpstreamAggregateTask)
+            .filter(em.UpstreamAggregateTask.source_id == source_id,
+                    em.UpstreamAggregateTask.status == "succeeded")
+            .order_by(em.UpstreamAggregateTask.finished_at.desc())
+            .limit(200)
+            .all())
+    for row in rows:
+        kind = None
+        if row.result_json:
+            try:
+                parsed = json.loads(row.result_json)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                kind = parsed.get("kind")
+        if kind != uar.RUN_KIND_INCREMENTAL:
+            return row.finished_at
+    return None
+
+
+def decide_scheduled_run_kind(db, source_id: int) -> str:
+    """定时轮 kind 决策（手动轮不走这里、恒全量）：
+
+    - 增量开关关（env 回退）→ full；
+    - 该源尚无任何水位线（存量首次）→ full（跑完建线）；
+    - 从未有过全量成功、或距上次全量成功已满全量兜底间隔
+      → full；
+    - 其余 → incremental。
+    """
+    if not uar.incremental_enabled():
+        return uar.RUN_KIND_FULL
+    if not uar.has_watermarks(db, source_id):
+        return uar.RUN_KIND_FULL
+    last_full = last_full_succeeded_finished_at(db, source_id)
+    if last_full is None:
+        return uar.RUN_KIND_FULL
+    if datetime.now() - last_full >= timedelta(
+            seconds=uar.full_interval_sec()):
+        return uar.RUN_KIND_FULL
+    return uar.RUN_KIND_INCREMENTAL
+
+
+# ---------------------------------------------------------------------------
 # 任务行读写
 # ---------------------------------------------------------------------------
 
@@ -831,6 +898,7 @@ def execute_task(task_id: str) -> None:
             return
         row = _get_row(db, task_id)
         page_size = row.page_size
+        trigger = row.trigger
         resume_of = row.resume_of
         skip_ids = []
         if row.skip_libraries_json:
@@ -867,12 +935,19 @@ def execute_task(task_id: str) -> None:
                 except ValueError:
                     prior = {}
         fn = _aggregate_fn or uar.run_manual_aggregation
+        # 轮次种类：只有定时口（trigger=scheduled）才可能增量，
+        # 且要过 kind 决策（存量首次/全量兜底/回退开关都在决策
+        # 里）；手动与续跑（trigger=manual）恒全量、语义不变。
+        run_kind = uar.RUN_KIND_FULL
+        if trigger == "scheduled":
+            run_kind = decide_scheduled_run_kind(db, source_id)
         result = fn(db, source, page_size=page_size,
                     on_event=_make_progress_handler(task_id),
                     on_heartbeat=_make_heartbeat_handler(task_id),
                     commit_each_library=True,
                     skip_library_ids=skip_ids,
-                    prior_summaries=prior)
+                    prior_summaries=prior,
+                    run_kind=run_kind)
         if not isinstance(result, dict):
             _rollback(db)
             _finish(task_id, status="failed", error={
@@ -885,10 +960,11 @@ def execute_task(task_id: str) -> None:
         db.commit()
         _finish(task_id, status="succeeded", result=result)
         logger.info(
-            "上游聚合任务完成 task_id=%s source_id=%s fetched=%s "
+            "上游聚合任务完成 task_id=%s source_id=%s kind=%s fetched=%s "
             "paired=%s written=%s failed_libraries=%s",
-            task_id, source_id, result.get("fetched"), result.get("paired"),
-            result.get("written"), len(result.get("failed_libraries") or []))
+            task_id, source_id, result.get("kind"), result.get("fetched"),
+            result.get("paired"), result.get("written"),
+            len(result.get("failed_libraries") or []))
     except uar.UpstreamAggregateRunError as exc:
         _rollback(db)
         _finish(task_id, status="failed", error={

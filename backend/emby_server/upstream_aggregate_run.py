@@ -83,16 +83,26 @@ tasks 表）在此之上加了逐库提交与可恢复续跑：执行器传
 commit_each_library=True 时逐库一事务、撞冲突只回滚单库；
 续跑按任务行里已完成的库跳过（skip_library_ids），本模块
 自身仍不建检查点表。
+
+增量拉取（定时轮，run_kind="incremental"，任务层决策传入）：
+逐库按 DateLastContentAdded 倒序拉、整页不高于水位线即停，
+上游无更新时每库只发一页；水位线落
+``upstream_aggregate_watermarks`` 表，只在本库成功后推进。
+手动触发恒全量、语义不变；全量兜底节奏与对账只认全量的
+守卫见 run_manual_aggregation 与任务层 kind 决策。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.exc import IntegrityError
@@ -143,6 +153,141 @@ PAGE_RETRY_BACKOFF_DEFAULT = 2
 #: 默认页大小 SystemConfig 键（O-05）：钳 [10, 500]，无行/非法
 #: 回落 DEFAULT_PAGE_SIZE。
 KEY_DEFAULT_PAGE_SIZE = "upstream_aggregate_default_page_size"
+
+#: 增量拉取总开关 env 键（定时轮用）：默认开（不配即开），配
+#: ``0`` 一键回退为每轮全量（旧行为）。只管定时轮的 kind 决策
+#: （upstream_aggregate_jobs.decide_scheduled_run_kind），手动
+#: 聚合恒全量、不读本键。env.example 同步收录（r44 契约）。
+INCREMENTAL_ENABLED_ENV = "UPSTREAM_AGGREGATE_INCREMENTAL_ENABLED"
+
+#: 全量兜底间隔 env 键（秒）：定时轮距上次全量成功满此值时本
+#: 轮走全量（对账/删除/同量替换这类增量看不见的变化靠它兜
+#: 底）；默认 86400（每天至多一轮全量），非法回落默认，低于
+#: 60 秒钳制到 60 秒。env.example 同步收录。
+FULL_INTERVAL_ENV = "UPSTREAM_AGGREGATE_FULL_INTERVAL_SEC"
+DEFAULT_FULL_INTERVAL_SEC = 86400.0
+MIN_FULL_INTERVAL_SEC = 60.0
+
+#: 增量拉取的排序字段：Emby ``DateLastContentAdded``（内容最近
+#: 入库时间）——新条目入库即赋值；剧集新增集时，单集自身是新
+#: 记录、所属剧的该值同步刷新（本站 compat 层 Items 实现同
+#: 口径，见 api.py 的 _date_last_content_added 注释「新集入库
+#: 即刷新」），故新增条目与新增集都能被它捕获。倒序拉、整页
+#: 不高于水位线即停。元数据原地刷新（不产生新入库时间）不被
+#: 它捕获，由每日全量兜底覆盖（见 FULL_INTERVAL_ENV）。
+INCREMENTAL_SORT_FIELD = "DateLastContentAdded"
+
+#: 一轮的种类（run_manual_aggregation 的 run_kind / 结果 kind）。
+RUN_KIND_FULL = "full"
+RUN_KIND_INCREMENTAL = "incremental"
+
+
+def incremental_enabled() -> bool:
+    """增量拉取是否启用：默认开，env 显式 ``0`` 才关（回退全量）。"""
+    return (os.getenv(INCREMENTAL_ENABLED_ENV, "1") or "1").strip() != "0"
+
+
+def full_interval_sec(explicit: Optional[float] = None) -> float:
+    """全量兜底间隔（秒）：显式值优先，否则读 env，非法回落默认。"""
+    if explicit is not None:
+        try:
+            value = float(explicit)
+        except (TypeError, ValueError):
+            return DEFAULT_FULL_INTERVAL_SEC
+        if value != value:  # NaN
+            return DEFAULT_FULL_INTERVAL_SEC
+        return max(MIN_FULL_INTERVAL_SEC, value)
+    try:
+        value = float(os.getenv(FULL_INTERVAL_ENV,
+                                str(DEFAULT_FULL_INTERVAL_SEC)) or
+                      str(DEFAULT_FULL_INTERVAL_SEC))
+    except (TypeError, ValueError):
+        return DEFAULT_FULL_INTERVAL_SEC
+    if value != value:  # NaN
+        return DEFAULT_FULL_INTERVAL_SEC
+    return max(MIN_FULL_INTERVAL_SEC, value)
+
+
+#: Emby 时间戳小数秒可能长达 7 位（.NET 风格），fromisoformat
+#: 只吃 6 位，先截断再解析。
+_TS_FRACTION_RE = re.compile(r"(\.\d{6})\d+")
+
+
+def _parse_upstream_ts(value) -> Optional[datetime]:
+    """解析上游时间戳为带时区 datetime（无时区按 UTC）：失败给 None。
+
+    吃 Emby 常见形态：``...T10:00:00.1234567Z``（7 位小数 + Z）、
+    带 ``+HH:MM`` 偏移、无时区裸串。解析不了不猜——该记录不
+    参与水位计算（见 UpstreamCatalogRecord.last_content_added_at）。
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    text = _TS_FRACTION_RE.sub(r"\1", text, count=1)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _get_watermark(db, source_id, library_id) -> Optional[str]:
+    """读（源，库）水位线原文（ISO 串）；无行返回 None。"""
+    if db is None:
+        return None
+    row = (db.query(em.UpstreamAggregateWatermark)
+           .filter(em.UpstreamAggregateWatermark.source_id == source_id,
+                   em.UpstreamAggregateWatermark.upstream_library_id
+                   == str(library_id))
+           .first())
+    return row.watermark_at if row is not None else None
+
+
+def has_watermarks(db, source_id) -> bool:
+    """该源是否已有任一库水位线（kind 决策的存量首次判据）。"""
+    if db is None:
+        return False
+    return (db.query(em.UpstreamAggregateWatermark.id)
+            .filter(em.UpstreamAggregateWatermark.source_id == source_id)
+            .first()) is not None
+
+
+def _advance_watermark(db, source_id, library_id,
+                       candidate: Optional[datetime]) -> Optional[str]:
+    """推进（源，库）水位线到 candidate（只 flush，调用方事务）。
+
+    candidate 为空（本轮没见到可解析时间戳）或不高于现值时
+    不动，返回现值；推进/新建返回新值。只许在本库本轮成功
+    完成后调用——逐库事务下推进随该库一起提交/回滚（失败
+    不推进靠的是这个事务边界，不另设保险）。
+    """
+    if db is None or candidate is None:
+        return _get_watermark(db, source_id, library_id)
+    row = (db.query(em.UpstreamAggregateWatermark)
+           .filter(em.UpstreamAggregateWatermark.source_id == source_id,
+                   em.UpstreamAggregateWatermark.upstream_library_id
+                   == str(library_id))
+           .first())
+    if row is not None:
+        existing = _parse_upstream_ts(row.watermark_at)
+        if existing is not None and candidate <= existing:
+            return row.watermark_at
+        row.watermark_at = candidate.isoformat()
+        row.updated_at = datetime.now()
+        db.flush()
+        return row.watermark_at
+    row = em.UpstreamAggregateWatermark(
+        source_id=source_id, upstream_library_id=str(library_id),
+        watermark_at=candidate.isoformat())
+    db.add(row)
+    db.flush()
+    return row.watermark_at
 
 #: 测试注入：重试退避的睡眠实现（生产用 time.sleep）。
 _sleep = time.sleep
@@ -395,7 +540,8 @@ def _resolve_api_key(source, *, http_post=None):
 
 def _page_fetcher(source, api_key, get, *, parent_id=None,
                   retries: int = PAGE_RETRIES_DEFAULT,
-                  backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT):
+                  backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT,
+                  sort_by: Optional[str] = None):
     """造一个 Emby Items 取页回调：parent_id 给了就按库拉，不给走整源。
 
     错误映射与旧整源路径同款：401→凭据失效、403 分流（JSON 体→
@@ -409,6 +555,12 @@ def _page_fetcher(source, api_key, get, *, parent_id=None,
     分页韧性（O-05）：断连/超时（status None）与 5xx 是瞬时形态，
     按 retries/backoff_sec 有限重试后才判上游不可用；401/403/429
     是确定性错误，重试只会放大上游压力且改变不了结论，不重试。
+
+    ``sort_by``（增量拉取）：给了就带 ``SortBy=<字段>`` +
+    ``SortOrder=Descending``（新→旧），水位线早停才成立；同时
+    把 ``DateCreated,DateLastContentAdded`` 显式加进 Fields
+    （水位计算靠响应里的时间戳原文，不赌服务端默认字段集）；
+    不给时请求参数与历史口径逐字一致。
     """
 
     base = (source.base_url or "").rstrip("/")
@@ -422,6 +574,10 @@ def _page_fetcher(source, api_key, get, *, parent_id=None,
             "StartIndex": str(start),
             "Limit": str(limit),
         }
+        if sort_by:
+            params["SortBy"] = sort_by
+            params["SortOrder"] = "Descending"
+            params["Fields"] = "ProviderIds,DateCreated,DateLastContentAdded"
         if parent_id:
             params["ParentId"] = str(parent_id)
         if api_key:
@@ -548,7 +704,9 @@ def iter_upstream_records_for_parent(
         page_size: int = DEFAULT_PAGE_SIZE,
         api_key: Optional[str] = None,
         retries: int = PAGE_RETRIES_DEFAULT,
-        backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT):
+        backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT,
+        sort_by: Optional[str] = None,
+        on_page: Optional[Callable] = None):
     """按 ParentId 流式拉回某上游库的目录记录（逐库分窗的核心）。
 
     只产出、不攒 list、不设单库总量上限：总量上限曾把真实大库
@@ -557,6 +715,10 @@ def iter_upstream_records_for_parent(
     与整源路径同款分页与错误映射，唯一区别是多传 ParentId；
     category_id 记为该库 id，供聚合层按库分区。
     api_key 传了就复用（逐库不重复换 token），没传则现解析。
+
+    ``sort_by`` / ``on_page`` 是增量拉取的两个口子（缺省都不
+    给 = 历史行为逐字不变）：sort_by 透传给取页器（倒序），
+    on_page 透传给 ``agg.iter_emby_pages``（逐页回调 + 早停）。
     """
     if page_size <= 0:
         raise ValueError("page_size must be positive")
@@ -566,10 +728,12 @@ def iter_upstream_records_for_parent(
     if api_key is None:
         api_key = _resolve_api_key(source, http_post=http_post)
     fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id,
-                               retries=retries, backoff_sec=backoff_sec)
+                               retries=retries, backoff_sec=backoff_sec,
+                               sort_by=sort_by)
     yield from agg.iter_emby_pages(
         fetch_page, source_id=str(source.id),
-        category_id=str(parent_id), page_size=page_size)
+        category_id=str(parent_id), page_size=page_size,
+        on_page=on_page)
 
 
 def iter_record_windows(records, window_size):
@@ -909,7 +1073,8 @@ def run_manual_aggregation(db: Session, source, *,
                            commit_each_library: bool = False,
                            skip_library_ids=None,
                            prior_summaries: Optional[Dict[str, dict]] = None,
-                           import_limit: Optional[int] = None
+                           import_limit: Optional[int] = None,
+                           run_kind: str = RUN_KIND_FULL
                            ) -> dict:
     """手动聚合一轮：按库分批拉目录 → 逐库聚合 → 逐库配对 → 开关开时写映射。
 
@@ -980,8 +1145,22 @@ def run_manual_aggregation(db: Session, source, *,
     libraries 列表与总量，summary 副本带 ``skipped_resume=True``
     标记；不给 prior 的跳过库按零计数空摘要并入。靠的是任务表
     （upstream_aggregate_tasks），本函数仍不自建检查点表。
+
+    增量轮（``run_kind="incremental"``，只由任务层定时口传入；
+    手动口恒 full、语义不变）：逐库有水位线才增量——按
+    ``DateLastContentAdded`` 倒序拉、整页最大值不高于水位线
+    即停（该页照常处理）；没水位线的库本轮按全量拉并在成功
+    后建线。水位线只在本库成功完成后推进到本轮见到的最大
+    值（逐库事务同提交/同回滚，失败不推进）；全量轮同样刷新
+    水位。增量轮的 seen 集合天然不完整，**绝不做生命周期
+    对账**（对账只认全量轮，见收尾守卫）。逐库 summary 与
+    返回结果带 kind / pages（实际请求页数）/ watermark_*，
+    供任务行审计。
     """
     ensure_aggregatable(source)
+    run_kind = (RUN_KIND_INCREMENTAL
+                if run_kind == RUN_KIND_INCREMENTAL else RUN_KIND_FULL)
+    incremental_round = run_kind == RUN_KIND_INCREMENTAL
     # 全量口径：不读 source.note（纯备注），pair_aggregates 不传
     # library_id，逐条按条目自身对位各库（见模块头备注口径）。
     if page_size is None:
@@ -1041,20 +1220,57 @@ def run_manual_aggregation(db: Session, source, *,
             if commit_each_library:
                 db.commit()
             continue
+        # 增量口径：本库有可解析水位线才走增量（倒序 + 水位
+        # 早停）；没水位线（或水位原文解析不了）的库在本轮按
+        # 全量拉、成功后建线。全量轮不早停，但同样经 _on_page
+        # 统计实际请求页数与见到的最大时间戳，成功后刷新水位。
+        wm_before = _get_watermark(db, source.id, lib_id)
+        wm_dt = _parse_upstream_ts(wm_before)
+        lib_incremental = bool(incremental_round and wm_dt is not None)
+        fetch_state: Dict[str, object] = {"pages": 0, "max_seen": None}
+
+        def _on_page(page_records, _total, _state=fetch_state,
+                     _wm=wm_dt, _inc=lib_incremental):
+            _state["pages"] = int(_state["pages"]) + 1
+            page_max: Optional[datetime] = None
+            for _rec in page_records:
+                _ts = _parse_upstream_ts(_rec.last_content_added_at)
+                if _ts is not None and (page_max is None or _ts > page_max):
+                    page_max = _ts
+            if page_max is not None:
+                _seen = _state["max_seen"]
+                if _seen is None or page_max > _seen:
+                    _state["max_seen"] = page_max
+            # 早停判据：整页最大值不高于水位线——本页照常处理
+            # （回调返回后本页记录仍会产出），不再取下一页。
+            # 整页都无可解析时间戳时 page_max 为 None、绝不早停
+            # （未证明已旧，宁可多拉、由全量兜底收口）。
+            return bool(_inc and _wm is not None and page_max is not None
+                        and page_max <= _wm)
+
         summary: Dict[str, object] = {
             "library_id": lib_id, "library_name": lib_name,
             "fetched": 0, "aggregates": 0, "paired": 0, "written": 0,
             "status": "ok",
+            "kind": (RUN_KIND_INCREMENTAL if lib_incremental
+                     else RUN_KIND_FULL),
+            "pages": 0,
+            "watermark_before": wm_before,
+            "watermark_after": wm_before,
         }
         lib_fetched = lib_aggregates = lib_paired = lib_written = 0
         lib_import = {key: 0 for key in _IMPORT_KEYS}
         lib_pairs: List[dict] = []
+        lib_watermark_after: Optional[str] = wm_before
         failure: Optional[Tuple[str, str]] = None
         try:
             record_iter = iter_upstream_records_for_parent(
                 source, lib_id, http_get=http_get, http_post=http_post,
                 page_size=page_size, api_key=api_key,
-                retries=page_retries, backoff_sec=page_backoff)
+                retries=page_retries, backoff_sec=page_backoff,
+                sort_by=(INCREMENTAL_SORT_FIELD if lib_incremental
+                         else None),
+                on_page=_on_page)
             for window in iter_record_windows(record_iter, WINDOW_RECORDS):
                 for _record in window:
                     seen_upstream_ids.add(
@@ -1164,6 +1380,12 @@ def run_manual_aggregation(db: Session, source, *,
                 total_aggregates += len(items)
                 total_paired += len(pairs)
                 total_written += written
+            # 本库全部窗处理完 = 本库成功收尾：水位推进到本轮
+            # 见到的最大值（只 flush；逐库事务下随本库一起提
+            # 交，中途失败走不到这里、提交期冲突回滚也会把推
+            # 进一并回滚——失败不推进靠这个事务边界保证）。
+            lib_watermark_after = _advance_watermark(
+                db, source.id, lib_id, fetch_state["max_seen"])
         except UpstreamAggregateRunError as exc:
             failure = (exc.code, exc.message)
         except IntegrityError:
@@ -1175,6 +1397,7 @@ def run_manual_aggregation(db: Session, source, *,
         # 进库统计并入本库 summary（commit 模式回滚时在下面归 0）。
         summary.update({
             f"import_{_k}": lib_import[_k] for _k in _IMPORT_KEYS})
+        summary["pages"] = int(fetch_state["pages"])
         if failure is not None:
             code, message = failure
             if commit_each_library:
@@ -1207,7 +1430,8 @@ def run_manual_aggregation(db: Session, source, *,
                         {"type": "library_failed", "summary": summary})
             continue
         summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
-                        "paired": lib_paired, "written": lib_written})
+                        "paired": lib_paired, "written": lib_written,
+                        "watermark_after": lib_watermark_after})
         library_summaries.append(summary)
         if commit_each_library:
             all_pairs.extend(lib_pairs)
@@ -1226,6 +1450,8 @@ def run_manual_aggregation(db: Session, source, *,
                 summary.update({
                     "paired": 0, "written": 0, "status": "failed",
                     **{f"import_{_k}": 0 for _k in _IMPORT_KEYS},
+                    # 水位推进随本库事务一并回滚，照实回退报告。
+                    "watermark_after": wm_before,
                     "error_code": "mapping_conflict",
                     "error": "映射写入冲突，请重试"})
                 del all_pairs[len(all_pairs) - len(lib_pairs):]
@@ -1244,8 +1470,12 @@ def run_manual_aggregation(db: Session, source, *,
     # 跳过，本轮 seen 集合就不完整，计数会把上游抖动误判成下架；
     # 开关关时对账函数自身也会整表不动（双保险）。对账是附加
     # 动作：失败只记日志，不打断聚合结果返回。
+    # 增量轮红线（显式守卫）：增量轮只拉了水位线以上的新记录，
+    # seen 集合天然不完整，旧条目没见到绝不许记 missing——对账
+    # 只认全量轮（run_kind == full），增量轮恒不调用。
     lifecycle_stats: Optional[Dict[str, object]] = None
-    if (libraries and not failed_libraries and not skip_ids
+    if (run_kind == RUN_KIND_FULL
+            and libraries and not failed_libraries and not skip_ids
             and getattr(source, "import_enabled", True)):
         try:
             lifecycle_stats = uimp.reconcile_hosted_lifecycle(
@@ -1262,6 +1492,7 @@ def run_manual_aggregation(db: Session, source, *,
                 mapping_on)
     return {
         "source_id": source.id,
+        "kind": run_kind,
         "fetched": total_fetched,
         "aggregates": total_aggregates,
         "pairs": all_pairs,
