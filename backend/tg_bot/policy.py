@@ -40,7 +40,7 @@ DEFAULTS: dict[str, str] = {
     "bot_cmd_wants": "true",
     # 管理员群号对账开关（借鉴第 3 项，仅私聊 + is_staff 可用）
     "bot_cmd_reconcile": "true",
-    # 管理员审计反查开关（借鉴第 2 项，仅私聊 + is_staff 可用）
+    # 管理员查人开关（借鉴第 2 项：私聊审计全卡 / 群内精简卡，均 is_staff）
     "bot_cmd_whois": "true",
     # 红包功能开关（/redpacket 发红包 + 抢红包按钮）
     "bot_redpacket_enabled": "true",

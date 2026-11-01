@@ -14,6 +14,9 @@
 - IP 对管理员完整显示：这是管理员自查工具，IP 本就是反查的输入
   信号，打码反而没法核对；命令本身仅私聊 + is_staff 双门（见
   handlers.handle_whois），普通用户看不到任何结果。
+
+本文件下半段另有群内精简卡（find_lite_user / render_whois_lite）：
+管理员在群里查人时只出字段白名单，审计痕迹一律不进，口径见该段注释。
 """
 from __future__ import annotations
 
@@ -274,3 +277,117 @@ def render_whois(db, keyword: str) -> str:
     if len(text) > 3900:
         text = text[:3900] + "\n…（结果过长已截断）"
     return text
+
+
+# ---------------------------------------------------------------------------
+# 群内精简卡（2026-11-01 用户拍板：只给管理员、在群里能查、出精简卡）。
+# 与上面审计全卡是两条链路，硬规矩更严：
+# - 定位只查 web_users 本表（TG 号 / 站内用户名），绝不碰 login_logs /
+#   播放会话——IP、设备、UA 信号根本不进精简卡链路；
+# - 渲染只出字段白名单：站内用户名、TG 显示名、等级、公益资格、订阅
+#   到期、能量余额、网盘绑定（只 provider＋状态，无 label / 凭据 id）、
+#   账号状态；多一个字段都不许加（断言型测试挡敏感字段）；
+# - 全只读，与全卡同一口径：不建行、不改行、不提交事务。
+# ---------------------------------------------------------------------------
+
+def find_lite_user(db, keyword: str):
+    """精简卡带参定位：纯数字→telegram_id 精确；文本→username 精确
+    优先，其次 username / emby_username 模糊（取最早一条）。"""
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return None
+    if keyword.isdigit():
+        return (
+            db.query(models.WebUser)
+            .filter(models.WebUser.telegram_id == int(keyword))
+            .first()
+        )
+    exact = (
+        db.query(models.WebUser)
+        .filter(models.WebUser.username == keyword)
+        .first()
+    )
+    if exact is not None:
+        return exact
+    like = f"%{keyword}%"
+    return (
+        db.query(models.WebUser)
+        .filter(models.WebUser.username.ilike(like)
+                | models.WebUser.emby_username.ilike(like))
+        .order_by(models.WebUser.id)
+        .first()
+    )
+
+
+def _binding_lite_line(db, user_id: int) -> str:
+    """绑定盘（精简）：只出 provider＋状态，绝不带 label / 凭据 id。"""
+    rows = (
+        db.query(em.UserStorageBinding)
+        .filter(em.UserStorageBinding.user_id == user_id)
+        .order_by(em.UserStorageBinding.id)
+        .all()
+    )
+    if not rows:
+        return "未绑定网盘"
+    parts = []
+    for row in rows:
+        provider = PROVIDER_TEXT.get(row.provider,
+                                     html.escape(str(row.provider)))
+        status = BINDING_STATUS_TEXT.get(row.status,
+                                         html.escape(str(row.status)))
+        parts.append(f"{provider}｜{status}")
+    return "；".join(parts)
+
+
+def _subscription_lite_line(db, user_id: int) -> str:
+    """订阅到期状态：取到期最晚的一条出状态＋到期日（不带套餐名）。
+
+    表缺失的夹具环境回落「暂无订阅」，与 features._level_info 的
+    夹具回落同口径：只读展示路径不许因缺表炸掉整张卡。
+    """
+    try:
+        row = (
+            db.query(models.UserSubscription)
+            .filter(models.UserSubscription.user_id == user_id)
+            .order_by(models.UserSubscription.end_date.desc())
+            .first()
+        )
+    except Exception:
+        db.rollback()
+        return "暂无订阅"
+    if row is None:
+        return "暂无订阅"
+    end = row.end_date.strftime("%Y-%m-%d") if row.end_date else "未知"
+    active = (row.status == "active" and row.end_date
+              and row.end_date > datetime.now())
+    return f"{'生效中' if active else '已结束'}（至 {end}）"
+
+
+def render_whois_lite(db, user, tg_display_name: str | None = None) -> str:
+    """群内精简卡：字段白名单逐项对用户定版，不许私自加行。
+
+    等级 / 公益资格复用 features 的现行口径（横切只许一套）：
+    _level_info 只读快照、_welfare_line 三态文案。
+    """
+    from backend.tg_bot import features
+
+    info = features._level_info(db, user)
+    welfare = features._welfare_line(user).split("：", 1)[-1]
+    status = "正常" if bool(getattr(user, "is_active", True)) else "已停用"
+    rows = [
+        layout.row("👤", "账号",
+                   f"<b>{html.escape(str(user.username or ''))}</b>"
+                   f"（#{user.id}）"),
+        layout.row("✈️", "TG 显示名",
+                   html.escape(str(tg_display_name)) if tg_display_name
+                   else "—"),
+        layout.row("⭐", "等级",
+                   f"Lv.{info['level']} "
+                   f"{html.escape(str(info['name']))}"),
+        layout.row("📊", "公益资格", welfare),
+        layout.row("📦", "订阅", _subscription_lite_line(db, user.id)),
+        layout.row("🍒", "能量余额", int(getattr(user, "points", 0) or 0)),
+        layout.row("🔗", "网盘绑定", _binding_lite_line(db, user.id)),
+        layout.row("🚦", "账号状态", status),
+    ]
+    return layout.card(layout.title("账号速览"), rows)

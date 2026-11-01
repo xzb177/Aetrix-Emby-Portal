@@ -63,7 +63,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("wants", "[私聊] 查想看"),
     ("reconcile", "[私聊] 群号一致性对账（管理员）"),
     ("rankpush", "[私聊] 推送观影榜（管理员）"),
-    ("whois", "[私聊] 账号反查（管理员）"),
+    ("whois", "[群/私聊] 账号反查（管理员）"),
 ]
 
 
