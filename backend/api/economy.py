@@ -519,7 +519,9 @@ def checkin_status(
         models.CheckinRecord.checkin_date >= today,
     ).first() is not None
 
-    # 连签数：今日已签按当日记录，未签则按昨天回溯
+    # 连签数：今日已签按当日记录，未签则按昨天回溯。
+    # PA-016：回溯须有“昨天”下界——只认昨天或今天的记录，否则断签用户
+    # 会看到 10 天前的旧连签（与 _do_checkin_core“只认昨天才续连签”一致）。
     anchor = today
     if not checked:
         anchor = today - timedelta(days=1)
@@ -527,7 +529,9 @@ def checkin_status(
         models.CheckinRecord.user_id == current_user.id,
         models.CheckinRecord.checkin_date <= anchor,
     ).order_by(models.CheckinRecord.checkin_date.desc()).first()
-    streak = last.streak if last else 0
+    streak = 0
+    if last is not None and last.checkin_date >= today - timedelta(days=1):
+        streak = last.streak
 
     rules = _checkin_rules(db)
     return CheckinStatusResponse(
@@ -660,8 +664,20 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
                 limit = int(cfg.get("daily_gain_limit", 0) or 0)
                 gained = _vitality.get_today_free_gain(db, user_id) if limit > 0 else 0
                 gain = _get_int_config(db, "vitality_checkin_gain", 1)
-                if gain > 0 and (limit <= 0 or gained < limit):
-                    vitality_gained = _vitality._add_vitality(db, user_id, gain, "checkin")
+                # PA-014：按剩余量钳制，不是只判“未满就全额发”——
+                # 与 vitality._grant_free_vitality（观影活力）同口径。
+                if limit > 0:
+                    gain = max(0, min(gain, limit - gained))
+                if gain > 0:
+                    # PA-015：_add_vitality 返回的是钳制后余额，不是增量；
+                    # 机器人面板按增量渲染“+N”，故用加后值减加前值。
+                    # 加前值直查库（不用 user.vitality 属性：_add_vitality 走原生
+                    # SQL，ORM 属性不会同步刷新）。不改 _add_vitality 返回语义。
+                    before = db.query(models.WebUser.vitality).filter(
+                        models.WebUser.id == user_id).scalar()
+                    before = int(before or 0)
+                    after = _vitality._add_vitality(db, user_id, gain, "checkin")
+                    vitality_gained = after - before
         except Exception:
             logger.exception("checkin vitality restore failed for user %s", user_id)
     # Step 0 公益原生经验：签到 +1（可刷日封顶 10 钳制；不提交，随签到事务提交）

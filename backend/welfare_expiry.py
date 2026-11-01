@@ -134,11 +134,48 @@ def check_welfare_expiry(db: Session) -> dict:
             "renewed": renewed_ids}
 
 
+def _last_active_at(db: Session, u: models.WebUser):
+    """最后活跃时间：网站登录 / 签到 / 播放三信号取最晚。
+
+    PA-013：只认 last_login_at 会误伤只用播放器看片、只在机器人签到、
+    30 天以上未做网站登录的公益用户——播放与签到均不更新 last_login_at。
+    播放信号取 PlaybackSession 的 start_time 与 last_update_at 两者最晚值：
+    会话复活会重置 start_time，而 last_update_at 随每次上报刷新，两者取 max
+    才不漏掉任一方向的最新活动。三者缺失时回退 welfare_granted_at。
+    """
+    candidates = [u.last_login_at, u.welfare_granted_at]
+    latest_checkin = (
+        db.query(models.CheckinRecord.checkin_date)
+        .filter(models.CheckinRecord.user_id == u.id)
+        .order_by(models.CheckinRecord.checkin_date.desc())
+        .first()
+    )
+    if latest_checkin and latest_checkin[0]:
+        candidates.append(latest_checkin[0])
+    # 懒导入：与 points._recent_active_days 同口径，避免顶层循环导入。
+    from sqlalchemy import func
+
+    from backend.emby_server import models as em_models
+
+    # func.max 对 NULL 免疫（老行 last_update_at 为空也不影响取最晚值）。
+    latest_play = (
+        db.query(func.max(em_models.PlaybackSession.start_time),
+                 func.max(em_models.PlaybackSession.last_update_at))
+        .filter(em_models.PlaybackSession.user_id == u.id)
+        .one()
+    )
+    if latest_play:
+        candidates.extend([ts for ts in latest_play if ts])
+    present = [ts for ts in candidates if ts is not None]
+    return max(present) if present else None
+
+
 def check_inactive_users(db: Session) -> dict:
     """扫描长期不活跃的公益用户并禁用。
 
     仅检查未过期（welfare_expires_at 为空或晚于当前时间）的公益用户；
-    以 last_login_at（缺失时回退到 welfare_granted_at）作为最后活跃时间，
+    以最后活跃时间（网站登录 / 最新签到 / 最新播放三信号取最晚，
+    缺失时回退到 welfare_granted_at）作为判定基准，
     超过 inactive_days（welfare_inactive_days）未活跃的用户取消公益身份，
     并写入 channel="auto_inactive" 的 WelfareGrantLog。
     单个用户处理失败时记录错误日志并继续处理下一个用户。
@@ -171,7 +208,7 @@ def check_inactive_users(db: Session) -> dict:
                 exp = u.welfare_expires_at
                 if exp is not None and exp <= now:
                     continue
-                last_active = u.last_login_at or u.welfare_granted_at
+                last_active = _last_active_at(db, u)
                 if last_active is None:
                     continue
                 if (now - last_active).days >= inactive_days:
