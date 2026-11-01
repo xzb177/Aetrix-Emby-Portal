@@ -328,6 +328,12 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "transfer_cross_cloudpull_enabled": ("bool",),
     "transfer_cross_cloudpull_ttl_sec": ("int", 1800, 86400),
     "transfer_cross_cloudpull_timeout_sec": ("int", 60, 21600),
+    # 换代线地基记账开关（2026-11-01）：交付状态落盘＋块哈希
+    # 清单记账，纯记账 fail-open；默认开由 transfer_variant
+    # .manifest_accounting_enabled 的读取默认兜底（无行=True），
+    # 关时执行面不接线、行为与上线前逐字一致。纯 SystemConfig
+    # 键，不进 env.example（#1527 先例）。
+    "transfer_manifest_accounting_enabled": ("bool",),
 }
 
 # Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的
