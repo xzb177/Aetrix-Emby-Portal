@@ -853,12 +853,13 @@ def _whitelist_status(db: Session, user: models.WebUser, now: datetime) -> dict:
     }
 
 
-def whitelist_accounts(db: Session) -> list:
-    """已核销白名单码的账号名单（管理端查看/回收用）。
+def _whitelist_traces(db: Session) -> dict:
+    """白名单码核销痕迹：user_id -> (RegistrationCode, redeemed_at|None)。
 
-    来源只认核销痕迹：CodeRedemption 核销记录为主，RegistrationCode
-    的 used_by CSV 兜底（核销记录表上线前的老记录）。用户不存在（已删号）
-    的痕迹跳过。状态按当前三处实际值现算，不存第二份状态。
+    只认核销痕迹：CodeRedemption 核销记录为主，RegistrationCode 的
+    used_by CSV 兜底（核销记录表上线前的老记录）。这是「谁用过白名单码」
+    的唯一来源——名单、回收与各横切豁免（活力等）都从这里出发，痕迹
+    本身不等于仍生效，是否生效由 _whitelist_status 现算。
     """
     codes_by_id = {
         c.id: c
@@ -866,7 +867,7 @@ def whitelist_accounts(db: Session) -> list:
             models.RegistrationCode.code_type == CODE_TYPE_WHITELIST).all()
     }
     if not codes_by_id:
-        return []
+        return {}
     found = {}  # user_id -> (code, redeemed_at)
     rows = (
         db.query(models.CodeRedemption)
@@ -881,6 +882,50 @@ def whitelist_accounts(db: Session) -> list:
             part = part.strip()
             if part.isdigit():
                 found.setdefault(int(part), (c, None))
+    return found
+
+
+def is_whitelist_account(db: Session, user: models.WebUser) -> bool:
+    """该账号当前是否为生效中的白名单（永久）账号。
+
+    与 whitelist_accounts 名单同一口径：有白名单码核销痕迹（_whitelist_traces），
+    且 _whitelist_status 现算三处永久仍全在位（is_permanent_active）。
+    管理端回收后三处永久被置到期，本判定随即为 False。「谁是永久账号」
+    全站只此一份定义，其他机制（如活力豁免）只许复用本函数，不许另立名单。
+    """
+    if user is None:
+        return False
+    if user.id not in _whitelist_traces(db):
+        return False
+    return _whitelist_status(db, user, datetime.now())["is_permanent_active"]
+
+
+def whitelist_account_ids(db: Session) -> set:
+    """当前生效中的白名单账号 id 集合（口径同 is_whitelist_account）。
+
+    供批量场景（如每日活力扣减）一次性取豁免集合，避免逐人查痕迹。
+    """
+    traces = _whitelist_traces(db)
+    if not traces:
+        return set()
+    now = datetime.now()
+    out = set()
+    for uid in traces:
+        user = db.query(models.WebUser).filter(
+            models.WebUser.id == uid).first()
+        if user is not None and _whitelist_status(
+                db, user, now)["is_permanent_active"]:
+            out.add(uid)
+    return out
+
+
+def whitelist_accounts(db: Session) -> list:
+    """已核销白名单码的账号名单（管理端查看/回收用）。
+
+    来源只认核销痕迹（_whitelist_traces）。用户不存在（已删号）
+    的痕迹跳过。状态按当前三处实际值现算，不存第二份状态。
+    """
+    found = _whitelist_traces(db)
     now = datetime.now()
     out = []
     for user_id in sorted(found):

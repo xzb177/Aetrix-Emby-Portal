@@ -171,6 +171,39 @@ def vitality_status(db: Session, user) -> dict:
     }
 
 
+def _is_whitelist_exempt(db: Session, user) -> bool:
+    """白名单（永久）账号活力豁免判定（单用户版）。
+
+    口径只复用 codes 的白名单定义（codes.is_whitelist_account：核销痕迹
+    ＋三处永久现算），本模块不另立名单。函数内导入 codes 避开循环导入
+    （与本模块导入 economy 同款写法）。判定失败时按不豁免处理
+    （fail-closed）并记日志，绝不凭不确定数据放行。
+    """
+    try:
+        from backend import codes as _codes
+
+        return _codes.is_whitelist_account(db, user)
+    except Exception:
+        logger.exception("白名单活力豁免判定失败，按不豁免处理 user=%s",
+                         getattr(user, "id", None))
+        return False
+
+
+def _whitelist_exempt_ids(db: Session) -> set:
+    """当前生效中的白名单账号 id 集合（批量版，口径同 _is_whitelist_exempt）。
+
+    计算失败时返回空集（本轮不豁免，退回旧行为，与签到跳过集合同款
+    fail-closed），绝不凭不确定数据跳过扣减。
+    """
+    try:
+        from backend import codes as _codes
+
+        return _codes.whitelist_account_ids(db)
+    except Exception:
+        logger.warning("白名单活力豁免集合计算失败，本轮不豁免", exc_info=True)
+        return set()
+
+
 def ensure_can_play(db: Session, user) -> None:
     cfg = get_vitality_config(db)
     if not cfg["enabled"]:
@@ -178,6 +211,10 @@ def ensure_can_play(db: Session, user) -> None:
     if not getattr(user, "is_welfare", False):
         return
     if getattr(user, "is_staff", False):
+        return
+    # 白名单（永久）账号活力豁免（2026-11-01 用户亲定）：哪怕活力已归零
+    # 也恒放行，杜绝「资格永久但被活力阈值拦住播放」。
+    if _is_whitelist_exempt(db, user):
         return
     v = int(getattr(user, "vitality", None) or 0)
     if v >= cfg["limit_threshold"]:
@@ -415,18 +452,23 @@ def daily_deduct(db: Session) -> dict:
     开时恢复 #1449 的跳过逻辑（上一自然日有签到记录的用户本轮不扣）。
     开关值缺失／非法时 _cfg_bool 回落 False（关）；跳过集合计算失败时
     同样按不跳过处理（fail-closed，绝不凭不确定数据跳过扣减）。
+    白名单（永久）账号豁免（2026-11-01 用户亲定）：生效中的白名单账号
+    整轮跳过、不扣分（计数 skipped_whitelist），口径复用 codes 的白名单
+    定义（whitelist_account_ids）；集合计算失败时按不豁免处理
+    （fail-closed，与签到跳过集合同款）。
     上限 14、阈值 3、日耗 1、签到 +1、每日免费上限、扣到 0 为止、
     键集分页与单用户 savepoint 隔离均不变。
     """
     cfg = get_vitality_config(db)
     if not cfg["enabled"]:
         return {"deducted": 0, "suspended": 0, "failed": 0, "skipped": True,
-                "skipped_checkin": 0}
+                "skipped_checkin": 0, "skipped_whitelist": 0}
     cost = cfg["daily_cost"]
     deducted = 0
     suspended = 0
     failed = 0
     skipped_checkin = 0
+    skipped_whitelist = 0
     skip_ids = set()
     if cfg.get("checkin_skip_deduct_enabled"):
         try:
@@ -434,6 +476,7 @@ def daily_deduct(db: Session) -> dict:
         except Exception:
             logger.warning("签到日免日耗：跳过集合计算失败，本轮不跳过", exc_info=True)
             skip_ids = set()
+    exempt_ids = _whitelist_exempt_ids(db)
     last_id = 0
     # 键集分页（id > last_id）而不是 offset：过滤条件是 vitality > 0，本批扣到 0 的用户
     # 会从结果集里消失，offset 继续往后跳就会整批漏扣后面的用户。
@@ -446,6 +489,9 @@ def daily_deduct(db: Session) -> dict:
         if not rows:
             break
         for (uid,) in rows:
+            if uid in exempt_ids:
+                skipped_whitelist += 1
+                continue
             if uid in skip_ids:
                 skipped_checkin += 1
                 continue
@@ -469,7 +515,8 @@ def daily_deduct(db: Session) -> dict:
             break
         last_id = rows[-1][0]
     return {"deducted": deducted, "suspended": suspended, "failed": failed,
-            "skipped_checkin": skipped_checkin}
+            "skipped_checkin": skipped_checkin,
+            "skipped_whitelist": skipped_whitelist}
 
 _SCHEDULER_STARTED = False
 _SCHEDULER_LOCK = threading.Lock()

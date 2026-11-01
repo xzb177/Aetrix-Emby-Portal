@@ -137,11 +137,14 @@ def test_normal_deduct_unchanged(db):
 
     2026-10-28 保号 A+B：结果有意多一个 skipped_checkin（本轮因昨天签到
     而跳过扣减的人数，本例为 0）；扣减/停播/失败三数语义不变。
+    2026-11-01 白名单豁免：结果再多一个 skipped_whitelist（本轮因白名单
+    豁免跳过扣减的人数，本例无白名单账号为 0），其余语义不变。
     """
     n = 5
     _make_users(db, n, vitality_value=1)
     res = vitality.daily_deduct(db)
-    assert res == {"deducted": n, "suspended": n, "failed": 0, "skipped_checkin": 0}
+    assert res == {"deducted": n, "suspended": n, "failed": 0,
+                   "skipped_checkin": 0, "skipped_whitelist": 0}
     assert db.query(models.WebUser).filter(models.WebUser.vitality > 0).count() == 0
 
 
