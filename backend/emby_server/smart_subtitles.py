@@ -12,7 +12,10 @@
 
 能力边界（产品红线）：
 - 不转码、不做自研播放器：双语轨是 VTT 文本轨，供第三方播放器
-  经既有字幕投递链路消费，本模块不改播放链路。
+  经用户端取用口消费（同款条目可见性＋播放门禁，见
+  ``backend.api.smart_subtitles`` 的取用路由）；双语轨是按用户
+  生成的个人产物，不进条目共享的 MediaStream 轨列表，本模块
+  不改播放链路。
 - 不爬取、不保存他人盘内容：输入只来自调用方给出的字幕文本与
   同目录候选文件名，不主动读任何挂载/远端文件。
 - AI 翻译走配置化提供方接口，默认不启用任何外部调用：
@@ -320,24 +323,36 @@ _LANG_RE = re.compile(r"^[a-z]{2,3}$")
 
 
 def bilingual_cache_path(item_id: int, source_lang: str, target_lang: str,
-                         cache_dir: Optional[str] = None) -> Path:
-    """双语轨落盘路径：<字幕缓存区>/smart/item_<id>_<源>-<目标>.vtt。"""
+                         cache_dir: Optional[str] = None,
+                         user_id: Optional[int] = None) -> Path:
+    """双语轨落盘路径：<字幕缓存区>/smart/item_<id>[_<uid>]_<源>-<目标>.vtt。
+
+    ``user_id`` 给出时文件名带用户维：同条目同语言、不同用户生成
+    的轨互不覆盖（PA-040）；不给时保持旧名，兼容模块级直调与
+    既有测试。
+    """
     if not _LANG_RE.match(source_lang or "") or not _LANG_RE.match(target_lang or ""):
         raise ValueError("语言码须为 2~3 位小写字母（如 chi/eng）")
     base = Path(cache_dir) if cache_dir else Path(subtitle_delivery.SUB_CACHE_DIR)
-    return base / "smart" / f"item_{int(item_id)}_{source_lang}-{target_lang}.vtt"
+    if user_id is None:
+        name = f"item_{int(item_id)}_{source_lang}-{target_lang}.vtt"
+    else:
+        name = f"item_{int(item_id)}_{int(user_id)}_{source_lang}-{target_lang}.vtt"
+    return base / "smart" / name
 
 
 def write_bilingual_track(item_id: int, vtt_text: str, source_lang: str,
                           target_lang: str,
-                          cache_dir: Optional[str] = None) -> str:
+                          cache_dir: Optional[str] = None,
+                          user_id: Optional[int] = None) -> str:
     """把双语 VTT 写进服务端字幕缓存区，返回文件名（不回显绝对路径）。
 
     落盘前校验解析后路径仍在缓存区内；缓存区外的任何路径一律拒绝。
+    ``user_id`` 转交 ``bilingual_cache_path``（见该函数用户维说明）。
     """
     base = Path(cache_dir) if cache_dir else Path(subtitle_delivery.SUB_CACHE_DIR)
     path = bilingual_cache_path(item_id, source_lang, target_lang,
-                                cache_dir=str(base))
+                                cache_dir=str(base), user_id=user_id)
     resolved_base = base.resolve()
     resolved = path.resolve()
     if resolved_base not in resolved.parents:
@@ -352,7 +367,7 @@ def generate_bilingual_track(item_id: int, source_text: str,
                              translations: Optional[Sequence[str]] = None,
                              http_post: Optional[Callable] = None,
                              cache_dir: Optional[str] = None,
-                             db=None) -> dict:
+                             db=None, user_id: Optional[int] = None) -> dict:
     """一站式：开关 → 语言码先验 → 翻译（未给译文时调提供方）→ 合成 → 缓存区落盘。
 
     调用方已给 ``translations`` 时不做任何外部调用；未给时缺配置即
@@ -366,13 +381,14 @@ def generate_bilingual_track(item_id: int, source_text: str,
     if not cues:
         raise ValueError("原文中没有可解析的字幕 cue，拒绝生成空轨")
     # 只校验、不落盘；写盘时还会再验一次，口径同一处。
-    bilingual_cache_path(item_id, source_lang, target_lang, cache_dir=cache_dir)
+    bilingual_cache_path(item_id, source_lang, target_lang, cache_dir=cache_dir,
+                         user_id=user_id)
     if translations is None:
         translations = translate_texts(
             [c["text"] for c in cues], source_lang, target_lang,
             http_post=http_post, db=db)
     vtt = build_bilingual_vtt(source_text, translations, source_lang, target_lang)
     filename = write_bilingual_track(item_id, vtt, source_lang, target_lang,
-                                     cache_dir=cache_dir)
+                                     cache_dir=cache_dir, user_id=user_id)
     return {"filename": filename, "cue_count": len(cues),
             "source_lang": source_lang, "target_lang": target_lang}

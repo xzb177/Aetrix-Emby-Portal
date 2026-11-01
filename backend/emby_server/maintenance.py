@@ -241,6 +241,10 @@ def prune_subtitle_cache(max_files: Optional[int] = None,
 
     字幕缓存（外挂/内封字幕转 VTT）是只增不减的：每个条目一份文件，
     追新久了就是几万个文件躺在磁盘上。
+
+    递归扫描整个缓存区（含 ``smart/`` 等子目录，PA-040）：此前只
+    ``scandir`` 顶层且只计文件，子目录内的双语轨整目录被跳过，
+    既不按天数删、也不计入数量上限。
     """
     from backend.emby_server import subtitles
 
@@ -253,18 +257,18 @@ def prune_subtitle_cache(max_files: Optional[int] = None,
     cutoff = datetime.now().timestamp() - days * 86400
     removed = 0
     entries: list[tuple[float, str]] = []
-    for entry in os.scandir(cache_dir):
-        try:
-            if not entry.is_file():
+    for root, _dirs, files in os.walk(cache_dir):
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
                 continue
-            mtime = entry.stat().st_mtime
-        except OSError:
-            continue
-        if mtime < cutoff:
-            if _unlink(entry.path):
-                removed += 1
-            continue
-        entries.append((mtime, entry.path))
+            if mtime < cutoff:
+                if _unlink(path):
+                    removed += 1
+                continue
+            entries.append((mtime, path))
 
     if len(entries) > keep_files:
         entries.sort()  # 最旧在前
