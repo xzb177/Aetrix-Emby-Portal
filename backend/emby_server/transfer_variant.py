@@ -412,6 +412,20 @@ def pan115_multipart_upload_enabled(db=None):
     return _system_config_bool(db, KEY_PAN115_MULTIPART_UPLOAD_ENABLED, True)
 
 
+#: 夸克二期（转存 + 点播中继）开关 SystemConfig 键；默认开
+#: （站内既定规矩：没用户时开关默认开）。关 = 只绑夸克的用户
+#: 点播在门禁直接 failed 明示（quark_disabled，不回落共享）、
+#: 点播出流端再复核一遍关时 503 明示；在途夸克跨单仍走跨
+#: provider 总开关口径由工人处理，本键不半路杀单。纯
+#: SystemConfig 键，不进 env.example（#1527 先例）。
+KEY_QUARK_PLAY_ENABLED = "quark_play_enabled"
+
+
+def quark_play_enabled(db=None):
+    """夸克转存/点播开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(db, KEY_QUARK_PLAY_ENABLED, True)
+
+
 #: 换代线地基记账开关 SystemConfig 键（2026-11-01，蓝图 v2 附二
 #: 换代线 step 1 余项＋step 2）：开 = Drive→115 分片路的交付状态
 #: 落 transfer_deliveries（sidecar 的持久化镜像）＋搬运程内块
@@ -585,6 +599,7 @@ def transfer_config_payload(db):
         "transfer_cross_cloudpull_ttl_sec": cross_cloudpull_ttl_sec(db),
         "transfer_cross_cloudpull_timeout_sec": (
             cross_cloudpull_timeout_sec(db)),
+        "quark_play_enabled": quark_play_enabled(db),
     }
 
 
@@ -601,7 +616,8 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_rebind_waiver_max_uses=None,
                           transfer_cross_cloudpull_enabled=None,
                           transfer_cross_cloudpull_ttl_sec=None,
-                          transfer_cross_cloudpull_timeout_sec=None):
+                          transfer_cross_cloudpull_timeout_sec=None,
+                          quark_play_enabled=None):
     """管理端转存配置写入：走 config_service 的 transfer 家族校验。
 
     None = 该键不改。非法值抛 ConfigValueError（ValueError 子类，
@@ -650,6 +666,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if transfer_cross_cloudpull_timeout_sec is not None:
         values[KEY_TRANSFER_CROSS_CLOUDPULL_TIMEOUT_SEC] = str(
             transfer_cross_cloudpull_timeout_sec)
+    if quark_play_enabled is not None:
+        values[KEY_QUARK_PLAY_ENABLED] = (
+            "true" if quark_play_enabled else "false")
     if values:
         from backend import config_service
         config_service.save_config(db, values, schema="transfer")
@@ -1579,7 +1598,9 @@ def _is_cross_job(job):
     """任务行是否跨 provider：provider=源，dest_drive_id=目标盘。
 
     - Drive 源任务 dest 以 pan115: 开头 → 落用户 115 盘；
-    - 115 源任务 dest 以 userdrive: 开头 → 落用户 Drive 盘。
+    - 115 源任务 dest 以 userdrive: 开头 → 落用户 Drive 盘；
+    - 任一源（drive/pan115）dest 以 quark: 开头 → 落用户夸克盘
+      （二期；夸克无同 provider 源，quark: 恒跨）。
     同 provider 任务的 dest 与 provider 同侧（drive→userdrive:、
     pan115→pan115:），不会误判。任务行无需新列，provider 字段
     保留为源 provider（巡检/统计口径不变）。
@@ -1587,7 +1608,9 @@ def _is_cross_job(job):
     provider = (getattr(job, "provider", "") or "").strip()
     dest = (getattr(job, "dest_drive_id", "") or "").strip()
     return ((provider == "drive" and dest.startswith("pan115:"))
-            or (provider == "pan115" and dest.startswith("userdrive:")))
+            or (provider == "pan115" and dest.startswith("userdrive:"))
+            or (provider in ("drive", "pan115")
+                and dest.startswith("quark:")))
 
 
 def _latest_job_for_dest(db, item_id, owner_scope, owner_ref, dest):
@@ -1637,10 +1660,16 @@ FILE_ONLY_COPY_UNAVAILABLE_DETAIL = (
     "file-only 授权无法服务端 copy 该文件（令牌看不见源文件），"
     "搬字节转存已停用；请等只读授权（drive.readonly）恢复后"
     "重新绑定再播")
+#: 夸克点播开关关时的门禁明示文案（二期）：只绑夸克的用户被
+#: 挡在这里，不许 proceed 去播共享原件。
+QUARK_PLAY_DISABLED_DETAIL = (
+    "夸克转存/点播已被管理员关闭，不走共享播放："
+    "请改绑谷歌盘或 115，或联系管理员开启夸克点播")
 
 
 def create_cross_provider_job(db, item, user_id, source_provider,
-                              trigger="playback", force=False):
+                              trigger="playback", force=False,
+                              dest_provider=None):
     """给该用户建一个跨 provider 转存任务（门禁共用）。
 
     校验与 create_user_job 同款（总闸、条目 id、24h 同归属桶节流、
@@ -1650,6 +1679,12 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     （drive 源→pan115:user-<uid>，pan115 源→userdrive:<uid>）。
     force=True 仅供门禁对 failed-retriable 任务的重触发，语义同
     create_user_job（24h 内已失败的任务不挡重建）。
+
+    dest_provider（二期夸克）：落点 provider，缺省按源推导
+    （drive 源→pan115、pan115 源→drive，既有调用方行为逐字
+    不变）；显式传 "quark" 时落 quark:user-<uid>、no_binding
+    前置校验查夸克绑定。落点与源相同或不在三家名单内 →
+    bad_dest_provider 响亮拒绝，不许建出执行器认不出的单。
 
     2026-10-29 曾随搬字节路线一并关停（#1487），2026-10-30 用户
     亲点重开：恢复建单。总开关 cross_provider_transfer_enabled
@@ -1668,8 +1703,17 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     if item_id is None:
         raise TransferError("no_item_id", "条目无 id")
     owner_ref = str(user_id)
-    dest = (f"pan115:user-{user_id}" if source_provider == "drive"
-            else f"userdrive:{user_id}")
+    if dest_provider is None:
+        dest_provider = ("pan115" if source_provider == "drive"
+                         else "drive")
+    if dest_provider == source_provider or dest_provider not in (
+            "drive", "pan115", "quark"):
+        raise TransferError(
+            "bad_dest_provider",
+            f"跨 provider 转存落点非法：{dest_provider}")
+    dest = {"drive": f"userdrive:{user_id}",
+            "pan115": f"pan115:user-{user_id}",
+            "quark": f"quark:user-{user_id}"}[dest_provider]
     use_waiver, waiver_from = False, ""
     if not force:
         use_waiver, waiver_from = _raise_if_user_throttled(
@@ -1684,7 +1728,6 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     # 绑定而非源盘）：跨单的落点在 dest 侧，只有源侧绑定、目标侧
     # 没绑时建单必死（复核样本原型），落行前秒判不落行；放在节流
     # 与源校验之后，既有错误优先级不变。
-    dest_provider = "pan115" if source_provider == "drive" else "drive"
     if _active_binding(db, user_id, dest_provider) is None:
         raise TransferError(
             "no_binding",
@@ -1712,6 +1755,9 @@ def create_cross_provider_job(db, item, user_id, source_provider,
 # - error：门禁内部异常，fail-closed 报 503，绝不静默回落。
 # - serve_115_copy：115 用户副本已就绪，调用方须用用户 Cookie +
 #   副本 pickcode 现签 302（绝不走共享 115 链），variant 行随 dict 回。
+# - serve_quark_copy：夸克用户副本已就绪（二期），调用方须用用户
+#   Cookie 现取直链后服务端中继出流（夸克 CDN 校验三件套，绝不
+#   302 裸发、绝不走共享链），variant 行随 dict 回。
 #
 # 绑定用户可以 proceed 共享原件的原因只有下面这些明示放行。
 # 其余 proceed（含 no_drive_file / no_item_id）一律改成 failed，
@@ -1733,7 +1779,8 @@ QUOTA_NO_SHARED_DETAIL = "共享盘额度已满，不改播共享原件"
 SHARED_BLOCKED_DETAIL = "转存未就绪，不走共享播放"
 
 #: provider 人话名（门禁跨 provider 文案用）。
-_PROVIDER_LABELS = {"drive": "谷歌盘", "pan115": "115 网盘"}
+_PROVIDER_LABELS = {"drive": "谷歌盘", "pan115": "115 网盘",
+                    "quark": "夸克网盘"}
 
 
 def _provider_label(provider):
@@ -1853,7 +1900,8 @@ def _observe_gate(result, item, user) -> None:
         log_byos("byos_enqueue", **fields)
     if verdict in ("preparing", "failed", "error"):
         log_byos("byos_gate_block", **fields)
-    elif verdict == "serve_115_copy" or reason == "has_ready_variant":
+    elif verdict in ("serve_115_copy", "serve_quark_copy") \
+            or reason == "has_ready_variant":
         log_byos("byos_ready_play", **fields)
 
 
@@ -1861,9 +1909,9 @@ def bound_shared_play_blocked(gate, *, has_binding, play_variant) -> bool:
     """绑定用户没有本人 ready 副本时，不许静默播共享原件。
 
     明示放行（总闸关、已下发签名、无绑定、byos 条目等）返回 False。
-    preparing / failed / error / serve_115_copy 由调用方按原状态码
-    处理，这里不重复挡。``has_ready_variant`` 但调用方没换成用户
-    副本 fid 时仍返回 True。
+    preparing / failed / error / serve_115_copy / serve_quark_copy
+    由调用方按原状态码处理，这里不重复挡。``has_ready_variant``
+    但调用方没换成用户副本 fid 时仍返回 True。
     """
     if not has_binding:
         return False
@@ -1872,7 +1920,8 @@ def bound_shared_play_blocked(gate, *, has_binding, play_variant) -> bool:
         return False
     verdict = (gate or {}).get("verdict")
     reason = (gate or {}).get("reason")
-    if verdict in ("preparing", "failed", "error", "serve_115_copy"):
+    if verdict in ("preparing", "failed", "error", "serve_115_copy",
+                   "serve_quark_copy"):
         return False
     if verdict == "proceed" and reason in SHARED_PROCEED_REASONS:
         return False
@@ -2711,7 +2760,8 @@ def _retrigger_failed_job(db, item, user_id, provider, job, *,
     try:
         if cross:
             new_job = create_cross_provider_job(
-                db, item, user_id, provider, trigger="playback", force=True)
+                db, item, user_id, provider, trigger="playback",
+                force=True, dest_provider=_dest_provider_of_dest(dest))
         else:
             new_job = create_user_job(
                 db, item, user_id, provider, trigger="playback", force=True)
@@ -2744,7 +2794,8 @@ def _rebuild_done_job(db, item, user_id, provider, job, *,
     try:
         if cross:
             new_job = create_cross_provider_job(
-                db, item, user_id, provider, trigger="playback", force=True)
+                db, item, user_id, provider, trigger="playback",
+                force=True, dest_provider=_dest_provider_of_dest(dest))
         else:
             new_job = create_user_job(
                 db, item, user_id, provider, trigger="playback", force=True)
@@ -2927,8 +2978,20 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
             other = "pan115" if provider == "drive" else "drive"
             other_binding = _active_binding(db, user_id, other)
             if other_binding is None:
-                return {"verdict": "proceed",
-                        "reason": "no_matching_binding"}
+                # 夸克二期（2026-11-01）：counterpart（drive/115
+                # 互绑）也没有时再看夸克绑定——counterpart 优先
+                # 的既有顺序逐字不变；只绑夸克的用户落夸克跨
+                # provider 流，不许 proceed 去播共享原件；连夸克
+                # 也没绑才维持原 no_matching_binding 放行。
+                quark_binding = _active_binding(db, user_id, "quark")
+                if quark_binding is None:
+                    return {"verdict": "proceed",
+                            "reason": "no_matching_binding"}
+                if not quark_play_enabled(db):
+                    return {"verdict": "failed",
+                            "reason": "quark_disabled",
+                            "detail": QUARK_PLAY_DISABLED_DETAIL}
+                other, other_binding = "quark", quark_binding
             orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
             if provider == "pan115" and not orig_fid:
                 return {"verdict": "failed", "reason": "no_source_fid"}
@@ -2938,12 +3001,14 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
             item_id = getattr(item, "id", None)
             if item_id is None:
                 return {"verdict": "failed", "reason": "no_item_id"}
-            dest = (f"pan115:user-{user_id}" if other == "pan115"
-                    else f"userdrive:{user_id}")
-            scheme = "pan115:" if other == "pan115" else "userdrive:"
+            dest = {"pan115": f"pan115:user-{user_id}",
+                    "drive": f"userdrive:{user_id}",
+                    "quark": f"quark:user-{user_id}"}[other]
+            scheme = {"pan115": "pan115:", "drive": "userdrive:",
+                      "quark": "quark:"}[other]
             ready = _newest_ready_for_scheme(db, item_id, "user",
                                              str(user_id), scheme)
-            if (ready is not None and other in ("pan115", "drive")
+            if (ready is not None and other in ("pan115", "drive", "quark")
                     and getattr(ready, "stale_count", 0) >= 1):
                 # 副本行已吃过一次 stale strike：DB 状态虽仍 ready，
                 # 但文件很可能已死（2026-10-29 115 死链实证；Drive
@@ -2954,11 +3019,20 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                 if other == "pan115":
                     return {"verdict": "serve_115_copy", "reason": "ready",
                             "variant": ready}
+                if other == "quark":
+                    return {"verdict": "serve_quark_copy",
+                            "reason": "ready", "variant": ready}
                 return {"verdict": "proceed",
                         "reason": "has_ready_variant", "variant": ready}
             job = _latest_job_for_dest(db, item_id, "user",
                                        str(user_id), dest)
             preparing_detail = _cross_preparing_detail(provider, other)
+            if other == "quark":
+                # 落点目录写进用户可见文案（群里已有人问「视频
+                # 在网盘哪个目录」）：转存落用户夸克盘专属目录。
+                preparing_detail += (
+                    f"，转存完成后在你夸克网盘的"
+                    f"「{transfer_dir_name()}」目录里也能找到")
             if job is not None:
                 if job.status in ("pending", "running"):
                     _maybe_promote_inflight_job(db, job)
@@ -3010,9 +3084,9 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                             db, item, user_id, provider, job, cross=True,
                             dest=dest)
             try:
-                new_job = create_cross_provider_job(db, item, user_id,
-                                                    provider,
-                                                    trigger="playback")
+                new_job = create_cross_provider_job(
+                    db, item, user_id, provider, trigger="playback",
+                    dest_provider=other)
             except TransferError as exc:
                 if exc.kind == "throttled":
                     detail = (WAIVER_EXHAUSTED_DETAIL
@@ -3220,15 +3294,26 @@ def maybe_prefetch_transfer(db, item, user) -> dict:
             other = "pan115" if provider == "drive" else "drive"
             other_binding = _active_binding(db, user_id, other)
             if other_binding is None:
-                return {"triggered": False, "reason": "no_matching_binding"}
+                # 夸克二期：与点播门禁同口径——counterpart 优先，
+                # 只绑夸克才落夸克；开关关时不预建夸克单。
+                quark_binding = _active_binding(db, user_id, "quark")
+                if quark_binding is None:
+                    return {"triggered": False,
+                            "reason": "no_matching_binding"}
+                if not quark_play_enabled(db):
+                    return {"triggered": False,
+                            "reason": "quark_disabled"}
+                other, other_binding = "quark", quark_binding
             orig_fid = (getattr(target, "drive_file_id", "") or "").strip()
             if provider == "pan115" and not orig_fid:
                 return {"triggered": False, "reason": "no_source_fid"}
             if provider == "drive" and not orig_fid:
                 return {"triggered": False, "reason": "no_drive_file"}
-            dest = (f"pan115:user-{user_id}" if other == "pan115"
-                    else f"userdrive:{user_id}")
-            scheme = "pan115:" if other == "pan115" else "userdrive:"
+            dest = {"pan115": f"pan115:user-{user_id}",
+                    "drive": f"userdrive:{user_id}",
+                    "quark": f"quark:user-{user_id}"}[other]
+            scheme = {"pan115": "pan115:", "drive": "userdrive:",
+                      "quark": "quark:"}[other]
             ready = _newest_ready_for_scheme(db, target.id, "user",
                                              str(user_id), scheme)
             if ready is not None:
@@ -3243,8 +3328,9 @@ def maybe_prefetch_transfer(db, item, user) -> dict:
                 return {"triggered": False, "reason": "daily_cap",
                         "target_item_id": target.id}
             try:
-                job = create_cross_provider_job(db, target, user_id,
-                                                provider, trigger="prefetch")
+                job = create_cross_provider_job(
+                    db, target, user_id, provider, trigger="prefetch",
+                    dest_provider=other)
             except TransferError as exc:
                 if exc.kind == "throttled":
                     return {"triggered": False, "reason": "throttled",
@@ -3601,17 +3687,32 @@ def resolve_play_file_id(db, item, user):
 
 
 def _dest_scheme(dest):
-    """落盘标识的方案前缀：``pan115:`` / ``userdrive:`` / ""（不可判）。
+    """落盘标识的方案前缀：``pan115:`` / ``userdrive:`` /
+    ``quark:`` / ""（不可判）。
 
     与变体行 variant_drive_id 的方案口径同源（models 注释）：
-    Drive 副本 userdrive:<uid>、115 副本 pan115:user-<uid>。
+    Drive 副本 userdrive:<uid>、115 副本 pan115:user-<uid>、
+    夸克副本 quark:user-<uid>（二期）。
     """
     dest = (dest or "").strip()
     if dest.startswith("pan115:"):
         return "pan115:"
     if dest.startswith("userdrive:"):
         return "userdrive:"
+    if dest.startswith("quark:"):
+        return "quark:"
     return ""
+
+
+def _dest_provider_of_dest(dest):
+    """落盘标识 → 落点 provider（重触发/重建按原落点重建用）。
+
+    pan115:→pan115、userdrive:→drive、quark:→quark；认不出回
+    None（调用方回落 create_cross_provider_job 的按源推导）。
+    """
+    scheme = _dest_scheme(dest)
+    return {"pan115:": "pan115", "userdrive:": "drive",
+            "quark:": "quark"}.get(scheme)
 
 
 def _recent_user_jobs(db, item_id, owner_ref, window_sec=THROTTLE_SEC):
@@ -6851,13 +6952,18 @@ def _run_cross_job(db, job, item, drive_api):
     """跨 provider 任务分发：按 dest_drive_id 定方向（不按 provider）。
 
     dest pan115: 开头 → Drive→115；dest userdrive: 开头 → 115→Drive；
-    其它 dest（理论上到不了，_is_cross_job 已过滤）→ unsupported。
+    dest quark: 开头 → 任一源→用户夸克盘（二期，执行面在
+    transfer_quark，延迟导入避免模块环）；其它 dest（理论上
+    到不了，_is_cross_job 已过滤）→ unsupported。
     """
     dest = (getattr(job, "dest_drive_id", "") or "").strip()
     if dest.startswith("pan115:"):
         return _run_cross_drive_to_115(db, job, item, drive_api)
     if dest.startswith("userdrive:"):
         return _run_cross_115_to_drive(db, job, item)
+    if dest.startswith("quark:"):
+        from backend.emby_server import transfer_quark
+        return transfer_quark.run_cross_to_quark(db, job, item, drive_api)
     return _fail_job(db, job, "unsupported",
                      f"跨任务落盘标识未知：{dest}（不重试）")
 
@@ -6889,6 +6995,16 @@ def _cross_content_key(job, item):
                           fid, size)
     if dest.startswith("userdrive:"):
         return _stage_key("pan115", "", fid, size)
+    if dest.startswith("quark:"):
+        # 夸克落点不改内容键口径：键只认源（同内容多人转存到
+        # 不同盘共用同一份源暂存/清单，与落哪家盘无关）。
+        provider = (getattr(job, "provider", None) or "").strip()
+        if provider == "drive":
+            return _stage_key("drive",
+                              getattr(job, "drive_id", None) or "",
+                              fid, size)
+        if provider == "pan115":
+            return _stage_key("pan115", "", fid, size)
     return None
 
 
@@ -7476,6 +7592,8 @@ def _fail_user_jobs_without_binding(db, jobs):
             provider = "drive"
         elif dest.startswith("pan115:"):
             provider = "pan115"
+        elif dest.startswith("quark:"):
+            provider = "quark"
         if provider is None:
             kept.append(job)
             continue

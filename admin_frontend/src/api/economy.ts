@@ -440,6 +440,8 @@ export interface TransferConfig {
   transfer_rebind_waiver_window_days: number
   /** 窗口内换绑豁免可用次数（默认 1，范围 1~20） */
   transfer_rebind_waiver_max_uses: number
+  /** 夸克转存/点播开关（默认开；关 = 只绑夸克的用户点播被门禁明示挡下、不回落共享） */
+  quark_play_enabled: boolean
 }
 
 export type TransferConfigPayload = TransferConfig

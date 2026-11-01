@@ -6321,6 +6321,58 @@ async def video_stream(
             return _observe_traffic(
                 RedirectResponse(_url115, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
+        if _gate_verdict == "serve_quark_copy":
+            _variantq = (_transfer_gate or {}).get("variant")
+            _fidq = (getattr(_variantq, "variant_file_id", "")
+                     or "").strip()
+            if not _fidq:
+                raise HTTPException(
+                    status_code=409,
+                    detail="夸克用户副本已就绪但缺少文件标识，无法取流")
+            # 开关在出流端再复核一遍：门禁判 ready 之后管理员关掉
+            # 开关，本次也不许放行夸克副本（更不许回落共享）。
+            if not await run_db(_tv.quark_play_enabled, db):
+                raise HTTPException(
+                    status_code=503,
+                    detail="夸克点播已被管理员关闭，不走共享播放")
+            from backend.emby_server import user_bindings as _ubq
+            from backend.emby_server import quarkdrive as _qd
+            from backend.emby_server.streaming import \
+                serve_mount_relay_async as _relay_async
+            _byos_t0q = time.perf_counter()
+            try:
+                _urlq, _cookieq = await run_db(
+                    _ubq.resolve_user_quark_copy_url, db,
+                    getattr(user, "id", None), _fidq)
+            except _ubq.BindingError as exc:
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="transfer_quark_relay",
+                    variant=play_variants.BYOS_QUARK_RELAY,
+                    result="error", error_kind=exc.kind,
+                    resolve_ms=int(
+                        (time.perf_counter() - _byos_t0q) * 1000))
+                _detail = exc.message if exc.kind in (
+                    "auth_error", "expired", "throttled") else \
+                    "播放变体当前不可用：transfer_quark_relay"
+                raise HTTPException(status_code=409,
+                                    detail=_detail) from exc
+            _note_play_start_safe(
+                item, user_id=getattr(user, "id", None),
+                method="transfer_quark_relay",
+                variant=play_variants.BYOS_QUARK_RELAY,
+                result="ok",
+                resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
+            # 夸克 CDN 取流校验 Cookie/Referer/UA 三件套：直链
+            # 只许在服务端中继里用（头只在服务端组装、绝不下
+            # 发），绝不 302 裸发给播放器——与 115 副本的 302
+            # 形态区别正在于此。
+            return _observe_traffic(await _relay_async(
+                _urlq, request,
+                headers={"Cookie": _cookieq,
+                         "Referer": _qd.QUARK_REFERER,
+                         "User-Agent": _qd.QUARK_UA},
+                media_type=media_type, pt=_pt))
         _gate.raise_for_transfer_gate(_transfer_gate)
         _play_fid, _play_variant = _tv.prefer_user_variant(
             _play_fid, _play_variant, _transfer_gate)
