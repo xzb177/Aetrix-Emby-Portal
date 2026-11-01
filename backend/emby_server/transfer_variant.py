@@ -3388,6 +3388,17 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                         return {"verdict": "failed", "reason": job.error_kind,
                                 "job_id": job.id,
                                 "detail": _cross_failed_detail(other, job)}
+                    elif (job.error_kind in _AUTH_TERMINAL_KINDS
+                            or job.error_kind == "insufficient_space"):
+                        # PA-004：与同 provider 分支 :3467-3480 逐字同款
+                        # （2026-11-01 生产单 1714 的修复，跨分支漏补）。
+                        # no_binding / insufficient_space 也是终态：此前
+                        # 落到下面的 preparing/throttled，失败跨单被包装
+                        # 成「转存准备中」，重绑后仍取同一失败行空等。
+                        # 改判 failed 并透传原因（含重绑指引）。
+                        return {"verdict": "failed", "reason": job.error_kind,
+                                "job_id": job.id,
+                                "detail": _cross_failed_detail(other, job)}
                     return {"verdict": "preparing", "reason": "throttled",
                             "job_id": job.id, "detail": preparing_detail}
                 if job.status == "done":
