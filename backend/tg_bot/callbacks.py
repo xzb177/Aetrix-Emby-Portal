@@ -194,7 +194,9 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
             else:
                 text, markup = reply, handlers.back_markup()
     elif action == "lottery":
-        reply = handlers.handle_lottery(db, tg_user, chat_id, "", False)
+        # PA-030：群/私聊分流。群里走群轮次卡（is_group=True），绝不把
+        # 点击者个人抽奖记录编辑进群共享消息；私聊保持个人记录分支。
+        reply = handlers.handle_lottery(db, tg_user, chat_id, "", not is_private)
         if isinstance(reply, tuple):
             text, markup = reply
         else:

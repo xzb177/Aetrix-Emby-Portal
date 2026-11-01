@@ -108,6 +108,8 @@ def _award_group_chat_points(db, tg_user: dict) -> None:
     直接进程内调用 points.award_chat_points（与发表影评同款），
     走 points_chat_* 默认口径（0.1 能量/条小数累计、每天 20 能量封顶）。
     未绑定发送者静默跳过；发分失败只记日志，绝不中断消息处理。
+    PA-029：停用账号静默跳过（不计分、不写台账行），停用处罚在
+    机器人群发言侧同样生效。
     """
     tg_user_id = (tg_user or {}).get("id")
     if not tg_user_id:
@@ -118,6 +120,8 @@ def _award_group_chat_points(db, tg_user: dict) -> None:
 
         user = resolve(db, int(tg_user_id))
         if user is None:
+            return
+        if not getattr(user, "is_active", True):
             return
         points_mod.award_chat_points(db, user.id)
     except Exception:
