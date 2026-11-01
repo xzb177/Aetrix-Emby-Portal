@@ -115,6 +115,12 @@ const GROUPS: Group[] = [
       { key: 'checkin_penalty_min', label: '惩罚下限', type: 'int', suffix: '积分', hint: '单次惩罚最少扣多少积分。推荐值：1', advanced: true },
       { key: 'checkin_penalty_max', label: '惩罚上限', type: 'int', suffix: '积分', hint: '单次惩罚最多扣多少积分。推荐值：3', advanced: true },
       { key: 'vitality_checkin_gain', label: '签到活力奖励', type: 'int', suffix: '点/次', hint: '公益服用户签到恢复的活力点数，默认 1，填 0 则签到不恢复活力；仍受每日获取上限门控与活力上限钳制', advanced: true },
+      { key: 'checkin_milestone_points', label: '连签里程碑奖励', type: 'int', suffix: '积分/次', hint: '连签达到里程碑天数时额外发放，默认 15，填 0 则关闭里程碑', advanced: true },
+      { key: 'checkin_milestone_days', label: '里程碑天数', type: 'str', hint: '逗号分隔的连签天数，如 7,14,21,28；每个天数在一轮连签内只发一次，断签后重新累计；留空=默认 7,14,21,28', advanced: true },
+      { key: 'checkin_full_attendance_points', label: '全勤奖', type: 'int', suffix: '积分/月', hint: '自然月签到达标时发放，默认 30，填 0 则关闭全勤奖', advanced: true },
+      { key: 'checkin_full_attendance_min_days', label: '全勤达标天数', type: 'int', suffix: '天/月', hint: '自然月内签到天数达到该值发全勤奖（按月只发一次），默认 28', advanced: true },
+      { key: 'checkin_crit_pct', label: '签到暴击概率', type: 'int', suffix: '%', hint: '每次签到触发暴击的概率，默认 5，填 0 则关闭暴击', advanced: true },
+      { key: 'checkin_crit_cap', label: '暴击封顶', type: 'int', suffix: '积分', hint: '暴击（当日签到所得 ×3）后的封顶值，默认 24', advanced: true },
     ],
   },
   {

@@ -520,6 +520,13 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "checkin_base_min": ("int", 0, _BIG), "checkin_base_max": ("int", 0, _BIG),
     "checkin_penalty_pct": ("int", 0, 100),
     "checkin_penalty_min": ("int", 0, _BIG), "checkin_penalty_max": ("int", 0, _BIG),
+    # 签到增强（2026-11-01 货币再设计一期）：里程碑/全勤/暴击，economy._checkin_rules 读取
+    "checkin_milestone_points": ("int", 0, _BIG),
+    "checkin_milestone_days": ("int_list", 1, 366),
+    "checkin_full_attendance_points": ("int", 0, _BIG),
+    "checkin_full_attendance_min_days": ("int", 0, 366),
+    "checkin_crit_pct": ("int", 0, 100),
+    "checkin_crit_cap": ("int", 0, _BIG),
     "media_seek_daily_limit": ("int", 0, _BIG),
     "media_seek_daily_vote_limit": ("int", 0, _BIG),
     # 2026-10-23 去重 #5：两个月限与日限同卡（运营参数）后需在此登记才可

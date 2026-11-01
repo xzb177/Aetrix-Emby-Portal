@@ -74,6 +74,26 @@ def _get_int_config(db: Session, key: str, default: int) -> int:
         return default
 
 
+def _get_int_list_config(db: Session, key: str, default: list) -> list:
+    """读逗号分隔整数列表配置（如签到里程碑天数 "7,14,21,28"）。
+
+    非法项跳过、全空/全非法回退默认；结果去重升序，下限 1。
+    """
+    raw = _get_config(db, key, "")
+    out = []
+    for part in str(raw or "").replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            n = int(part)
+        except ValueError:
+            continue
+        if n >= 1 and n not in out:
+            out.append(n)
+    return sorted(out) if out else list(default)
+
+
 def _get_float_config(db: Session, key: str, default: float) -> float:
     """读浮点配置（P2 货币体系：recharge_ratio 用）"""
     try:
@@ -371,6 +391,10 @@ def _checkin_rules(db: Session) -> dict:
     - 连签加成：streak_bonus * (streak-1)，封顶 streak_max_bonus
     - 惩罚：penalty_pct% 概率扣 penalty_min ~ penalty_max（默认 0 = 关闭，旧行为不变）
     - 积分仅发放给公益服用户（is_welfare=True）；其他用户签到只记录连签
+    - 签到增强（2026-11-01 货币再设计一期）：连签里程碑（达到 milestone_days
+      各发 milestone_points，0 分 = 关闭）、全勤奖（自然月签到 ≥
+      full_attendance_min_days 发 full_attendance_points，0 分/0 天 = 关闭）、
+      签到暴击（crit_pct% 概率当日所得 ×3、封顶 crit_cap，0% = 关闭）
     """
     base_min = _get_int_config(db, "checkin_base_min", 5)
     base_max = _get_int_config(db, "checkin_base_max", 5)
@@ -391,7 +415,77 @@ def _checkin_rules(db: Session) -> dict:
         "penalty_pct": _get_int_config(db, "checkin_penalty_pct", 0),
         "penalty_min": penalty_min,
         "penalty_max": penalty_max,
+        "milestone_points": _get_int_config(db, "checkin_milestone_points", 15),
+        "milestone_days": _get_int_list_config(
+            db, "checkin_milestone_days", [7, 14, 21, 28]),
+        "full_attendance_points": _get_int_config(
+            db, "checkin_full_attendance_points", 30),
+        "full_attendance_min_days": _get_int_config(
+            db, "checkin_full_attendance_min_days", 28),
+        "crit_pct": max(0, min(100, _get_int_config(db, "checkin_crit_pct", 5))),
+        "crit_cap": _get_int_config(db, "checkin_crit_cap", 24),
     }
+
+
+# 签到暴击倍数（设计稿定版 ×3，不做配置键）
+_CHECKIN_CRIT_MULTIPLIER = 3
+
+
+def _roll_checkin_crit(pct: int) -> bool:
+    """签到暴击掷骰：与签到惩罚同一服务端随机源（random 模块）；pct<=0 恒不中。"""
+    if pct <= 0:
+        return False
+    return random.random() * 100 < pct
+
+
+def _checkin_month_window(today: datetime):
+    """由签到日帧（上海日界的 UTC naive）推本月窗口 [start, next) 与月键 YYYYMM。
+
+    与 _month_start_utc_naive() 同口径（Asia/Shanghai 自然月），但从已定的
+    today 帧推导，保证计数窗口与 CheckinRecord.checkin_date 写入帧严格一致，
+    不另起一次 now() 采样（跨月界瞬间两次采样可能落在不同月份）。
+    """
+    sh = today + timedelta(hours=8)  # 还原为上海帧当日 00:00
+    start = datetime(sh.year, sh.month, 1) - timedelta(hours=8)
+    if sh.month == 12:
+        nxt = datetime(sh.year + 1, 1, 1) - timedelta(hours=8)
+    else:
+        nxt = datetime(sh.year, sh.month + 1, 1) - timedelta(hours=8)
+    return start, nxt, f"{sh.year:04d}{sh.month:02d}"
+
+
+def _grant_full_attendance(db: Session, user: models.WebUser,
+                           today: datetime, rules: dict, balance: int):
+    """全勤奖结算：本月签到天数达标且本月未发过时发放，返回 (发放额, 新余额)。
+
+    在签到事务内即时结算：签到没有月结批处理结构，即时发与签到记录同事务
+    原子落账、用户当场可见（次月 1 日批结还需新调度且失败面更大）。
+    幂等靠 ref_id=checkin-full:YYYYMM 先查后发：按 count >= 门槛判定，
+    配置中途调低门槛可补发；一旦发过，同月永不重发。
+    """
+    points = rules["full_attendance_points"]
+    min_days = rules["full_attendance_min_days"]
+    if points <= 0 or min_days <= 0:
+        return 0, balance
+    start, nxt, month_key = _checkin_month_window(today)
+    cnt = db.query(func.count(models.CheckinRecord.id)).filter(
+        models.CheckinRecord.user_id == user.id,
+        models.CheckinRecord.checkin_date >= start,
+        models.CheckinRecord.checkin_date < nxt,
+    ).scalar() or 0
+    if cnt < min_days:
+        return 0, balance
+    ref = f"checkin-full:{month_key}"
+    exists = db.query(models.PointsLog).filter(
+        models.PointsLog.user_id == user.id,
+        models.PointsLog.ref_id == ref,
+    ).first()
+    if exists:
+        return 0, balance
+    balance = _add_points(
+        db, user, points, "checkin_full",
+        f"全勤奖（{month_key[:4]}年{month_key[4:]}月签到 {cnt} 天）", ref)
+    return points, balance
 
 
 class CheckinStatusResponse(BaseModel):
@@ -407,6 +501,11 @@ class CheckinStatusResponse(BaseModel):
     base_max: int = 5
     penalty_pct: int = 0
     points_enabled: bool = True  # 当前用户是否为公益服（是否会获得积分）
+    # 2026-11-01 签到增强（带默认值，保持旧客户端兼容）
+    milestone_points: int = 15
+    milestone_days: list = []
+    full_attendance_points: int = 30
+    crit_pct: int = 5
 
 
 @router.get("/checkin/status", response_model=CheckinStatusResponse)
@@ -443,6 +542,10 @@ def checkin_status(
         base_max=rules["base_max"],
         penalty_pct=rules["penalty_pct"],
         points_enabled=bool(getattr(current_user, "is_welfare", False)),
+        milestone_points=rules["milestone_points"],
+        milestone_days=rules["milestone_days"],
+        full_attendance_points=rules["full_attendance_points"],
+        crit_pct=rules["crit_pct"],
     )
 
 
@@ -456,7 +559,10 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
     唯一索引 (user_id, checkin_date) 是并发防重的最后一道门：先 flush 让冲突在提交前
     暴露，避免「先发积分、后落库失败」或直接 500。
 
-    返回 {"points_awarded", "streak", "balance", "penalty"}，失败时抛 HTTPException。
+    返回 {"points_awarded", "streak", "balance", "penalty", "crit",
+    "milestone_points", "full_attendance_points"}，失败时抛 HTTPException。
+    其中 points_awarded 只记当日基础奖励（基础+连签加成−惩罚，含暴击放大），
+    里程碑/全勤为独立台账行分开返回；balance 为全部发放后的余额。
     供 POST /api/user/economy/checkin 路由和已废弃的 POST /api/points/signin 复用。
     """
     user_id = user.id
@@ -483,6 +589,7 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
     # 奖励计算：仅公益服用户获得积分
     is_welfare = bool(getattr(user, "is_welfare", False))
     penalty = False
+    crit = False
     if not is_welfare:
         reward = 0
     else:
@@ -495,6 +602,13 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         # 惩罚只削减当日奖励，不倒扣余额：base+bonus-penalty 可能为负（如 base=1、penalty=3），
         # 负数会经 _add_points 直接扣用户积分（可扣成负余额），且前端/通知文案都不支持负奖励
         reward = max(0, base + bonus - penalty_amount)
+        # 签到暴击：只放大当日签到所得（基础+连签−惩罚），里程碑/全勤是
+        # 独立奖励不参与放大；封顶 crit_cap（<=0 视为不封顶）。
+        if reward > 0 and _roll_checkin_crit(rules["crit_pct"]):
+            crit = True
+            reward = reward * _CHECKIN_CRIT_MULTIPLIER
+            if rules["crit_cap"] > 0:
+                reward = min(reward, rules["crit_cap"])
 
     record = models.CheckinRecord(
         user_id=user_id,
@@ -514,12 +628,28 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         raise HTTPException(status_code=409, detail="签到请求冲突，请稍后重试")
     if reward:
         description = f"每日签到（连续 {streak} 天）"
+        if crit:
+            description += "，暴击 ×3"
     else:
         description = f"每日签到（连续 {streak} 天，无能量奖励）"
     balance = _add_points(
         db, user, reward, "checkin",
         description, f"checkin:{today.strftime('%Y%m%d')}",
     )
+    # 签到增强（2026-11-01）：连签里程碑——streak 在一轮连签内单调递增、
+    # 断签重置，故 streak 恰达里程碑日即「每轮只发一次」；与签到同事务落账。
+    milestone_points = 0
+    full_attendance_points = 0
+    if is_welfare:
+        if rules["milestone_points"] > 0 and streak in rules["milestone_days"]:
+            milestone_points = rules["milestone_points"]
+            balance = _add_points(
+                db, user, milestone_points, "checkin_milestone",
+                f"连签里程碑（连续 {streak} 天）",
+                f"checkin-milestone:{today.strftime('%Y%m%d')}:{streak}",
+            )
+        full_attendance_points, balance = _grant_full_attendance(
+            db, user, today, rules, balance)
     # C1 活力值：公益服用户签到恢复活力（受每日免费获取上限钳制）
     # 恢复点数走 SystemConfig vitality_checkin_gain（默认 1，填 0 则签到不恢复活力）
     vitality_gained = 0
@@ -543,7 +673,9 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         logger.exception("checkin XP award failed for user %s", user_id)
     db.commit()
     return {"points_awarded": reward, "streak": streak, "balance": balance,
-            "penalty": penalty, "vitality_gained": vitality_gained, "xp_gained": xp_gained}
+            "penalty": penalty, "vitality_gained": vitality_gained, "xp_gained": xp_gained,
+            "crit": crit, "milestone_points": milestone_points,
+            "full_attendance_points": full_attendance_points}
 
 
 @router.post("/checkin")
@@ -562,11 +694,24 @@ async def do_checkin(
 
     award = await run_in_threadpool(_do_checkin_core, db, current_user)
 
-    if award["points_awarded"] > 0:
+    # 签到增强（2026-11-01）：暴击/里程碑/全勤要在返回里看得见
+    extras = []
+    if award.get("crit"):
+        extras.append("签到暴击 ×3")
+    if award.get("milestone_points"):
+        extras.append(f"连签里程碑 +{award['milestone_points']} 能量")
+    if award.get("full_attendance_points"):
+        extras.append(f"全勤奖 +{award['full_attendance_points']} 能量")
+    total_awarded = (award["points_awarded"] + award.get("milestone_points", 0)
+                     + award.get("full_attendance_points", 0))
+    if total_awarded > 0:
         title = f"📅 签到成功 +{award['points_awarded']} 能量"
         content = (f"已连续签到 {award['streak']} 天，当前余额 {award['balance']} 能量。"
                    f"\n明日再来看看，连签奖励更高！")
         message = f"签到成功，+{award['points_awarded']} 能量（连续 {award['streak']} 天）"
+        if extras:
+            content += "\n" + "；".join(extras) + "！"
+            message += "（" + "；".join(extras) + "）"
     else:
         title = "📅 签到成功"
         content = (f"已连续签到 {award['streak']} 天。能量奖励仅限公益服用户。")
@@ -587,6 +732,9 @@ async def do_checkin(
         "balance": award["balance"],
         "vitality_gained": award.get("vitality_gained", 0),
         "xp_gained": award.get("xp_gained", 0),
+        "crit": bool(award.get("crit")),
+        "milestone_points": award.get("milestone_points", 0),
+        "full_attendance_points": award.get("full_attendance_points", 0),
         "message": message,
     }
 
