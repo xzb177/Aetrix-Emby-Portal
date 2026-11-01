@@ -389,6 +389,34 @@ def cross_aging_sec(db=None):
 
 
 # ---------------------------------------------------------------------------
+# 探针道 · 期一（2026-11-01 转存等待压缩 期一；
+# reports/transfer-wait-compression-design-20261101.md）
+#
+# 秒传试探原本没有独立调度身份：它只是跨单被认领后执行器的
+# 第一步，认领被 cross_cap 全局卡死、点播当场先办又明文排除
+# 跨单——指纹已登记的单本体秒级，却要在搬字节队列后面干等。
+# 期一先做纯调度：claim_due_jobs 的 _pick_candidates 里可探针
+# 单（条目有可信 sha1 或清单 sha1 的跨 Drive→115 单）优先占用
+# 跨槽、跨槽为它保留至少 1 槽（开关
+# transfer_probe_priority_enabled，关 = 回现行排序逐字不变）。
+# 期二（独立探针道认领 + probe_only 执行 + 点播当场探针）在
+# 后续提交接入。全部纯 SystemConfig 键，不进 env.example
+# （#1527 先例）；读取口径 fail-safe：读不到/非法回默认。
+# 跨 provider 并发（cross_cap）不动——不靠加搬运槽解决问题。
+# ---------------------------------------------------------------------------
+
+#: 期一优先排序开关 SystemConfig 键；默认开。关 = _pick_candidates
+#: 不做可探针分层，排序与现行逐字一致。
+KEY_TRANSFER_PROBE_PRIORITY_ENABLED = "transfer_probe_priority_enabled"
+
+
+def probe_priority_enabled(db=None):
+    """期一可探针优先排序开关：SystemConfig 热读，默认开。"""
+    return _system_config_bool(
+        db, KEY_TRANSFER_PROBE_PRIORITY_ENABLED, True)
+
+
+# ---------------------------------------------------------------------------
 # 类别级熔断（预见层 v2 第一层，2026-11-01）：按「provider＋失败
 # 类别」暂停派发。2026-10-29 授权范围突变时没有按类停派的开关，
 # 只能人肉全表取消 293 单（见 OPS_CANCELLED_KIND 来历注释）。
@@ -1852,6 +1880,14 @@ def create_cross_provider_job(db, item, user_id, source_provider,
         _record_throttle_waiver(db, user_id, item_id, waiver_from,
                                 _dest_scheme(dest), job.id)
     db.commit()
+    # 期一指纹状态落盘（方案 §5.1）：建单时刻条目可信 sha1 有无
+    # 决定这单将来走探针道还是搬字节道，先落结构化日志供离线
+    # 与 job 对账分层统计等待；只读条目行字段，不改表。
+    logger.info(
+        "transfer_create job=%s item=%s dest=%s sha1_present=%s",
+        job.id, item_id, dest_provider,
+        1 if _trusted_item_sha1(
+            item, _to_int(getattr(item, "size", None))) else 0)
     notify_transfer_wakeup(job.id)
     return job
 
@@ -3600,7 +3636,8 @@ def claim_job_for_inline(db, job_id, worker_id=None, now=None):
     lease_until = now + timedelta(seconds=worker_lease_sec())
     result = db.execute(
         text("UPDATE emby_transfer_jobs SET status='running', "
-             "lease_expires_at=:lease, claimed_by=:worker "
+             "lease_expires_at=:lease, claimed_by=:worker, "
+             "claimed_at=:now "
              "WHERE id=:jid AND status='pending' "
              "AND (next_retry_at IS NULL OR next_retry_at <= :now)"),
         {"lease": lease_until, "worker": worker_id, "jid": job_id,
@@ -7594,7 +7631,8 @@ def _is_aged_cross(job, now, cross_aging_sec):
 
 
 def _pick_candidates(candidates, limit, running_counts, cap, now=None,
-                     cross_cap=None, cross_running=0, cross_aging_sec=None):
+                     cross_cap=None, cross_running=0, cross_aging_sec=None,
+                     probeable_ids=None):
     """公平挑单：点播组（trigger=playback）在前、后台组在后；
     每组内按用户轮流取
     （每轮每用户先取 1 单，再取第 2 单……），直至 limit 或取尽。
@@ -7618,6 +7656,12 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
     跨 provider 搬字节单另有全局在途上限（cross_cap，None=不限）：
     在途（含本轮已挑）达上限后跨单跳过、同 provider 单照常挑——
     慢单不许占满整条道（2026-10-30 重开硬要求）。
+    探针分层（期一，probeable_ids 非空时生效，None=现行行为逐字
+    不变）：可探针跨单（id 在 probeable_ids 内）在同 owner 组内
+    排到不可探针单之前；不可探针跨单的总占用（cross_running +
+    本轮已挑的不可探针跨单）另受 cross_cap-1 约束——跨槽恒为
+    可探针单保留至少 1 槽（cross_cap≥2 时），免得它被小时级
+    搬运单挤到天荒地老。可探针单自身只受 cross_cap 总帽约束。
     返回挑中的任务行（不改状态，认领在 claim_due_jobs 里做）。"""
     now = now or datetime.now()
     fast = [c for c in candidates
@@ -7628,14 +7672,22 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
     for job in fast:
         if _is_aged_cross(job, now, cross_aging_sec):
             job._claim_aged = True
+    probe_reserve = (1 if probeable_ids and cross_cap is not None
+                     and cross_cap >= 2 else 0)
     picked = []
     used = dict(running_counts)
     picked_cross = 0
+    picked_cross_plain = 0
     for lane in (fast, slow):
-        # 按用户分组，保持每组内 id 顺序
+        # 按用户分组，保持每组内 id 顺序；探针分层时同组内
+        # 可探针跨单稳定排到前面（同类内仍 FIFO）。
         by_owner = {}
         for job in lane:
             by_owner.setdefault(_owner_key(job), []).append(job)
+        if probeable_ids:
+            for group in by_owner.values():
+                group.sort(
+                    key=lambda j: 0 if id(j) in probeable_ids else 1)
         # 每 owner 名下最老候选的 created_at（等待键），候选集在本
         # 次挑单内固定，先算好；created_at 缺失按最早处理。
         oldest_at = {
@@ -7659,12 +7711,19 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
                 if used.get(key, 0) >= cap:
                     continue
                 job = group[round_no]
-                if (cross_cap is not None and _is_cross_job(job)
-                        and cross_running + picked_cross >= cross_cap):
-                    continue
+                if cross_cap is not None and _is_cross_job(job):
+                    if cross_running + picked_cross >= cross_cap:
+                        continue
+                    if (probe_reserve
+                            and id(job) not in probeable_ids
+                            and cross_running + picked_cross_plain
+                            >= cross_cap - probe_reserve):
+                        continue  # 预留槽只留给可探针单
                 picked.append(job)
                 if _is_cross_job(job):
                     picked_cross += 1
+                    if not probeable_ids or id(job) not in probeable_ids:
+                        picked_cross_plain += 1
                 used[key] = used.get(key, 0) + 1
                 progressed = True
             if not progressed:
@@ -7697,7 +7756,9 @@ def _log_claim_pick(worker_id, picked, claimed_ids, running_counts, now):
             f"trigger={job.trigger or ''} "
             f"cross={1 if _is_cross_job(job) else 0} "
             f"owner_running={running_counts.get(key, 0)} wait_s={wait}"
-            + (" aged=1" if getattr(job, "_claim_aged", False) else ""))
+            + (" aged=1" if getattr(job, "_claim_aged", False) else "")
+            + (" probe=1" if getattr(job, "_claim_probeable", False)
+               else ""))
     logger.info("转存认领 claim_pick worker=%s %s",
                 worker_id, " ".join(parts))
 
@@ -7742,6 +7803,35 @@ def _fail_user_jobs_without_binding(db, jobs):
             continue
         kept.append(job)
     return kept
+
+
+def _job_probeable_sha1(db, job):
+    """任务行此刻是否「可探针」：可直接试秒传的 sha1 或 ""。
+
+    判定口径与执行器预检段一致：条目可信 sha1
+    （_trusted_item_sha1）优先；其次清单接管生效时的清单 sha1
+    （manifest_trusted_sha1）。只读条目行/清单行字段，不查外
+    部服务；任何异常回 ""（不可探针——安全方向：漏判只是走
+    现行搬字节道，绝不误判去探一份没有指纹的内容）。"""
+    try:
+        item = (db.query(em.MediaItem)
+                .filter(em.MediaItem.id == job.item_id,
+                        em.MediaItem.deleted_at.is_(None))
+                .first())
+        if item is None:
+            return ""
+        size = _to_int(getattr(item, "size", None))
+        sha1 = _trusted_item_sha1(item, size)
+        if sha1:
+            return sha1
+        if manifest_accounting_enabled(db) and manifest_takeover_active(db):
+            key = _cross_content_key(job, item)
+            if key:
+                from backend.emby_server import transfer_manifest as _tm
+                return _tm.manifest_trusted_sha1(db, key, size) or ""
+        return ""
+    except Exception:  # noqa: BLE001 — 判定失败按不可探针处理
+        return ""
 
 
 def claim_due_jobs(db, now=None, limit=None, worker_id=None):
@@ -7790,11 +7880,24 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
         return []
     cap = per_owner_inflight(db)
     running_counts = _running_counts_by_owner(db, now=now)
+    # 期一探针分层：开关开时先算 due 里可探针跨单的 id 集（判定
+    # 只读条目行/清单行，见 _job_probeable_sha1），交给挑单层做
+    # 优先＋预留；关 = probeable_ids 恒 None，排序逐字不变。
+    probeable_ids = None
+    if probe_priority_enabled(db):
+        probeable_ids = set()
+        for _job in due:
+            if _is_cross_job(_job) and _job_probeable_sha1(db, _job):
+                probeable_ids.add(id(_job))
+                _job._claim_probeable = True
+        if not probeable_ids:
+            probeable_ids = None
     picked = _pick_candidates(
         due, limit, running_counts, cap, now=now,
         cross_cap=cross_lane_concurrency(db),
         cross_running=_running_cross_count(db, now=now),
-        cross_aging_sec=cross_aging_sec(db))
+        cross_aging_sec=cross_aging_sec(db),
+        probeable_ids=probeable_ids)
     if not picked:
         return []
     lease_until = now + timedelta(seconds=worker_lease_sec())
@@ -7821,6 +7924,7 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
                 job.status = "running"
                 job.lease_expires_at = lease_until
                 job.claimed_by = worker_id
+                job.claimed_at = now
                 claimed.append(job.id)
             db.commit()
             _log_claim_pick(worker_id, picked, claimed,
@@ -7837,9 +7941,11 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
     for job in picked:
         result = db.execute(
             text("UPDATE emby_transfer_jobs SET status='running', "
-                 "lease_expires_at=:lease, claimed_by=:worker "
+                 "lease_expires_at=:lease, claimed_by=:worker, "
+                 "claimed_at=:now "
                  "WHERE id=:jid AND status='pending'"),
-            {"lease": lease_until, "worker": worker_id, "jid": job.id})
+            {"lease": lease_until, "worker": worker_id, "jid": job.id,
+             "now": now})
         if result.rowcount == 1:
             claimed.append(job.id)
     db.commit()
@@ -8333,6 +8439,7 @@ __all__ = [
     "worker_concurrency", "worker_per_user_max", "worker_lease_sec",
     "lane_concurrency", "per_owner_inflight",
     "cross_provider_enabled", "cross_lane_concurrency",
+    "probe_priority_enabled",
     "transfer_config_payload", "write_transfer_config",
     "worker_sweep_sec", "notify_transfer_wakeup", "pause_user_queue",
     "is_user_paused", "reclaim_expired_leases", "claim_due_jobs",

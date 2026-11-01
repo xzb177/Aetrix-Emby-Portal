@@ -1737,6 +1737,11 @@ class TransferJob(Base):
     dest_drive_id = Column(String(256))
     status = Column(String(20), nullable=False, default="pending")
     attempts = Column(Integer, nullable=False, default=0)
+    # 认领时间戳（2026-11-01 转存等待压缩 期一）：任何认领路径
+    # （批量认领两路/当场先办，期二起含探针认领）落行时同写
+    # 本列，纯观测用途——配合 created_at 区分「排队多久」与
+    # 「认领后卡多久」。老库由 auto-migrate 补列。
+    claimed_at = Column(DateTime)
     error_kind = Column(String(100))
     error_detail = Column(String(500))
     next_retry_at = Column(DateTime)
