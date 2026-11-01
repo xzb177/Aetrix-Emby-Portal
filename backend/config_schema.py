@@ -334,6 +334,15 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "transfer_probe_lane_concurrency": ("int", 1, 16),
     "transfer_probe_recheck_sec": ("int", 30, 3600),
     "play_inline_probe_budget_sec": ("int", 1, 60),
+    # 剧集预热（2026-11-01 转存等待压缩 期四）：总开关默认开
+    # （站里没用户口径；读取默认兜底在 transfer_variant.
+    # series_preheat_enabled，无行=True）；搬字节预热独立日帽
+    # 默认 2、钳 [1, 16]（只数 trigger=series_preheat_byte 的行，
+    # 与 prefetch 帽分开）；候选集数默认 3、钳 [1, 10]。范围与
+    # 读取侧钳制同口径。纯 SystemConfig 键，不进 env.example。
+    "transfer_series_preheat_enabled": ("bool",),
+    "transfer_series_preheat_daily_max": ("int", 1, 16),
+    "transfer_series_preheat_next_count": ("int", 1, 10),
     "transfer_cross_aging_sec": ("int", 60, 86400),
     "transfer_fast_lane_concurrency": ("int", 1, 32),
     "transfer_per_owner_inflight": ("int", 1, 16),

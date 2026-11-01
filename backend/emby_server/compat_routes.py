@@ -334,6 +334,47 @@ def _mark_variant_played_best_effort(db, user, item) -> None:
         logger.debug("转存副本播放回写失败", exc_info=True)
 
 
+def _maybe_series_preheat_best_effort(item_id, user_id) -> None:
+    """剧集预热后台触发（2026-11-01 转存等待压缩 期四，尽力而为）。
+
+    起 daemon 线程、自开 DB 会话跑 maybe_series_preheat_transfer
+    （含 inline 探针，秒级×后续集数）：不占 Stopped 上报的线程池、
+    不阻塞上报返回；线程内任何异常只记日志。触发资格（finished
+    90% 口径）由调用方 _record_stopped 判定，这里只调不判——
+    与 _mark_variant_played_best_effort 同款“会话上报挂钩子”
+    口径，不新造事件系统。"""
+    try:
+        import threading
+
+        from backend.emby_server import transfer_variant as _tv
+
+        def _run():
+            from types import SimpleNamespace
+
+            db = SessionLocal()
+            try:
+                item = (db.query(em.MediaItem)
+                        .filter(em.MediaItem.id == item_id,
+                                em.MediaItem.deleted_at.is_(None))
+                        .first())
+                if item is None:
+                    return
+                _tv.maybe_series_preheat_transfer(
+                    db, item, SimpleNamespace(id=user_id))
+            except Exception:  # noqa: BLE001 — 预热失败只记日志
+                logger.debug("剧集预热后台触发失败", exc_info=True)
+            finally:
+                try:
+                    db.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        threading.Thread(target=_run, daemon=True,
+                         name="series-preheat").start()
+    except Exception:  # noqa: BLE001 — 起线程失败不挡上报
+        logger.debug("剧集预热后台线程启动失败", exc_info=True)
+
+
 def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_visible_item(db, user, body.get("ItemId") or "")
     session, _wrote = _upsert_session(db, request, user, item, body)
@@ -393,6 +434,11 @@ def _record_stopped(request: Request, user: models.WebUser, db: Session, body: d
     _mark_variant_played_best_effort(db, user, item)
     _apply_play_progress(umd, pos, finished)
     db.commit()
+    # 剧集预热（2026-11-01 期四）：播完（finished 90% 口径）才触发，
+    # 后台线程跑、不阻塞 Stopped 返回；umd 已提交，强信号判定能
+    # 看见本集播放。未播完的 Stopped 不触发（弱信号不配花成本）。
+    if finished:
+        _maybe_series_preheat_best_effort(item.id, user.id)
     # 观影时长分档奖励（尽力而为）：发放走自己的锁 + 提交，失败只记日志，
     # 绝不影响 Stopped 主流程与返回。
     try:

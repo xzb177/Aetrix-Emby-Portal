@@ -699,6 +699,9 @@ const transfer = reactive({
   cross_provider_transfer_enabled: true,
   transfer_cross_lane_concurrency: 2,
   transfer_probe_lane_concurrency: 4,
+  transfer_series_preheat_enabled: true,
+  transfer_series_preheat_daily_max: 2,
+  transfer_series_preheat_next_count: 3,
   transfer_cross_aging_sec: 1800,
   transfer_fast_lane_concurrency: 8,
   transfer_per_owner_inflight: 2,
@@ -730,6 +733,9 @@ function applyTransfer(data: TransferConfig) {
   transfer.cross_provider_transfer_enabled = data.cross_provider_transfer_enabled !== false
   transfer.transfer_cross_lane_concurrency = Number(data.transfer_cross_lane_concurrency) || 2
   transfer.transfer_probe_lane_concurrency = Number(data.transfer_probe_lane_concurrency) || 4
+  transfer.transfer_series_preheat_enabled = data.transfer_series_preheat_enabled !== false
+  transfer.transfer_series_preheat_daily_max = Number(data.transfer_series_preheat_daily_max) || 2
+  transfer.transfer_series_preheat_next_count = Number(data.transfer_series_preheat_next_count) || 3
   transfer.transfer_cross_aging_sec = Number(data.transfer_cross_aging_sec) || 1800
   transfer.transfer_fast_lane_concurrency = Number(data.transfer_fast_lane_concurrency) || 8
   transfer.transfer_per_owner_inflight = Number(data.transfer_per_owner_inflight) || 2
@@ -772,6 +778,9 @@ const transferDirty = computed(() =>
 transfer.cross_provider_transfer_enabled !== transferOriginal.cross_provider_transfer_enabled
   || transfer.transfer_cross_lane_concurrency !== transferOriginal.transfer_cross_lane_concurrency
   || transfer.transfer_probe_lane_concurrency !== transferOriginal.transfer_probe_lane_concurrency
+  || transfer.transfer_series_preheat_enabled !== transferOriginal.transfer_series_preheat_enabled
+  || transfer.transfer_series_preheat_daily_max !== transferOriginal.transfer_series_preheat_daily_max
+  || transfer.transfer_series_preheat_next_count !== transferOriginal.transfer_series_preheat_next_count
   || transfer.transfer_cross_aging_sec !== transferOriginal.transfer_cross_aging_sec
   || transfer.transfer_fast_lane_concurrency !== transferOriginal.transfer_fast_lane_concurrency
   || transfer.transfer_per_owner_inflight !== transferOriginal.transfer_per_owner_inflight
@@ -808,6 +817,16 @@ async function saveTransferCore(): Promise<boolean> {
   if (!Number.isInteger(transfer.transfer_probe_lane_concurrency)
     || transfer.transfer_probe_lane_concurrency < 1 || transfer.transfer_probe_lane_concurrency > 16) {
     ElMessage.error('探针道单轮上限需在 1~16 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_series_preheat_daily_max)
+    || transfer.transfer_series_preheat_daily_max < 1 || transfer.transfer_series_preheat_daily_max > 16) {
+    ElMessage.error('剧集预热搬字节日帽需在 1~16 之间')
+    return false
+  }
+  if (!Number.isInteger(transfer.transfer_series_preheat_next_count)
+    || transfer.transfer_series_preheat_next_count < 1 || transfer.transfer_series_preheat_next_count > 10) {
+    ElMessage.error('剧集预热候选集数需在 1~10 之间')
     return false
   }
   if (!Number.isInteger(transfer.transfer_cross_aging_sec)
@@ -1780,6 +1799,50 @@ watch(
                     <span class="field-suffix">条</span>
                   </div>
                   <span class="field-hint">指纹已登记的跨单先走探针道只试秒传（命中秒成），工人每轮最多探几条；探针不占上面的搬字节在途上限，默认 4</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="剧集预热">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-model="transfer.transfer_series_preheat_enabled"
+                      active-text="开"
+                      inactive-text="关"
+                    />
+                  </div>
+                  <span class="field-hint">开：播完一集后给同季后续集建预热（先只探针、强信号才搬字节）；关：播完不预热。默认开</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="剧集预热搬字节日帽">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_series_preheat_daily_max"
+                      :min="1"
+                      :max="16"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">条/人/日</span>
+                  </div>
+                  <span class="field-hint">强信号时每人每天最多建几张搬字节预热单，与详情页预转存的日帽分开计，默认 2</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="剧集预热候选集数">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="transfer.transfer_series_preheat_next_count"
+                      :min="1"
+                      :max="10"
+                      :step="1"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">集</span>
+                  </div>
+                  <span class="field-hint">播完一集后给同季后续几集建预热，默认 3</span>
                 </div>
               </el-form-item>
               <el-form-item label="跨单排队提权阈值">

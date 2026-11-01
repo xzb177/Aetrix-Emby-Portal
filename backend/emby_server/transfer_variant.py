@@ -477,6 +477,75 @@ def play_inline_probe_budget_sec(db=None):
 
 
 # ---------------------------------------------------------------------------
+# 剧集预热（2026-11-01 转存等待压缩 期四；
+# reports/transfer-wait-compression-design-20261101.md §3）
+#
+# 用户播完一集后，给同季后续 K 集建预热——两段式、成本分层：
+# - 探针预拷（近零成本，激进做）：候选集有可信 sha1 且方向为跨
+#   Drive→115 时，建 trigger=series_preheat 的探针单并在触发
+#   后台线程里 inline 跑期二 probe_only（只试 initupload，命中
+#   落 ready 变体）；未命中/失败删单不留行——24h 节流桶按
+#   (item, user) 计任何任务行，墓碑行会挡住用户随后对该集的
+#   正常点播建单，所以探针单绝不能以 pending/failed 留在表里。
+#   探针单不走工人两道认领（claim_due_jobs 与 claim_probe_jobs
+#   均显式跳过 series_preheat 行）：搬字节道认领它就等于未命中
+#   也自动搬字节，探针清扫认领它会与 inline 探针双跑。
+# - 搬字节预热（贵，克制做）：强信号时才建 trigger=
+#   series_preheat_byte 的正式单（走现行工人慢组认领、跨槽与
+#   aging 全套口径），独立日帽 transfer_series_preheat_daily_max
+#   默认 2，与详情页 prefetch 帽（trigger=prefetch 计数）分开计。
+# 触发点：会话上报 _record_stopped 的 finished（90% 口径）处，
+# 与活力/XP 结算同结算点——不新造事件系统；Progress 不挂
+# （finished 会在 90% 后每次上报都成立，挂 Progress 会反复
+# 触发；Stopped 每会话只发一次，且未命中删单后重播完才会再探）。
+# 全部纯 SystemConfig 键，不进 env.example（#1527 先例）。
+# ---------------------------------------------------------------------------
+
+#: 剧集预热总开关 SystemConfig 键；默认开（站里没用户口径）。
+KEY_TRANSFER_SERIES_PREHEAT_ENABLED = "transfer_series_preheat_enabled"
+
+#: 搬字节预热独立日帽 SystemConfig 键；默认 2 单/人/日，钳 [1, 16]。
+#: 只数 trigger=series_preheat_byte 的当日建单，不数探针单、
+#: 不数详情页 prefetch 单（后者由 _prefetch_today_count 另计）。
+KEY_TRANSFER_SERIES_PREHEAT_DAILY_MAX = "transfer_series_preheat_daily_max"
+TRANSFER_SERIES_PREHEAT_DAILY_DEFAULT = 2
+
+#: 预热候选集数 SystemConfig 键；默认 3（同季后续 K 集），钳 [1, 10]。
+KEY_TRANSFER_SERIES_PREHEAT_NEXT_COUNT = "transfer_series_preheat_next_count"
+TRANSFER_SERIES_PREHEAT_NEXT_DEFAULT = 3
+
+#: 探针单 trigger：工人两道认领跳过、预热 inline 探针专属。
+TRIGGER_SERIES_PREHEAT = "series_preheat"
+#: 搬字节预热单 trigger：走现行工人认领，日帽按本 trigger 计数。
+TRIGGER_SERIES_PREHEAT_BYTE = "series_preheat_byte"
+#: 探针僵尸清理阈值（秒）：pending 探针单超过此时长未被 inline
+#: 探针收尾，必是触发线程已死（探针本体秒级），下次触发时删行
+#: 兜底，不让它占着 24h 节流桶。
+_SERIES_PREHEAT_STALE_SEC = 600
+
+
+def series_preheat_enabled(db=None):
+    """剧集预热总开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(db, KEY_TRANSFER_SERIES_PREHEAT_ENABLED, True)
+
+
+def series_preheat_daily_max(db=None):
+    """搬字节预热日帽：SystemConfig > 默认 2，钳 [1, 16]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_SERIES_PREHEAT_DAILY_MAX)
+    if configured is not None:
+        return max(1, min(16, configured))
+    return TRANSFER_SERIES_PREHEAT_DAILY_DEFAULT
+
+
+def series_preheat_next_count(db=None):
+    """预热候选集数：SystemConfig > 默认 3，钳 [1, 10]。"""
+    configured = _system_config_int(db, KEY_TRANSFER_SERIES_PREHEAT_NEXT_COUNT)
+    if configured is not None:
+        return max(1, min(10, configured))
+    return TRANSFER_SERIES_PREHEAT_NEXT_DEFAULT
+
+
+# ---------------------------------------------------------------------------
 # 类别级熔断（预见层 v2 第一层，2026-11-01）：按「provider＋失败
 # 类别」暂停派发。2026-10-29 授权范围突变时没有按类停派的开关，
 # 只能人肉全表取消 293 单（见 OPS_CANCELLED_KIND 来历注释）。
@@ -768,6 +837,9 @@ def transfer_config_payload(db):
         "cross_provider_transfer_enabled": cross_provider_enabled(db),
         "transfer_cross_lane_concurrency": cross_lane_concurrency(db),
         "transfer_probe_lane_concurrency": probe_lane_concurrency(db),
+        "transfer_series_preheat_enabled": series_preheat_enabled(db),
+        "transfer_series_preheat_daily_max": series_preheat_daily_max(db),
+        "transfer_series_preheat_next_count": series_preheat_next_count(db),
         "transfer_cross_aging_sec": cross_aging_sec(db),
         "transfer_fast_lane_concurrency": lane_concurrency(db),
         "transfer_per_owner_inflight": per_owner_inflight(db),
@@ -795,6 +867,9 @@ def transfer_config_payload(db):
 def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_cross_lane_concurrency=None,
                           transfer_probe_lane_concurrency=None,
+                          transfer_series_preheat_enabled=None,
+                          transfer_series_preheat_daily_max=None,
+                          transfer_series_preheat_next_count=None,
                           transfer_cross_aging_sec=None,
                           transfer_fast_lane_concurrency=None,
                           transfer_per_owner_inflight=None,
@@ -836,6 +911,15 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if transfer_probe_lane_concurrency is not None:
         values[KEY_TRANSFER_PROBE_LANE_CONCURRENCY] = str(
             transfer_probe_lane_concurrency)
+    if transfer_series_preheat_enabled is not None:
+        values[KEY_TRANSFER_SERIES_PREHEAT_ENABLED] = (
+            "true" if transfer_series_preheat_enabled else "false")
+    if transfer_series_preheat_daily_max is not None:
+        values[KEY_TRANSFER_SERIES_PREHEAT_DAILY_MAX] = str(
+            transfer_series_preheat_daily_max)
+    if transfer_series_preheat_next_count is not None:
+        values[KEY_TRANSFER_SERIES_PREHEAT_NEXT_COUNT] = str(
+            transfer_series_preheat_next_count)
     if transfer_cross_aging_sec is not None:
         values[KEY_TRANSFER_CROSS_AGING_SEC] = str(
             transfer_cross_aging_sec)
@@ -3622,6 +3706,305 @@ def maybe_prefetch_transfer(db, item, user) -> dict:
                 "job_id": job.id, "target_item_id": target.id}
     except Exception:  # noqa: BLE001 — 预转存绝不能打断详情页
         logger.warning("详情页预转存异常（不影响详情页）", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"triggered": False, "reason": "error"}
+
+
+def _series_preheat_candidates(db, anchor, limit):
+    """同季后续集候选：同 series_id＋同季、集号更大，按集号升序。
+
+    复用 transfer_cleanup._watching_item_ids 的同款排序逻辑
+    （季号、集号，缺号排后、id 兜底），不新造第二套选集算法；
+    软删/已合并行不进候选。"""
+    return (db.query(em.MediaItem)
+            .filter(em.MediaItem.item_type == "episode",
+                    em.MediaItem.series_id == anchor.series_id,
+                    em.MediaItem.season_number == anchor.season_number,
+                    em.MediaItem.episode_number > anchor.episode_number,
+                    em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None))
+            .order_by(em.MediaItem.episode_number.is_(None),
+                      em.MediaItem.episode_number,
+                      em.MediaItem.id)
+            .limit(limit)
+            .all())
+
+
+def _series_preheat_strong_signal(db, user_id, anchor):
+    """强信号（任一成立即强）：继续追剧才配花搬字节成本。
+
+    - 14 天内播过同剧 ≥2 集（含刚播完的锚集）：用户正在连看、
+      该剧在追剧信号内再次被播（锚＋另一集即满足，7 天档是其
+      子集，不另列——任务书“继续点播下一集”与“追剧信号内
+      再次被播”在此口径下同一判定）；
+    - SeriesFollow 有效行：用户显式订阅了这部剧。
+    判定失败 fail-open 回弱信号（只探针、不建搬字节单），
+    绝不因信号查询异常多花搬字节成本。"""
+    try:
+        now = datetime.now()
+        series_id = getattr(anchor, "series_id", None)
+        if series_id is None:
+            return False
+        follow = (db.query(em.SeriesFollow)
+                  .filter(em.SeriesFollow.user_id == user_id,
+                          em.SeriesFollow.series_item_id == series_id,
+                          em.SeriesFollow.status == "active")
+                  .first())
+        if follow is not None:
+            return True
+        rows = (db.query(em.UserMediaData.item_id)
+                .join(em.MediaItem,
+                      em.MediaItem.id == em.UserMediaData.item_id)
+                .filter(em.UserMediaData.user_id == user_id,
+                        em.MediaItem.series_id == series_id,
+                        em.MediaItem.item_type == "episode",
+                        em.UserMediaData.last_played_at.isnot(None),
+                        em.UserMediaData.last_played_at >= (
+                            now - timedelta(days=14)))
+                .all())
+        played = {row[0] for row in rows}
+        return len(played) >= 2
+    except Exception:  # noqa: BLE001 — 信号查询失败只回弱信号
+        logger.debug("剧集预热强信号判定失败（回弱信号）", exc_info=True)
+        return False
+
+
+def _series_preheat_byte_today_count(db, user_id) -> int:
+    """该用户今天已建的搬字节预热单数（与 prefetch 帽分开计数）。
+
+    只数 trigger=series_preheat_byte 的行：探针单、详情页
+    prefetch 单、点播单都不进这个桶。"""
+    today_start = datetime.now().replace(hour=0, minute=0, second=0,
+                                         microsecond=0)
+    return (db.query(em.TransferJob)
+            .filter(em.TransferJob.owner_scope == "user",
+                    em.TransferJob.owner_ref == str(user_id),
+                    em.TransferJob.trigger == TRIGGER_SERIES_PREHEAT_BYTE,
+                    em.TransferJob.created_at >= today_start)
+            .count())
+
+
+def _series_preheat_cleanup_stale(db, user_id, candidate_ids):
+    """删超期未收尾的 pending 探针单（触发线程已死的僵尸行）。
+
+    探针本体秒级：pending 超 10 分钟必不是活探针；留着它会
+    占 24h 节流桶、挡住用户对该集的正常建单。只清本用户、
+    本批候选集的行，不碰他人/别集的单。"""
+    if not candidate_ids:
+        return 0
+    cutoff = datetime.now() - timedelta(seconds=_SERIES_PREHEAT_STALE_SEC)
+    stale = (db.query(em.TransferJob)
+             .filter(em.TransferJob.owner_scope == "user",
+                     em.TransferJob.owner_ref == str(user_id),
+                     em.TransferJob.trigger == TRIGGER_SERIES_PREHEAT,
+                     em.TransferJob.status == "pending",
+                     em.TransferJob.item_id.in_(list(candidate_ids)),
+                     em.TransferJob.created_at.isnot(None),
+                     em.TransferJob.created_at < cutoff)
+             .all())
+    for row in stale:
+        db.delete(row)
+    if stale:
+        db.commit()
+        logger.info("剧集预热：清理超期探针僵尸单 %d 条 user=%s",
+                    len(stale), user_id)
+    return len(stale)
+
+
+def _series_preheat_resolve_dest(db, user_id, candidate):
+    """候选集的落点解析（与 maybe_prefetch_transfer 同款绑哪播哪）。
+
+    返回 (kind, provider, dest_provider, dest, scheme)：
+    - same：用户绑了源 provider 同盘，建同 provider 单；
+    - cross：用户只绑了对侧盘，建跨单（dest_provider 为落点）；
+    - unknown_provider：条目 provider 认不出（byos/本地等），跳过；
+    - no_binding：用户无任何可用绑定，跳过（调用方响亮记日志）。
+    夸克只作跨落点候补（与详情页预转存同口径：开关关时不建）。"""
+    provider = _item_provider(db, candidate)
+    if provider is None:
+        return ("unknown_provider", None, None, None, None)
+    if _active_binding(db, user_id, provider) is not None:
+        dest = (f"userdrive:{user_id}" if provider == "drive"
+                else f"pan115:user-{user_id}")
+        scheme = "userdrive:" if provider == "drive" else "pan115:"
+        return ("same", provider, provider, dest, scheme)
+    other = "pan115" if provider == "drive" else "drive"
+    if _active_binding(db, user_id, other) is not None:
+        dest = (f"pan115:user-{user_id}" if other == "pan115"
+                else f"userdrive:{user_id}")
+        scheme = "pan115:" if other == "pan115" else "userdrive:"
+        return ("cross", provider, other, dest, scheme)
+    quark_binding = _active_binding(db, user_id, "quark")
+    if quark_binding is not None and quark_play_enabled(db):
+        return ("cross", provider, "quark", f"quark:user-{user_id}",
+                "quark:")
+    return ("no_binding", provider, None, None, None)
+
+
+def _series_preheat_probe_once(db, job, drive_api_factory):
+    """探针单 inline 探一次：复用期二 probe_only 执行原样。
+
+    命中 → 执行器已落 done＋ready 变体，行保留（与普通探针
+    命中收尾一致）；未命中/失败/异常 → 删行（探针单是临时态，
+    不留 pending/failed 墓碑占节流桶）。返回 done / probe_miss。"""
+    try:
+        factory = drive_api_factory or DriveApiClient
+        result = run_probe_job_once(db, job, factory())
+        outcome = (result or {}).get("outcome", "")
+    except Exception:  # noqa: BLE001 — 探针异常按未命中删单
+        logger.warning("剧集预热探针异常 job=%s item=%s（删单）",
+                       job.id, job.item_id, exc_info=True)
+        try:
+            db.rollback()
+            db.delete(job)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            pass
+        return "probe_miss"
+    if outcome == "done":
+        return "done"
+    logger.info("剧集预热探针未命中 job=%s item=%s（删单，不自动搬字节）",
+                job.id, job.item_id)
+    try:
+        db.delete(job)
+        db.commit()
+    except Exception:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    return "probe_miss"
+
+
+def maybe_series_preheat_transfer(db, anchor, user, *,
+                                  drive_api_factory=None) -> dict:
+    """播完触发的剧集预热（幂等、便宜、永不抛错进会话上报）。
+
+    返回 {"triggered", "reason", "probe_jobs", "probe_missed",
+    "byte_jobs", "skipped": [{item_id, reason}]}。不触发的情形
+    一律明示原因：master_off / preheat_off / no_user /
+    not_episode / no_series / no_episode_number / no_candidates /
+    no_binding。单集级跳过原因：already_ready / throttled /
+    no_sha1 / not_probe_direction / byte_cap / 建单错误 kind。
+    预热绝不消费换绑豁免：节流态非 clear（blocked /
+    waiver_exhausted）一律跳过，豁免留给门禁/重建路径。
+    """
+    try:
+        if not master_enabled():
+            return {"triggered": False, "reason": "master_off"}
+        if not series_preheat_enabled(db):
+            return {"triggered": False, "reason": "preheat_off"}
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return {"triggered": False, "reason": "no_user"}
+        if (getattr(anchor, "item_type", "") or "") != "episode":
+            return {"triggered": False, "reason": "not_episode"}
+        if getattr(anchor, "series_id", None) is None:
+            return {"triggered": False, "reason": "no_series"}
+        if (getattr(anchor, "season_number", None) is None
+                or getattr(anchor, "episode_number", None) is None):
+            return {"triggered": False, "reason": "no_episode_number"}
+        candidates = _series_preheat_candidates(
+            db, anchor, series_preheat_next_count(db))
+        if not candidates:
+            return {"triggered": False, "reason": "no_candidates"}
+        if all(_active_binding(db, user_id, provider) is None
+               for provider in ("drive", "pan115", "quark")):
+            # 无绑定/绑定失效用户不建单并响亮记日志（任务书硬边界）
+            logger.warning(
+                "剧集预热 no_binding：用户无生效绑定 user=%s series=%s "
+                "anchor=%s（不建单）", user_id, anchor.series_id,
+                anchor.id)
+            return {"triggered": False, "reason": "no_binding"}
+        _series_preheat_cleanup_stale(
+            db, user_id, [c.id for c in candidates])
+        strong = _series_preheat_strong_signal(db, user_id, anchor)
+        byte_left = (series_preheat_daily_max(db)
+                     - _series_preheat_byte_today_count(db, user_id))
+        probe_jobs, probe_missed, byte_jobs, skipped = [], [], [], []
+        for cand in candidates:
+            kind, provider, dest_provider, dest, scheme = (
+                _series_preheat_resolve_dest(db, user_id, cand))
+            if kind in ("unknown_provider", "no_binding"):
+                skipped.append({"item_id": cand.id, "reason": kind})
+                continue
+            if kind == "same":
+                ready = _newest_ready(db, cand.id, "user", str(user_id))
+            else:
+                ready = _newest_ready_for_scheme(db, cand.id, "user",
+                                                 str(user_id), scheme)
+            if ready is not None:
+                skipped.append({"item_id": cand.id,
+                                "reason": "already_ready"})
+                continue
+            state, _from = _user_throttle_state(db, cand.id, user_id,
+                                                dest)
+            if state in ("blocked", "waiver_exhausted"):
+                skipped.append({"item_id": cand.id,
+                                "reason": "throttled"})
+                continue
+            if strong and byte_left > 0:
+                try:
+                    if kind == "same":
+                        job = create_user_job(
+                            db, cand, user_id, provider,
+                            trigger=TRIGGER_SERIES_PREHEAT_BYTE)
+                    else:
+                        job = create_cross_provider_job(
+                            db, cand, user_id, provider,
+                            trigger=TRIGGER_SERIES_PREHEAT_BYTE,
+                            dest_provider=dest_provider)
+                except TransferError as exc:
+                    skipped.append({"item_id": cand.id,
+                                    "reason": exc.kind})
+                    continue
+                byte_jobs.append(job.id)
+                byte_left -= 1
+                continue
+            if (kind == "cross" and provider == "drive"
+                    and dest_provider == "pan115"):
+                try:
+                    job = create_cross_provider_job(
+                        db, cand, user_id, provider,
+                        trigger=TRIGGER_SERIES_PREHEAT,
+                        dest_provider="pan115")
+                except TransferError as exc:
+                    skipped.append({"item_id": cand.id,
+                                    "reason": exc.kind})
+                    continue
+                if not _job_is_probeable(db, job):
+                    # 不可探针（无可信 sha1）：删刚建的探针单，
+                    # 不留行；无指纹集靠期三沉淀追剧档另行覆盖。
+                    try:
+                        db.delete(job)
+                        db.commit()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    skipped.append({"item_id": cand.id,
+                                    "reason": "no_sha1"})
+                    continue
+                outcome = _series_preheat_probe_once(
+                    db, job, drive_api_factory)
+                if outcome == "done":
+                    probe_jobs.append(job.id)
+                else:
+                    probe_missed.append(cand.id)
+                continue
+            skipped.append({"item_id": cand.id,
+                            "reason": ("byte_cap" if strong
+                                       else "not_probe_direction")})
+        triggered = bool(probe_jobs or probe_missed or byte_jobs)
+        return {"triggered": triggered,
+                "reason": ("job_created" if triggered else "all_skipped"),
+                "probe_jobs": probe_jobs,
+                "probe_missed": probe_missed,
+                "byte_jobs": byte_jobs,
+                "skipped": skipped}
+    except Exception:  # noqa: BLE001 — 预热绝不能打断会话上报
+        logger.warning("剧集预热异常（不影响会话上报）", exc_info=True)
         try:
             db.rollback()
         except Exception:  # noqa: BLE001
@@ -8187,6 +8570,19 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
            .all())
     if not due:
         return []
+    # 剧集预热探针单（trigger=series_preheat）不进搬字节认领：
+    # 它只由预热触发线程 inline 探，搬字节道认领它就等于未命中
+    # 也自动搬字节，违背“未命中不自动搬字节”。行留在 pending、
+    # 不烧 attempts、不判死（僵尸行由下次预热触发按 10 分钟阈值清）。
+    _probe_only = [j for j in due
+                   if (j.trigger or "") == TRIGGER_SERIES_PREHEAT]
+    if _probe_only:
+        logger.info("转存工人：剧集预热探针单 %d 条不进搬字节认领",
+                    len(_probe_only))
+        due = [j for j in due
+               if (j.trigger or "") != TRIGGER_SERIES_PREHEAT]
+        if not due:
+            return []
     # 类别级熔断：命中暂停规则的任务本轮不认领——留在 pending、
     # 不烧 attempts，也不许被下面的 no_binding 复核判死（暂停的
     # 语义是「先压住」，不是「判掉」）；过滤必须在复核之前。
@@ -8324,6 +8720,10 @@ def claim_probe_jobs(db, now=None, limit=None, worker_id=None):
     for job in due:
         if len(picked) >= limit:
             break
+        # 剧集预热探针单不走探针清扫：它由预热触发线程 inline 探完，
+        # 清扫再认领会与 inline 探针双跑（两次 initupload＋重复登记）。
+        if (job.trigger or "") == TRIGGER_SERIES_PREHEAT:
+            continue
         if _job_is_probeable(db, job, now=now):
             picked.append(job)
     if not picked:
@@ -9007,6 +9407,8 @@ __all__ = [
     "probe_recheck_sec", "play_inline_probe_budget_sec",
     "claim_probe_jobs", "claim_probe_job", "run_probe_job_once",
     "process_probe_round", "claim_and_probe_inline",
+    "series_preheat_enabled", "series_preheat_daily_max",
+    "series_preheat_next_count", "maybe_series_preheat_transfer",
     "transfer_config_payload", "write_transfer_config",
     "worker_sweep_sec", "notify_transfer_wakeup", "pause_user_queue",
     "is_user_paused", "reclaim_expired_leases", "claim_due_jobs",
