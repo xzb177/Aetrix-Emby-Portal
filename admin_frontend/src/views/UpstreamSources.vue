@@ -20,12 +20,9 @@ import {
   deleteUpstreamSource,
   disableUpstreamSource,
   enableUpstreamSource,
-  fetchLibraries,
   fetchUpstreamAggregateTask,
-  fetchUpstreamCategoryLibraryMap,
   fetchUpstreamDetailLineConfig,
   fetchUpstreamSources,
-  updateUpstreamCategoryLibraryMap,
   updateUpstreamDetailLineConfig,
   updateUpstreamSource,
 } from '@/api/admin'
@@ -144,7 +141,6 @@ const form = ref({
   user_agent: '',
   referer: '',
   note: '',
-  category: '',
 })
 
 const HEALTH_LABELS: Record<string, string> = {
@@ -195,127 +191,6 @@ async function onDetailLineToggle(value: boolean) {
   }
 }
 
-// 分类→本地库改配（备注-分类对位）：源备注「备注-分类」的分类默认
-// 同名对位本地库；这里只改配对不上的个别分类。文本是 JSON 对象，
-// 留空保存 = 清掉改配、全部分类回同名对位。
-const categoryMapText = ref('')
-const categoryMapSaving = ref(false)
-/** 改配表的分类名集合：备注拆分时认「已知分类」用（见 splitNoteCategory）。 */
-const categoryMapKeys = ref<string[]>([])
-
-async function loadCategoryLibraryMap() {
-  try {
-    const res = await fetchUpstreamCategoryLibraryMap()
-    categoryMapText.value = res.value
-    categoryMapKeys.value = Object.keys(res.map ?? {})
-  } catch (e) {
-    ElMessage.error(toAdminError(e))
-  }
-}
-
-async function saveCategoryLibraryMap() {
-  const text = categoryMapText.value.trim()
-  if (text) {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      ElMessage.error('分类映射必须是 JSON 对象，如 {"国产剧": "华语剧场"}')
-      return
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      ElMessage.error('分类映射必须是 JSON 对象，如 {"国产剧": "华语剧场"}')
-      return
-    }
-  }
-  categoryMapSaving.value = true
-  try {
-    const res = await updateUpstreamCategoryLibraryMap(text)
-    categoryMapText.value = res.value
-    ElMessage.success('分类→本地库映射已保存')
-  } catch (e) {
-    ElMessage.error(toAdminError(e))
-  } finally {
-    categoryMapSaving.value = false
-  }
-}
-
-// 聚合分类下拉的库名选项：从库列表接口动态取（只列真实库、
-// 同名去重），不写死名单——库改名/新增后下拉自动跟上。拉取
-// 失败时降级为只有固定两项，不挡表单使用。
-const libraryNames = ref<string[]>([])
-
-async function loadLibraryNames() {
-  try {
-    const res = await fetchLibraries()
-    const names: string[] = []
-    for (const lib of res.libraries) {
-      if (lib.is_virtual) continue
-      if (lib.name && !names.includes(lib.name)) names.push(lib.name)
-    }
-    libraryNames.value = names
-  } catch {
-    libraryNames.value = []
-  }
-}
-
-/**
- * 备注与聚合分类的拆分/拼合，与后端 parse_remark_category 同口径：
- * 后端取备注最后一个「-」/「－」之后的段为分类，没分隔符时整段
- * 即分类。表单里分类走下拉、备注只写自由文本，保存时拼回
- * 「自由文本-分类」一根字符串存进 note——手写备注的老写法
- * （直接改库里的 note）同样被后端认，两种写法等效。
- * 规则（可预测、重复保存不叠字）：
- * - 打开表单拆：有分隔符 → 最后一段是分类、之前是自由文本；
- *   没分隔符 → 整段恰是已知分类（全部/库名/改配表分类名）时
- *   算分类，否则整段算自由文本、分类不指定；
- * - 保存拼：分类为空 → 只存自由文本（分类段清掉）；自由文本
- *   为空 → 只存分类；都有 → 以半角「-」拼一段；
- * - 当前分类不在下拉名单里（改配过的旧分类等）→ 名单临时补
- *   一项显示它，不静默丢，见 categoryOptions。
- */
-const NOTE_SEPARATORS = ['-', '－']
-
-function splitNoteCategory(note: string): { text: string; category: string } {
-  const raw = note ?? ''
-  let cut = -1
-  for (const sep of NOTE_SEPARATORS) {
-    const idx = raw.lastIndexOf(sep)
-    if (idx > cut) cut = idx
-  }
-  if (cut < 0) {
-    const whole = raw.trim()
-    if (!whole) return { text: '', category: '' }
-    const known = new Set(['全部', ...libraryNames.value, ...categoryMapKeys.value])
-    return known.has(whole)
-      ? { text: '', category: whole }
-      : { text: raw, category: '' }
-  }
-  const tail = raw.slice(cut + 1).trim()
-  if (!tail) return { text: raw, category: '' }
-  return { text: raw.slice(0, cut), category: tail }
-}
-
-function composeNote(text: string, category: string): string {
-  const t = text.trim()
-  const c = category.trim()
-  if (!c) return t
-  return t ? `${t}-${c}` : c
-}
-
-const categoryOptions = computed(() => {
-  const options = [
-    { value: '', label: '不指定（默认全量：整源聚合、逐库对位）' },
-    { value: '全部', label: '全部（显式全量，与不指定等效）' },
-    ...libraryNames.value.map((name) => ({ value: name, label: name })),
-  ]
-  const current = form.value.category
-  if (current && !options.some((o) => o.value === current)) {
-    options.push({ value: current, label: `${current}（当前备注里的分类）` })
-  }
-  return options
-})
-
 function openCreate() {
   editingId.value = null
   form.value = {
@@ -329,14 +204,12 @@ function openCreate() {
     user_agent: '',
     referer: '',
     note: '',
-    category: '',
   }
   showForm.value = true
 }
 
 function openEdit(source: UpstreamSource) {
   editingId.value = source.id
-  const split = splitNoteCategory(source.note ?? '')
   form.value = {
     name: source.name,
     source_type: source.source_type,
@@ -349,8 +222,7 @@ function openEdit(source: UpstreamSource) {
       : '',
     user_agent: source.user_agent ?? '',
     referer: source.referer ?? '',
-    note: split.text,
-    category: split.category,
+    note: source.note ?? '',
   }
   showForm.value = true
 }
@@ -388,9 +260,9 @@ async function submitForm() {
       : undefined,
     user_agent: form.value.user_agent.trim() || undefined,
     referer: form.value.referer.trim() || undefined,
-    // 备注恒拼回一根字符串发送（含空串：编辑时清空分类/备注要
-    // 真落库，不能像旧写法那样用 undefined 把字段吞掉）。
-    note: composeNote(form.value.note, form.value.category),
+    // 备注是纯备注、整段发送（含空串：编辑时清空备注要真落库，
+    // 不能像旧写法那样用 undefined 把字段吞掉）；不参与聚合。
+    note: form.value.note.trim(),
   }
   if (extraHeaders !== undefined) input.extra_headers = extraHeaders
   if (editingId.value === null) {
@@ -522,8 +394,6 @@ async function removeSource(source: UpstreamSource) {
 onMounted(() => {
   void loadSources()
   void loadDetailLineConfig()
-  void loadCategoryLibraryMap()
-  void loadLibraryNames()
 })
 onUnmounted(() => {
   aggregatePageToken += 1
@@ -625,28 +495,6 @@ onUnmounted(() => {
         />
       </div>
     </SectionCard>
-    <SectionCard title="聚合对位">
-      <div class="detail-line-hint">
-        聚合默认全量跑：源没指定分类时，整源聚合、配对按条目自身
-        所属逐库对位。在源表单的「聚合分类」里选了具体分类
-        （存进备注末尾的「备注-分类」段），配对才收窄到分类对位
-        的那个本地库；分类对不上任何本地库，该源整源跳过并在聚合
-        结果里报原因。分类默认同名对位本地库；个别分类的库名
-        对不上时，在下面用 JSON 对象改配（分类名 → 本地库名），
-        只写要改配的即可；「全部」是全量模式开关，不进这张改配表。
-      </div>
-      <el-input
-        v-model="categoryMapText"
-        type="textarea"
-        :rows="3"
-        placeholder='如 {"国产剧": "华语剧场"}，留空 = 全部分类同名对位'
-      />
-      <div style="margin-top: 8px">
-        <el-button type="primary" :loading="categoryMapSaving" @click="saveCategoryLibraryMap">
-          保存映射
-        </el-button>
-      </div>
-    </SectionCard>
     <SectionCard title="源列表">
       <template #actions>
         <el-button type="primary" @click="openCreate">新建上游源</el-button>
@@ -722,18 +570,6 @@ onUnmounted(() => {
         </p>
       </SectionCard>
       <SectionCard v-if="aggregateResult" title="最近一次聚合结果">
-        <p v-if="aggregateResult.result.skipped">
-          源「{{ aggregateResult.sourceName }}」本轮已跳过：
-          {{ aggregateResult.result.skip_reason?.message }}（{{ aggregateResult.result.skip_reason?.code }}）
-        </p>
-        <p v-else-if="aggregateResult.result.target_library_id == null">
-          源「{{ aggregateResult.sourceName }}」本轮是全量聚合，
-          配对按条目自身所属逐库对位，不限于单一本地库<span v-if="aggregateResult.result.category">（分类：{{ aggregateResult.result.category }}）</span><span v-else>（未指定分类，默认全量）</span>。
-        </p>
-        <p v-else-if="aggregateResult.result.target_library_name">
-          源「{{ aggregateResult.sourceName }}」本轮对位本地库「{{ aggregateResult.result.target_library_name }}」
-          （分类：{{ aggregateResult.result.category }}），配对只在该库内进行。
-        </p>
         <p>
           源「{{ aggregateResult.sourceName }}」：发现 {{ aggregateResult.result.libraries_discovered }} 个库，
           拉取 {{ aggregateResult.result.fetched }} 条，聚合 {{ aggregateResult.result.aggregates }} 条，
@@ -814,25 +650,8 @@ onUnmounted(() => {
         <el-form-item label="备注">
           <el-input
             v-model="form.note"
-            placeholder="自由说明文字，可留空（聚合分类在下面选，不用写进备注）"
+            placeholder="自由说明文字，可留空（只是备注，不参与聚合）"
           />
-        </el-form-item>
-        <el-form-item label="聚合分类">
-          <el-select v-model="form.category" style="width: 100%">
-            <el-option
-              v-for="opt in categoryOptions"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-          <div class="detail-line-hint">
-            分类只用来把聚合收窄到一个本地库：不指定（或选「全部」）
-            就是整源全量聚合、按条目逐库对位；选了具体库就只配
-            那个库，分类名对不上任何本地库时整源跳过并报原因。
-            保存时分类拼到备注末尾（「备注-分类」），手写备注的
-            老写法同样有效。
-          </div>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="saving" @click="submitForm">保存</el-button>
