@@ -334,6 +334,12 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     # 关时执行面不接线、行为与上线前逐字一致。纯 SystemConfig
     # 键，不进 env.example（#1527 先例）。
     "transfer_manifest_accounting_enabled": ("bool",),
+    # 换代线 step 4 执行面接管开关（2026-11-01）：开 = 115 续传
+    # 恢复以落盘交付行为准、清单 complete 的整文件 sha1 直接
+    # 采信、同内容在跑单调度合并；须与记账开关联动（记账关时
+    # 本开关无数据可依、整步回落）。默认开由 transfer_variant
+    # .manifest_takeover_enabled 的读取默认兜底。
+    "transfer_manifest_takeover_enabled": ("bool",),
 }
 
 # Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的

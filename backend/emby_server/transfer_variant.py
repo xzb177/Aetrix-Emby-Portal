@@ -430,6 +430,31 @@ def manifest_accounting_enabled(db=None):
         db, KEY_TRANSFER_MANIFEST_ACCOUNTING_ENABLED, True)
 
 
+#: 换代线 step 4 执行面接管开关 SystemConfig 键（2026-11-01）：
+#: 开 = #1648 的记账转为执行依据——Drive→115 续传恢复以
+#: transfer_deliveries 落盘行为准（sidecar 退为第二落点）、
+#: 清单 complete 的整文件 sha1 直接采信（省大文件哈希遍）、
+#: 同 content_key 在跑单调度合并（后到单 defer 不重复读源）。
+#: 须与记账开关联动：记账关 = 无数据可依、整步回落现行执行
+#: 面；本开关关 = 同样逐字回现行执行面。默认开（用户
+#: 2026-11-01 亲令点火门解除、换代线全部做完）。纯
+#: SystemConfig 键，不进 env.example。
+KEY_TRANSFER_MANIFEST_TAKEOVER_ENABLED = (
+    "transfer_manifest_takeover_enabled")
+
+
+def manifest_takeover_enabled(db=None):
+    """换代线接管开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(
+        db, KEY_TRANSFER_MANIFEST_TAKEOVER_ENABLED, True)
+
+
+def manifest_takeover_active(db=None):
+    """接管是否真正生效：记账开＋接管开，缺一回落现行执行面。"""
+    return (manifest_accounting_enabled(db)
+            and manifest_takeover_enabled(db))
+
+
 # ---------------------------------------------------------------------------
 # 形态 B 云下载配置（2026-10-30 用户亲批立项：让 115 自己拉）
 #
@@ -552,6 +577,8 @@ def transfer_config_payload(db):
             pan115_multipart_upload_enabled(db)),
         "transfer_manifest_accounting_enabled": (
             manifest_accounting_enabled(db)),
+        "transfer_manifest_takeover_enabled": (
+            manifest_takeover_enabled(db)),
         "transfer_rebind_waiver_window_days": rebind_waiver_window_days(db),
         "transfer_rebind_waiver_max_uses": rebind_waiver_max_uses(db),
         "transfer_cross_cloudpull_enabled": cross_cloudpull_enabled(db),
@@ -569,6 +596,7 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           pan115_rapid_upload_enabled=None,
                           pan115_multipart_upload_enabled=None,
                           transfer_manifest_accounting_enabled=None,
+                          transfer_manifest_takeover_enabled=None,
                           transfer_rebind_waiver_window_days=None,
                           transfer_rebind_waiver_max_uses=None,
                           transfer_cross_cloudpull_enabled=None,
@@ -592,6 +620,9 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if transfer_manifest_accounting_enabled is not None:
         values[KEY_TRANSFER_MANIFEST_ACCOUNTING_ENABLED] = (
             "true" if transfer_manifest_accounting_enabled else "false")
+    if transfer_manifest_takeover_enabled is not None:
+        values[KEY_TRANSFER_MANIFEST_TAKEOVER_ENABLED] = (
+            "true" if transfer_manifest_takeover_enabled else "false")
     if transfer_cross_lane_concurrency is not None:
         values[KEY_TRANSFER_CROSS_LANE_CONCURRENCY] = str(
             transfer_cross_lane_concurrency)
@@ -6258,6 +6289,19 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
         except Exception:  # noqa: BLE001 — 记账接线失败不打挂搬运
             _tman = None
             _recorder = None
+    if (not stored_sha1 and _tman is not None
+            and manifest_takeover_active(db)):
+        # 换代线 step 4 接管：清单已 complete 的整文件 sha1 直接
+        # 采信（入册前已经过现行交付链交叉核对，见清单模型头
+        # 注），省掉下面大文件的整遍哈希重读。清单未齐/开关关
+        # 时 stored_sha1 维持空、哈希遍口径逐字不变。
+        _manifest_sha1 = _tman.manifest_trusted_sha1(
+            db, _content_key, size)
+        if _manifest_sha1:
+            stored_sha1 = _manifest_sha1
+            logger.info(
+                "transfer_manifest outcome=sha1_trusted job=%s "
+                "item=%s size=%s", job.id, item.id, size)
     if (not stored_sha1 and size > _115_SIMPLE_UPLOAD_LIMIT
             and pan115_multipart_upload_enabled(db)):
         # initupload（秒传与分片共用）以整文件 sha1 为必填入参：
@@ -6384,26 +6428,53 @@ def _run_cross_drive_to_115(db, job, item, drive_api):
                         "文件超过 115 简单上传 5 GiB 上限且无可信整"
                         "文件 sha1（initupload 分片协议必填），"
                         "不静默回落")
-                mp_session = _load_multipart_session(
-                    job.id, _content_key, size, dest_cid)
-                if mp_session is None and _recorder is not None:
-                    # 交付状态落盘恢复（换代线 step 1 余项）：
-                    # sidecar 缺失（容器重建把 /tmp 清掉）时凭
-                    # transfer_deliveries 行恢复会话，并回写
-                    # sidecar——之后续传判定仍归 transfer115 的
-                    # ListParts 对账，本处只是多一个找回来源，
-                    # 三项校验（content_key＋size＋目标目录）与
-                    # sidecar 同口径。恢复不到按无会话走全新
-                    # 上传（与 sidecar 丢失的现行语义一致）。
+                if (_recorder is not None
+                        and manifest_takeover_active(db)):
+                    # 换代线 step 4 接管：恢复顺序翻转——落盘
+                    # 交付行（经三项校验）为准，sidecar 退为第
+                    # 二落点；两者都在且 upload_id 不一致时以落
+                    # 盘行为准并响亮记日志（落盘行经 failed 事
+                    # 件同步过最新会话，见 _mp_progress，不会比
+                    # sidecar 旧）。续传判定仍归 transfer115 的
+                    # ListParts 对账，本处只决定恢复来源。
                     mp_session = _tman.restore_delivery_session(
                         db, job.id, _content_key, size, dest_cid)
+                    _sidecar_session = _load_multipart_session(
+                        job.id, _content_key, size, dest_cid)
                     if mp_session is not None:
-                        _save_multipart_session(
-                            job.id, _content_key, size, dest_cid,
-                            mp_session)
-                        logger.info(
-                            "pan115 分片会话已由交付落盘恢复 job=%s "
-                            "item=%s（sidecar 缺失）", job.id, item.id)
+                        if (_sidecar_session is not None
+                                and str(_sidecar_session.get(
+                                    "upload_id") or "")
+                                != str(mp_session.get(
+                                    "upload_id") or "")):
+                            logger.warning(
+                                "pan115 分片会话落盘行与 sidecar "
+                                "不一致 job=%s item=%s：以落盘行为准",
+                                job.id, item.id)
+                    else:
+                        mp_session = _sidecar_session
+                else:
+                    mp_session = _load_multipart_session(
+                        job.id, _content_key, size, dest_cid)
+                    if mp_session is None and _recorder is not None:
+                        # 交付状态落盘恢复（换代线 step 1 余项）：
+                        # sidecar 缺失（容器重建把 /tmp 清掉）时凭
+                        # transfer_deliveries 行恢复会话，并回写
+                        # sidecar——之后续传判定仍归 transfer115 的
+                        # ListParts 对账，本处只是多一个找回来源，
+                        # 三项校验（content_key＋size＋目标目录）与
+                        # sidecar 同口径。恢复不到按无会话走全新
+                        # 上传（与 sidecar 丢失的现行语义一致）。
+                        mp_session = _tman.restore_delivery_session(
+                            db, job.id, _content_key, size, dest_cid)
+                        if mp_session is not None:
+                            _save_multipart_session(
+                                job.id, _content_key, size, dest_cid,
+                                mp_session)
+                            logger.info(
+                                "pan115 分片会话已由交付落盘恢复 "
+                                "job=%s item=%s（sidecar 缺失）",
+                                job.id, item.id)
 
                 # 会话状态放闭包里递进（不依赖 sidecar 回读：回读的
                 # 校验会把 callback 为空等中间态判掉，导致续传丢会话）。
@@ -6791,6 +6862,60 @@ def _run_cross_job(db, job, item, drive_api):
                      f"跨任务落盘标识未知：{dest}（不重试）")
 
 
+#: 调度合并（换代线 step 4）：同内容领跑单在跑时，后到单让路
+#: 回 pending 的轮询间隔；最长让路时长与源暂存 TTL 同量级——
+#: 超过后暂存/清单收益已过期，单子照常自己执行，不无限期压住。
+MERGE_DEFER_SEC = 60
+MERGE_MAX_WAIT_SEC = 6 * 3600
+
+
+def _cross_content_key(job, item):
+    """跨 provider 单的 content_key（与暂存/清单 _stage_key 同口径）。
+
+    Drive→115 以源（drive, 源盘, 源 fid, size）为键；115→Drive
+    以 (pan115, "", 源 fid, size) 为键。size 取条目登记值：与
+    执行器实测 size 不一致时键对不上、合并漏触发（安全方向：
+    漏合并只是多读一遍源，绝不误合并到别的内容上）。
+    """
+    if item is None:
+        return None
+    size = _to_int(getattr(item, "size", None))
+    if size <= 0:
+        return None
+    dest = (getattr(job, "dest_drive_id", None) or "").strip()
+    fid = getattr(item, "drive_file_id", None) or ""
+    if dest.startswith("pan115:"):
+        return _stage_key("drive", getattr(job, "drive_id", None) or "",
+                          fid, size)
+    if dest.startswith("userdrive:"):
+        return _stage_key("pan115", "", fid, size)
+    return None
+
+
+def _find_merge_leader(db, job, content_key):
+    """同 content_key 的在跑领跑单：id 更小（防互等）且租约未过期。
+
+    running 行在生产里受车道并发约束、数量很小，全表扫可接受。
+    租约已过期的 running 行是僵尸（认领回收自会处理），不让路。
+    """
+    now = datetime.now()
+    candidates = (db.query(em.TransferJob)
+                  .filter(em.TransferJob.status == "running",
+                          em.TransferJob.id < int(job.id))
+                  .order_by(em.TransferJob.id)
+                  .all())
+    for other in candidates:
+        lease = getattr(other, "lease_expires_at", None)
+        if lease is not None and lease <= now:
+            continue
+        other_item = (db.query(em.MediaItem)
+                      .filter_by(id=other.item_id).one_or_none()
+                      if other.item_id else None)
+        if _cross_content_key(other, other_item) == content_key:
+            return other
+    return None
+
+
 def run_transfer_job_once(db, job, drive_api):
     """执行一个转存任务（工人单线程顺序调用；内部提交）。
 
@@ -6843,6 +6968,45 @@ def run_transfer_job_once(db, job, drive_api):
         job.error_detail = "任务无 drive_id"
         db.commit()
         return {"job_id": job.id, "outcome": "failed", "error_kind": "no_drive"}
+    # 调度合并（换代线 step 4，接管生效时）：同 content_key 已
+    # 有领跑单在跑，本单不重复读源——不烧 attempts、回 pending
+    # 等领跑单把源暂存与清单备好，届时本单被认领时自然走暂存
+    # （源零重读）并按各自落点收尾。全程 fail-open：合并探测
+    # 出任何异常都照常执行本单，绝不因合并把单子压死。
+    if _is_cross_job(job):
+        try:
+            if manifest_takeover_active(db):
+                _merge_key = _cross_content_key(job, item)
+                _leader = (_find_merge_leader(db, job, _merge_key)
+                           if _merge_key else None)
+                if _leader is not None:
+                    _age = ((datetime.now() - job.created_at)
+                            .total_seconds() if job.created_at else 0)
+                    if _age <= MERGE_MAX_WAIT_SEC:
+                        job.status = "pending"
+                        job.next_retry_at = (
+                            datetime.now()
+                            + timedelta(seconds=MERGE_DEFER_SEC))
+                        db.add(job)
+                        db.commit()
+                        logger.info(
+                            "transfer_merge outcome=defer job=%s "
+                            "leader=%s content_key=%s",
+                            job.id, _leader.id, _merge_key)
+                        return {"job_id": job.id,
+                                "outcome": "deferred",
+                                "leader_job_id": _leader.id}
+                    logger.info(
+                        "transfer_merge outcome=skip job=%s leader=%s "
+                        "reason=too_old", job.id, _leader.id)
+        except Exception:  # noqa: BLE001 — 合并探测失败照常执行
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.warning("transfer_merge probe failed job=%s",
+                           getattr(job, "id", None), exc_info=True)
+
     job.status = "running"
     job.attempts += 1
     db.commit()

@@ -600,6 +600,36 @@ def restore_drive_session(db, job_id, content_key, size, dest_ref):
         return None
 
 
+def manifest_trusted_sha1(db, content_key, size):
+    """清单里可直接采信的整文件 sha1（换代线 step 4 执行依据）。
+
+    仅当清单存在、manifest_state=complete、size 逐字相等且
+    whole_sha1 是合法 40 位十六进制时返回；其余（未完成/大小
+    不符/哈希缺失或非法）一律 None——调用方回落现行取哈希口径
+    （条目哈希→哈希遍），绝不拿半成品清单当执行依据。
+    """
+    if db is None or not content_key:
+        return None
+    try:
+        row = (db.query(em.TransferContentManifest)
+               .filter_by(content_key=content_key).one_or_none())
+        if row is None or row.manifest_state != "complete":
+            return None
+        if int(row.size or 0) != int(size):
+            return None
+        sha1 = str(row.whole_sha1 or "").strip().lower()
+        if len(sha1) != 40:
+            return None
+        int(sha1, 16)
+        return sha1
+    except Exception:  # noqa: BLE001 — 查不到可信哈希按没有处理
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return None
+
+
 def restore_delivery_session(db, job_id, content_key, size, dest_cid):
     """sidecar 缺失时凭 transfer_deliveries 行恢复分片会话。
 
