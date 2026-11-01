@@ -239,3 +239,129 @@ def test_reset_ignores_none_error_detail(db):
     assert do.reset_mkdir_failed_jobs(db, 7) == 0
     db.refresh(job)
     assert job.status == "failed"
+
+
+# ---------------------------------------------------------------------------
+# ④ 重绑复活扩到 error_kind == "no_binding"（PA-004 跟进，2026-11-02
+# 用户亲点“重绑后自动复活，死单打回待处理”）：绑定失效/缺失判死的
+# failed 单（含 dest 为 pan115:/quark: 的跨 provider 死单）随 Drive
+# 重绑一并打回 pending；其它 kind 与他人行不动。
+# ---------------------------------------------------------------------------
+
+def _seed_job_kind(db, item_id, user_id="7", status="failed",
+                   error_kind="no_binding",
+                   error_detail="目标盘无生效绑定",
+                   dest_drive_id="userdrive:7", attempts=3,
+                   owner_scope="user", lease=False):
+    job = em.TransferJob(
+        item_id=item_id, trigger="playback", provider="drive",
+        owner_scope=owner_scope,
+        owner_ref=user_id if owner_scope == "user" else None,
+        dest_drive_id=dest_drive_id, status=status, attempts=attempts,
+        error_kind=error_kind, error_detail=error_detail,
+        next_retry_at=datetime.now() - timedelta(seconds=60)
+        if status == "failed" else None,
+        lease_expires_at=datetime.now() + timedelta(minutes=30)
+        if lease else None,
+        claimed_by="worker-x" if lease else None)
+    db.add(job)
+    db.commit()
+    return job
+
+
+def _assert_revived(db, job):
+    db.refresh(job)
+    assert job.status == "pending"
+    assert job.attempts == 0
+    assert job.error_kind is None
+    assert job.error_detail is None
+    assert job.next_retry_at is None
+    assert job.lease_expires_at is None
+    assert job.claimed_by is None
+
+
+def _assert_still_failed(db, job):
+    db.refresh(job)
+    assert job.status == "failed"
+
+
+def test_reset_revives_no_binding_same_and_cross_provider(db):
+    same_job = _seed_job_kind(db, 21, dest_drive_id="userdrive:7",
+                              lease=True)
+    cross_115_job = _seed_job_kind(
+        db, 22, dest_drive_id="pan115:user-7",
+        error_detail="目标盘（115）无生效绑定")
+    cross_quark_job = _seed_job_kind(
+        db, 23, dest_drive_id="quark:user-7",
+        error_detail="目标盘（夸克）无生效绑定")
+
+    assert do.reset_mkdir_failed_jobs(db, 7) == 3
+    db.commit()
+
+    for job in (same_job, cross_115_job, cross_quark_job):
+        _assert_revived(db, job)
+
+
+def test_reset_revives_prefix_and_no_binding_together(db):
+    mkdir_job = _seed_job_kind(
+        db, 24, error_kind="auth_error",
+        error_detail="建转存目录失败：403", dest_drive_id="userdrive:7")
+    no_binding_job = _seed_job_kind(db, 25, dest_drive_id="userdrive:7")
+
+    assert do.reset_mkdir_failed_jobs(db, 7) == 2
+    db.commit()
+
+    _assert_revived(db, mkdir_job)
+    _assert_revived(db, no_binding_job)
+
+
+def test_reset_no_binding_scoped_to_owner(db):
+    other_user_job = _seed_job_kind(
+        db, 26, user_id="8", dest_drive_id="userdrive:8")
+    source_job = _seed_job_kind(db, 27, owner_scope="source",
+                                dest_drive_id=None)
+
+    assert do.reset_mkdir_failed_jobs(db, 7) == 0
+    db.commit()
+
+    _assert_still_failed(db, other_user_job)
+    _assert_still_failed(db, source_job)
+
+
+def test_reset_leaves_other_kinds_failed(db):
+    dead_job = _seed_job_kind(db, 28, error_kind="dead",
+                              error_detail="源文件已死")
+    auth_job = _seed_job_kind(db, 29, error_kind="auth_error",
+                              error_detail="凭据失效")
+    space_job = _seed_job_kind(db, 30, error_kind="insufficient_space",
+                               error_detail="目标盘空间不足")
+    nodrive_job = _seed_job_kind(db, 31, error_kind="no_drive",
+                                 error_detail="无 Drive 落点")
+
+    assert do.reset_mkdir_failed_jobs(db, 7) == 0
+    db.commit()
+
+    for job in (dead_job, auth_job, space_job, nodrive_job):
+        _assert_still_failed(db, job)
+
+
+def test_reset_no_binding_idempotent_and_pending_untouched(db):
+    dead_job = _seed_job_kind(db, 32, dest_drive_id="userdrive:7")
+    pending_job = _seed_job_kind(db, 33, status="pending",
+                                 error_kind="no_binding",
+                                 error_detail=None)
+
+    assert do.reset_mkdir_failed_jobs(db, 7) == 1
+    db.commit()
+    _assert_revived(db, dead_job)
+    # 重复重绑：已复活的行不再重复计数/处理。
+    assert do.reset_mkdir_failed_jobs(db, 7) == 0
+    db.commit()
+    db.refresh(pending_job)
+    assert pending_job.status == "pending"
+    assert pending_job.attempts == 3  # 本就 pending 的行不动
+
+
+def test_reset_no_dead_jobs_no_side_effect(db):
+    assert do.reset_mkdir_failed_jobs(db, 7) == 0
+    db.commit()
