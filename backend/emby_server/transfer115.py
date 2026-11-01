@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
 from backend.emby_server.env_util import env_float
+from backend.emby_server.upstream_sources import SealedSecretError, seal_secret, unseal_secret
 
 logger = logging.getLogger(__name__)
 
@@ -555,6 +556,54 @@ def normalize_cookie(raw: Optional[str]) -> str:
     return re.sub(r"\s+", " ", (raw or "").strip())
 
 
+def unseal_account_cookie(stored: Optional[str]) -> str:
+    """解开账号配置档 Cookie：fernet-v1 密封值走 Fernet 解封；无前缀的旧明文行原样返回
+    （迁移前兼容）；损坏的密封值响亮抛 SealedSecretError，调用方须按凭据失效处理。"""
+    value = (stored or "").strip()
+    if not value:
+        return ""
+    if value.startswith("fernet-v1:"):
+        return unseal_secret(value)
+    return value
+
+
+def _seal_legacy_row(db, account) -> None:
+    """读到旧明文行时顺带密封（只 flush，不单独 commit，随调用方事务落盘；已密封行跳过）。"""
+    stored = (account.cookie or "").strip()
+    if stored and not stored.startswith("fernet-v1:"):
+        account.cookie = seal_secret(normalize_cookie(stored))
+        db.flush()
+
+
+def _account_cookie_for_use(db, account) -> str:
+    """账号配置档 Cookie 明文（供 resolve_cookie 各分支共用）：旧明文行顺带密封，
+    损坏的密封值转 Pan115Error 明示重录。"""
+    _seal_legacy_row(db, account)
+    try:
+        return unseal_account_cookie(account.cookie or "")
+    except SealedSecretError:
+        raise Pan115Error(f"115 账号配置档「{account.name}」凭据已损坏，请管理员重录")
+
+
+def migrate_pan115_account_cookies(db) -> dict:
+    """密封迁移：无 fernet-v1 前缀的旧明文行密封入库；已密封/空行跳过；幂等、可重跑。
+
+    生产侧调用点是 resolve_cookie 的顺带密封（本函数供测试与管理脚本直接调用，自带 commit）。
+    """
+    migrated = 0
+    skipped = 0
+    for account in db.query(em.Pan115Account).order_by(em.Pan115Account.id).all():
+        stored = (account.cookie or "").strip()
+        if not stored or stored.startswith("fernet-v1:"):
+            skipped += 1
+            continue
+        account.cookie = seal_secret(normalize_cookie(stored))
+        migrated += 1
+    if migrated:
+        db.commit()
+    return {"migrated": migrated, "skipped": skipped}
+
+
 def resolve_cookie(
     db: Session,
     *,
@@ -576,7 +625,7 @@ def resolve_cookie(
             raise Pan115Error(f"115 账号配置档 #{account_id} 不存在")
         if not account.is_enabled:
             raise Pan115Error(f"115 账号配置档「{account.name}」已停用")
-        return normalize_cookie(account.cookie), f"账号配置档「{account.name}」"
+        return _account_cookie_for_use(db, account), f"账号配置档「{account.name}」"
 
     if explicit_cookie and explicit_cookie.strip():
         return normalize_cookie(explicit_cookie), "表单 Cookie"
@@ -585,7 +634,7 @@ def resolve_cookie(
     if bound_id:
         account = db.query(em.Pan115Account).filter(em.Pan115Account.id == bound_id).first()
         if account and account.is_enabled:
-            return normalize_cookie(account.cookie), f"媒体库绑定账号「{account.name}」"
+            return _account_cookie_for_use(db, account), f"媒体库绑定账号「{account.name}」"
         if account:
             raise Pan115Error(f"媒体库绑定的 115 账号「{account.name}」已停用")
         logger.warning(
@@ -599,7 +648,7 @@ def resolve_cookie(
         .first()
     )
     if default:
-        return normalize_cookie(default.cookie), f"默认账号「{default.name}」"
+        return _account_cookie_for_use(db, default), f"默认账号「{default.name}」"
 
     env_cookie = os.getenv(PAN115_COOKIE_ENV, "").strip()
     if env_cookie:

@@ -66,6 +66,7 @@ from backend.emby_server import reachability
 from backend.emby_server import scan_queue
 from backend.emby_server import soft_delete
 from backend.emby_server import transfer115
+from backend.emby_server.upstream_sources import SealedSecretError, seal_secret
 
 logger = logging.getLogger(__name__)
 
@@ -2926,11 +2927,20 @@ def _mask_cookie(cookie: str) -> str:
     return f"…{value[-6:]}" if len(value) > 6 else "…"
 
 
+def _account_cookie_plaintext(account) -> str:
+    """账号配置档 Cookie 明文（仅管理端内部使用，永不回传）：密封值解封，旧明文行原样；
+    损坏的密封值返回空串（列表页不因此炸掉，verify 端点会明示损坏）。"""
+    try:
+        return transfer115.unseal_account_cookie(account.cookie or "")
+    except SealedSecretError:
+        return ""
+
+
 def _serialize_account(account: em.Pan115Account) -> dict:
     return {
         "id": account.id,
         "name": account.name,
-        "cookie_preview": _mask_cookie(account.cookie),
+        "cookie_preview": _mask_cookie(_account_cookie_plaintext(account)),
         "has_cookie": bool((account.cookie or "").strip()),
         "ua": account.ua or "",
         "is_default": bool(account.is_default),
@@ -2991,7 +3001,7 @@ def create_pan115_account(req: Pan115AccountCreate,
     if db.query(em.Pan115Account).filter(em.Pan115Account.name == name).first():
         raise HTTPException(status_code=400, detail=f"账号名称「{name}」已存在")
     account = em.Pan115Account(
-        name=name, cookie=transfer115.normalize_cookie(req.cookie),
+        name=name, cookie=seal_secret(transfer115.normalize_cookie(req.cookie)),
         is_default=req.is_default, is_enabled=req.is_enabled, remark=req.remark or "",
         ua=(req.ua or "").strip()[:300],
     )
@@ -3020,7 +3030,7 @@ def update_pan115_account(account_id: int, req: Pan115AccountUpdate,
         cookie = transfer115.normalize_cookie(req.cookie)
         if not cookie:
             raise HTTPException(status_code=400, detail="Cookie 不能为空")
-        account.cookie = cookie
+        account.cookie = seal_secret(cookie)
         # Cookie 变了，上次校验结论作废
         account.last_verify_ok = None
         account.last_verify_message = None
@@ -3063,7 +3073,12 @@ async def verify_pan115_account(account_id: int,
     def load() -> tuple[em.Pan115Account | None, str]:
         """取配置档与 Cookie（同步；下放线程池——路由是 async，不能占事件循环）"""
         row = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
-        return row, (row.cookie if row is not None else "")
+        if row is None:
+            return None, ""
+        try:
+            return row, transfer115.unseal_account_cookie(row.cookie or "")
+        except SealedSecretError:
+            raise HTTPException(status_code=400, detail="账号凭据已损坏，请重新录入 Cookie")
 
     account, cookie = await run_in_threadpool(load)
     if not account:

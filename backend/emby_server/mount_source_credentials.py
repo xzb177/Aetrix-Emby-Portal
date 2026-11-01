@@ -314,9 +314,12 @@ def _snapshot_legacy_credential(db, mount) -> tuple[str | None, str]:
                 em.Pan115Account.id == account_id).first()
             if account is None or not getattr(account, "is_enabled", True):
                 return None, "115 账号档不存在或已停用"
-            from backend.emby_server.transfer115 import normalize_cookie
+            from backend.emby_server.transfer115 import normalize_cookie, unseal_account_cookie
 
-            cookie = normalize_cookie(account.cookie or "")
+            try:
+                cookie = normalize_cookie(unseal_account_cookie(account.cookie or ""))
+            except ups.SealedSecretError:
+                return None, "115 账号档凭据已损坏，请管理员重录"
             if not cookie:
                 return None, "115 账号档凭据为空"
             return cookie, ""
