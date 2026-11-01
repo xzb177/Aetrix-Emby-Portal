@@ -65,6 +65,13 @@
   空（内容全是托管行，无本地路径可扫）、非虚拟；库的
   collection_type 取上游 CollectionType（抓取面已补收），
   取不到按内容类型推断。管理员改名后按关系找库，不重复建。
+- 剧数限额（``series_limit``，内部试点口）：行限额做不出小
+  批量完整树试点（窗内先建剧行后处理集行，行限额取值不是
+  只有光秃剧行就是上百部），故另设按「新建独有剧树」计数
+  的限额：接纳整树进、未接纳整树不进（其集按 SeriesId
+  确定性跳过，不落标题回落误挂）；接纳/拒绝集合跨窗存活
+  （``_SeriesBudget``，run 层整轮线程化）。默认 None =
+  不限，旧口径逐字不变。
 - ``reconcile_hosted_lifecycle``：生命周期对账（机制 4）。
   调用方（聚合 run）在整轮可信时调用：本轮见到的托管行清零
   缺失计数（对账藏过的恢复可见），没见到的 +1；连续
@@ -436,7 +443,7 @@ def _zero_series_stats() -> Dict[str, object]:
     stats.update({
         "series_imported": 0, "episodes_imported": 0,
         "seasons_created": 0, "no_identity": 0, "no_series": 0,
-        "no_position": 0,
+        "no_position": 0, "series_limited": 0,
     })
     return stats
 
@@ -461,6 +468,72 @@ class _Limit:
             return False
         self.remaining -= 1
         return True
+
+
+class _SeriesBudget:
+    """整轮剧数预算（跨窗存活）：series_limit 的接纳/拒绝登记。
+
+    与 ``_Limit``（行限额）分工：``_Limit`` 管「一共能建多少
+    行」，本对象管「能接纳几部新剧」——计数与接纳/拒绝集合
+    必须跨窗存活（run 层整轮建一个、逐窗传入），单窗内的
+    ``_Limit`` 计数方式套不到这里。
+
+    - ``limit=None``：未启用——``can_admit`` 恒真但不登记，
+      ``is_admitted`` / ``is_rejected`` 恒假，series_limit
+      语义完全不介入，行为与旧口径逐字一致；
+    - 接纳只在**新建剧行落成时**登记（``register_admitted``），
+      计数只数真正新建的独有剧树；已有托管行（guid 命中 /
+      软删复活 / 合并跟随）不计数、不接纳；
+    - 拒绝登记 ``rejected_ids``（该剧全部线路的上游条目
+      id）：被拒新剧的集在后续窗按 SeriesId 命中即跳过，
+      绝不让它落到标题回落上误挂同名本地剧（O-08 红线）；
+    - ``is_admitted`` 供集行豁免 ``_Limit``：接纳剧的季/集
+      无论在哪个窗到达都不被行限额拦截——整棵树要么全进、
+      要么（未接纳）一行不进，不许半截。
+    """
+
+    def __init__(self, limit: Optional[int]):
+        self.limit = None if limit is None else max(0, int(limit))
+        self.admitted_count = 0
+        self.admitted_ids: Set[str] = set()
+        self.admitted_local_ids: Set[int] = set()
+        self.rejected_ids: Set[str] = set()
+
+    @property
+    def active(self) -> bool:
+        return self.limit is not None
+
+    def can_admit(self, upstream_ids: Set[str]) -> bool:
+        if not self.active:
+            return True
+        if upstream_ids & self.admitted_ids:
+            return True
+        return self.admitted_count < self.limit
+
+    def register_admitted(self, upstream_ids: Set[str],
+                          local_id: Optional[int]) -> None:
+        if not self.active:
+            return
+        if not (upstream_ids & self.admitted_ids):
+            self.admitted_count += 1
+        self.admitted_ids |= upstream_ids
+        if local_id:
+            self.admitted_local_ids.add(local_id)
+
+    def register_rejected(self, upstream_ids: Set[str]) -> None:
+        if self.active:
+            self.rejected_ids |= upstream_ids
+
+    def is_rejected(self, upstream_id: str) -> bool:
+        return upstream_id in self.rejected_ids
+
+    def is_admitted(self, upstream_id: str,
+                    local_id: Optional[int]) -> bool:
+        if not self.active:
+            return False
+        if upstream_id and upstream_id in self.admitted_ids:
+            return True
+        return bool(local_id) and local_id in self.admitted_local_ids
 
 
 def _resolve_series_row(db: Session, source, item, series_ctx: Dict,
@@ -611,7 +684,9 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
                                 upstream_library_name: str,
                                 upstream_library_id: Optional[str] = None,
                                 upstream_collection_type: str = "",
-                                limit: Optional[int] = None
+                                limit: Optional[int] = None,
+                                series_limit: Optional[int] = None,
+                                series_budget: Optional[_SeriesBudget] = None
                                 ) -> Dict[str, object]:
     """把一窗聚合作品里的未配对独有剧整棵进库＋已配对剧补集。
 
@@ -620,7 +695,21 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
     只 flush 不 commit（调用方事务）。统计键除一期同名键外加：
     series_imported / episodes_imported / seasons_created /
     no_identity（无 tmdb 剧跳过）/ no_series（集定不到所属剧）/
-    no_position（集缺季或集号）/ libraries_created。
+    no_position（集缺季或集号）/ libraries_created /
+    series_limited（被剧数限额整树拒掉的新剧与其集）。
+
+    ``series_limit``（内部试点口，默认 None = 不限）：只统计
+    **新建的独有剧树**（未配对 Series 新建行；已有剧行不占
+    额、已配对剧补集不占额），达到上限后不再接纳新剧，其
+    季/集一行不建。接纳是整树语义：一部剧一旦接纳，它在
+    本轮后续任何窗出现的季/集照常落库，不受 ``limit`` 行
+    限额拦截（但仍计入 imported 统计——整轮行余量由 run
+    层按 imported 递减，口径不变）；往轮已进库的剧本轮不
+    算接纳，其新集仍受行限额（口径不变）。跨窗状态（计数
+    与接纳/拒绝集合）由 ``series_budget`` 承载：run 层整轮
+    建一个逐窗传进来，未传时按 ``series_limit`` 为本窗
+    新建（单窗调用的旧形态）。``series_limit=None`` 且未传
+    budget 时预算对象不介入，行为与旧口径逐字一致。
     """
     stats = _zero_series_stats()
     if not getattr(source, "import_enabled", True):
@@ -636,6 +725,8 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
         for p in pairs if p.get("item_type") == "Series"}
     items = list(items or ())
     budget = _Limit(limit)
+    if series_budget is None:
+        series_budget = _SeriesBudget(series_limit)
     target_library = None
     target_resolved = False
 
@@ -688,6 +779,19 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
             stats["no_library"] += 1
             _ctx_note(series_ctx, title_key, {"hopeless": True})
             continue
+        line_ids = {line.upstream_item_id for line in source_lines}
+        if not any(_usable_row_by_guid(
+                db, hosted_guid(source.id, lid)) is not None
+                for lid in line_ids) \
+                and not series_budget.can_admit(line_ids):
+            # 剧数限额已满且本剧确是新剧（任一线路都无既有托管
+            # 行）：整树拒绝——登记拒绝集，其集随后按 SeriesId
+            # 确定性跳过；本窗标题结论标 hopeless，集也不许靠
+            # 标题回落挂错剧。已有剧行不占额，不走这道门。
+            stats["series_limited"] += 1
+            series_budget.register_rejected(line_ids)
+            _ctx_note(series_ctx, title_key, {"hopeless": True})
+            continue
         local_row = None
         for line in source_lines:
             guid = hosted_guid(source.id, line.upstream_item_id)
@@ -709,6 +813,7 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
                 db.flush()
                 stats["imported"] += 1
                 stats["series_imported"] += 1
+                series_budget.register_admitted(line_ids, row.id)
                 logger.info(
                     "上游独有剧进库 source_id=%s upstream_item_id=%s "
                     "local_item_id=%s library_id=%s name=%r",
@@ -734,6 +839,14 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
         if any(line.upstream_item_id in paired_ids
                for line in source_lines):
             continue  # 任一线路已配对 = 本地已有此集
+        sid = (getattr(item, "series_upstream_id", None)
+               or "").strip()
+        if sid and series_budget.is_rejected(sid):
+            # 所属新剧已被剧数限额整树拒绝：按 SeriesId 确定性
+            # 跳过，绝不落到 _resolve_series_row 的标题回落上
+            # 误挂同名异剧（O-08 防错红线），跨窗同理。
+            stats["series_limited"] += 1
+            continue
         season_number = getattr(item, "season_number", None)
         ep_numbers = {line.episode_index for line in source_lines}
         if (season_number is None or len(ep_numbers) != 1
@@ -747,8 +860,13 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
             stats["no_series"] += 1
             continue
         stats["candidates"] += 1
+        # 接纳剧的季/集豁免行限额：整棵树要么全进、要么不进，
+        # 不许行限额把已接纳的树拦成半截；未接纳路径（补集、
+        # 往轮剧的新集）仍走原 budget，口径不变。
+        bypass_limit = series_budget.is_admitted(sid, series_row.id)
         season_row = _ensure_hosted_season(
-            db, source, series_row, season_number, budget, stats)
+            db, source, series_row, season_number,
+            _Limit(None) if bypass_limit else budget, stats)
         if season_row is None:
             stats["limited"] += 1
             continue
@@ -759,7 +877,7 @@ def import_unpaired_series_tree(db: Session, source, items: Iterable,
             guid = hosted_guid(source.id, line.upstream_item_id)
             row = _usable_row_by_guid(db, guid)
             if row is None:
-                if not budget.take():
+                if not bypass_limit and not budget.take():
                     stats["limited"] += 1
                     break
                 row = em.MediaItem(
