@@ -110,14 +110,21 @@ def dedup_key_for(library_id: int, item_type: str,
 def _primary_score(item: Any) -> tuple:
     """主记录评分：分数越小越优先。
 
-    优先级：有海报 > 有 tmdb_id > 有简介 > id 小（最早入库）
+    优先级：有本地文件 > 有海报 > 有 tmdb_id > 有简介 > id 小（最早入库）
+
+    「有本地文件」居首（进库一期，2026-11-01）：上游托管行（无
+    file_path、只有上游线路）只是展示/播放兜底，本地文件行才是正主；
+    托管行当主记录会让本地播放、转存、扫描口径全部落空。托管行被
+    合并后其映射迁到存活行（merge_versions_worker 调
+    upstream_item_mappings.migrate_mappings），线路不丢。
     """
     has_poster = bool(getattr(item, "poster_path", None)
                       or getattr(item, "primary_image_url", None))
     has_tmdb = bool((getattr(item, "tmdb_id", None) or "").strip())
     has_overview = bool((getattr(item, "overview", None) or "").strip())
     item_id = getattr(item, "id", 0) or 0
-    return (0 if has_poster else 1,
+    return (0 if (getattr(item, "file_path", None) or "") else 1,
+            0 if has_poster else 1,
             0 if has_tmdb else 1,
             0 if has_overview else 1,
             item_id)

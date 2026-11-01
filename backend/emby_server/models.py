@@ -392,6 +392,15 @@ class MediaItem(Base):
     # 播放时可通过主记录查看/选择多版本。
     # NULL = 主记录（或未参与合并）。
     merged_into_id = Column(Integer, ForeignKey("emby_items.id"), default=None, index=True)
+    # 上游托管标记（独有资源进库一期，2026-11-01）：非空 = 该行由上游
+    # 聚合进库托管，值 = upstream_sources.id（不加外键，照 UpstreamSource
+    # 先例）。这类行没有本地文件（file_path 恒空），播放只走上游线路；
+    # 扫描清理必须跳过（见 scanner._remove_missing_items 与删除预算），
+    # 合并选主必须让位于有本地文件的行（见 dedup._primary_score），
+    # 被合并时映射迁到存活行（见 upstream_item_mappings.migrate_mappings）。
+    # NULL = 普通本地行。老库由 database._backfill_orm_columns 按 ORM
+    # 声明自动补列（可空、无默认），无需手写迁移。
+    upstream_source_id = Column(Integer, default=None, index=True)
 
 
 from sqlalchemy.orm import relationship  # noqa: E402
@@ -1132,6 +1141,13 @@ class UpstreamSource(Base):
     health_status = Column(String(20), nullable=False, default="unknown")
     last_checked_at = Column(DateTime)  # 25-3 探活工人写，25-1 不写
     note = Column(String(500))
+    # 独有资源进库开关（进库一期，2026-11-01）：按源字段（同 enabled
+    # 先例——治理面按源的开关都长在源行上，SystemConfig 没有按源键的
+    # 先例）。默认开；关时该源不再进库，且已进库的托管行只隐藏不删
+    # （is_hidden=True，见 upstream_sources.update_source 的联动），
+    # 重开恢复可见。老库补列回填 DEFAULT TRUE（见
+    # database._backfill_orm_columns 的字面量默认值口径）。
+    import_enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
                         nullable=False)

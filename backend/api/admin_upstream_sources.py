@@ -136,6 +136,9 @@ class UpstreamSourceUpdateRequest(BaseModel):
     user_agent: Optional[str] = None
     referer: Optional[str] = None
     note: Optional[str] = None
+    # 独有资源进库开关（按源字段，默认开）：absent = 不动；翻转时
+    # 联动该源托管行隐藏/恢复（见 upstream_sources.update_source）。
+    import_enabled: Optional[bool] = None
 
 
 @admin_emby_router.put("/upstream-sources/{source_id}")
@@ -166,7 +169,8 @@ def update_upstream_source(
             user_agent_set=("user_agent" in data),
             referer=data.get("referer"),
             referer_set=("referer" in data),
-            note=data.get("note"), note_set=("note" in data))
+            note=data.get("note"), note_set=("note" in data),
+            import_enabled=data.get("import_enabled"))
     except ups.DuplicateSourceName as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ups.UpstreamSourceError as exc:

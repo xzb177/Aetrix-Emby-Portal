@@ -349,7 +349,8 @@ def update_source(db, source, *, name: Optional[str] = None,
                   user_agent_set: bool = False,
                   referer: Optional[str] = None,
                   referer_set: bool = False,
-                  note: Optional[str] = None, note_set: bool = False):
+                  note: Optional[str] = None, note_set: bool = False,
+                  import_enabled: Optional[bool] = None):
     """编辑上游源（只改传了的字段；没传的字段逐字不动）。
 
     凭据三态（secret_set 区分「没传」与「传了」）：
@@ -357,6 +358,9 @@ def update_source(db, source, *, name: Optional[str] = None,
     - secret_set=True 且 secret 非空：重密封替换；
     - secret_set=True 且 secret 为空/None：清掉凭据（改匿名访问）。
     enabled 不在这里改：启用/停用只走 enable_source / disable_source。
+    import_enabled（独有资源进库开关）在这里改：None = 不动；翻转时
+    联动该源托管行的可见性（关→隐藏、开→恢复，只改 is_hidden 不删
+    行，见 _set_import_visibility），与字段变更同一事务。
     """
     new_name = name if name is not None else source.name
     new_type = source_type if source_type is not None else source.source_type
@@ -387,6 +391,11 @@ def update_source(db, source, *, name: Optional[str] = None,
         source.note = note.strip() if note else None
     if secret_set:
         source.sealed_secret = seal_secret(secret) if secret else None
+    if import_enabled is not None:
+        new_flag = bool(import_enabled)
+        if new_flag != bool(getattr(source, "import_enabled", True)):
+            source.import_enabled = new_flag
+            _set_import_visibility(db, source.id, new_flag)
     source.updated_at = datetime.now()
     try:
         db.flush()
@@ -394,6 +403,25 @@ def update_source(db, source, *, name: Optional[str] = None,
         raise DuplicateSourceName(
             f"上游源名称已存在：{new_name.strip()!r}") from exc
     return source
+
+
+def _set_import_visibility(db, source_id, import_enabled: bool) -> int:
+    """进库开关翻转的可见性联动：关 → 该源全部托管行隐藏；开 → 恢复。
+
+    只动 is_hidden（可逆），绝不删行、不动映射（映射读契约本就只认
+    活行，隐藏期间线路自然不可见）。恢复时把该源托管行一律置可见：
+    管理员对单条托管行的手工隐藏会被开关恢复覆盖，以开关为准
+    （与 enabled 停用/启用的整体口径一致）。返回受影响行数。
+    """
+    updated = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.upstream_source_id == source_id)
+        .update({em.MediaItem.is_hidden: not import_enabled},
+                synchronize_session=False))
+    db.flush()
+    logger.info("上游源进库开关联动可见性 source_id=%s import_enabled=%s "
+                "rows=%s", source_id, import_enabled, updated)
+    return int(updated or 0)
 
 
 def enable_source(db, source):
@@ -535,6 +563,7 @@ def source_payload(source) -> dict:
         "user_agent": source.user_agent,
         "referer": source.referer,
         "enabled": bool(source.enabled),
+        "import_enabled": bool(getattr(source, "import_enabled", True)),
         "credential_scope": source.credential_scope,
         "health_status": source.health_status,
         "last_checked_at": (source.last_checked_at.isoformat()

@@ -199,7 +199,11 @@ def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, i
         text(
             "SELECT COUNT(*) FROM emby_items "
             "WHERE library_id = :lib AND item_type IN ('movie', 'episode') "
-            "AND deleted_at IS NULL"
+            "AND deleted_at IS NULL "
+            # 上游托管行（进库一期）没有本地文件、永远不会出现在
+            # seen 里：不排除的话混合库每轮都被「预计删除数」顶爆
+            # 预算、整轮清理被拦停并报 ERROR。托管行不归扫描管。
+            "AND upstream_source_id IS NULL"
         ),
         {"lib": library.id},
     ).scalar() or 0)
@@ -5182,7 +5186,10 @@ def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
             "COALESCE(SUM(CASE WHEN missing_count > 0 THEN 1 ELSE 0 END), 0) "
             "FROM emby_items "
             "WHERE library_id = :lib AND item_type IN ('movie', 'episode') "
-            "AND deleted_at IS NULL"
+            "AND deleted_at IS NULL "
+            # 与 _removal_budget 同口径：托管行不计文件类条目数，
+            # 否则快速路径的计数永远对不上 seen、每轮白遍历整库。
+            "AND upstream_source_id IS NULL"
         ),
         {"lib": library.id},
     ).first()
@@ -5423,6 +5430,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 emby_models.MediaItem.file_path,
                 emby_models.MediaItem.drive_file_id,
                 emby_models.MediaItem.missing_count,
+                emby_models.MediaItem.upstream_source_id,
             )
             .where(
                 emby_models.MediaItem.library_id == library.id,
@@ -5441,8 +5449,14 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         gone_drive: list[tuple] = []
         grace_ids: list[int] = []
         reset_ids: list[int] = []
-        for item_id, guid, item_type, file_path, drive_file_id, missing_count in rows:
+        for (item_id, guid, item_type, file_path, drive_file_id,
+             missing_count, upstream_source_id) in rows:
             missing_count = missing_count or 0
+            if upstream_source_id is not None:
+                # 上游托管行（进库一期）：没有本地文件、永远不会出现在
+                # seen 里，生死归上游聚合/进库开关管，扫描清理不许碰
+                # （不计缺失、不下架、不清零）。
+                continue
             if guid in seen_guids:
                 # 文件回来了：缺失计数清零（批一 #6），别让旧账害它下次单轮缺失就越线
                 if missing_count > 0:
