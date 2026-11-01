@@ -1102,8 +1102,10 @@ class UpstreamSource(Base):
     不许拉（该约束由调用方落实，本表只保证默认值）。
 
     不加外键（照 ScanRun 先例）：25-2/25-3 落地后，源删了，目录与
-    线路行要留着供追溯与对账，删源时是否联动清理由 25-2/25-3 的
-    设计定，本步删源只删本行（见 upstream_sources.delete_source）。
+    线路行要留着供追溯与对账——PA-038 已改口径：删源时托管行
+    同事务软删、映射／关系／生命周期／绑定／非 running 任务行
+    硬删（见 upstream_sources.delete_source）；本地自动建库本身
+    不动，空库由管理员手动处理。
     """
 
     __tablename__ = "upstream_sources"

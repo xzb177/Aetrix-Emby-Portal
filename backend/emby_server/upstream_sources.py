@@ -442,16 +442,67 @@ def disable_source(db, source):
     return source
 
 
-def delete_source(db, source) -> None:
-    """删除上游源（只删本行）。
+def delete_source(db, source) -> dict:
+    """删除上游源并联动清理（PA-038；同一事务内，调用方提交）。
 
-    25-2/25-3 落地前无任何表引用本行，硬删安全；那两步落地后删源
-    是否联动目录/线路行，须由它们的设计定——到时本函数必须复核，
-    不许悄悄改成级联或悄悄留孤儿行。
+    旧口径“只删本行”已作废：无外键约束下，源行一删，托管行
+    仍带 tmdb_id 上架、可点不可播（身份门以 tmdb 非空为准入，
+    货架面全仓无 upstream_source_id 过滤），2026-11-01 唯一源
+    删除时就得靠 parent 手工软删 6,074 部托管行＋硬删 9,554 条
+    映射——产品删口必须自己做这件事。联动清单：
+    - 托管行：全部软删（复用 upstream_import._delete_rows 口径：
+      软删开时 mark_soft_deleted，否则硬删；剧→季→集子树行
+      同样带 upstream_source_id，按源过滤即全覆盖）；
+    - 硬删残留行：映射、自动建库关系、托管生命周期、分类绑定、
+      非 running 聚合任务（running 行保留：在跑线程删行也拦
+      不住，留待其自然失败／存量过期清理；其写映射读口本就
+      验源存在，源删后线路自然不可见）；
+    - 本地自动建库本身不动：库可能还挂其它内容，关系行已删，
+      库不再与源关联，空库由管理员手动处理。
+    返回各段计数供调用方核对。残留窗口：删源恰逢聚合任务在跑，
+    该任务此后仍可能写出少量带已删 source_id 的托管行（执行前
+    才验源存在），属已知竞态，不在本单加锁，管理员删源前停
+    聚合可避开。
     """
-    logger.info("上游源删除 id=%s name=%r", source.id, source.name)
+    from backend.emby_server.upstream_import import _delete_rows
+
+    source_id = source.id
+    hosted = (db.query(em.MediaItem)
+              .filter(em.MediaItem.upstream_source_id == source_id)
+              .all())
+    hosted_deleted = _delete_rows(db, hosted)
+    residual = (db.query(em.MediaItem)
+                .filter(em.MediaItem.upstream_source_id == source_id)
+                .count())
+    if residual:
+        logger.warning("上游源删除后托管行仍有残留 source_id=%s residual=%s "
+                       "（软删守卫 fail-closed 剔除，须人工复核）",
+                       source_id, residual)
+
+    def _purge(model, extra=None):
+        q = db.query(model).filter(model.source_id == source_id)
+        if extra is not None:
+            q = q.filter(extra)
+        n = q.delete(synchronize_session=False)
+        db.flush()
+        return int(n or 0)
+
+    stats = {
+        "hosted_rows_deleted": int(hosted_deleted),
+        "hosted_rows_residual": int(residual),
+        "mappings_deleted": _purge(em.UpstreamItemMapping),
+        "library_links_deleted": _purge(em.UpstreamLibraryLink),
+        "lifecycle_deleted": _purge(em.UpstreamHostedLifecycle),
+        "category_bindings_deleted": _purge(em.SourceCategoryBinding),
+        "tasks_deleted": _purge(
+            em.UpstreamAggregateTask,
+            em.UpstreamAggregateTask.status != "running"),
+    }
+    logger.info("上游源删除 id=%s name=%r stats=%r",
+                source_id, source.name, stats)
     db.delete(source)
     db.flush()
+    return stats
 
 
 def set_health_status(db, source, status: str):
