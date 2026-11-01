@@ -442,6 +442,8 @@ export interface TransferConfig {
   transfer_rebind_waiver_max_uses: number
   /** 夸克转存/点播开关（默认开；关 = 只绑夸克的用户点播被门禁明示挡下、不回落共享） */
   quark_play_enabled: boolean
+  /** 类别级熔断规则（JSON 数组文本 [{provider, error_kind}]；error_kind="*" = 该 provider 全部类别；默认 "[]" = 不暂停） */
+  transfer_paused_categories: string
 }
 
 export type TransferConfigPayload = TransferConfig

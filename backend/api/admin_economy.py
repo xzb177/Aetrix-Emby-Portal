@@ -636,6 +636,11 @@ class TransferConfigRequest(BaseModel):
     # 夸克的用户点播被门禁明示挡下、不回落共享。校验在
     # config_schema 的 transfer 家族里。
     quark_play_enabled: bool = True
+    # 类别级熔断（2026-11-01 预见层 v2）：暂停规则 JSON 数组文本
+    # [{provider, error_kind}]，error_kind="*" 为该 provider 全部
+    # 类别；默认 "[]" = 不暂停、现行行为不变。结构校验在
+    # transfer_variant.coerce_paused_categories（保存侧 strict）。
+    transfer_paused_categories: str = "[]"
 
 
 @admin_router.get("/transfer-config")
@@ -689,6 +694,7 @@ def transfer_update_config(
             transfer_manifest_takeover_enabled=(
                 request.transfer_manifest_takeover_enabled),
             quark_play_enabled=request.quark_play_enabled,
+            transfer_paused_categories=request.transfer_paused_categories,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -717,7 +723,9 @@ def transfer_update_config(
             request.transfer_cross_cloudpull_ttl_sec,
             "transfer_cross_cloudpull_timeout_sec":
             request.transfer_cross_cloudpull_timeout_sec,
-            "quark_play_enabled": request.quark_play_enabled})
+            "quark_play_enabled": request.quark_play_enabled,
+            "transfer_paused_categories":
+            request.transfer_paused_categories})
     db.commit()
     return result
 

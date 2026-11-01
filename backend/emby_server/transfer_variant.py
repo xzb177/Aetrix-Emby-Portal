@@ -388,6 +388,102 @@ def cross_aging_sec(db=None):
     return TRANSFER_CROSS_AGING_DEFAULT
 
 
+# ---------------------------------------------------------------------------
+# 类别级熔断（预见层 v2 第一层，2026-11-01）：按「provider＋失败
+# 类别」暂停派发。2026-10-29 授权范围突变时没有按类停派的开关，
+# 只能人肉全表取消 293 单（见 OPS_CANCELLED_KIND 来历注释）。
+# 规则存 SystemConfig transfer_paused_categories（JSON 数组
+# [{provider, error_kind}]）：
+# - 类别口径复用任务行现有字段，不新造第二套分类：provider =
+#   任务行 provider（源 provider），error_kind = 任务行当前失败
+#   类别（待重试单带上次失败类别；从未执行的新单为空，只被
+#   "*" 规则命中）；
+# - error_kind="*" = 该 provider 全部类别（含新单）——provider
+#   整体不可用时用这条；
+# - 空配置（无行/空数组/解析失败）= 现行行为逐字不变；
+# - 命中任务在认领（claim_due_jobs）与点播当场派发
+#   （claim_job_for_inline）时被跳过：留在 pending、不烧
+#   attempts、不判死、不回落；解暂停后自然恢复被认领。
+# 纯 SystemConfig 键，不进 env.example（#1527 先例）。
+# ---------------------------------------------------------------------------
+
+#: 类别级熔断规则 SystemConfig 键；默认空（不暂停任何类别）。
+KEY_TRANSFER_PAUSED_CATEGORIES = "transfer_paused_categories"
+_PAUSED_CATEGORY_PROVIDERS = frozenset({"drive", "pan115", "quark"})
+_PAUSED_CATEGORIES_MAX = 50
+
+
+def coerce_paused_categories(value, *, strict=False):
+    """暂停规则归一：JSON 文本或 list → [{provider, error_kind}]。
+
+    strict=True（保存侧）：结构非法抛 ValueError（端点转 400），
+    整批不落库；strict=False（运行时读已存值）：跳过坏条目，
+    绝不因一条坏配置把认领整体打停（fail-open 回现行行为）。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            if strict:
+                raise ValueError(
+                    "transfer_paused_categories 必须是合法的 JSON 数组")
+            return []
+    if not isinstance(value, list):
+        if strict:
+            raise ValueError("transfer_paused_categories 必须是规则数组")
+        return []
+    rules = []
+    seen = set()
+    for item in value:
+        provider = (str(item.get("provider") or "").strip()
+                    if isinstance(item, dict) else "")
+        kind = (str(item.get("error_kind") or "").strip()
+                if isinstance(item, dict) else "")
+        if (provider not in _PAUSED_CATEGORY_PROVIDERS
+                or not kind or len(kind) > 64):
+            if strict:
+                raise ValueError(
+                    "transfer_paused_categories 每条规则必须含合法的 "
+                    "provider（drive/pan115/quark）与 error_kind"
+                    "（'*' 表示该 provider 全部类别）")
+            continue
+        if (provider, kind) in seen:
+            continue
+        seen.add((provider, kind))
+        rules.append({"provider": provider, "error_kind": kind})
+    if len(rules) > _PAUSED_CATEGORIES_MAX:
+        if strict:
+            raise ValueError(
+                f"transfer_paused_categories 最多 {_PAUSED_CATEGORIES_MAX} 条")
+        rules = rules[:_PAUSED_CATEGORIES_MAX]
+    return rules
+
+
+def transfer_paused_categories(db=None):
+    """当前生效的类别暂停规则：SystemConfig 热读，默认空（不暂停）。"""
+    if db is None:
+        return []
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, KEY_TRANSFER_PAUSED_CATEGORIES, "")
+    except Exception:
+        return []
+    return coerce_paused_categories(raw, strict=False)
+
+
+def job_category_paused(job, rules) -> bool:
+    """任务是否命中类别暂停规则（provider 等值＋类别等值或 '*'）。"""
+    if not rules:
+        return False
+    provider = (getattr(job, "provider", "") or "").strip()
+    kind = (getattr(job, "error_kind", "") or "").strip()
+    return any(rule["provider"] == provider
+               and (rule["error_kind"] == "*" or rule["error_kind"] == kind)
+               for rule in rules)
+
+
 #: 115 秒传（initupload）开关 SystemConfig 键；默认开（2026-10-30
 #: 用户亲点整套：记哈希＋秒传协议）。关 = Drive→115 跨单完全回
 #: 现行口径：不试秒传、只走 simple_upload 全量（哈希沉淀照常，
@@ -600,6 +696,10 @@ def transfer_config_payload(db):
         "transfer_cross_cloudpull_timeout_sec": (
             cross_cloudpull_timeout_sec(db)),
         "quark_play_enabled": quark_play_enabled(db),
+        # 类别级熔断规则以 canonical JSON 文本回包（管理端文本框
+        # 直接编辑同一形态，保存侧 strict 校验）。
+        "transfer_paused_categories": json.dumps(
+            transfer_paused_categories(db), ensure_ascii=False),
     }
 
 
@@ -617,7 +717,8 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
                           transfer_cross_cloudpull_enabled=None,
                           transfer_cross_cloudpull_ttl_sec=None,
                           transfer_cross_cloudpull_timeout_sec=None,
-                          quark_play_enabled=None):
+                          quark_play_enabled=None,
+                          transfer_paused_categories=None):
     """管理端转存配置写入：走 config_service 的 transfer 家族校验。
 
     None = 该键不改。非法值抛 ConfigValueError（ValueError 子类，
@@ -669,6 +770,13 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
     if quark_play_enabled is not None:
         values[KEY_QUARK_PLAY_ENABLED] = (
             "true" if quark_play_enabled else "false")
+    if transfer_paused_categories is not None:
+        # 保存侧 strict 校验：结构非法抛 ValueError（端点转 400），
+        # 整批不落库；落库形态为 canonical JSON 文本。
+        values[KEY_TRANSFER_PAUSED_CATEGORIES] = json.dumps(
+            coerce_paused_categories(transfer_paused_categories,
+                                     strict=True),
+            ensure_ascii=False)
     if values:
         from backend import config_service
         config_service.save_config(db, values, schema="transfer")
@@ -3482,6 +3590,13 @@ def claim_job_for_inline(db, job_id, worker_id=None, now=None):
     from sqlalchemy import text
     now = now or datetime.now()
     worker_id = worker_id or _INLINE_WORKER_ID
+    # 类别级熔断同样拦当场派发：命中规则直接不认领，任务留在
+    # pending、不烧 attempts，等规则解除后由工人自然认领。
+    _job_row = (db.query(em.TransferJob)
+                .filter(em.TransferJob.id == job_id).first())
+    if _job_row is not None and job_category_paused(
+            _job_row, transfer_paused_categories(db)):
+        return False
     lease_until = now + timedelta(seconds=worker_lease_sec())
     result = db.execute(
         text("UPDATE emby_transfer_jobs SET status='running', "
@@ -7656,6 +7771,18 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
            .all())
     if not due:
         return []
+    # 类别级熔断：命中暂停规则的任务本轮不认领——留在 pending、
+    # 不烧 attempts，也不许被下面的 no_binding 复核判死（暂停的
+    # 语义是「先压住」，不是「判掉」）；过滤必须在复核之前。
+    paused_rules = transfer_paused_categories(db)
+    if paused_rules:
+        held = [j for j in due if job_category_paused(j, paused_rules)]
+        if held:
+            logger.info("转存工人：类别级熔断压住 %d 单不认领（规则 %s）",
+                        len(held), paused_rules)
+            due = [j for j in due if not job_category_paused(j, paused_rules)]
+            if not due:
+                return []
     # 认领前 no_binding 复核：建单后解绑的 user 单在此秒判终态，
     # 不占认领名额、不进执行（见 _fail_user_jobs_without_binding）。
     due = _fail_user_jobs_without_binding(db, due)
