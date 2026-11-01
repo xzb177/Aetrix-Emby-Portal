@@ -63,6 +63,7 @@ SYMBOL_EMOJI = {"bar": "🅱️", "grape": "🍇", "lemon": "🍋", "seven": "7�
 
 REASON_MESSAGES = {
     "disabled": "🎰 老虎机暂未开启",
+    "account_disabled": "账号已被停用，无法玩老虎机",
     "not_free_realm": "🎰 老虎机仅在公益服开放",
     "blacklisted": "你暂无老虎机资格",
     "too_new": "账号注册满 {min_days} 天后才能玩老虎机",
@@ -223,6 +224,8 @@ def check_eligibility(db: Session, user: models.WebUser) -> dict:
     """返回 {"ok": True} 或 {"ok": False, "reason": ...}。"""
     if not is_enabled(db):
         return {"ok": False, "reason": "disabled"}
+    if not getattr(user, "is_active", True):
+        return {"ok": False, "reason": "account_disabled"}
     from backend import subscriptions
 
     if not subscriptions.is_free_realm(db):
