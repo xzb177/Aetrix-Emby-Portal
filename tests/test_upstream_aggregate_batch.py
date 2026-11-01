@@ -215,7 +215,7 @@ def test_fetch_libraries_parses_and_maps_errors(db):
     source = _source(db)
     fake = _FakeUpstream([("lib-a", "电影库")], {})
     assert uar.fetch_upstream_libraries(source, http_get=fake.get) == [
-        {"id": "lib-a", "name": "电影库"}]
+        {"id": "lib-a", "name": "电影库", "collection_type": ""}]
 
     def bad_get(url, headers, timeout):
         return 401, {}

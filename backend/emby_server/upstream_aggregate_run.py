@@ -93,7 +93,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -457,7 +457,9 @@ def fetch_upstream_libraries(source, *, http_get=None,
                              http_post=None, api_key=None) -> List[dict]:
     """取上游库清单（Emby /Library/MediaFolders）。
 
-    返回 [{"id": ..., "name": ...}]（按上游顺序，Id 去重）。
+    返回 [{"id": ..., "name": ..., "collection_type": ...}]（按上游
+    顺序，Id 去重）。``collection_type`` 是上游 CollectionType 原值
+    （二期自动建库定本地库类型用，此前被丢弃，见方案机制 5）。
     该端点是 Emby 官方库清单口（本仓库 compat_routes 亦实现同口），
     api_key 形态同样走 api_key 参数。空清单 = 上游无可见库，照实
     返回空列表，不回落整源拉取（回落会重回整源上限问题）。
@@ -500,7 +502,9 @@ def fetch_upstream_libraries(source, *, http_get=None,
             continue
         seen.add(str(lib_id))
         libraries.append({"id": str(lib_id),
-                          "name": str(item.get("Name") or "")})
+                          "name": str(item.get("Name") or ""),
+                          "collection_type":
+                              str(item.get("CollectionType") or "")})
     return libraries
 
 
@@ -935,6 +939,14 @@ def run_manual_aggregation(db: Session, source, *,
     调度/管理端路径不传 = 不限量。进库是附加动作：单窗失败只记
     日志，不打断聚合主流程。
 
+    二期（2026-11-01）：每窗在电影之后接剧整棵进库＋已配对剧
+    补集（upstream_import.import_unpaired_series_tree），落点带
+    上游库 id 与 CollectionType（自动建库）；整轮收尾在「全库
+    成功、无续跑跳过、源进库开关开」时做一次生命周期对账
+    （reconcile_hosted_lifecycle，上游下架跟随），结果并入返回
+    的 lifecycle 键；任一条件不满足整轮不对账（seen 不完整
+    计数会误判下架）。
+
     事务口径（2026-10-31 优化 O-01，``commit_each_library``）：
     - 默认 False = 旧口径：全程只 flush，提交归调用方；单库失败
       隔离只挡 UpstreamAggregateRunError，IntegrityError 等穿透
@@ -993,11 +1005,18 @@ def run_manual_aggregation(db: Session, source, *,
     total_paired = 0
     total_written = 0
     # 进库统计（整轮）：import_remaining 是 import_limit 的整轮余量，
-    # 跨窗跨库递减（None = 不限量）。
-    import_totals = {"candidates": 0, "imported": 0, "existing": 0,
-                     "no_library": 0, "limited": 0}
+    # 跨窗跨库递减（None = 不限量）。二期起键集含剧/集与自动建库、
+    # 生命周期键（见 upstream_import 二期段）。
+    _IMPORT_KEYS = ("candidates", "imported", "existing", "no_library",
+                    "limited", "libraries_created", "series_imported",
+                    "episodes_imported", "seasons_created", "no_identity",
+                    "no_series", "no_position")
+    import_totals = {key: 0 for key in _IMPORT_KEYS}
     import_blocked: Optional[str] = None
     import_remaining = import_limit
+    # 生命周期对账的本轮 seen 集合（该源目录里出现过的全部上游
+    # 条目 id）：随窗累积，整轮可信时才在收尾对账（见循环后）。
+    seen_upstream_ids: Set[str] = set()
     for library in libraries:
         lib_id = library["id"]
         lib_name = library["name"]
@@ -1028,8 +1047,7 @@ def run_manual_aggregation(db: Session, source, *,
             "status": "ok",
         }
         lib_fetched = lib_aggregates = lib_paired = lib_written = 0
-        lib_import = {"candidates": 0, "imported": 0, "existing": 0,
-                      "no_library": 0, "limited": 0}
+        lib_import = {key: 0 for key in _IMPORT_KEYS}
         lib_pairs: List[dict] = []
         failure: Optional[Tuple[str, str]] = None
         try:
@@ -1038,6 +1056,9 @@ def run_manual_aggregation(db: Session, source, *,
                 page_size=page_size, api_key=api_key,
                 retries=page_retries, backoff_sec=page_backoff)
             for window in iter_record_windows(record_iter, WINDOW_RECORDS):
+                for _record in window:
+                    seen_upstream_ids.add(
+                        str(_record.upstream_item_id))
                 aggregated = agg.aggregate_sources({str(source.id): window})
                 if aggregated and aggregated[0].error:
                     raise UpstreamAggregateRunError(
@@ -1092,26 +1113,37 @@ def run_manual_aggregation(db: Session, source, *,
                 # 落点按上游库名找同名库。进库失败只记日志、本窗
                 # 跳过，绝不打断聚合主流程（聚合是主、进库是附加）；
                 # 口径见 upstream_import 模块头。
-                try:
-                    _imp_stats = uimp.import_unpaired_movies(
-                        db, source, items,
-                        {p["upstream_item_id"] for p in pairs},
-                        upstream_library_name=lib_name,
-                        limit=import_remaining)
-                    for _k in lib_import:
-                        _v = int(_imp_stats.get(_k) or 0)
-                        lib_import[_k] += _v
-                        import_totals[_k] += _v
-                    if _imp_stats.get("blocked"):
-                        import_blocked = str(_imp_stats["blocked"])
-                    if import_remaining is not None:
-                        import_remaining = max(
-                            0, import_remaining
-                            - int(_imp_stats.get("imported") or 0))
-                except Exception:
-                    logger.exception(
-                        "上游独有电影进库失败（已跳过本窗） "
-                        "source_id=%s library=%s", source.id, lib_id)
+                # 二期：落点解析带上游库 id（自动建库＋关系落点），
+                # 电影之后接剧整棵进库/补集（同窗同事务）。
+                for _imp_fn, _imp_args in (
+                    (uimp.import_unpaired_movies,
+                     (items, {p["upstream_item_id"] for p in pairs})),
+                    (uimp.import_unpaired_series_tree,
+                     (items, pairs)),
+                ):
+                    try:
+                        _imp_stats = _imp_fn(
+                            db, source, *_imp_args,
+                            upstream_library_name=lib_name,
+                            upstream_library_id=lib_id,
+                            upstream_collection_type=library.get(
+                                "collection_type", ""),
+                            limit=import_remaining)
+                        for _k in lib_import:
+                            _v = int(_imp_stats.get(_k) or 0)
+                            lib_import[_k] += _v
+                            import_totals[_k] += _v
+                        if _imp_stats.get("blocked"):
+                            import_blocked = str(_imp_stats["blocked"])
+                        if import_remaining is not None:
+                            import_remaining = max(
+                                0, import_remaining
+                                - int(_imp_stats.get("imported") or 0))
+                    except Exception:
+                        logger.exception(
+                            "上游独有进库失败（已跳过本窗） "
+                            "source_id=%s library=%s fn=%s",
+                            source.id, lib_id, _imp_fn.__name__)
                 lib_fetched += len(window)
                 lib_aggregates += len(items)
                 lib_paired += len(pairs)
@@ -1142,11 +1174,7 @@ def run_manual_aggregation(db: Session, source, *,
                              "library=%s", source.id, lib_id)
         # 进库统计并入本库 summary（commit 模式回滚时在下面归 0）。
         summary.update({
-            "import_candidates": lib_import["candidates"],
-            "import_imported": lib_import["imported"],
-            "import_existing": lib_import["existing"],
-            "import_no_library": lib_import["no_library"],
-            "import_limited": lib_import["limited"]})
+            f"import_{_k}": lib_import[_k] for _k in _IMPORT_KEYS})
         if failure is not None:
             code, message = failure
             if commit_each_library:
@@ -1161,9 +1189,7 @@ def run_manual_aggregation(db: Session, source, *,
                 summary.update({
                     "fetched": lib_fetched, "aggregates": lib_aggregates,
                     "paired": 0, "written": 0,
-                    "import_candidates": 0, "import_imported": 0,
-                    "import_existing": 0, "import_no_library": 0,
-                    "import_limited": 0,
+                    **{f"import_{_k}": 0 for _k in _IMPORT_KEYS},
                     "status": "failed", "error_code": code, "error": message})
             else:
                 # 窗粒度断点（旧口径）：已写窗的进度照实留在 summary。
@@ -1199,9 +1225,7 @@ def run_manual_aggregation(db: Session, source, *,
                     import_totals[_k] -= lib_import[_k]
                 summary.update({
                     "paired": 0, "written": 0, "status": "failed",
-                    "import_candidates": 0, "import_imported": 0,
-                    "import_existing": 0, "import_no_library": 0,
-                    "import_limited": 0,
+                    **{f"import_{_k}": 0 for _k in _IMPORT_KEYS},
                     "error_code": "mapping_conflict",
                     "error": "映射写入冲突，请重试"})
                 del all_pairs[len(all_pairs) - len(lib_pairs):]
@@ -1216,6 +1240,20 @@ def run_manual_aggregation(db: Session, source, *,
         else:
             _fire_event(on_event,
                         {"type": "library_done", "summary": summary})
+    # 生命周期对账（二期）：整轮可信才对账——任一库失败/被续跑
+    # 跳过，本轮 seen 集合就不完整，计数会把上游抖动误判成下架；
+    # 开关关时对账函数自身也会整表不动（双保险）。对账是附加
+    # 动作：失败只记日志，不打断聚合结果返回。
+    lifecycle_stats: Optional[Dict[str, object]] = None
+    if (libraries and not failed_libraries and not skip_ids
+            and getattr(source, "import_enabled", True)):
+        try:
+            lifecycle_stats = uimp.reconcile_hosted_lifecycle(
+                db, source, seen_upstream_ids)
+        except Exception:
+            logger.exception(
+                "上游托管行生命周期对账失败（已跳过本轮） source_id=%s",
+                source.id)
     logger.info("上游按库手动聚合 source_id=%s libraries=%s fetched=%s "
                 "aggregates=%s pairs=%s written=%s failed_libraries=%s "
                 "mapping_enabled=%s",
@@ -1234,7 +1272,15 @@ def run_manual_aggregation(db: Session, source, *,
         "import_existing": import_totals["existing"],
         "import_no_library": import_totals["no_library"],
         "import_limited": import_totals["limited"],
+        "import_libraries_created": import_totals["libraries_created"],
+        "series_imported": import_totals["series_imported"],
+        "episodes_imported": import_totals["episodes_imported"],
+        "seasons_created": import_totals["seasons_created"],
+        "import_no_identity": import_totals["no_identity"],
+        "import_no_series": import_totals["no_series"],
+        "import_no_position": import_totals["no_position"],
         "import_blocked": import_blocked,
+        "lifecycle": lifecycle_stats,
         "mapping_enabled": mapping_on,
         "unpaired_reasons": unpaired_total,
         "libraries": library_summaries,

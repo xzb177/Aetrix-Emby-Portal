@@ -218,7 +218,16 @@ def test_run_identity_aggregate_never_downgrades_to_title(db, monkeypatch):
     result = uar.run_manual_aggregation(db, source, http_get=pages.get)
     assert result["paired"] == 0
     assert result["unpaired_reasons"] == {"identity_no_local_match": 1}
-    assert db.query(em.UpstreamItemMapping).count() == 0
+    # 绝不降级配对：本地同名行（id=20）名下不许有这条上游线路的映射。
+    # （二期起该片会作为独有电影进库：映射只许落在新建的托管行上，
+    # 见 upstream_import——进库不是配对，不算降级。）
+    assert db.query(em.UpstreamItemMapping).filter(
+        em.UpstreamItemMapping.local_item_id == 20).count() == 0
+    hosted = db.query(em.MediaItem).filter(
+        em.MediaItem.upstream_source_id == source.id).one()
+    assert hosted.tmdb_id == "999999"
+    assert db.query(em.UpstreamItemMapping).filter(
+        em.UpstreamItemMapping.local_item_id == hosted.id).count() == 1
 
 
 def test_run_episode_without_identity_stays_unpaired(db, monkeypatch):
