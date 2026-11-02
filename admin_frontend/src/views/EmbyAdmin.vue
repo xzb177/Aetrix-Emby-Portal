@@ -50,6 +50,7 @@ import {
   fetchEnrichNoneStats,
   fetchEnrichFieldStats,
   fetchUnifiedFallback,
+  fetchUpstreamSources,
   generateVirtualLibraries,
   previewLibraryCover,
   regenerateLibraryCover,
@@ -67,7 +68,7 @@ import {
   saveUnifiedFallback,
   updateLibrary,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichEpisodeFieldsConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichEpisodeFieldsConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig, UpstreamSource } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -181,6 +182,12 @@ interface LibFormState {
   path_entries: LibraryPathEntry[]
   /** 是否纳入「自动发现新增文件」轮询监听（仅编辑可用；自动发现新增文件本身是全局开关） */
   chase: boolean
+  /** 库类型：local = 本机/挂载扫描；applecms = CMS 同步喂托管行（建库后不可改） */
+  kind: string
+  /** kind=applecms 时收哪些苹果 CMS 型上游源 */
+  upstream_source_ids: number[]
+  /** kind=applecms 时的分类映射（JSON 文本，分类名 → in/out；空 = 全收） */
+  cms_type_map_text: string
 }
 
 function emptyLibForm(): LibFormState {
@@ -195,6 +202,48 @@ function emptyLibForm(): LibFormState {
     account_115_id: null,
     path_entries: [],
     chase: false,
+    kind: 'local',
+    upstream_source_ids: [],
+    cms_type_map_text: '',
+  }
+}
+
+/** 库类型选项：选了会发生什么写在 hint 里，别让管理员猜 */
+const LIBRARY_KINDS: LibOption[] = [
+  { value: 'local', label: '本地媒体库', hint: '内容来自本机目录 / 存储挂载，由扫描器扫入（现有全部库都是这种）', recommended: true },
+  { value: 'applecms', label: '苹果 CMS 库', hint: '内容来自苹果 CMS 采集源：同步工人把目录喂成托管行，点播时现取现播（302），没有本地文件、不走扫描' },
+]
+
+/** 可选的苹果 CMS 型上游源（打开表单时现拉；拉不到就空列表 + 提示去源管理页加） */
+const cmsSourceOptions = ref<UpstreamSource[]>([])
+let cmsSourcesLoaded = false
+async function ensureCmsSources() {
+  if (cmsSourcesLoaded) return
+  cmsSourcesLoaded = true
+  try {
+    const res = await fetchUpstreamSources()
+    cmsSourceOptions.value = (res.items || []).filter((s) => s.source_type === 'applecms')
+  } catch {
+    cmsSourceOptions.value = []
+  }
+}
+
+/** 分类映射文本 → 对象：非法 JSON 返回 null（保存时拦下来让人改） */
+function parseCmsTypeMapText(text: string): Record<string, string> | null {
+  const trimmed = text.trim()
+  if (!trimmed) return {}
+  try {
+    const data = JSON.parse(trimmed)
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+      const verdict = String(v).trim().toLowerCase()
+      if (!k.trim() || (verdict !== 'in' && verdict !== 'out')) return null
+      out[k.trim()] = verdict
+    }
+    return out
+  } catch {
+    return null
   }
 }
 
@@ -425,6 +474,9 @@ function formFingerprint(): string {
     incremental_scan: incrementalScan.value,
     fs_watch: fsWatch.value,
     chase: libForm.chase,
+    kind: libForm.kind,
+    upstream_source_ids: [...libForm.upstream_source_ids].sort((a, b) => a - b),
+    cms_type_map_text: libForm.cms_type_map_text.trim(),
   })
 }
 
@@ -442,6 +494,7 @@ const libFormPathsChanged = computed(() => {
 
 function openCreate() {
   libFormTarget.value = null
+  void ensureCmsSources()
   Object.assign(libForm, emptyLibForm())
   // 封面几项也要清干净：新建库不该继承上一个库的样式/标题/自动更新开关
   coverTemplate.value = ''
@@ -456,6 +509,7 @@ function openCreate() {
 
 function openSettings(l: EmbyLibrary) {
   libFormTarget.value = l
+  void ensureCmsSources()
   // 封面：先回填已存配置，再拉一张预览（走 blob，不占 cover_path）
   coverTemplate.value = (l.cover_template || '') as typeof coverTemplate.value
   coverTitle.value = l.cover_title || ''
@@ -477,6 +531,9 @@ coverAutoRegen.value = l.cover_auto_regen === true
     account_115_id: l.account_115_id ?? null,
     path_entries: pathEntriesOf(l).map((e) => ({ ...e })),
     chase: chaseExcluded(l.id),
+    kind: l.kind || 'local',
+    upstream_source_ids: [...(l.upstream_source_ids || [])],
+    cms_type_map_text: l.cms_type_map ? JSON.stringify(l.cms_type_map, null, 2) : '',
   })
   libFormVisible.value = true
   libFormFingerprintAtOpen.value = formFingerprint()
@@ -532,11 +589,24 @@ async function saveForm(thenScan = false) {
     mount_id: e.mount_id ?? null,
   }))
   const virtual = !!libFormTarget.value?.is_virtual
+  const isCms = libForm.kind === 'applecms'
+  let cmsTypeMap: Record<string, string> | null = null
   if (!name) {
     ElMessage.warning('请填写媒体库名称')
     return
   }
-  if (!virtual && !pathEntries.length && !legacyMountIds.value.length) {
+  if (isCms) {
+    if (!libForm.upstream_source_ids.length) {
+      ElMessage.warning('苹果 CMS 库至少要选一个 CMS 来源，否则同步无内容可喂')
+      return
+    }
+    cmsTypeMap = parseCmsTypeMapText(libForm.cms_type_map_text)
+    if (cmsTypeMap === null) {
+      ElMessage.warning('分类映射不是合法的 JSON（格式：{"电影": "in", "电视剧": "out"}），请改好再保存')
+      return
+    }
+  }
+  if (!virtual && !isCms && !pathEntries.length && !legacyMountIds.value.length) {
     ElMessage.warning('请至少添加一个媒体路径，否则扫不到任何内容')
     return
   }
@@ -559,10 +629,16 @@ async function saveForm(thenScan = false) {
         cover_auto_regen: coverAutoRegen.value,
         incremental_scan: incrementalScan.value,
         fs_watch: fsWatch.value,
+        kind: isCms ? 'applecms' : 'local',
+        ...(isCms
+          ? { upstream_source_ids: [...libForm.upstream_source_ids], cms_type_map: cmsTypeMap }
+          : {}),
       })
       savedId = res.id
       const hasSource = pathEntries.length > 0
-      ElMessage.success(`媒体库「${name}」已创建${hasSource ? '，可以扫一次了' : ''}`)
+      ElMessage.success(isCms
+        ? `媒体库「${name}」已创建，内容由 CMS 同步工人喂入（记得打开同步开关）`
+        : `媒体库「${name}」已创建${hasSource ? '，可以扫一次了' : ''}`)
     } else {
       // 虚拟库没有自己的目录与挂载（也不归属某台节点），这几个字段干脆不传：
       // 传空数组等于「清空来源」，没必要为看不出来的库担这个风险
@@ -574,9 +650,12 @@ async function saveForm(thenScan = false) {
         // 传 null 表示解绑（回退默认账号）；省略会被 axios 丢掉，等于不改
         account_115_id: libForm.account_115_id ?? null,
         realm_id: libForm.realm_id ?? null,
-        ...(virtual
+        ...(virtual || isCms
           ? {}
           : { path_entries: pathEntries, node_id: libForm.node_id ?? null }),
+        ...(isCms
+          ? { upstream_source_ids: [...libForm.upstream_source_ids], cms_type_map: cmsTypeMap }
+          : {}),
         cover_template: coverTemplate.value || null,
         cover_title: coverTitle.value || null,
         cover_subtitle: coverSubtitle.value || null,
@@ -676,6 +755,7 @@ function legacyMountNamesFor(l: EmbyLibrary): string {
 
 function libSummary(l: EmbyLibrary): string {
   if (l.is_virtual) return `虚拟库 · ${l.platform || '按平台聚合'} · 刮削 ${policyLabel(l.scrape_policy)}`
+  if (l.kind === 'applecms') return `苹果 CMS 库 · ${(l.upstream_source_ids || []).length} 家来源 · 内容由 CMS 同步喂入`
   const entries = pathEntriesOf(l)
   const pathBit = entries.length
     ? `${entries.length} 个路径${entries[0] ? `（${entries[0].path}）` : ''}`
@@ -2375,6 +2455,33 @@ function typeLabel(t: string): string {
               <p class="field-help">{{ optionOf(COLLECTION_TYPES, libForm.collection_type)?.hint }}</p>
             </el-form-item>
 
+            <el-form-item label="库类型">
+              <el-select
+                v-model="libForm.kind"
+                style="width: 100%"
+                popper-class="lib-opt-popper"
+                :disabled="libForm.id != null"
+              >
+                <el-option
+                  v-for="k in LIBRARY_KINDS"
+                  :key="k.value"
+                  :label="optionLabel(LIBRARY_KINDS, k.value)"
+                  :value="k.value"
+                >
+                  <div class="opt">
+                    <div class="opt-label">
+                      {{ k.label }}<span v-if="k.recommended" class="opt-rec">（推荐）</span>
+                    </div>
+                    <div class="opt-hint">{{ k.hint }}</div>
+                  </div>
+                </el-option>
+              </el-select>
+              <p class="field-help">
+                {{ optionOf(LIBRARY_KINDS, libForm.kind)?.hint }}
+                <span v-if="libForm.id != null">库类型在建库后不可更改（两套喂数机制不能对同一批条目打架）。</span>
+              </p>
+            </el-form-item>
+
             <el-form-item label="启用状态">
               <el-switch v-model="libForm.is_enabled" active-text="启用" inactive-text="停用" />
               <p class="field-help">
@@ -2648,8 +2755,54 @@ function typeLabel(t: string): string {
   </template>
         </div>
 
+        <!-- 分组四（CMS 库）：CMS 来源与分类映射 -->
+        <div v-if="libForm.kind === 'applecms'" class="settings-section">
+          <div class="settings-section-title">CMS 来源</div>
+          <p class="form-hint">
+            这个库的内容由 CMS 同步工人从下面的采集源喂入（托管行），点播时现取
+            现播（302 直链），没有本地文件、也不走扫描。下面选哪几家，库里就收
+            哪几家的目录；多家同片自动合并去重。
+          </p>
+          <el-form label-position="top">
+            <el-form-item label="采集源（可多选）">
+              <el-select
+                v-model="libForm.upstream_source_ids"
+                multiple
+                style="width: 100%"
+                placeholder="选择苹果 CMS 型上游源"
+              >
+                <el-option
+                  v-for="s in cmsSourceOptions"
+                  :key="s.id"
+                  :label="`${s.name}${s.enabled ? '' : '（未启用）'}`"
+                  :value="s.id"
+                />
+              </el-select>
+              <p v-if="!cmsSourceOptions.length" class="field-warn">
+                还没有苹果 CMS 型上游源——先到「上游源」页添加并启用，再回来建库。
+              </p>
+              <p class="field-help">
+                未启用的源同步时会自动跳过；源的启停在「上游源」页单独管理。
+              </p>
+            </el-form-item>
+
+            <el-form-item label="分类映射（JSON，可留空）">
+              <el-input
+                v-model="libForm.cms_type_map_text"
+                type="textarea"
+                :rows="4"
+                placeholder='{"电影": "in", "电视剧": "out"}'
+              />
+              <p class="field-help">
+                按源站的顶级分类名决定收不收：<code>in</code> = 收、<code>out</code> = 不收；
+                没写到的分类默认收。留空 = 全部收。只认分类名，不写死任何站的业务。
+              </p>
+            </el-form-item>
+          </el-form>
+        </div>
+
         <!-- 分组四：媒体路径 -->
-        <div v-if="!libFormTarget?.is_virtual" class="settings-section">
+        <div v-if="!libFormTarget?.is_virtual && libForm.kind !== 'applecms'" class="settings-section">
           <div class="settings-section-title">媒体路径</div>
           <p class="form-hint">
             决定扫描哪些目录：<strong>一行一条</strong>，路径只写目录本身（如 <code>/mnt/电影</code>），
@@ -2676,7 +2829,7 @@ function typeLabel(t: string): string {
         </div>
 
         <!-- 分组五：目录变更监听 -->
-        <div v-if="libFormTarget && !libFormTarget.is_virtual" class="settings-section">
+        <div v-if="libFormTarget && !libFormTarget.is_virtual && libForm.kind !== 'applecms'" class="settings-section">
           <div class="settings-section-title">目录变更监听</div>
           <p class="form-hint">
             「自动发现新增文件」每隔几分钟扫一遍目录，发现新视频文件就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
