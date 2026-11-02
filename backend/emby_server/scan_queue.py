@@ -164,12 +164,55 @@ _RESCAN_FAIL_DEAD_LETTER_AFTER = 5
 
 # ==================== 入队 / 取消 ====================
 
+def _applecms_skip_result(library, trigger: str) -> Optional[dict]:
+    """苹果 CMS 库的扫描隔离：内容行是同步工人喂的托管行、没有本地
+    文件；这类库一旦被当成普通库扫描，空 paths 会被清理阶段读成
+    「文件全消失」而整库误删托管行。所以入队口一律拒绝，返回一个
+    形状与正常结果一致的 skipped 结果（调用方读 result["task"]
+    的 state 不会炸）。非 CMS 库返回 None（原路径逐字不变）。
+    """
+    from backend.emby_server import applecms_library as _cms_lib
+
+    if not _cms_lib.is_applecms_library(library):
+        return None
+    logger.info("扫描隔离：苹果 CMS 库「%s」(id=%s) 不走本地扫描，已跳过（触发=%s）",
+                getattr(library, "name", "?"), getattr(library, "id", "?"),
+                trigger)
+    return {
+        "created": False,
+        "skipped": "applecms_library",
+        "task": {
+            "library_id": int(getattr(library, "id", 0) or 0),
+            "name": str(getattr(library, "name", "") or ""),
+            "trigger": str(trigger or "manual"),
+            "state": "skipped",
+            "mount_ids": [],
+            "local_sources": 0,
+            "requested_at": datetime.now().isoformat(timespec="seconds"),
+            "started_at": None,
+            "finished_at": None,
+            "queued_ms": 0,
+            "duration_ms": None,
+            "waiting_for": [],
+            "result": None,
+            "error": None,
+            "request_count": 1,
+            "remote_lists": 0,
+            "remote_reused": 0,
+            "message": "苹果 CMS 库不走本地扫描，内容由 CMS 同步维护",
+        },
+    }
+
+
 def enqueue(library, *, trigger: str = "manual", force_full: bool = False) -> dict:
     """把一个媒体库的扫描放进队列（角色分发版）
 
     - API 进程（AETRIX_ROLE=api 且 Redis 可用）：推入 Redis 队列，由 worker 消费执行
     - 其他：走进程内队列（enqueue_local，原有逻辑）
     """
+    skipped = _applecms_skip_result(library, trigger)
+    if skipped is not None:
+        return skipped
     if AETRIX_ROLE == "api":
         try:
             from backend.emby_server import scan_queue_redis as _rq
@@ -193,6 +236,9 @@ def enqueue_targeted(library, prefixes: list[str],
 
     与整库增量扫描共用同一队列与挂载互斥，不会并发打架。
     """
+    skipped = _applecms_skip_result(library, trigger)
+    if skipped is not None:
+        return skipped
     import dataclasses
     from backend.emby_server.scanner import LibrarySnapshot
 
@@ -369,6 +415,9 @@ def enqueue_local(library, *, trigger: str = "manual", redis_raw=None,
 
     返回 ``{"created": bool, "task": {...}}``：``created=False`` 表示这次点击被合并到已有任务。
     """
+    skipped = _applecms_skip_result(library, trigger)
+    if skipped is not None:
+        return skipped
     from backend.emby_server.scanner import LibrarySnapshot  # 延迟导入：避免与 scanner 互相导入
 
     scan_instrument.install()   # 进度上报点（幂等；见 scan_instrument 的模块说明）
