@@ -161,7 +161,9 @@ def _projection_page(db, library_id: int, sort: str, cursor_key, cursor_id, limi
     """投影读一页：返回 ([(row, item)], has_more)；覆盖不全/页内行过期/
     读错 → None（调用方回落现算）。"""
     try:
-        live_count = _live_items_query(db, library_id).count()
+        # PA-042：Query.count() 会把语句包成子查询，软删钩子看不到内层表名，
+        # 活条目数会把已下架算进去、误判覆盖不全；改聚合口径（与 PA-035 同款）。
+        live_count = _live_items_query(db, library_id).with_entities(func.count()).scalar() or 0
         proj_count = (
             db.query(func.count(em.MediaItemSortProjection.item_id))
             .filter(em.MediaItemSortProjection.library_id == library_id)

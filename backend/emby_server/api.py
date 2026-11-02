@@ -3093,10 +3093,13 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     # 排序
     # DateLastContentAdded: 剧集取其下所有单集的最大入库时间（新集入库即刷新），
     # 其他类型取自身 date_added。Rex 等第三方客户端按此排序最新更新。
+    # 注意：标量子查询不经过软删钩子（钩子只给外层语句补 deleted_at），
+    # 已下架单集必须在这里显式排除，否则会抬高剧集的最新入库时间（PA-042）。
     _ChildItem = aliased(em.MediaItem)
     _date_last_content_added = func.coalesce(
         select(func.max(_ChildItem.date_added))
         .where(_ChildItem.series_id == em.MediaItem.id)
+        .where(_ChildItem.deleted_at.is_(None))
         .correlate(em.MediaItem)
         .scalar_subquery(),
         em.MediaItem.date_added,
