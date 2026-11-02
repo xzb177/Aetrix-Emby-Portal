@@ -93,6 +93,42 @@ def search(q: str = Query(..., min_length=1, max_length=200),
     return result
 
 
+@router.get("/details/item/{item_id}")
+def details_by_item(item_id: int,
+                    user=Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """按本地条目 id 取详情：给搜索补排的库内行用。
+
+    这类行不在数据集里（还没同步到、或根本没刮出 tmdb_id），拿
+    tmdb_id 查数据集详情必然 404；它们的身份就是 library_item_id。
+    可见性与 play-status 同口径：范围读失败 403（不猜）、范围外
+    404；只认标题级条目（movie/series），与搜索混排口径一致。
+    本路由必须声明在 /details/{media_type}/{tmdb_id} 之前，否则
+    "item" 会被当成 media_type 吃掉。
+    """
+    require_search_enabled()
+    allowed, known = _scope(db, user)
+    if not known:
+        raise HTTPException(status_code=403, detail="库可见范围读失败，暂不提供详情")
+    item_query = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.id == item_id,
+                em.MediaItem.deleted_at.is_(None),
+                em.MediaItem.merged_into_id.is_(None),
+                em.MediaItem.item_type.in_(("movie", "series")))
+    )
+    if allowed is not None:
+        item_query = item_query.filter(
+            em.MediaItem.library_id.in_(allowed))
+    item = item_query.first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="未找到该条目")
+    out = dataset._library_item_dict(item)
+    obs.log_event("next302_details", media_type=out["media_type"],
+                  in_library=True, by_item=True)
+    return out
+
+
 @router.get("/details/{media_type}/{tmdb_id}")
 def details(media_type: str, tmdb_id: str,
             user=Depends(get_current_user), db: Session = Depends(get_db)):
