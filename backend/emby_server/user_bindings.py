@@ -44,7 +44,11 @@ quark_vip_required，开关 quark_bind_vip_check_enabled
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import threading
+import time
+import uuid
 
 import logging
 from datetime import datetime
@@ -383,6 +387,110 @@ def binding_quark_cookie(db: Session, user_id: int,
     return cookie
 
 
+#: per-binding 凭据锁的 Redis 键前缀（规格：binding:<id>）。
+_BINDING_LOCK_PREFIX = "binding:"
+#: 锁 TTL（毫秒）：临界区可能含整段上传（分钟级），靠续租线程
+#: 保活，TTL 只防持锁进程猝死后死锁；续租间隔 = TTL/3。
+_BINDING_LOCK_TTL_MS = 120_000
+_LOCK_RELEASE_LUA = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then "
+    "return redis.call('del', KEYS[1]) end return 0")
+_LOCK_RENEW_LUA = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then "
+    "return redis.call('pexpire', KEYS[1], ARGV[2]) end return 0")
+
+
+@contextlib.contextmanager
+def quark_binding_lock(binding_id, *, wait_sec: float = 30.0):
+    """夸克凭据 per-binding 分布式锁（转存/点播取链/手动重验三口共用）。
+
+    同一绑定的「解封 → 用 → 回写」临界区全站串行：__puus 轮换
+    不再被并发流互踩（2026-11-02 风暴根因第一位）。实现口径与
+    本站其余 Redis 设施一致——Redis 是协调面不是命脉：
+    - Redis 不可用（get_redis 回 None / 连接异常）→ fail-open
+      直接放行（yield False），绝不因锁设施故障打停转存/点播；
+    - wait_sec 内抢不到 → 同样放行（yield False）并记 warning：
+      串行化是第一道防线，absorb 的 CAS 回写（见
+      absorb_quark_cookie_rotation）与判死前复核是第二、三道，
+      不许为了等锁把点播/转存挂死。
+    yield True 表示真持锁；持锁期间有续租线程保 TTL，退出时以
+    token 校验释放（绝不误删他人的锁）。115 凭据不走本锁：其
+    取用/回写是独立实现（无 absorb 回写面），不在本锁范围。
+    """
+    key = f"{_BINDING_LOCK_PREFIX}{binding_id}"
+    token = uuid.uuid4().hex
+    client = None
+    try:
+        from backend.database import get_redis
+
+        client = get_redis()
+    except Exception:  # noqa: BLE001 — 取客户端失败按不可用降级
+        client = None
+    if client is None:
+        yield False
+        return
+    deadline = time.monotonic() + max(0.0, float(wait_sec))
+    acquired = False
+    while True:
+        try:
+            acquired = bool(client.set(key, token, nx=True,
+                                       px=_BINDING_LOCK_TTL_MS))
+        except Exception:  # noqa: BLE001 — Redis 抖动按不可用降级
+            logger.warning("夸克凭据锁获取异常，降级放行 binding=%s",
+                           binding_id, exc_info=True)
+            yield False
+            return
+        if acquired:
+            break
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "夸克凭据锁等待超时，降级放行（CAS 兜底）binding=%s",
+                binding_id)
+            yield False
+            return
+        time.sleep(0.2)
+    stop_renew = threading.Event()
+
+    def _renew():
+        interval = (_BINDING_LOCK_TTL_MS / 1000.0) / 3.0
+        while not stop_renew.wait(interval):
+            try:
+                client.eval(_LOCK_RENEW_LUA, 1, key, token,
+                            _BINDING_LOCK_TTL_MS)
+            except Exception:  # noqa: BLE001 — 续租失败不打扰主流程
+                return
+
+    renew_thread = threading.Thread(
+        target=_renew, name=f"quark-lock-renew-{binding_id}",
+        daemon=True)
+    renew_thread.start()
+    try:
+        yield True
+    finally:
+        stop_renew.set()
+        try:
+            client.eval(_LOCK_RELEASE_LUA, 1, key, token)
+        except Exception:  # noqa: BLE001 — 释放失败靠 TTL 自愈
+            logger.warning("夸克凭据锁释放失败（靠 TTL 过期）"
+                           "binding=%s", binding_id, exc_info=True)
+
+
+#: 夸克 Cookie 的轮换字段（上游每次响应都可能轮换，只有这两个）。
+_ROTATION_COOKIE_KEYS = ("__puus", "__pus")
+
+
+def _cookie_field(cookie: str, name: str) -> str:
+    """从 Cookie 串里取一个字段值，取不到回空串。"""
+    for chunk in (cookie or "").split(";"):
+        chunk = chunk.strip()
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        if key.strip() == name:
+            return value.strip()
+    return ""
+
+
 def absorb_quark_cookie_rotation(db: Session,
                                  binding: em.UserStorageBinding,
                                  original_cookie: str,
@@ -394,13 +502,50 @@ def absorb_quark_cookie_rotation(db: Session,
     重新密封落库，否则绑定慢性失效（与一期验活后回写同一纪律，
     收口到一处实现）。回写失败只记日志返 False——保活优化不许
     打挂转存/点播主流程；无变化返 False。
+
+    CAS 口径（2026-11-02 风暴修复）：回写前重读库内密封值——
+    仍等于取用快照才整体覆盖；已被并发流轮换过（快照过期）
+    时禁止旧派生值整体盖新值：以库内最新值为底、只合并本流
+    新拿到的轮换字段（__puus/__pus），其余字段一律以最新值
+    为准。本流没拿到新轮换时什么都不写（返 False）。
     """
     if not current_cookie or current_cookie == original_cookie:
         return False
     try:
         cred = _credential_of(db, binding)
-        cred.sealed_credential = seal_secret(current_cookie)
+        db.expire(cred)
+        try:
+            stored = unseal_secret(cred.sealed_credential or "")
+        except SealedSecretError:
+            # 库内值已解不开：绑定另有定性路径（取凭据时落
+            # auth_error），回写层不拿自己的值去盖未知状态。
+            logger.warning("夸克 Cookie 回写跳过：库内密封值解不开 "
+                           "binding=%s", getattr(binding, "id", None))
+            return False
+        if stored == current_cookie:
+            return False
+        if stored == original_cookie or not stored:
+            cred.sealed_credential = seal_secret(current_cookie)
+            db.commit()
+            return True
+        # 冲突合并：以最新值为底，只并入本流新拿到的轮换字段。
+        merged = stored
+        changed = False
+        for name in _ROTATION_COOKIE_KEYS:
+            new_value = _cookie_field(current_cookie, name)
+            if (new_value
+                    and new_value != _cookie_field(original_cookie, name)
+                    and new_value != _cookie_field(stored, name)):
+                merged = quarkdrive._splice_cookie(merged, name,
+                                                   new_value)
+                changed = True
+        if not changed:
+            return False
+        cred.sealed_credential = seal_secret(merged)
         db.commit()
+        logger.info("夸克 Cookie 回写 CAS 合并 binding=%s"
+                    "（快照已被并发流轮换，仅合并轮换字段）",
+                    getattr(binding, "id", None))
         return True
     except Exception:  # noqa: BLE001 — 回写失败不拖垮主流程
         try:
@@ -490,17 +635,71 @@ def _classify_quark_error(exc: Exception) -> tuple[str, str] | None:
     return None
 
 
+def _quark_verify_steps(client) -> None:
+    """夸克验活三步（建绑/重验/判死复核共用同一口径）。
+
+    前两步与 115 验活同款：check 证会话、list_root 证能读目录。
+    第三步 list_dir 全量档（_size=100 + fetch_all_file）是
+    2026-11-02 对齐项：转存实际走的是 list_dir(_size=100) /
+    mkdir / upload 写口，只测两读口时出现过「重验成功、一小时
+    后转存仍 403」的口径错位——验活必须测到转存真用的那一档。
+    """
+    client.check()
+    client.list_root()
+    client.list_dir("0")
+
+
 def _verify_quark_cookie(cookie: str) -> str:
-    """夸克验活：check + 列根目录（与 115 两步验活同款口径）。
+    """夸克验活：见 _quark_verify_steps（三步）。
 
     返回验活后的 Cookie：上游会轮换 __puus，client.cookie 已同步
     为最新值，调用方须把与入参不同的返回值重新密封落库，否则
     绑定慢性失效。异常按 _classify_quark_error 分类后由调用方定状态。
     """
     client = quarkdrive.QuarkClient(cookie)
-    client.check()
-    client.list_root()
+    _quark_verify_steps(client)
     return client.cookie
+
+
+def recheck_quark_binding(db: Session,
+                          binding: em.UserStorageBinding,
+                          client_factory=None) -> str:
+    """判死前复核（2026-11-02 去单点化）：返回 alive/dead/unknown。
+
+    单次 QuarkAuthError 不许直接落 expired：先重读库内最新
+    Cookie（不用失败流手里的旧快照）走一遍验活三步——
+    - alive：验活全过，凭据没死（多半是并发轮换互踩的一过性
+      401），复核吸收到的轮换照常 CAS 回写；
+    - dead：复核也抛 QuarkAuthError，或库内已无可用 Cookie
+      （解不开/为空），才许判死；
+    - unknown：一过性失败（网络/限流/形状异常），定不了性，
+      不许判死。
+    本函数永不落绑定状态、永不抛（复核是保命路径，自身失败
+    按 unknown 收敛）。client_factory 仅供测试打桩，生产固定
+    quarkdrive.QuarkClient。
+    """
+    factory = client_factory or quarkdrive.QuarkClient
+    try:
+        cred = _credential_of(db, binding)
+        db.expire(cred)
+        latest = unseal_secret(cred.sealed_credential or "")
+    except SealedSecretError:
+        return "dead"
+    except Exception:  # noqa: BLE001 — 凭据行异常定不了性
+        logger.warning("夸克判死复核读凭据失败 binding=%s",
+                       getattr(binding, "id", None), exc_info=True)
+        return "unknown"
+    if not latest:
+        return "dead"
+    try:
+        client = factory(latest)
+        _quark_verify_steps(client)
+    except quarkdrive.QuarkAuthError:
+        return "dead"
+    except Exception:  # noqa: BLE001 — 一过性失败不判死
+        return "unknown"
+    absorb_quark_cookie_rotation(db, binding, latest, client.cookie)
+    return "alive"
 
 
 def _pan115_vip_status(cookie: str) -> str:
@@ -679,7 +878,7 @@ def create_binding(db: Session, user_id: int, provider: str,
     # no_binding 等三类行打回 pending、工人按新凭据重跑；只在
     # 验活成功点调，失败落态/一过性回滚路径不调（同事务提交）。
     from backend.emby_server import transfer_variant as _tv
-    _tv.revive_binding_failed_jobs(db, user_id)
+    _tv.revive_binding_failed_jobs(db, binding.user_id)
     db.commit()
     return binding
 
@@ -712,6 +911,22 @@ def verify_binding(db: Session, user_id: int,
         raise BindingError("unsupported", "该 provider 不支持重验。")
     if binding.provider == PROVIDER_QUARK and not quark_bind_enabled(db):
         raise BindingError("unsupported", "夸克绑定暂未开启。")
+    if binding.provider == PROVIDER_QUARK:
+        # 夸克凭据临界区（解封→验活→回写）与转存/点播取链共用
+        # 同一把 per-binding 锁串行（见 quark_binding_lock）。
+        with quark_binding_lock(binding.id):
+            return _verify_cookie_binding(db, binding)
+    return _verify_cookie_binding(db, binding)
+
+
+def _verify_cookie_binding(db: Session,
+                           binding: em.UserStorageBinding,
+                           ) -> em.UserStorageBinding:
+    """重验主体（115/夸克共用）：解封 → 验活 → 落态/回写。
+
+    夸克路径由 verify_binding 在 quark_binding_lock 内调用；
+    115 是独立凭据实现（无轮换回写面），不进锁、行为不变。
+    """
     cred = _credential_of(db, binding)
     try:
         cookie = unseal_secret(cred.sealed_credential or "")
@@ -766,7 +981,7 @@ def verify_binding(db: Session, user_id: int,
     # create_binding 成功点）：与 Drive 重绑共用同一份实现，
     # 只在验活通过点调，失败落态/一过性不改状态路径不调。
     from backend.emby_server import transfer_variant as _tv
-    _tv.revive_binding_failed_jobs(db, user_id)
+    _tv.revive_binding_failed_jobs(db, binding.user_id)
     db.commit()
     return binding
 
@@ -998,6 +1213,16 @@ def resolve_user_quark_copy_url(db: Session, user_id: int,
     binding = get_active_binding(db, user_id, PROVIDER_QUARK)
     if binding is None:
         raise BindingError("not_found", "当前用户没有可用的夸克绑定。")
+    # 凭据临界区（解封→取链→回写）与转存/手动重验共用同一把
+    # per-binding 锁串行（见 quark_binding_lock）。
+    with quark_binding_lock(binding.id):
+        return _resolve_user_quark_copy_url_locked(db, binding, fid)
+
+
+def _resolve_user_quark_copy_url_locked(db: Session,
+                                        binding: em.UserStorageBinding,
+                                        fid: str) -> tuple[str, str]:
+    """resolve_user_quark_copy_url 的临界区主体（锁内执行）。"""
     cred = _credential_of(db, binding)
     try:
         cookie = unseal_secret(cred.sealed_credential or "")
@@ -1015,11 +1240,20 @@ def resolve_user_quark_copy_url(db: Session, user_id: int,
     try:
         url = client.download_url(fid)
     except quarkdrive.QuarkAuthError as exc:
-        _mark_failed(db, binding, "expired")
-        db.commit()
+        # 判死去单点化：单次取链 401/403 先用库内最新 Cookie
+        # 验活复核，复核也鉴权失败才落 expired；复核未判死按
+        # 一过性处理（多半是并发轮换互踩），绑定状态不动。
+        if recheck_quark_binding(db, binding) == "dead":
+            _mark_failed(db, binding, "expired")
+            db.commit()
+            raise BindingError(
+                "expired",
+                error_message("expired", PROVIDER_QUARK)) from exc
+        absorb_quark_cookie_rotation(db, binding, cookie,
+                                     client.cookie)
         raise BindingError(
-            "expired",
-            error_message("expired", PROVIDER_QUARK)) from exc
+            "transient",
+            "夸克取链单次鉴权失败，复核未判死，请重试播放。") from exc
     except Exception as exc:  # noqa: BLE001 — 分类后决定落态或不改
         classified = _classify_quark_error(exc)
         if classified is not None:
