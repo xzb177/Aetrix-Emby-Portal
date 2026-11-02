@@ -22,6 +22,9 @@ def handle_callback(db, callback_query: dict, redpacket_enabled: bool | None = N
     if data.startswith("menu:"):
         _handle_menu(db, callback_query)
         return
+    if data.startswith("whois:"):
+        _handle_whois_callback(db, callback_query)
+        return
     if data.startswith("redpacket_claim:"):
         _handle_redpacket_claim(db, callback_query, redpacket_enabled)
         return
@@ -99,6 +102,62 @@ def _handle_menu(db, callback_query: dict) -> None:
         _rearm_group_panel_autodelete(db, chat_id, message_id)
 
 
+def _handle_whois_callback(db, callback_query: dict) -> None:
+    """处理 /whois 管理员面板按钮（whois:<page>:<user_id>[:<op>]）。
+
+    每次点击都重新校验点击者：未绑定或非管理员一律回拒绝卡（不带
+    目标任何数据）；目标不存在回明示卡。渲染与写操作全在
+    whois_panel（写操作二次确认在 ask/do 两步里，do 才执行）。
+    """
+    from . import whois_panel
+
+    data = callback_query.get("data") or ""
+    parts = data.split(":")
+    cq_id = callback_query.get("id")
+    from_user = callback_query.get("from") or {}
+    tg_id = from_user.get("id")
+    msg = callback_query.get("message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = msg.get("message_id")
+    if not chat_id or not message_id or not tg_id or len(parts) < 3:
+        return
+    sender.answer_callback_query(db, cq_id)
+    try:
+        page = parts[1]
+        target_id = int(parts[2])
+        op = parts[3] if len(parts) > 3 else None
+    except (IndexError, ValueError):
+        return
+    caller = resolve(db, int(tg_id))
+    if caller is None or not bool(getattr(caller, "is_staff", False)):
+        text = layout.card(
+            layout.title("账号反查"),
+            [layout.row("🔒", "访问状态", "仅管理员可用")])
+        sender.edit_message_text(db, chat_id, message_id, text, None)
+        return
+    target = (
+        db.query(models.WebUser)
+        .filter(models.WebUser.id == target_id)
+        .first()
+    )
+    if target is None:
+        text = layout.card(
+            layout.title("账号速览"),
+            [layout.row("📭", "结果", "目标账号不存在")])
+        sender.edit_message_text(db, chat_id, message_id, text, None)
+        return
+    try:
+        text, markup = whois_panel.render(db, caller, target, page, op)
+    except Exception:
+        logger.warning("tg whois panel render failed: %s", data, exc_info=True)
+        return
+    ok, _err = sender.edit_message_text(db, chat_id, message_id, text, markup)
+    if ok and chat_id != int(tg_id):
+        # 群面板续命：与 menu 面板同一口径，互动后重挂自毁定时。
+        _rearm_group_panel_autodelete(db, chat_id, message_id)
+
+
 def _rearm_group_panel_autodelete(db, chat_id: int, message_id: int) -> None:
     """群面板互动续命接线：按当前配置重挂该面板消息的自毁定时器。
 
@@ -164,11 +223,16 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         text = handlers.handle_points(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
     elif action == "chatpoints":
-        text = handlers.handle_chatpoints(db, tg_user, chat_id, "")
+        # 发言能量已并入 /points 输出：按钮入口一律指向合并后面板。
+        text = handlers.handle_points(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
     elif action in ("account", "request", "myrequests", "rank", "requestboard", "rules", "login", "govlog", "level", "report", "propose", "launch"):
-        # 凭据类与求片类仍私聊限定；账号展示已放行群聊（只展示个人面板信息）。
-        if not is_private and action in ("request", "myrequests", "login", "govlog", "report", "propose", "launch"):
+        # 凭据类与求片类仍私聊限定；账号卡（account/level）已私聊化：
+        # 群里点到只回统一私聊提示卡＋去私聊按钮，不铺账号数据。
+        if not is_private and action in ("account", "level"):
+            text = handlers.private_only_card()
+            markup = handlers.private_only_markup(db)
+        elif not is_private and action in ("request", "myrequests", "login", "govlog", "report", "propose", "launch"):
             text = layout.card(
                 layout.title("私聊使用"),
                 [layout.row("🔒", "使用方式", "这个功能请私聊机器人使用")])
@@ -183,7 +247,7 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
                 "rules": handlers.handle_rules,
                 "login": handlers.handle_login,
                 "govlog": handlers.handle_govlog,
-                "level": handlers.handle_level,
+                "level": handlers.handle_account,
                 "report": handlers.handle_report,
                 "propose": handlers.handle_propose,
                 "launch": handlers.handle_direct_launch,

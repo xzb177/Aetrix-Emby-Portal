@@ -70,8 +70,9 @@ def test_group_start_bound_returns_card_with_group_menu(db):
     result = handlers.handle_start(db, _tg(), GROUP, "")
     assert isinstance(result, tuple)
     text, markup = result
-    # 正文就是现行信息卡，一字不改
-    assert text == features.compact_dashboard(db, user, display_name="Alice")
+    # 正文是「私密操作入口」简短卡：不展示任何个人账号数据
+    assert text == handlers.group_start_text()
+    assert "能量余额" not in text and "用户编号" not in text
     # 群菜单定版五行的 callback 序列
     rows = markup["inline_keyboard"]
     assert [[b.get("callback_data") for b in row] for row in rows] == [
@@ -95,7 +96,7 @@ def test_group_start_unbound_has_slots_watch_button(db):
                                    GROUP, "")
     assert isinstance(result, tuple)
     text, markup = result
-    assert "账号绑定" in text  # 仍是绑定卡
+    assert text == handlers.group_start_text()  # 未绑定同形态入口卡
     datas = _callback_datas(markup)
     assert "menu:bind" in datas
     assert "menu:help" in datas

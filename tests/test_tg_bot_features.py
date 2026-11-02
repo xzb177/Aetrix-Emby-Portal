@@ -26,7 +26,9 @@ def test_account_unbound_is_private_safe(db):
     text = features.handle_account(db, {"id": 1}, 1, "")
     assert "绑定" in text and "账号中心" in text
 
-def test_account_shows_subscription_and_device(db):
+def test_account_shows_subscription_summary(db):
+    # 精简卡口径（2026-11-02 合并）：订阅只出汇总行（套餐名＋到期日），
+    # 设备逐条已下线（明细去网站账号页）。
     row = user(db)
     plan = models.SubscriptionPlan(name="月卡", price=30, duration_days=30, is_active=True)
     db.add(plan); db.flush()
@@ -34,7 +36,8 @@ def test_account_shows_subscription_and_device(db):
     db.add(models.UserDevice(user_id=row.id, device_id="d1", client="SenPlayer", last_seen_at=datetime.now()))
     db.commit()
     text = features.handle_account(db, {"id": row.telegram_id}, row.telegram_id, "")
-    assert all(x in text for x in ("alice", "月卡", "剩", "SenPlayer"))
+    assert "alice" in text and "月卡" in text and "生效中" in text
+    assert "SenPlayer" not in text and "最近设备" not in text
 
 def test_request_unbound_does_not_write(db):
     text = features.handle_request(db, {"id": 100}, 100, "电影")

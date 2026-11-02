@@ -302,14 +302,14 @@ def _group_menu_markup() -> dict:
 
 
 def private_only_card() -> str:
-    """私聊限定功能在群里被点到时的统一提示卡（与 callbacks 既有口径一致）。"""
+    """私聊命令在群里被调用时的统一提示卡（命令层与按钮层同一张）。"""
     return layout.card(
         layout.title("私聊使用"),
-        [layout.row("🔒", "使用方式", "这个功能请私聊机器人使用")])
+        [layout.row("🔒", "使用方式", "这是一条私聊命令，请私聊机器人使用")])
 
 
 def private_only_markup(db) -> dict:
-    """私聊卡按钮：「💬 去私聊」深链（可解析时）＋回主界面。
+    """私聊提示卡按钮：「💬 点我去私聊」深链（可解析时）＋回主界面。
 
     深链用户名走既有来源 tg_bind.get_bot_username（缓存配置
     telegram_bot_username，缺失时 getMe 回填）；解析不到就不挂
@@ -324,7 +324,7 @@ def private_only_markup(db) -> dict:
     except Exception:
         username = ""
     if username:
-        rows.append([{"text": "💬 去私聊", "url": f"https://t.me/{username}"}])
+        rows.append([{"text": "💬 点我去私聊", "url": f"https://t.me/{username}"}])
     rows.append(layout.home_row())
     return {"inline_keyboard": rows}
 
@@ -340,6 +340,7 @@ USER_PANEL_GROUPS: dict[str, dict] = {
             {"text": "🎬 求片", "callback_data": "menu:request"},
             {"text": "📋 我的求片", "callback_data": "menu:myrequests"},
             {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
+            {"text": "🔥 求片榜", "callback_data": "menu:requestboard"},
         ],
     },
     "drive": {
@@ -356,12 +357,14 @@ USER_PANEL_GROUPS: dict[str, dict] = {
             {"text": "🏆 能量榜", "callback_data": "menu:rank"},
             {"text": "🎟️ 续期", "callback_data": "menu:login"},
             {"text": "🔗 绑定账号", "callback_data": "menu:bind"},
+            {"text": "🏅 成就", "callback_data": "menu:achievements"},
         ],
     },
     "welfare": {
         "label": "🎁 福利活动",
         "buttons": [
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
+            {"text": "🏆 我的抽奖", "callback_data": "menu:mylottery"},
             {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
             {"text": "🎰 老虎机", "callback_data": "menu:slots"},
         ],
@@ -528,21 +531,32 @@ def admin_markup() -> dict:
     ]}
 
 
+def group_start_text() -> str:
+    """群内 /start 入口卡：只说明私密操作入口与群内通知口径，不带个人数据。
+
+    学参照形态：群里输 /start 只回简短入口提示＋功能按钮（按钮由
+    main_markup 按绑定状态给群菜单/未绑定菜单），账号信息不在群里铺开。
+    """
+    return layout.card(
+        layout.title("私密操作入口"),
+        [
+            layout.row("🔒", "操作入口", "这里是私密操作入口，个人功能请点下方按钮直达，或私聊我使用"),
+            layout.row("📣", "群内通知", "群里只保留入库喜报等通知"),
+        ],
+    )
+
+
 def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
     site_name = html.escape(str(store.get_value(db, "site_name", "Aetrix")))
     telegram_id = tg_user.get("id")
     web_user = resolve(db, int(telegram_id)) if telegram_id else None
     is_private = (chat_id == telegram_id)
 
-    if web_user:
-        if not is_private:
-            from backend.tg_bot.features import compact_dashboard
+    if not is_private:
+        # 群里：只回入口卡＋功能按钮（绑定与否同形态），不渲染账号卡。
+        return group_start_text(), main_markup(db, web_user, False)
 
-            greet = tg_user.get("first_name") or web_user.username
-            # 正文仍是现行九行信息卡（一字不改），补挂群菜单按钮：
-            # 此前只回纯文本，群里没有任何按钮能点进功能。
-            return (compact_dashboard(db, web_user, display_name=greet),
-                    main_markup(db, web_user, False))
+    if web_user:
         return main_card_text(tg_user, web_user), main_markup(db, web_user, True)
 
     return unbound_card_text(tg_user, site_name), main_markup(db, None, is_private)
@@ -617,13 +631,23 @@ def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
             rows.append(layout.row("⚡", "活力数值", f"{v}/{vmax} <code>{bar}</code>"))
     except Exception:
         pass
-    return layout.card(layout.title("我的能量"), rows)
+    # 群发言能量已并入 /points 输出（菜单简化）：同一段行与 /chatpoints
+    # 独立卡共用 _chatpoints_section，计分口径一字不改。读状态失败时
+    # 只略过该段（与上方活力块同一容错口径），不拖垮能量主卡。
+    try:
+        chat_rows, chat_notes = _chatpoints_section(db, user)
+        rows.extend(chat_rows)
+    except Exception:
+        chat_notes = []
+    return layout.card(layout.title("我的能量"), rows, chat_notes)
 
 
-def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
-    user = resolve(db, int(tg_user.get("id") or 0))
-    if user is None:
-        return _bind_guide_text()
+def _chatpoints_section(db, user) -> tuple[list[str], list[str]]:
+    """群发言能量段（信息行＋备注）：/points 合并展示与 /chatpoints 共用。
+
+    口径全部取自 points.get_chat_points_status（与发分侧同一只读口），
+    本段只负责渲染，不改任何计分语义。
+    """
     from backend import points as points_mod
 
     status = points_mod.get_chat_points_status(db, user.id)
@@ -631,13 +655,10 @@ def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
     cap = status["daily_cap"]
     per_msg = status["per_msg"]
     if per_msg == 0:
-        return layout.card(
-            layout.title("群发言能量"),
-            [
-                layout.row("💬", "发言奖励", "当前已关闭，在群里发言暂不发放能量"),
-                layout.row("🏆", "累计能量", f"<b>{status['total_earned']}</b> 能量"),
-            ],
-        )
+        return ([
+            layout.row("💬", "发言奖励", "当前已关闭，在群里发言暂不发放能量"),
+            layout.row("🏆", "累计能量", f"<b>{status['total_earned']}</b> 能量"),
+        ], [])
     filled = round(earned / cap * 10) if cap > 0 else 0
     bar = "▓" * filled + "░" * (10 - filled)
     rows = [
@@ -648,6 +669,14 @@ def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
     notes = []
     if earned >= cap:
         notes.append("✅ 今日发言能量已达上限，明天再继续。")
+    return rows, notes
+
+
+def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    rows, notes = _chatpoints_section(db, user)
     return layout.card(layout.title("群发言能量"), rows, notes)
 
 
@@ -1118,15 +1147,18 @@ def handle_whois(db, tg_user: dict, chat_id: int, args: str,
                  reply_from: dict | None = None) -> str:
     """管理员查人（只读，embyboss 借鉴第 2 项 + 群内精简卡）。
 
-    私聊（默认路径）：审计全卡，口径逐字不变——双门与 handle_admin
-    同一口径：私聊限定（handler 层 guard，router 的 private_only
-    另有一层）+ resolve 后 is_staff 判定；非管理员回现行拒绝卡，
-    未绑定回绑定指引。查询与渲染全在 whois.py（只读，只查现有表）。
+    私聊（默认路径）：双门与 handle_admin 同一口径：私聊限定
+    （handler 层 guard，router 的 private_only 另有一层）+ resolve
+    后 is_staff 判定；非管理员回现行拒绝卡，未绑定回绑定指引。
+    二期面板：回复定位或带参定位到具体用户时出管理员面板第一页
+    （whois_panel.main_page：精简卡＋翻页/写操作按钮）；定位不到
+    具体用户（IP/设备等关键词）仍走 whois.render_whois 审计全卡
+    搜索，口径不变。
 
     群聊（router 显式传 in_group=True 才进，2026-11-01 用户拍板）：
-    同一 is_staff 判定，只出精简卡；见 _whois_group。
+    同一 is_staff 判定，出面板第一页；见 _whois_group。
     """
-    from backend.tg_bot import queries, whois
+    from backend.tg_bot import queries, whois, whois_panel
 
     tg_id = tg_user.get("id")
     if in_group:
@@ -1141,6 +1173,14 @@ def handle_whois(db, tg_user: dict, chat_id: int, args: str,
             layout.title("账号反查"),
             [layout.row("🔒", "访问状态", "仅管理员可用")],
         )
+    if reply_from and reply_from.get("id"):
+        target = resolve(db, int(reply_from["id"]))
+        if target is not None:
+            name = (f"{reply_from.get('first_name') or ''} "
+                    f"{reply_from.get('last_name') or ''}").strip()
+            if not name:
+                name = str(reply_from.get("username") or "")
+            return whois_panel.main_page(db, target, name or None)
     keyword = (args or "").strip()
     if not keyword:
         return layout.card(
@@ -1150,6 +1190,9 @@ def handle_whois(db, tg_user: dict, chat_id: int, args: str,
                 layout.row("🧭", "可查", "IP 地址、TG 号、站内用户名 / Emby 名、设备或客户端名"),
             ],
         )
+    target = whois.find_lite_user(db, keyword)
+    if target is not None:
+        return whois_panel.main_page(db, target)
     return whois.render_whois(db, keyword)
 
 
@@ -1160,10 +1203,11 @@ def _whois_group(db, tg_id, args: str, reply_from: dict | None) -> str:
     🔒 拒绝卡（卡里绝不带被查人任何信息）。目标定位：优先被回复
     消息的发送者（reply_from，凭其 TG 号走 identity 链），其次
     带参（站内用户名 / TG 号，whois.find_lite_user 只查 web_users）。
-    查无此人 / 对方未绑定一律回明示卡，不报错、不建行（全只读）；
-    渲染只走 whois.render_whois_lite 的字段白名单。
+    查无此人 / 对方未绑定一律回明示卡，不报错、不建行；定位成功出
+    管理员面板第一页（whois_panel.main_page：精简卡＋按钮，精简卡
+    字段仍只走 whois.render_whois_lite 的字段白名单）。
     """
-    from backend.tg_bot import whois
+    from backend.tg_bot import whois, whois_panel
 
     if not tg_id:
         return _bind_guide_text()
@@ -1186,7 +1230,7 @@ def _whois_group(db, tg_id, args: str, reply_from: dict | None) -> str:
                 f"{reply_from.get('last_name') or ''}").strip()
         if not name:
             name = str(reply_from.get("username") or "")
-        return whois.render_whois_lite(db, target, name or None)
+        return whois_panel.main_page(db, target, name or None)
     keyword = (args or "").strip()
     if not keyword:
         return layout.card(
@@ -1202,4 +1246,4 @@ def _whois_group(db, tg_id, args: str, reply_from: dict | None) -> str:
             layout.title("账号速览"),
             [layout.row("📭", "结果", "没查到这个账号")],
         )
-    return whois.render_whois_lite(db, target)
+    return whois_panel.main_page(db, target)

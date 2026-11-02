@@ -5,7 +5,9 @@
 普通用户在菜单里就能看到管理员级命令（点了会被门禁拒绝，但菜单先暴露了）。
 
 本模块按 Telegram 的 BotCommandScope 分三级下发：
-- default scope（不带 scope 参数）：普通用户集 = BOT_COMMANDS 去掉管理员级；
+- default scope（不带 scope 参数）：普通用户集，2026-11-02 二期起
+  只保留 start/me/help 三条（面板优先：功能走 /start 面板按钮，
+  其余命令手输保留可用，见 USER_MENU_COMMANDS）；
 - 管理员 scope（BotCommandScopeChat，chat_id=管理员 TG 号）：全量下发，
   管理员名单 = web_users 里 is_staff 且在用且已绑 telegram_id（与
   features._notify_staff_about_request 的管理员口径一致，不新造名单配置）；
@@ -43,21 +45,31 @@ ADMIN_ONLY_COMMANDS: frozenset[str] = frozenset({
 
 # 群内可执行命令（不带斜杠）：逐条对 router.dispatch 的现行群内拦截口径——
 # 不在 private_only、不在 _P1_COMMANDS、且不被群内专门拒执行。
-# 排除项（13)：private_only 8 (request/myrequests/login/renew/govlog/
-# report/propose/launch) + P1 私人查询 4 (bindings/transfers/whyplay/
-# wants) + redeem（群内拒执行：删原消息并提示私聊）。
+# 排除项（18)：private_only 13 (request/myrequests/login/renew/govlog/
+# report/propose/launch/reconcile/rankpush/me/account/level，其中 me/
+# account/level 指向账号卡、账号卡私聊化后一并私聊限定）+ P1 私人查询
+# 4 (bindings/transfers/whyplay/wants) + redeem（群内拒执行：删原消息
+# 并回私聊提示）。/chatpoints 是 /points 的手输别名（不在菜单），群内
+# 随 /points 口径执行合并输出，不单独登记。
 # slots：/slots 命令群里出公共面板（不带个人数据，绑定点注时才判），
 # 与 menu:slots 面板入口同口径，属群内可执行。
 GROUP_COMMANDS: frozenset[str] = frozenset({
-    "start", "help", "bind", "checkin", "points", "chatpoints",
-    "account", "me", "rank", "level", "requestboard", "rules",
+    "start", "help", "bind", "checkin", "points",
+    "rank", "requestboard", "rules",
     "redpacket", "lottery", "slots",
 })
 
 
+#: 私聊用户菜单只留三条（2026-11-02 二期·面板优先）：/start 是功能
+#: 总入口（全部用户功能走面板按钮点达）、/me 是唯一账号命令、
+#: /help 兜底说明；其余用户命令全部摘出 default 菜单，但手输一律
+#: 保留可用（router 命令表不动）。管理员 scope 与群 scope 不受此影响。
+USER_MENU_COMMANDS: frozenset[str] = frozenset({"start", "me", "help"})
+
+
 def default_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """default scope 命令集：全量去掉管理员级。"""
-    return [c for c in commands if c[0] not in ADMIN_ONLY_COMMANDS]
+    """default scope 命令集：普通用户私聊菜单，只下发 start/me/help 三条。"""
+    return [c for c in commands if c[0] in USER_MENU_COMMANDS]
 
 
 def admin_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:

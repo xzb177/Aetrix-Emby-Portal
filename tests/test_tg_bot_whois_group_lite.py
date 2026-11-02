@@ -191,12 +191,15 @@ def test_group_args_lookup_by_username_and_tg_id(db, sent):
 def test_handler_group_direct_call_renders_lite(db):
     _staff(db)
     _rich_target(db)
-    out = handlers.handle_whois(
+    out, markup = handlers.handle_whois(
         db, {"id": STAFF_TG}, GROUP_ID, "",
         in_group=True,
         reply_from={"id": TARGET_TG, "first_name": "小明"})
     assert "lite_target" in out
     assert "小明" in out
+    # 二期：直调也带管理员面板按钮（绑定详情/资格凭证入口在）
+    datas = [b.get("callback_data") for row in markup["inline_keyboard"] for b in row]
+    assert any(d and d.startswith("whois:bind:") for d in datas)
 
 
 # ---------- 非管理员：只有现行拒绝卡，零被查人信息 ----------
@@ -300,13 +303,28 @@ def test_group_lookup_is_readonly(db, sent):
     assert counts() == before
 
 
-def test_private_whois_full_card_unchanged(db, sent):
+def test_private_whois_user_keyword_opens_panel(db, sent):
+    # 二期面板口径：私聊按用户名定位到具体用户 → 面板第一页（精简卡），
+    # 登录 IP 等审计痕迹不进第一页；IP 等定位不到具体用户的关键词
+    # 仍走全卡搜索（见 test_private_whois_ip_keyword_full_card）。
     _staff(db)
     _rich_target(db)
     router.dispatch(db, _private_update("/whois lite_target"))
     assert len(sent) == 1
     card = sent[0]
     assert "lite_target" in card
-    assert "9.9.9.9" in card        # 私聊全卡仍带登录 IP（审计口径不变）
+    assert "9.9.9.9" not in card
+    assert "最近登录" not in card
+    assert "最近播放" not in card
+
+
+def test_private_whois_ip_keyword_full_card(db, sent):
+    _staff(db)
+    _rich_target(db)
+    router.dispatch(db, _private_update("/whois 9.9.9.9"))
+    assert len(sent) == 1
+    card = sent[0]
+    assert "lite_target" in card
+    assert "9.9.9.9" in card        # 全卡仍带登录 IP（审计搜索口径不变）
     assert "最近登录" in card
     assert "最近播放" in card

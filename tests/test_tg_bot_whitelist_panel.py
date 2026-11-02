@@ -10,7 +10,8 @@
   换专属版式——专属问候标题＋👑专属称号行（＋创世编号行，编号落地后才有）。
 - 创世编号由身份组单落库，本单只读展示：编号未落地时只显示称号行；
   编号经 user 属性或 codes 名单行任一口出现时，面板自动带出编号行。
-- 普通用户两个面板逐字不变（金快照为改动前实测输出）。
+- 普通用户：user_panel 与账号中心已于 2026-11-02 合并为同一张精简卡
+  （features.account_card 唯一构建器），金快照为合并后新口径输出。
 - 本文件不重绑全局引擎、不引入真实 Timer／睡眠依赖。
 """
 from __future__ import annotations
@@ -32,36 +33,24 @@ from backend.tg_bot import features  # noqa: E402
 TG_PLAIN = 900001
 TG_VIP = 900002
 
-# 改动前（基线 71dba843）对普通用户实测的逐字输出，普通版式一字不许变。
+# 合并后（2026-11-02）账号卡新口径：user_panel 与账号中心同一张卡。
 PLAIN_PANEL_GOLDEN = (
     "▎<b>欢迎进入用户面板！</b>alice\n"
-    "· 🆔 <b>用户编号</b> | 1\n"
-    "· 📊 <b>公益资格</b> | 未开通\n"
-    "· 🎟️ <b>查看凭证</b> | 未开通\n"
-    "· 🍒 <b>能量余额</b> | 42\n"
-    "· ⚡ <b>活力数值</b> | 14/14\n"
-    "· 💠 <b>当前等级</b> | Lv.1 初幕 · 馆灵 蛋 · 已观影 0.0 小时（距夜枭还差 50.0 小时）\n"
-    "· 🔗 <b>网盘绑定</b> | 未绑定，绑定后才能点播\n"
-    "· 📅 <b>连签天数</b> | 0 天（满 30 天自动续公益资格）\n"
-    "· 🏅 <b>成就进度</b> | 0/0"
-)
-
-PLAIN_ACCOUNT_GOLDEN = (
-    "▎<b>账号中心！</b>alice\n"
     "· 🆔 <b>用户编号</b> | 1\n"
     "· 👤 <b>账号名称</b> | <b>alice</b>\n"
     "· ⭐ <b>当前等级</b> | Lv.1 初幕 · 经验 0／100 ░░░░░░░░░░（距 Lv.2 影迷还差 100 经验）\n"
     "· 🍒 <b>能量余额</b> | <b>42</b>\n"
     "· 📊 <b>公益资格</b> | 未开通\n"
     "· 🎟️ <b>查看凭证</b> | 未开通\n"
-    "· ⚡ <b>活力数值</b> | <b>14</b>/14\n"
-    "· 🐉 <b>当前馆灵</b> | 🥚 蛋（累计观影 0.0 小时）\n"
-    "· 🌱 <b>下一阶段</b> | 夜枭，还差 50.0 小时\n"
+    "· ⚡ <b>活力数值</b> | 14/14\n"
+    "· 🔗 <b>网盘绑定</b> | 未绑定，绑定后才能点播\n"
+    "· 🐉 <b>当前馆灵</b> | 🥚 蛋（累计观影 0.0 小时），距夜枭还差 50.0 小时\n"
     "· 🏅 <b>成就进度</b> | 已解锁 0／共 0 个\n"
-    "· 🏅 <b>解锁成就</b> | 暂无成就\n"
-    "· 📦 <b>订阅状态</b> | 暂无订阅\n"
-    "· 📱 <b>最近设备</b> | 暂无设备记录"
+    "· 📦 <b>订阅状态</b> | 暂无"
 )
+
+# 账号中心与用户面板已合并：同一张卡、同一份金快照。
+PLAIN_ACCOUNT_GOLDEN = PLAIN_PANEL_GOLDEN
 
 
 @pytest.fixture()
@@ -135,16 +124,16 @@ def test_user_panel_whitelist_layout(db):
     text = features.user_panel(db, vip)
     # 专属问候标题（称号唯一来源 codes.WHITELIST_TITLE，断言按常量取值）
     assert text.startswith(f"▎<b>欢迎回来，{codes.WHITELIST_TITLE}！</b>vip")
-    # 称号行：紧跟用户编号行、在公益资格行之前
+    # 称号行：紧跟账号名称行、在当前等级行之前（合并卡行序）
     title_row = f"· 👑 <b>专属称号</b> | <b>{codes.WHITELIST_TITLE}</b>"
     assert title_row in text
-    assert text.index("用户编号") < text.index("专属称号") < text.index("公益资格")
+    assert text.index("账号名称") < text.index("专属称号") < text.index("当前等级")
     # 编号尚未落地：只显示称号，不出编号行
     assert "创世编号" not in text
     # 其余信息行照现行口径（三处永久 → 长期有效、能量照旧）
     assert "· 📊 <b>公益资格</b> | 长期有效" in text
     assert "· 🎟️ <b>查看凭证</b> | 长期有效" in text
-    assert "· 🍒 <b>能量余额</b> | 42" in text
+    assert "· 🍒 <b>能量余额</b> | <b>42</b>" in text
 
 
 def test_compact_dashboard_whitelist_layout(db):
@@ -175,7 +164,8 @@ def test_title_follows_codes_constant(db, monkeypatch):
 def test_account_whitelist_layout(db):
     vip = _make_whitelist(db, _user(db, TG_VIP, "vip"))
     text = features.handle_account(db, _tg(TG_VIP, "Vip"), TG_VIP, "")
-    assert text.startswith("▎<b>专属账号中心！</b>vip")
+    # 合并卡：账号中心与用户面板同一版式（含专属问候标题）
+    assert text.startswith(f"▎<b>欢迎回来，{codes.WHITELIST_TITLE}！</b>vip")
     title_row = f"· 👑 <b>专属称号</b> | <b>{codes.WHITELIST_TITLE}</b>"
     assert title_row in text
     # 称号行紧跟账号名称行、在当前等级行之前
@@ -234,7 +224,7 @@ def test_revoked_whitelist_falls_back_to_plain_layout(db):
     assert text.startswith("▎<b>欢迎进入用户面板！</b>vip")
     account = features.handle_account(db, _tg(TG_VIP, "Vip"), TG_VIP, "")
     assert "专属称号" not in account
-    assert account.startswith("▎<b>账号中心！</b>vip")
+    assert account.startswith("▎<b>欢迎进入用户面板！</b>vip")
 
 
 # ---------- 6. 创世编号真口径：whitelist_serials 表（身份组 #1680） ----------

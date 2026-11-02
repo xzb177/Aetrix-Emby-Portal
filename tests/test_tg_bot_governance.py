@@ -163,14 +163,16 @@ def test_dashboard_sample_layout_exact(db):
     expected = "\n".join([
         "▎<b>欢迎进入用户面板！</b>Shun",
         f"· 🆔 <b>用户编号</b> | {row.id}",
+        "· 👤 <b>账号名称</b> | <b>shunxian2580</b>",
+        "· ⭐ <b>当前等级</b> | Lv.1 初幕 · 经验 0／100 ░░░░░░░░░░（距 Lv.2 影迷还差 100 经验）",
+        "· 🍒 <b>能量余额</b> | <b>57</b>",
         "· 📊 <b>公益资格</b> | 至 2026-11-27",
         "· 🎟️ <b>查看凭证</b> | 至 2030-11-27",
-        "· 🍒 <b>能量余额</b> | 57",
         "· ⚡ <b>活力数值</b> | 14/14",
-        "· 💠 <b>当前等级</b> | Lv.1 初幕 · 馆灵 蛋 · 已观影 0.0 小时（距夜枭还差 50.0 小时）",
         "· 🔗 <b>网盘绑定</b> | Drive 已绑 ✓",
-        "· 📅 <b>连签天数</b> | 2 天（满 30 天自动续公益资格）",
-        "· 🏅 <b>成就进度</b> | 0/13",
+        "· 🐉 <b>当前馆灵</b> | 🥚 蛋（累计观影 0.0 小时），距夜枭还差 50.0 小时",
+        "· 🏅 <b>成就进度</b> | 已解锁 0／共 13 个",
+        "· 📦 <b>订阅状态</b> | 暂无",
     ])
     assert text == expected
 
@@ -279,10 +281,12 @@ def test_launch_success_and_gate(db):
 
 # ---------- 路由与菜单 ----------
 
-def test_level_allowed_in_group_report_propose_private_only(db, monkeypatch):
+def test_level_private_only_in_group_report_propose_private_only(db, monkeypatch):
+    # /level 已改为账号卡别名、账号卡私聊化：群里与 report/propose
+    # 同口径，只回私聊提示（覆盖旧「/level 群内放行」口径）。
     _user(db)
     sent = _dispatch(db, monkeypatch, "/level", chat_id=GROUP, chat_type="group")
-    assert sent and "会员等级" in sent[0] and "请私聊" not in sent[0]
+    assert sent and "请私聊" in sent[0] and "会员等级" not in sent[0]
     for cmd in ("/report 1 违规", "/propose 标题 | 能量:10x1 | -100123"):
         sent = _dispatch(db, monkeypatch, cmd, chat_id=GROUP, chat_type="group")
         assert sent and "请私聊" in sent[0], cmd
@@ -290,4 +294,5 @@ def test_level_allowed_in_group_report_propose_private_only(db, monkeypatch):
 
 def test_bot_commands_cover_new_commands():
     registered = {cmd for cmd, _desc in poller.BOT_COMMANDS}
-    assert {"level", "report", "propose", "launch"} <= registered
+    assert {"report", "propose", "launch"} <= registered
+    assert "level" not in registered  # /level 已摘出菜单（手输别名保留）

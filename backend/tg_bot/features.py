@@ -394,12 +394,38 @@ def _after_colon(text: str) -> str:
     return text.split("：", 1)[-1]
 
 
-def user_panel(db, user, display_name: str | None = None) -> str:
-    """用户面板（卡片式）：样稿八行，字段口径沿用既有 helper。"""
+def _subscription_summary(db, user) -> str:
+    """订阅状态一行汇总：生效中的套餐名＋到期日；无生效订阅回「暂无」。
+
+    明细（多订阅逐条）让用户去网站账号页看，卡上不铺。
+    """
+    now = datetime.now()
+    subs = (
+        db.query(models.UserSubscription)
+        .filter(models.UserSubscription.user_id == user.id)
+        .order_by(models.UserSubscription.end_date.desc())
+        .all()
+    )
+    for sub in subs:
+        if sub.status == "active" and sub.end_date and sub.end_date > now:
+            plan = getattr(sub, "plan", None)
+            name = _esc(getattr(plan, "name", None) or "会员")
+            return f"{name}：生效中，{sub.end_date.strftime('%Y-%m-%d')} 到期"
+    return "暂无"
+
+
+def account_card(db, user, display_name: str | None = None) -> str:
+    """账号卡（唯一构建器）：/me、/account 与用户面板共用同一张精简卡。
+
+    固定 11 行汇总——用户编号/账号名称/当前等级（带经验进度，/level
+    详情并入此行）/能量余额/公益资格/查看凭证/活力数值/网盘绑定/
+    当前馆灵（下一阶段差距并进同一行）/成就进度（一行汇总）/订阅状态
+    （一行汇总）；成就/订阅/设备不逐条铺、连签行砍掉（签到卡里有）。
+    白名单专属版式保留：专属问候标题＋称号/编号行紧跟账号名称行。
+    """
     shown_ach, total_ach = _achievement_summary(db, user.id)
     total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
     cap, threshold = _vitality_config(db)
-    info = _level_info(db, user)
     greet = display_name or getattr(user, "username", "") or "朋友"
 
     vitality = getattr(user, "vitality", None)
@@ -413,64 +439,18 @@ def user_panel(db, user, display_name: str | None = None) -> str:
         if v < threshold:
             vitality_text += "（暂时播不了）"
 
-    bindings_text = _after_colon(_bindings_line(db, user.id))
     pet_text = (
-        f"Lv.{info['level']} {_esc(info['name'])} · 馆灵 {_esc(pet_cur.get('name', ''))}"
-        f" · 已观影 {total_hours:.1f} 小时"
+        f"{_esc(pet_cur.get('icon', ''))} {_esc(pet_cur.get('name', ''))}"
+        f"（累计观影 {total_hours:.1f} 小时）"
     )
     if pet_nxt is not None:
         pet_text += (
-            f"（距{_esc(pet_nxt.get('name', ''))}还差 "
-            f"{pet_nxt['hours'] - total_hours:.1f} 小时）"
+            f"，距{_esc(pet_nxt.get('name', ''))}还差 "
+            f"{pet_nxt['hours'] - total_hours:.1f} 小时"
         )
-    streak_text = _after_colon(_streak_line(db, user.id).removeprefix("📋 "))
-    rows = [
-        layout.row("🆔", "用户编号", user.id),
-        layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
-        layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
-        layout.row("🍒", "能量余额", int(user.points or 0)),
-        layout.row("⚡", "活力数值", vitality_text),
-        layout.row("💠", "当前等级", pet_text),
-        layout.row("🔗", "网盘绑定", bindings_text),
-        layout.row("📅", "连签天数", streak_text),
-        layout.row("🏅", "成就进度", f"{len(shown_ach)}/{total_ach}"),
-    ]
-    identity = _whitelist_identity(db, user)
-    if identity is not None:
-        # 白名单专属版式：专属问候＋称号/编号行紧跟用户编号行，其余照旧。
-        rows[1:1] = _whitelist_rows(identity)
-        return layout.card(layout.title(f"欢迎回来，{identity['title']}！", greet), rows)
-    return layout.card(layout.title("欢迎进入用户面板！", greet), rows)
+    else:
+        pet_text += "，已满级"
 
-
-def compact_dashboard(db, user, display_name: str | None = None) -> str:
-    """兼容旧函数名：/start 群聊 dashboard 与用户面板共用同一卡片构建。"""
-    return user_panel(db, user, display_name=display_name)
-
-
-def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """账号中心完整版：与用户面板同一骨架，并展开馆灵/成就/订阅/设备。"""
-    user = _bound_user(db, tg_user)
-    if user is None:
-        return layout.card(
-            layout.title("账号中心"),
-            [layout.row("🔒", "账号状态", "需要先绑定网站账号")],
-            ["发送 /bind 查看绑定方法。"],
-        )
-
-    now = datetime.now()
-    subs = (
-        db.query(models.UserSubscription)
-        .filter(models.UserSubscription.user_id == user.id)
-        .order_by(models.UserSubscription.end_date.desc())
-        .limit(5).all()
-    )
-    devices = (
-        db.query(models.UserDevice)
-        .filter(models.UserDevice.user_id == user.id)
-        .order_by(models.UserDevice.last_seen_at.desc())
-        .limit(3).all()
-    )
     rows = [
         layout.row("🆔", "用户编号", user.id),
         layout.row("👤", "账号名称", f"<b>{_esc(user.username)}</b>"),
@@ -478,65 +458,44 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
         layout.row("🍒", "能量余额", f"<b>{int(user.points or 0)}</b>"),
         layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
         layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
+        layout.row("⚡", "活力数值", vitality_text),
+        layout.row("🔗", "网盘绑定", _after_colon(_bindings_line(db, user.id))),
+        layout.row("🐉", "当前馆灵", pet_text),
+        layout.row("🏅", "成就进度", f"已解锁 {len(shown_ach)}／共 {total_ach} 个"),
+        layout.row("📦", "订阅状态", _subscription_summary(db, user)),
     ]
     identity = _whitelist_identity(db, user)
     if identity is not None:
-        # 白名单专属版式：称号/编号行紧跟账号名称行，其余行照旧。
+        # 白名单专属版式：专属问候＋称号/编号行紧跟账号名称行，其余照旧。
         rows[2:2] = _whitelist_rows(identity)
-    vitality = getattr(user, "vitality", None)
-    if vitality is not None:
-        cap, _threshold = _vitality_config(db)
-        rows.append(layout.row("⚡", "活力数值", f"<b>{int(vitality)}</b>/{cap}"))
+        return layout.card(layout.title(f"欢迎回来，{identity['title']}！", greet), rows)
+    return layout.card(layout.title("欢迎进入用户面板！", greet), rows)
 
-    total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
-    rows.append(layout.row(
-        "🐉", "当前馆灵",
-        f"{_esc(pet_cur.get('icon', ''))} {_esc(pet_cur.get('name', ''))}"
-        f"（累计观影 {total_hours:.1f} 小时）",
-    ))
-    if pet_nxt is not None:
-        remain = pet_nxt["hours"] - total_hours
-        rows.append(layout.row(
-            "🌱", "下一阶段",
-            f"{_esc(pet_nxt.get('name', ''))}，还差 {remain:.1f} 小时",
-        ))
-    else:
-        rows.append(layout.row("🌱", "下一阶段", "已满级"))
 
-    shown_ach, total_ach = _achievement_summary(db, user.id)
-    rows.append(layout.row(
-        "🏅", "成就进度", f"已解锁 {len(shown_ach)}／共 {total_ach} 个"))
-    if not shown_ach:
-        rows.append(layout.row("🏅", "解锁成就", "暂无成就"))
-    else:
-        for d in shown_ach:
-            rows.append(layout.row("🏅", "解锁成就", f"{_esc(d.icon)} {_esc(d.name)}"))
+def user_panel(db, user, display_name: str | None = None) -> str:
+    """兼容旧名：用户面板与账号卡已合并，统一走 account_card 构建。"""
+    return account_card(db, user, display_name=display_name)
 
-    if not subs:
-        rows.append(layout.row("📦", "订阅状态", "暂无订阅"))
-    else:
-        for sub in subs:
-            plan = getattr(sub, "plan", None)
-            name = _esc(getattr(plan, "name", None) or "会员")
-            end = sub.end_date.strftime("%Y-%m-%d") if sub.end_date else "未知"
-            active = sub.status == "active" and sub.end_date and sub.end_date > now
-            status = "生效中" if active else "已结束"
-            days = max(0, (sub.end_date - now).days) if active else 0
-            rows.append(layout.row(
-                "📦", "订阅状态", f"{name}：{status}，{end}（剩 {days} 天）"))
 
-    if not devices:
-        rows.append(layout.row("📱", "最近设备", "暂无设备记录"))
-    else:
-        for device in devices:
-            label = _esc(device.client or device.name or "未知客户端")
-            seen = device.last_seen_at.strftime("%m-%d %H:%M") if device.last_seen_at else "未知"
-            blocked = "，已停用" if device.is_blocked else ""
-            rows.append(layout.row(
-                "📱", "最近设备", f"{label}：{seen}{blocked}"))
-    if identity is not None:
-        return layout.card(layout.title("专属账号中心！", user.username), rows)
-    return layout.card(layout.title("账号中心！", user.username), rows)
+def compact_dashboard(db, user, display_name: str | None = None) -> str:
+    """兼容旧名：同 account_card（/start 不再渲染账号卡，此名只剩面板回调在用）。"""
+    return account_card(db, user, display_name=display_name)
+
+
+def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """账号中心：/me 与别名 /account 的实现，与用户面板共用 account_card。
+
+    账号卡已精简为固定汇总行（见 account_card），全量展开版（成就/
+    订阅/设备逐条）就此下线，明细去网站账号页看。
+    """
+    user = _bound_user(db, tg_user)
+    if user is None:
+        return layout.card(
+            layout.title("账号中心"),
+            [layout.row("🔒", "账号状态", "需要先绑定网站账号")],
+            ["发送 /bind 查看绑定方法。"],
+        )
+    return account_card(db, user)
 
 
 def _request_help() -> str:

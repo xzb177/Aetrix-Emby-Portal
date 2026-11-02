@@ -24,11 +24,14 @@ HEARTBEAT_STALE_SECONDS = 360
 
 
 # 启动时注册的 Bot 命令菜单（客户端左下角 / 菜单可见）。
-# 与 router 命令表对照：路由新增用户命令时须同步补齐；
-# /me、/renew 分别为 /account、/login 的别名，描述与行为一致。
+# 与 router 命令表对照：菜单只收主命令；/account、/renew、/chatpoints、
+# /level 是手输别名（router 照常认），刻意不进菜单——/account 是 /me
+# 的别名、/renew 是 /login 的别名、/chatpoints 已并入 /points 输出、
+# /level 指向账号卡（等级详情已并入卡内当前等级行）。
 # 描述统一带场景标签前缀（学 embyboss 命令表）：[群/私聊] = 群里与
 # 私聊都能用（与 command_scopes.GROUP_COMMANDS 逐条一致）；[私聊] =
-# 群里不执行（router private_only / P1 个人查询 / redeem 群内拒执行）。
+# 群里不执行（router private_only / P1 个人查询 / redeem 群内拒执行 /
+# /me 等私聊命令群内只回私聊提示）。
 # 标签只改说明文案、不改任何命令行为；改 router 拦截口径时必须同步
 # 改这里的标签与 GROUP_COMMANDS，有双向断言在
 # tests/test_tg_bot_slots_command.py 防漂移。
@@ -38,25 +41,21 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("bind", "[群/私聊] 绑定 Telegram"),
     ("checkin", "[群/私聊] 每日签到"),
     ("points", "[群/私聊] 查能量"),
-    ("account", "[群/私聊] 账号中心"),
-    ("me", "[群/私聊] 账号中心"),
+    ("me", "[私聊] 账号中心"),
     ("request", "[私聊] 求片"),
     ("myrequests", "[私聊] 我的求片"),
     ("rank", "[群/私聊] 能量排行榜"),
     ("govlog", "[私聊] 治理审计日志"),
-    ("level", "[群/私聊] 会员等级"),
     ("report", "[私聊] 举报求片"),
     ("propose", "[私聊] 活动提案"),
     ("launch", "[私聊] 直接发起活动"),
     ("requestboard", "[群/私聊] 求片榜"),
     ("rules", "[群/私聊] 群规"),
     ("login", "[私聊] 快捷登录"),
-    ("renew", "[私聊] 快捷登录"),
     ("redpacket", "[群/私聊] 发红包"),
     ("lottery", "[群/私聊] 抽奖"),
     ("slots", "[群/私聊] 老虎机"),
     ("redeem", "[私聊] 兑换码兑换"),
-    ("chatpoints", "[群/私聊] 群发言能量查询"),
     ("bindings", "[私聊] 查网盘绑定"),
     ("transfers", "[私聊] 查转存进度"),
     ("whyplay", "[私聊] 为什么播不了"),

@@ -161,7 +161,7 @@ def test_bindings_line(db):
 def test_vitality_line(db):
     ok = _user(db, tg=TG, name="ok", vitality=14)
     text = features.compact_dashboard(db, ok)
-    assert "🍒 <b>能量余额</b> | 42" in text and "⚡ <b>活力数值</b> | 14/14" in text
+    assert "🍒 <b>能量余额</b> | <b>42</b>" in text and "⚡ <b>活力数值</b> | 14/14" in text
     assert "暂时播不了" not in text
     low = _user(db, tg=TG + 1, name="low", vitality=2)
     text = features.compact_dashboard(db, low)
@@ -178,28 +178,30 @@ def test_pet_next_and_max(db):
     _watch(db, row.id, [100, 20])
     text = features.compact_dashboard(db, row)
     assert "夜枭" in text and "120.0" in text
-    assert "💠 <b>当前等级</b> | Lv.1 初幕 · 馆灵 夜枭 · 已观影 120.0 小时（距守夜者还差 80.0 小时）" in text
+    # 精简卡：馆灵行 = 名称＋累计小时＋下一阶段差距（同一行，无独立行）
+    assert "🐉 <b>当前馆灵</b> | 🦉 夜枭（累计观影 120.0 小时），距守夜者还差 80.0 小时" in text
     top = _user(db, tg=TG + 1, name="top")
     _watch(db, top.id, [1200])
     text = features.compact_dashboard(db, top)
-    assert "已观影 1200.0 小时" in text
-    assert "（距" not in text  # 满级：去掉距下一阶段的括号部分
-    assert "已满级" not in text
+    assert "累计观影 1200.0 小时" in text
+    pet_line = [ln for ln in text.split("\n") if "当前馆灵" in ln][0]
+    assert "还差" not in pet_line  # 满级：馆灵行无下一阶段差距
+    assert "已满级" in pet_line
 
 
-# ---------- 连签 ----------
+# ---------- 连签行已砍（签到卡里有），成就只出汇总 ----------
 
 def test_streak_line(db):
     none = _user(db, tg=TG, name="none")
-    assert "📅 <b>连签天数</b> | 0 天" in features.compact_dashboard(db, none)
+    assert "连签天数" not in features.compact_dashboard(db, none)
     row = _user(db, tg=TG + 1, name="streak")
     _checkin(db, row.id, 5)
     text = features.compact_dashboard(db, row)
-    assert "🏅 <b>成就进度</b> | 0/0" in text
-    assert "📅 <b>连签天数</b> | 5 天（满 30 天自动续公益资格）" in text
+    assert "🏅 <b>成就进度</b> | 已解锁 0／共 0 个" in text
+    assert "连签天数" not in text
 
 
-# ---------- 卡片版式整版：标题＋9 行信息行、无进度条、面板不展开订阅 ----------
+# ---------- 卡片版式整版：标题＋11 行汇总行（明细不铺） ----------
 
 def test_slim_layout_full(db):
     row = _user(db, tg=TG, name="alice", points=16, vitality=14,
@@ -209,37 +211,34 @@ def test_slim_layout_full(db):
     _unlock(db, row.id, datetime(2026, 11, 27))
     _binding(db, row.id, "drive")
     _checkin(db, row.id, 7)
-    reply = handlers.handle_start(db, _tg(), GROUP, "")
-    # 群 /start 现返回 (正文, 群菜单) 元组：九行版式断言落在正文上。
-    assert isinstance(reply, tuple)
-    reply = reply[0]
+    reply = features.compact_dashboard(db, row)
     expected = "\n".join([
-        "▎<b>欢迎进入用户面板！</b>Alice",
+        "▎<b>欢迎进入用户面板！</b>alice",
         f"· 🆔 <b>用户编号</b> | {row.id}",
+        "· 👤 <b>账号名称</b> | <b>alice</b>",
+        "· ⭐ <b>当前等级</b> | Lv.1 初幕 · 经验 0／100 ░░░░░░░░░░（距 Lv.2 影迷还差 100 经验）",
+        "· 🍒 <b>能量余额</b> | <b>16</b>",
         "· 📊 <b>公益资格</b> | 至 2026-11-27",
         "· 🎟️ <b>查看凭证</b> | 至 2026-11-27",
-        "· 🍒 <b>能量余额</b> | 16",
         "· ⚡ <b>活力数值</b> | 14/14",
-        "· 💠 <b>当前等级</b> | Lv.1 初幕 · 馆灵 夜枭 · 已观影 120.0 小时（距守夜者还差 80.0 小时）",
         "· 🔗 <b>网盘绑定</b> | Drive 已绑 ✓",
-        "· 📅 <b>连签天数</b> | 7 天（满 30 天自动续公益资格）",
-        "· 🏅 <b>成就进度</b> | 1/2",
+        "· 🐉 <b>当前馆灵</b> | 🦉 夜枭（累计观影 120.0 小时），距守夜者还差 80.0 小时",
+        "· 🏅 <b>成就进度</b> | 已解锁 1／共 2 个",
+        "· 📦 <b>订阅状态</b> | 暂无",
     ])
     assert reply == expected
-    assert "█" not in reply and "░" not in reply and "──" not in reply
     assert "左下角" not in reply
     assert "一键免密登录请私聊" not in reply
-    assert "订阅" not in reply
+    assert "连签天数" not in reply
     assert "最近设备" not in reply
 
 
-# ---------- 瘦身边界：活力满格不出现进度条字符 ----------
+# ---------- 瘦身边界：固定 11 行，活力行不带进度条 ----------
 
 def test_no_bar_chars_full_vitality(db):
     row = _user(db, tg=TG, name="full", vitality=14)
     _watch(db, row.id, [120])  # 馆灵中段进度：旧版这里会渲染馆灵条
     text = features.compact_dashboard(db, row)
     assert "活力数值</b> | 14/14" in text
-    assert "█" not in text and "░" not in text
     assert "──" not in text
-    assert len(text.split("\n")) == 10  # 标题＋9 行信息行
+    assert len(text.split("\n")) == 12  # 标题＋11 行汇总行

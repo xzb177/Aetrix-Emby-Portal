@@ -457,16 +457,14 @@ def update_user(
 
     changed = {}
     if request.is_active is not None:
-        # PA-002（完美审计 R1·B1）：True→False 停用时，同一事务内批量吊销该用户
-        # 全部 Emby 客户端令牌并 token_version+1（复用 share_guard._disable_user 写法）。
-        # False→True 恢复启用不自动恢复任何旧会话；上方超级管理员保护计数已校验，不受影响。
-        if not request.is_active and user.is_active:
-            from backend.emby_server import models as emby_models
-            db.query(emby_models.EmbyApiToken).filter(
-                emby_models.EmbyApiToken.user_id == user.id
-            ).update({emby_models.EmbyApiToken.is_revoked: True}, synchronize_session=False)
-            user.token_version = int(user.token_version or 0) + 1
-        user.is_active = request.is_active
+        # PA-002（完美审计 R1·B1）：停用/启用走全站唯一实现
+        # backend.user_lifecycle.set_user_active（TG 机器人 /whois 管理员
+        # 面板同源）：停用时同一事务内批量吊销该用户全部 Emby 客户端
+        # 令牌并 token_version+1；恢复启用不自动恢复任何旧会话。
+        # 上方超级管理员保护计数已校验，不受影响。
+        from backend.user_lifecycle import set_user_active
+
+        set_user_active(db, user, bool(request.is_active))
         changed["is_active"] = request.is_active
     if staff_change:
         if request.is_staff:
