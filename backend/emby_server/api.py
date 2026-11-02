@@ -365,7 +365,10 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
             db.query(em.MediaItem.series_id, func.count(em.MediaItem.id))
             .filter(em.MediaItem.series_id.in_(series_ids_all),
                     em.MediaItem.item_type == "episode",
-                    em.MediaItem.merged_into_id.is_(None))
+                    em.MediaItem.merged_into_id.is_(None),
+                    # PA-037：外连接后 FROM 是 Join 对象，软删钩子看不见，
+                    # 必须自己带 deleted_at 条件，否则已下架集会虚增未看角标。
+                    em.MediaItem.deleted_at.is_(None))
             .outerjoin(em.UserMediaData,
                        (em.UserMediaData.item_id == em.MediaItem.id)
                        & (em.UserMediaData.user_id == user_id))
@@ -672,7 +675,10 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                 db.query(func.count(em.MediaItem.id))
                 .filter(em.MediaItem.series_id == item.id,
                         em.MediaItem.item_type == "episode",
-                        em.MediaItem.merged_into_id.is_(None))
+                        em.MediaItem.merged_into_id.is_(None),
+                        # PA-037：外连接后 FROM 是 Join 对象，软删钩子看不见，
+                        # 必须自己带 deleted_at 条件，否则已下架集会虚增未看角标。
+                        em.MediaItem.deleted_at.is_(None))
                 .outerjoin(em.UserMediaData,
                            (em.UserMediaData.item_id == em.MediaItem.id)
                            & (em.UserMediaData.user_id == user_id))
@@ -2453,7 +2459,10 @@ def get_suggestions(user_id: str,
                 func.sum(em.UserMediaData.play_count).label("plays"),
             )
             .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
-            .filter(em.UserMediaData.play_count > 0)
+            .filter(em.UserMediaData.play_count > 0,
+                    # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                    # 必须自己带 deleted_at 条件，否则已下架条目会占热门排行名额。
+                    em.MediaItem.deleted_at.is_(None))
             .group_by(em.MediaItem.id)
             .order_by(func.sum(em.UserMediaData.play_count).desc())
             .limit(limit * 3)
@@ -2857,7 +2866,12 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         if (q.get(flag) or "").lower() == "true":
             filters.add(flag.lower())
 
-    query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False)  # noqa: E712
+    query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False,  # noqa: E712
+                                         # PA-037：本查询按需外连接 UserMediaData，
+                                         # 一旦联结 FROM 就变成 Join 对象、软删钩子
+                                         # 看不见，故基底就带上 deleted_at 条件，
+                                         # 联结与非联结路径同口径。
+                                         em.MediaItem.deleted_at.is_(None))
 
     if ids:
         query = query.filter(em.MediaItem.guid.in_(ids))
@@ -3379,6 +3393,9 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
             em.UserMediaData.hide_from_resume == False,  # noqa: E712
             em.MediaItem.item_type.in_(["movie", "series", "episode"]),
             em.MediaItem.is_hidden == False,  # noqa: E712
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则已下架条目会进继续观看。
+            em.MediaItem.deleted_at.is_(None),
             # 副本绝不能占 Resume 的 limit 名额：合并 worker 不搬运播放记录，
             # 副本的播放行会先占名额、再被 deduplicate_items 扔掉，导致列表缩水。
             em.MediaItem.merged_into_id.is_(None),

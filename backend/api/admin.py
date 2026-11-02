@@ -1798,7 +1798,10 @@ def get_playback_stats(
             func.count(em.PlaybackSession.id).label("plays"),
         )
         .join(em.PlaybackSession, em.PlaybackSession.item_id == em.MediaItem.id)
-        .filter(em.PlaybackSession.start_time >= week_start)
+        .filter(em.PlaybackSession.start_time >= week_start,
+                # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                # 必须自己带 deleted_at 条件，否则已下架条目会进热门榜。
+                em.MediaItem.deleted_at.is_(None))
         .group_by(em.MediaItem.name, em.MediaItem.item_type)
         .order_by(func.count(em.PlaybackSession.id).desc())
         .limit(10)

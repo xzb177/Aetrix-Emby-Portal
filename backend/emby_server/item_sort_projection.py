@@ -183,6 +183,9 @@ def _projection_page(db, library_id: int, sort: str, cursor_key, cursor_id, limi
             em.MediaItemSortProjection.library_id == library_id,
             em.MediaItem.item_type.in_(_SORT_TYPES),
             em.MediaItem.merged_into_id.is_(None),
+            # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+            # 必须自己带 deleted_at 条件，否则投影孤行会进排序分页。
+            em.MediaItem.deleted_at.is_(None),
         )
     )
     if sort == "title":

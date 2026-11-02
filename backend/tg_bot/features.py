@@ -150,7 +150,10 @@ def _pet_summary(db, user_id: int):
             em.MediaItem.duration_ticks,
         )
         .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
-        .filter(em.PlaybackSession.user_id == user_id)
+        .filter(em.PlaybackSession.user_id == user_id,
+                # PA-037：联结查询的 FROM 是 Join 对象，软删钩子看不见，
+                # 必须自己带 deleted_at 条件，否则已下架条目会虚增馆灵小时。
+                em.MediaItem.deleted_at.is_(None))
         .all()
     )
     total_secs = sum(playback_seconds(r) for r in rows)
