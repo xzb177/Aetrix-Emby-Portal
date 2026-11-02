@@ -228,15 +228,16 @@ def _dispatch_group(db, monkeypatch, text):
     return sent
 
 
-def test_account_and_me_private_only_in_group(db, monkeypatch):
-    # 账号卡 2026-11-02 私聊化：群里输 /account、/me 不再铺账号卡，
-    # 统一回私聊命令提示（覆盖 2026-10-28 群内放行口径）。
+def test_account_and_me_render_account_card_in_group(db, monkeypatch):
+    # 账号展示群里放行（2026-10-28 用户亲定、2026-11-02 10:43 重申）：
+    # 群里输 /account、/me、/level 直接回发送者本人的账号卡；
+    # #1705 曾一并改成私聊限定，用户纠正后恢复本口径。
     _user(db)
-    for cmd in ("/account", "/me"):
+    for cmd in ("/account", "/me", "/level"):
         sent = _dispatch_group(db, monkeypatch, cmd)
         assert sent, cmd
-        assert "私聊" in sent[0]
-        assert "能量余额" not in sent[0]  # 账号数据不进群
+        assert "能量余额" in sent[0], cmd  # 账号卡本体
+        assert "私聊命令" not in sent[0], cmd
 
 
 def test_login_still_blocked_in_group(db, monkeypatch):
@@ -251,8 +252,9 @@ def test_p1_still_blocked_in_group(db, monkeypatch):
     assert sent and "私聊" in sent[0]
 
 
-def test_menu_callback_account_private_only_in_group(db, monkeypatch):
-    # 群菜单「账号中心」按钮同口径：群里点到只回私聊提示卡，不铺数据。
+def test_menu_callback_account_renders_card_in_group(db, monkeypatch):
+    # 群菜单「账号中心」按钮同口径：群里点到直接渲染点击者的账号卡
+    # （2026-10-28 定、2026-11-02 重申），不再回私聊提示卡。
     _user(db)
     edited = []
 
@@ -270,8 +272,8 @@ def test_menu_callback_account_private_only_in_group(db, monkeypatch):
         "message": {"message_id": 5, "chat": {"id": GROUP, "type": "group"}},
     }
     callbacks.handle_callback(db, cq)
-    assert edited and "私聊" in edited[0]
-    assert "能量余额" not in edited[0]
+    assert edited and "能量余额" in edited[0]
+    assert "私聊使用" not in edited[0]
 
 
 # ---------- 注册表覆盖路由命令 ----------
@@ -294,4 +296,4 @@ def test_bot_commands_cover_router_commands():
     assert aliases <= router_commands
     assert registered | aliases == router_commands
     assert aliases.isdisjoint(registered)
-    assert ("me", "[私聊] 账号中心") in poller.BOT_COMMANDS
+    assert ("me", "[群/私聊] 账号中心") in poller.BOT_COMMANDS

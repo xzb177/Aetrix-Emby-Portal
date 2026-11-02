@@ -227,12 +227,10 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         text = handlers.handle_points(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
     elif action in ("account", "request", "myrequests", "rank", "requestboard", "rules", "login", "govlog", "level", "report", "propose", "launch"):
-        # 凭据类与求片类仍私聊限定；账号卡（account/level）已私聊化：
-        # 群里点到只回统一私聊提示卡＋去私聊按钮，不铺账号数据。
-        if not is_private and action in ("account", "level"):
-            text = handlers.private_only_card()
-            markup = handlers.private_only_markup(db)
-        elif not is_private and action in ("request", "myrequests", "login", "govlog", "report", "propose", "launch"):
+        # 凭据类与求片类仍私聊限定；账号展示（account/level）群里放行
+        # （2026-10-28 用户亲定、2026-11-02 重申）：落下面正常渲染分支
+        # 出点击者本人的账号卡，与命令层 /me 口径一致。
+        if not is_private and action in ("request", "myrequests", "login", "govlog", "report", "propose", "launch"):
             text = layout.card(
                 layout.title("私聊使用"),
                 [layout.row("🔒", "使用方式", "这个功能请私聊机器人使用")])

@@ -45,18 +45,22 @@ ADMIN_ONLY_COMMANDS: frozenset[str] = frozenset({
 
 # 群内可执行命令（不带斜杠）：逐条对 router.dispatch 的现行群内拦截口径——
 # 不在 private_only、不在 _P1_COMMANDS、且不被群内专门拒执行。
-# 排除项（18)：private_only 13 (request/myrequests/login/renew/govlog/
-# report/propose/launch/reconcile/rankpush/me/account/level，其中 me/
-# account/level 指向账号卡、账号卡私聊化后一并私聊限定）+ P1 私人查询
-# 4 (bindings/transfers/whyplay/wants) + redeem（群内拒执行：删原消息
-# 并回私聊提示）。/chatpoints 是 /points 的手输别名（不在菜单），群内
-# 随 /points 口径执行合并输出，不单独登记。
+# 排除项（15)：private_only 10 (request/myrequests/login/renew/govlog/
+# report/propose/launch/reconcile/rankpush) + P1 私人查询 4 (bindings/
+# transfers/whyplay/wants) + redeem（群内拒执行：删原消息并回私聊
+# 提示）。/chatpoints 是 /points 的手输别名（不在菜单），群内随
+# /points 口径执行合并输出，不单独登记。
+# me/account/level（账号展示一家，指向同一张账号卡）在群里放行
+# （2026-10-28 用户亲定、2026-11-02 重申），在下面集合里；其中
+# account/level 是手输别名、不在 BOT_COMMANDS 菜单表，群菜单实际
+# 下发的只有 me（group_commands 按菜单表过滤，见下方函数）。
 # slots：/slots 命令群里出公共面板（不带个人数据，绑定点注时才判），
 # 与 menu:slots 面板入口同口径，属群内可执行。
 GROUP_COMMANDS: frozenset[str] = frozenset({
     "start", "help", "bind", "checkin", "points",
     "rank", "requestboard", "rules",
     "redpacket", "lottery", "slots",
+    "me", "account", "level",
 })
 
 

@@ -281,12 +281,13 @@ def test_launch_success_and_gate(db):
 
 # ---------- 路由与菜单 ----------
 
-def test_level_private_only_in_group_report_propose_private_only(db, monkeypatch):
-    # /level 已改为账号卡别名、账号卡私聊化：群里与 report/propose
-    # 同口径，只回私聊提示（覆盖旧「/level 群内放行」口径）。
+def test_level_renders_card_in_group_report_propose_private_only(db, monkeypatch):
+    # /level 是账号卡别名、账号展示群里放行（2026-10-28 定、2026-11-02
+    # 重申）：群里直接回账号卡；report/propose 仍私聊限定、只回提示。
     _user(db)
+    monkeypatch.setattr("backend.tg_bot.router._user_cmd_limits", {})
     sent = _dispatch(db, monkeypatch, "/level", chat_id=GROUP, chat_type="group")
-    assert sent and "请私聊" in sent[0] and "会员等级" not in sent[0]
+    assert sent and "当前等级" in sent[0] and "请私聊" not in sent[0]
     for cmd in ("/report 1 违规", "/propose 标题 | 能量:10x1 | -100123"):
         sent = _dispatch(db, monkeypatch, cmd, chat_id=GROUP, chat_type="group")
         assert sent and "请私聊" in sent[0], cmd

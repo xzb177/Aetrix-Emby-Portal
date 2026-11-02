@@ -525,16 +525,16 @@ def dispatch(db, update: dict) -> None:
             _send_reply(db, chat_id, ANON_ADMIN_TEXT, autodelete=True)
             return
 
-        # 账号、求片和免密登录都可能泄露隐私/凭据，强制私聊。
-        # 账号卡（/me、/account 与指向账号卡的 /level）2026-11-02 改为
-        # 私聊命令：群里不铺账号数据，统一回私聊提示卡＋跳转按钮（覆盖
-        # 2026-10-28「账号展示群里放行」旧口径）；登录与求片仍私聊限定。
+        # 求片和免密登录都可能泄露隐私/凭据，强制私聊。
+        # 账号展示一家（/me、/account 与指向账号卡的 /level）不在本
+        # 集合：群里放行（2026-10-28 用户亲定、2026-11-02 重申）——
+        # 账号卡是固定 11 行汇总、不带登录链接等凭据，群里与私聊同
+        # 形态渲染；登录与求片仍私聊限定，不许借此放宽任何一条。
         # /whois 是刻意例外（2026-11-01）：不在本集合——群里走 handler
         # 的管理员精简卡模式（is_staff 门禁 + 字段白名单，无审计痕迹），
         # 私聊仍出审计全卡；见 handlers.handle_whois 的 in_group 路径。
         private_only = {"/request", "/myrequests", "/login", "/renew", "/govlog",
-                        "/report", "/propose", "/launch", "/reconcile", "/rankpush",
-                        "/me", "/account", "/level"}
+                        "/report", "/propose", "/launch", "/reconcile", "/rankpush"}
         if cmd in private_only and in_group:
             _reply_private_only(db, chat_id, msg)
             return

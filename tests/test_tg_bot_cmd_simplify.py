@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""TG Bot 命令简化（方案三＋/start 群内入口卡＋/me 私聊化）新口径回归。
+"""TG Bot 命令简化（方案三＋/start 群内入口卡）新口径回归。
 
 口径（用户 2026-11-02 三次定夺）：
 - 菜单 31→27：摘 renew/chatpoints/level/account，/me 留菜单且是唯一
@@ -10,9 +10,10 @@
   用户面板（user_panel/compact_dashboard 旧名）输出逐字一致；固定
   11 行汇总（编号/名称/等级带经验进度/能量/资格/凭证/活力/绑定/
   馆灵/成就进度/订阅状态），不逐条铺成就/订阅/设备，不带连签行。
-- /me、/account 私聊命令：群里调用统一回「私聊命令提示卡＋去私聊
-  跳转按钮」，不铺账号数据；其余私聊命令（private_only/P1/redeem）
-  在群里同形态。
+- 账号展示一家（/me、/account、/level）群里放行（2026-10-28 用户
+  亲定、2026-11-02 10:43 重申）：群里调用直接回账号卡（#1705 曾一并
+  改成私聊限定，用户纠正后恢复）；其余私聊命令（private_only/P1/
+  redeem）在群里仍回私聊提示形态。
 - /points 输出并入群发言能量段（今日已得/累计能量/发言规则），
   /chatpoints 手输仍出原群发言能量卡。
 """
@@ -100,16 +101,24 @@ def _dispatch(db, monkeypatch, text, chat_id, chat_type="private"):
 def test_menu_slimmed_to_27_with_me_kept():
     names = [n for n, _ in poller.BOT_COMMANDS]
     assert len(names) == 27
-    assert ("me", "[私聊] 账号中心") in poller.BOT_COMMANDS
+    assert ("me", "[群/私聊] 账号中心") in poller.BOT_COMMANDS
     for gone in ("account", "renew", "chatpoints", "level"):
         assert gone not in names
 
 
 def test_group_scope_drops_private_and_merged_commands():
     group_names = {n for n, _ in command_scopes.group_commands(poller.BOT_COMMANDS)}
-    for gone in ("me", "account", "chatpoints", "level", "renew"):
+    for gone in ("chatpoints", "renew"):
         assert gone not in command_scopes.GROUP_COMMANDS
         assert gone not in group_names
+    # 账号展示一家群里放行（2026-10-28 定、2026-11-02 重申）：me 在
+    # 菜单表里、要进群菜单；account/level 是手输别名不在菜单表，但
+    # GROUP_COMMANDS 集合口径要含（router 群里放行）
+    assert "me" in command_scopes.GROUP_COMMANDS
+    assert "me" in group_names
+    for alias in ("account", "level"):
+        assert alias in command_scopes.GROUP_COMMANDS
+        assert alias not in group_names
     assert "start" in group_names
 
 
@@ -149,27 +158,31 @@ def test_level_alias_points_to_account_card_private(db, monkeypatch):
     assert "账号名称" in sent[0][0]
 
 
-# ---------- /me 私聊化：群里只回提示＋跳转按钮 ----------
+# ---------- /me 群里放行：账号展示一家在群里直接回账号卡 ----------
+# 2026-10-28 用户亲定、2026-11-02 10:43 重申；登录/求片等其余私聊
+# 命令在群里仍走私聊提示形态（下一节断言未动）。
 
-def test_me_in_group_replies_private_only_card_with_jump(db, monkeypatch):
+def test_me_in_group_renders_account_card(db, monkeypatch):
     _user(db)
-    monkeypatch.setattr(
-        "backend.tg_bind.get_bot_username", lambda db_: "aetrix_test_bot")
+    # 同一用户刚在私聊用例里发过 /me：清掉 router 用户级限流的进程内
+    # 状态，避免被「操作太快」挡下（限流本身的行为不在本例口径内）
+    monkeypatch.setattr("backend.tg_bot.router._user_cmd_limits", {})
     sent = _dispatch(db, monkeypatch, "/me", GROUP, "group")
     assert sent
-    text, markup = sent[0]
-    assert "这是一条私聊命令" in text
-    assert "能量余额" not in text  # 账号数据不铺群里
-    urls = [b.get("url") for row in (markup or {}).get("inline_keyboard", [])
-            for b in row if b.get("url")]
-    assert urls == ["https://t.me/aetrix_test_bot"]
+    text, _markup = sent[0]
+    assert "账号名称" in text
+    assert "能量余额" in text
+    assert "这是一条私聊命令" not in text
 
 
-def test_account_in_group_replies_private_only_card(db, monkeypatch):
+def test_account_and_level_in_group_render_account_card(db, monkeypatch):
     _user(db)
-    sent = _dispatch(db, monkeypatch, "/account", GROUP, "group")
-    assert sent
-    assert sent[0][0] == handlers.private_only_card()
+    monkeypatch.setattr("backend.tg_bot.router._user_cmd_limits", {})
+    for cmd in ("/account", "/level"):
+        sent = _dispatch(db, monkeypatch, cmd, GROUP, "group")
+        assert sent, cmd
+        assert "账号名称" in sent[0][0], cmd
+        assert sent[0][0] != handlers.private_only_card(), cmd
 
 
 def test_other_private_commands_in_group_use_same_form(db, monkeypatch):
@@ -191,7 +204,7 @@ def test_start_group_bound_is_entry_card_no_account_data(db):
     assert "入库喜报" in text
     assert "能量余额" not in text and "用户编号" not in text
     datas = [b.get("callback_data") for row in markup["inline_keyboard"] for b in row]
-    assert "menu:account" in datas  # 按钮可链到账号面板（点击走私聊提示）
+    assert "menu:account" in datas  # 按钮可链到账号面板（群里直接渲染账号卡）
 
 
 def test_start_group_unbound_is_entry_card_too(db):
