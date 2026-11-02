@@ -1119,6 +1119,14 @@ def _auto_migrate():
             ("chat_day_cents", "INTEGER", "0"),
             ("chat_day", "VARCHAR(10)", "NULL"),
         ]),
+        # 苹果 CMS 媒体库类型（2026-11-02）：库类型判别 + CMS 来源 +
+        # 分类映射。老库补列后 kind='local'、来源为空、映射为 NULL，
+        # 与升级前行为逐字一致（见 emby_server.applecms_library）。
+        ("emby_libraries", [
+            ("kind", "VARCHAR(20)", "'local'"),
+            ("upstream_source_ids", "TEXT", "''"),
+            ("cms_type_map", "TEXT", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
