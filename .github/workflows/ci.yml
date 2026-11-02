@@ -539,6 +539,191 @@ jobs:
         timeout-minutes: 5
         run: python scripts/benchmark_item_facets.py --guard
 
+    # 套件容量二期 · 分片第一步（2026-11-02）：pytest 全量按文件级
+    # 耗时切成两半，与原冒烟 job 的 pytest 步并存验证——原 job、原
+    # 检查名、原 pytest 步一字不动，本步只验证两分片各自全绿且
+    # passed 合计与全量对账。两分片各在独立 runner：独立 checkout、
+    # 独立 DATABASE_URL 文件，不共用 ci-smoke.db（xdist 同 job 多
+    # 进程共用一个库文件已被全量实测证伪：34 failed + 17 errors）。
+    # 清单 .github/ci-shard-a.txt / ci-shard-b.txt 按最近成功轮
+    # --durations=30 的文件级耗时 + 用例数估算贪心均衡（各约 600
+    # 秒串行量），清单内按文件名排序（与串行收集顺序同口径）。
+    # 第二步（另行）：分支保护必过名单加入两个分片检查名后，再摘
+    # 原冒烟 job 的 pytest 步；保护未改前摘步会漏门禁，故分两步。
+  smoke-shard-a:
+    name: 后端 · 冒烟测试（pytest 分片 A）
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      DATABASE_TYPE: sqlite
+      DATABASE_URL: sqlite:///./ci-smoke-shard-a.db
+      REDIS_ENABLED: "false"
+      MOUNT_RCLONE_CONF: /tmp/rclone.conf
+      PROVIDER_RUNTIME_SOCK_DIR: /tmp/aetrix-providers-shard-a
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+
+      - name: 安装后端依赖
+        timeout-minutes: 5
+        run: pip install --require-hashes -r backend/requirements.lock
+
+      - name: 安装 CI 附加依赖（zhconv＋pytest，见 requirements-ci.lock）
+        timeout-minutes: 5
+        run: pip install --require-hashes -r backend/requirements-ci.lock
+
+      # 与冒烟 job 同口径装 libvips：让 vips 路径测试真跑而不是 skip，
+      # 保证两分片的 passed 合计能与全量口径对账。
+      - name: 安装 libvips 与 pyvips（缩略图 vips 路径测试用）
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvips42t64 || sudo apt-get install -y -qq libvips42
+
+      # 覆盖检查：tests/ 下每个可收集测试文件必须恰好出现在一份分片
+      # 清单里。漏登记 = 该文件在分片里静默不跑；重复 = 两边重复跑、
+      # passed 对账虚高。任一情况即红。
+      - name: 分片清单覆盖检查（每个测试文件恰好进一份清单）
+        timeout-minutes: 5
+        run: |
+          python3 - <<'PYEOF'
+          import glob, sys
+          a = set(open(".github/ci-shard-a.txt").read().split())
+          b = set(open(".github/ci-shard-b.txt").read().split())
+          found = set()
+          for pat in ("tests/**/test_*.py", "tests/**/*_test.py"):
+              found.update(glob.glob(pat, recursive=True))
+          missing = sorted(found - a - b)
+          dup = sorted(a & b)
+          extra = sorted((a | b) - found)
+          if missing or dup or extra:
+              print("missing:", missing)
+              print("dup:", dup)
+              print("extra:", extra)
+              sys.exit(1)
+          print(f"shard coverage ok: {len(found)} files (A={len(a)}, B={len(b)})")
+          PYEOF
+
+      - name: 预热分片库 A（对齐串行冒烟前置：先建全表再跑 pytest）
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -c "from backend.database import init_db; init_db(); print('shard A db ready: schema initialized')"
+      - name: 单元测试分片 A（pytest：全量收集＋清单选取本片）
+        timeout-minutes: 45
+        run: |
+          _t0=$(date +%s)
+          set +e
+          mkdir -p /tmp/shardplug
+          cat > /tmp/shardplug/shard_select.py <<'PYEOF'
+          import os
+          def pytest_collection_modifyitems(session, config, items):
+              keep = {ln.strip() for ln in open(os.environ["SHARD_LIST"]) if ln.strip()}
+              def wanted(item):
+                  p = str(item.path).replace(os.sep, "/")
+                  return any(p.endswith("/" + k) for k in keep)
+              items[:] = [it for it in items if wanted(it)]
+          PYEOF
+          SHARD_LIST="$GITHUB_WORKSPACE/.github/ci-shard-a.txt" PYTHONPATH="/tmp/shardplug" python -m pytest -p shard_select -q --durations=30 tests/
+          _rc=$?
+          _t1=$(date +%s)
+          _el=$((_t1 - _t0))
+          echo "pytest 分片 A 耗时 ${_el} 秒" >> "$GITHUB_STEP_SUMMARY"
+          exit "$_rc"
+
+  smoke-shard-b:
+    name: 后端 · 冒烟测试（pytest 分片 B）
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      DATABASE_TYPE: sqlite
+      DATABASE_URL: sqlite:///./ci-smoke-shard-b.db
+      REDIS_ENABLED: "false"
+      MOUNT_RCLONE_CONF: /tmp/rclone.conf
+      PROVIDER_RUNTIME_SOCK_DIR: /tmp/aetrix-providers-shard-b
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+
+      - name: 安装后端依赖
+        timeout-minutes: 5
+        run: pip install --require-hashes -r backend/requirements.lock
+
+      - name: 安装 CI 附加依赖（zhconv＋pytest，见 requirements-ci.lock）
+        timeout-minutes: 5
+        run: pip install --require-hashes -r backend/requirements-ci.lock
+
+      # 与冒烟 job 同口径装 libvips：让 vips 路径测试真跑而不是 skip，
+      # 保证两分片的 passed 合计能与全量口径对账。
+      - name: 安装 libvips 与 pyvips（缩略图 vips 路径测试用）
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvips42t64 || sudo apt-get install -y -qq libvips42
+
+      # 覆盖检查：tests/ 下每个可收集测试文件必须恰好出现在一份分片
+      # 清单里。漏登记 = 该文件在分片里静默不跑；重复 = 两边重复跑、
+      # passed 对账虚高。任一情况即红。
+      - name: 分片清单覆盖检查（每个测试文件恰好进一份清单）
+        timeout-minutes: 5
+        run: |
+          python3 - <<'PYEOF'
+          import glob, sys
+          a = set(open(".github/ci-shard-a.txt").read().split())
+          b = set(open(".github/ci-shard-b.txt").read().split())
+          found = set()
+          for pat in ("tests/**/test_*.py", "tests/**/*_test.py"):
+              found.update(glob.glob(pat, recursive=True))
+          missing = sorted(found - a - b)
+          dup = sorted(a & b)
+          extra = sorted((a | b) - found)
+          if missing or dup or extra:
+              print("missing:", missing)
+              print("dup:", dup)
+              print("extra:", extra)
+              sys.exit(1)
+          print(f"shard coverage ok: {len(found)} files (A={len(a)}, B={len(b)})")
+          PYEOF
+
+      - name: 预热分片库 B（对齐串行冒烟前置：先建全表再跑 pytest）
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -c "from backend.database import init_db; init_db(); print('shard B db ready: schema initialized')"
+      - name: 单元测试分片 B（pytest：全量收集＋清单选取本片）
+        timeout-minutes: 45
+        run: |
+          _t0=$(date +%s)
+          set +e
+          mkdir -p /tmp/shardplug
+          cat > /tmp/shardplug/shard_select.py <<'PYEOF'
+          import os
+          def pytest_collection_modifyitems(session, config, items):
+              keep = {ln.strip() for ln in open(os.environ["SHARD_LIST"]) if ln.strip()}
+              def wanted(item):
+                  p = str(item.path).replace(os.sep, "/")
+                  return any(p.endswith("/" + k) for k in keep)
+              items[:] = [it for it in items if wanted(it)]
+          PYEOF
+          SHARD_LIST="$GITHUB_WORKSPACE/.github/ci-shard-b.txt" PYTHONPATH="/tmp/shardplug" python -m pytest -p shard_select -q --durations=30 tests/
+          _rc=$?
+          _t1=$(date +%s)
+          _el=$((_t1 - _t0))
+          echo "pytest 分片 B 耗时 ${_el} 秒" >> "$GITHUB_STEP_SUMMARY"
+          exit "$_rc"
+
   backend-pg:
     # PostgreSQL 兼容性门禁：init_db 建表 + _auto_migrate 在 PG 下全量跑通、
     # 方言映射（DATETIME→TIMESTAMP、BOOLEAN DEFAULT 0→FALSE）、JSON/Boolean/
