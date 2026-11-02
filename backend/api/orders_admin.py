@@ -84,6 +84,47 @@ def _ledger_entry(db: Session, user_id: int, ref_id: str, type_: str):
     ).order_by(models.PointsLog.id.asc()).first()
 
 
+def _subscription_spend_entry(db: Session, user_id: int, order):
+    """找订阅订单当初那笔积分扣款台账（退款退积分按实扣数，不按订单金额重算）。
+
+    两种花积分的订阅订单，落账口径不同：
+    - 手动积分购买（payment_method='points'）：economy 履约写
+      type='subscription_buy'、ref_id='subscription_points:{order_id}'；
+    - 自动续订（payment_method='auto_renew'）：subscriptions._auto_renew_one 写
+      type='subscription_auto_renew'、ref_id='auto_renew:{订阅 id}:{分钟}'，
+      分钟是扣款时刻，与订单 paid_at 同一时刻。
+    其余支付方式没花积分，返回 None。
+    """
+    method = order.payment_method or ""
+    if method == "points":
+        return _ledger_entry(db, user_id, f"subscription_points:{order.order_id}",
+                             "subscription_buy")
+    if method == "auto_renew":
+        if order.paid_at is None:
+            return None
+        minute = order.paid_at.strftime("%Y%m%d%H%M")
+        if order.subscription_id:
+            entry = _ledger_entry(
+                db, user_id, f"auto_renew:{order.subscription_id}:{minute}",
+                "subscription_auto_renew")
+            if entry is not None:
+                return entry
+        # 兜底：ref 里的 id 是续订扫描命中的订阅，订单 subscription_id 是发放
+        # 顺延后的订阅——常态同一行；不一致时按扣款分钟认领本单那一笔。
+        return (
+            db.query(models.PointsLog)
+            .filter(
+                models.PointsLog.user_id == user_id,
+                models.PointsLog.type == "subscription_auto_renew",
+                models.PointsLog.ref_id.like(f"auto_renew:%:{minute}"),
+                models.PointsLog.amount < 0,
+            )
+            .order_by(models.PointsLog.id.asc())
+            .first()
+        )
+    return None
+
+
 def _reverse_points(db: Session, user: models.WebUser, amount: int, description: str,
                     ref_id: str, allow_negative: bool) -> int:
     """从用户身上扣回 amount 积分；余额不够且不允许负数时抛 400（并把余额告诉管理员）"""
@@ -275,16 +316,17 @@ async def refund_order(
                     )
                 # P1 修复（审查）：积分购买的订阅订单，退款时只回滚了天数、
                 # 当初扣的积分没退（用户积分与会员两失）。按账本查实际扣款退回。
-                if (order.payment_method or "") == "points":
+                # PA-023：自动续订同样是花积分落的单，只是台账 type/ref 不同，
+                # 此前没纳入 → 续订单退款只回滚天数、扣的能量不回来（同款漏网）。
+                # 查账口径统一走 _subscription_spend_entry，退回数与原扣费一致。
+                spent = _subscription_spend_entry(db, user.id, order)
+                refund_pts = abs(int(spent.amount)) if spent else 0
+                if refund_pts > 0:
                     from backend.api.economy import _add_points
-                    spent = _ledger_entry(db, user.id, f"subscription_points:{order_id}",
-                                          "subscription_buy")
-                    refund_pts = abs(int(spent.amount)) if spent else 0
-                    if refund_pts > 0:
-                        _add_points(db, user, refund_pts, "refund",
-                                    f"订阅退款退回积分（订单 {order_id}）",
-                                    f"refund:{order_id}")
-                        result["revoked_points"] = -refund_pts
+                    _add_points(db, user, refund_pts, "refund",
+                                f"订阅退款退回积分（订单 {order_id}）",
+                                f"refund:{order_id}")
+                    result["revoked_points"] = -refund_pts
 
             # 履约时按实付发的会员经验也要撤回（两种 kind 都发），否则「买→退」
             # 可以刷经验升等级。revoke_entitlement=False（只退钱不撤权益）时不撤。
