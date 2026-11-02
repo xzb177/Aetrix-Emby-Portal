@@ -1056,6 +1056,12 @@ export const createLibrary = (data: {
   /** 扫描策略开关；不传 = 默认开 */
   incremental_scan?: boolean
   fs_watch?: boolean
+  /** 库类型：applecms 时内容来自 CMS 同步，paths 可空、来源必填 */
+  kind?: 'local' | 'applecms'
+  /** kind=applecms 时收哪些苹果 CMS 型上游源 */
+  upstream_source_ids?: number[]
+  /** kind=applecms 时的分类映射：源分类名 → in/out；不传 = 全收 */
+  cms_type_map?: Record<string, string> | null
 }) => post<{ success: boolean; id: number; guid: string }>(`${E}/libraries`, data)
 
 export const updateLibrary = (
@@ -1085,6 +1091,12 @@ export const updateLibrary = (
     /** 扫描策略开关；传 false = 关，省略则不修改 */
     incremental_scan?: boolean
     fs_watch?: boolean
+    /** 库类型：建库后不可更改，传了与现值不同后端会 400 */
+    kind?: 'local' | 'applecms'
+    /** kind=applecms 的库可改来源清单；省略则不修改 */
+    upstream_source_ids?: number[]
+    /** kind=applecms 的分类映射：传 null = 清空（回全收），省略则不修改 */
+    cms_type_map?: Record<string, string> | null
   }
 ) => put<{ success: boolean; rescan_required?: boolean }>(`${E}/libraries/${id}`, data)
 
