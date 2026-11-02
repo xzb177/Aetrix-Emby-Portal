@@ -1,7 +1,7 @@
 """TG Bot 命令三级下发（BotCommandScope）：分类表 + 分级注册测试。
 
 口径（与 backend/tg_bot/command_scopes.py 一致，parent 按表核对）：
-- default：BOT_COMMANDS 去掉管理员级命令，普通用户菜单不可见管理员命令
+- default：二期面板优先口径，只下发 start/me/help 三条入口命令
 - 管理员私聊 scope（BotCommandScopeChat=管理员 TG 号）：全量
 - 群 scope（BotCommandScopeChat=名单群 id）：只含 router 现行群内可执行命令
 scope 只决定菜单可见性，不是安全边界：实际门禁仍在 router/handler。
@@ -57,14 +57,15 @@ def _set_config(db, key, value):
 
 # ---------- 分类表：覆盖 / 互斥 ----------
 
-def test_every_bot_command_classified_exactly_once():
+def test_default_scope_is_three_entry_commands():
+    # 二期面板优先口径：default 菜单只留 start/me/help 三条入口命令；
+    # 其余命令（含管理员级）只在管理员 scope 全量里，靠手输触发。
     all_names = set(_names(poller.BOT_COMMANDS))
     default_names = set(_names(command_scopes.default_commands(poller.BOT_COMMANDS)))
-    admin_only = set(command_scopes.admin_only_names(poller.BOT_COMMANDS))
-    # 覆盖：每条 BOT_COMMANDS 至少进一级（default 或管理员级）
-    assert default_names | admin_only == all_names
-    # 互斥：default 与管理员级不重叠
-    assert default_names & admin_only == set()
+    assert default_names == {"start", "me", "help"}
+    assert default_names <= all_names
+    admin_names = set(_names(command_scopes.admin_commands(poller.BOT_COMMANDS)))
+    assert admin_names == all_names  # 管理员 scope 仍全量覆盖
 
 
 def test_admin_commands_never_in_default():
@@ -88,14 +89,18 @@ def test_group_scope_only_group_executable():
     for name in ("request", "myrequests", "login", "renew", "govlog",
                  "report", "propose", "launch"):
         assert name not in group_set
+    # 账号卡私聊化（2026-11-02）：/me、/account 与指向账号卡的 /level
+    # 群里只回私聊提示，一并排除出群菜单
+    for name in ("me", "account", "level"):
+        assert name not in group_set
     # P1 个人查询：群里不执行
     for name in ("bindings", "transfers", "whyplay", "wants"):
         assert name not in group_set
     # /redeem 群里拒执行（删消息+提示私聊），不进群菜单
     assert "redeem" not in group_set
-    # 群内确实可执行的要在群菜单里
+    # 群内确实可执行的要在群菜单里（chatpoints 已并入 points，不单列）
     for name in ("checkin", "redpacket", "lottery", "rank", "requestboard",
-                 "rules", "chatpoints", "level", "slots"):
+                 "rules", "slots", "points"):
         assert name in group_set
     # 群菜单是全量的子集
     assert group_set <= set(_names(poller.BOT_COMMANDS))

@@ -200,9 +200,10 @@ def test_username_fuzzy_and_emby_name_hit(db):
     _staff(db)
     u = _user(db, "moviefan88", tg_id=700501, emby_username="emby_shadow")
     _login(db, u)
-    out = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "moviefan")
+    # 二期面板口径：定位到具体用户 → 面板第一页（精简卡＋按钮）
+    out, _markup = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "moviefan")
     assert "moviefan88" in out
-    out2 = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "emby_shadow")
+    out2, _markup2 = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "emby_shadow")
     assert "moviefan88" in out2
 
 
@@ -210,7 +211,7 @@ def test_tg_id_hit(db):
     _staff(db)
     u = _user(db, "tghit", tg_id=700601)
     _login(db, u)
-    out = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "700601")
+    out, _markup = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "700601")
     assert "tghit" in out
 
 
@@ -248,8 +249,9 @@ def test_recent_five_logins_and_plays(db):
     for i in range(6):
         _play(db, u, item.id, f"sess-hist-{i}",
               when=base + timedelta(hours=i))
-    out = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "historyuser")
+    # 全卡搜索（IP 关键词定位不到具体用户面板，走 render_whois）：
     # 最近 5 条：最早的 10.0.0.0 应被截掉，其余在
+    out = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "10.0.0.5")
     assert "10.0.0.0" not in out
     assert "10.0.0.5" in out
     assert "历史片目" in out
@@ -264,9 +266,16 @@ def test_bindings_status_shown(db):
     db.add(row)
     db.commit()
     _login(db, u)
-    out = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "binder")
-    assert "我的主盘" in out
+    # 面板第一页（精简卡）：只出 provider＋状态，不带 label / 凭据 id
+    out, _markup = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "binder")
+    assert "谷歌网盘" in out
+    assert "我的主盘" not in out
     assert "424242" not in out
+    # 绑定详情子页：出账号名（用户自起的展示名），仍不出凭据 id
+    from backend.tg_bot import whois_panel
+    page, _m = whois_panel.bindings_page(db, u)
+    assert "我的主盘" in page
+    assert "424242" not in page
 
 
 def test_no_secrets_in_output(db):
@@ -277,7 +286,7 @@ def test_no_secrets_in_output(db):
     _login(db, u)
     item = _item(db, 104, "保密片")
     _play(db, u, item.id, "sess-secret")
-    out = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "secretuser")
+    out, _markup = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "secretuser")
     assert "secretuser" in out
     assert "SECRET_HASH_SENTINEL" not in out
     assert "SECRET_EMBY_PW_SENTINEL" not in out

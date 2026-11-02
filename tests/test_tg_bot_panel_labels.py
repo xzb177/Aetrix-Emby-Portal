@@ -25,12 +25,14 @@ LABEL_RE = re.compile(r"^· \S+ <b>([^<]+)</b> \|", re.M)
 CJK4 = re.compile(r"^[一-鿿]{4}$")
 
 DASHBOARD_LABELS = [
-    "用户编号", "公益资格", "查看凭证", "能量余额", "活力数值",
-    "当前等级", "网盘绑定", "连签天数", "成就进度",
+    "用户编号", "账号名称", "当前等级", "能量余额", "公益资格",
+    "查看凭证", "活力数值", "网盘绑定", "当前馆灵", "成就进度",
+    "订阅状态",
 ]
 SHARED_LABELS = [
-    "用户编号", "能量余额", "公益资格", "查看凭证", "活力数值",
-    "当前等级", "成就进度",
+    "用户编号", "账号名称", "当前等级", "能量余额", "公益资格",
+    "查看凭证", "活力数值", "网盘绑定", "当前馆灵", "成就进度",
+    "订阅状态",
 ]
 
 
@@ -64,7 +66,7 @@ def test_layout_row_bolds_label():
     assert layout.row("🍒", "能量余额", 16) == "· 🍒 <b>能量余额</b> | 16"
 
 
-def test_dashboard_labels_are_the_nine_four_char(db):
+def test_dashboard_labels_are_the_eleven_four_char(db):
     user = _user(db)
     text = features.user_panel(db, user)
     assert _labels(text) == DASHBOARD_LABELS

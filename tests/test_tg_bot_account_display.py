@@ -133,13 +133,15 @@ def test_start_bound_private_has_dashboard_no_command_list(db):
 
 def test_start_bound_group_has_dashboard_no_login_link(db):
     row = _user(db)
-    # 群 /start 现返回 (正文, 群菜单) 元组：正文仍是 dashboard 九行卡，
-    # 登录链接不进正文、也不进群菜单按钮（群里无一键登录行）。
+    # 群 /start 现返回 (入口卡, 群菜单) 元组：正文是「私密操作入口」
+    # 简短卡（不展示任何个人账号数据），登录链接不进正文、也不进
+    # 群菜单按钮（群里无一键登录行）。
     reply = handlers.handle_start(db, _tg(), GROUP, "")
     assert isinstance(reply, tuple)
     text, markup = reply
     assert "可用命令" not in text
-    assert "能量" in text
+    assert "私密操作入口" in text
+    assert "能量余额" not in text and "用户编号" not in text  # 账号数据不铺群里
     assert "一键免密登录请私聊" not in text  # 末尾私聊登录指引行已删
     assert "左下角" not in text  # 末尾菜单指引行已删
     assert "token=" not in text
@@ -164,12 +166,12 @@ def test_account_full_display(db):
     text = features.handle_account(db, _tg(), TG, "")
     assert "🍒 <b>能量余额</b> |" in text and "积分：" not in text
     assert "活力数值" in text
-    # 成就：只展示 enabled 且已解锁的定义；总数 Y 只计 enabled
+    # 成就：精简卡只出汇总行（总数 Y 只计 enabled），不再逐条铺成就
     assert "已解锁 1／共 2 个" in text
-    assert "🌙 首夜" in text
+    assert "首夜" not in text  # 逐条行已砍，明细去网站账号页
     assert "追剧达人" not in text  # 未解锁不展示
     assert "隐藏" not in text  # disabled 定义不展示
-    # 馆灵：120 小时 → 夜枭（50），下一阶段守夜者（200），还差 80
+    # 馆灵：120 小时 → 夜枭（50），下一阶段守夜者（200）差距并进同一行
     assert "夜枭" in text and "120.0" in text
     assert "守夜者" in text and "80.0" in text
 
@@ -177,7 +179,6 @@ def test_account_full_display(db):
 def test_account_empty_achievements_and_pet_egg(db):
     _user(db)
     text = features.handle_account(db, _tg(), TG, "")
-    assert "暂无成就" in text
     assert "已解锁 0／共 0 个" in text
     assert "蛋" in text and "50.0" in text  # 0 小时 → 蛋，下一阶段夜枭还差 50
 
@@ -195,8 +196,8 @@ def test_compact_dashboard_counts(db):
     _achievements(db, row.id)
     text = features.compact_dashboard(db, row)
     assert all(x in text for x in ("alice", "能量", "活力", "夜枭", "120.0"))
-    assert "<b>成就进度</b> | 1/2" in text
-    assert "订阅" not in text  # 精简版不展开订阅
+    assert "<b>成就进度</b> | 已解锁 1／共 2 个" in text
+    assert "<b>订阅状态</b> | 暂无" in text  # 精简卡只出订阅汇总行
 
 
 # ---------- 改动 3：群里放行账号展示 ----------
@@ -227,13 +228,15 @@ def _dispatch_group(db, monkeypatch, text):
     return sent
 
 
-def test_account_and_me_allowed_in_group(db, monkeypatch):
+def test_account_and_me_private_only_in_group(db, monkeypatch):
+    # 账号卡 2026-11-02 私聊化：群里输 /account、/me 不再铺账号卡，
+    # 统一回私聊命令提示（覆盖 2026-10-28 群内放行口径）。
     _user(db)
     for cmd in ("/account", "/me"):
         sent = _dispatch_group(db, monkeypatch, cmd)
         assert sent, cmd
-        assert "账号中心" in sent[0] and "能量" in sent[0]
-        assert "请私聊" not in sent[0]
+        assert "私聊" in sent[0]
+        assert "能量余额" not in sent[0]  # 账号数据不进群
 
 
 def test_login_still_blocked_in_group(db, monkeypatch):
@@ -248,7 +251,8 @@ def test_p1_still_blocked_in_group(db, monkeypatch):
     assert sent and "私聊" in sent[0]
 
 
-def test_menu_callback_account_allowed_in_group(db, monkeypatch):
+def test_menu_callback_account_private_only_in_group(db, monkeypatch):
+    # 群菜单「账号中心」按钮同口径：群里点到只回私聊提示卡，不铺数据。
     _user(db)
     edited = []
 
@@ -266,21 +270,28 @@ def test_menu_callback_account_allowed_in_group(db, monkeypatch):
         "message": {"message_id": 5, "chat": {"id": GROUP, "type": "group"}},
     }
     callbacks.handle_callback(db, cq)
-    assert edited and "账号中心" in edited[0]
-    assert "请私聊" not in edited[0]
+    assert edited and "私聊" in edited[0]
+    assert "能量余额" not in edited[0]
 
 
 # ---------- 注册表覆盖路由命令 ----------
 
 def test_bot_commands_cover_router_commands():
+    # 菜单简化后口径（2026-11-02）：BOT_COMMANDS 只收 27 条主命令；
+    # router 命令集另含 4 条手输别名（account/renew/chatpoints/level），
+    # 别名不在菜单但 router 照常认；菜单 ⊂ 路由命令全集。
     registered = {cmd for cmd, _desc in poller.BOT_COMMANDS}
+    assert len(registered) == 27
     router_commands = {
         "start", "help", "bind", "checkin", "points", "account", "me",
         "request", "myrequests", "rank", "requestboard", "rules",
         "login", "renew", "redeem", "lottery", "redpacket", "slots",
-        "bindings", "transfers", "whyplay", "wants",
-        "level", "report", "propose", "launch",
+        "bindings", "transfers", "whyplay", "wants", "chatpoints",
+        "level", "report", "propose", "launch", "govlog",
+        "reconcile", "rankpush", "whois",
     }
-    assert router_commands <= registered
-    assert ("me", "[群/私聊] 账号中心") in poller.BOT_COMMANDS
-    assert ("renew", "[私聊] 快捷登录") in poller.BOT_COMMANDS
+    aliases = {"account", "renew", "chatpoints", "level"}
+    assert aliases <= router_commands
+    assert registered | aliases == router_commands
+    assert aliases.isdisjoint(registered)
+    assert ("me", "[私聊] 账号中心") in poller.BOT_COMMANDS

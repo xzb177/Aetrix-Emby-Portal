@@ -211,7 +211,11 @@ def test_slots_registered_in_all_three_places():
     group_names = {n for n, _ in command_scopes.group_commands(poller.BOT_COMMANDS)}
     assert "slots" in group_names
     default_names = {n for n, _ in command_scopes.default_commands(poller.BOT_COMMANDS)}
-    assert "slots" in default_names  # 普通用户命令，进 default 菜单
+    # 二期面板优先：default 菜单只留 start/help/me，slots 靠面板按钮与
+    # 群菜单点达，不再进普通用户私聊菜单（手输仍可用）
+    assert "slots" not in default_names
+    admin_names = {n for n, _ in command_scopes.admin_commands(poller.BOT_COMMANDS)}
+    assert "slots" in admin_names
     assert "slots" not in command_scopes.ADMIN_ONLY_COMMANDS
 
 
@@ -219,9 +223,11 @@ def test_slots_registered_in_all_three_places():
 
 # router 现行群内拦截事实（dispatch 亲读）：以下命令在群里不执行。
 _PRIVATE_ONLY_FACT = {
-    # private_only 集合
+    # private_only 集合（me/account/level 指向账号卡，账号卡私聊化后
+    # 于 2026-11-02 一并入集，群里只回私聊提示）
     "request", "myrequests", "login", "renew", "govlog",
     "report", "propose", "launch", "reconcile", "rankpush",
+    "me", "account", "level",
     # P1 个人查询：群里不执行
     "bindings", "transfers", "whyplay", "wants",
     # 群里拒执行（删原消息＋提示私聊）

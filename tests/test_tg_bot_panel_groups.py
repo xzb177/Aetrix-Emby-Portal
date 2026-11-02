@@ -44,7 +44,10 @@ GROUPS = {
             {"text": "🎬 求片", "callback_data": "menu:request"},
             {"text": "📋 我的求片", "callback_data": "menu:myrequests"},
         ],
-        [{"text": "⭐ 我的想看", "callback_data": "menu:wants"}],
+        [
+            {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
+            {"text": "🔥 求片榜", "callback_data": "menu:requestboard"},
+        ],
     ]),
     "drive": ("📦 网盘转存", [
         [
@@ -61,13 +64,17 @@ GROUPS = {
             {"text": "🎟️ 续期", "callback_data": "menu:login"},
             {"text": "🔗 绑定账号", "callback_data": "menu:bind"},
         ],
+        [{"text": "🏅 成就", "callback_data": "menu:achievements"}],
     ]),
     "welfare": ("🎁 福利活动", [
         [
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
-            {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
+            {"text": "🏆 我的抽奖", "callback_data": "menu:mylottery"},
         ],
-        [{"text": "🎰 老虎机", "callback_data": "menu:slots"}],
+        [
+            {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
+            {"text": "🎰 老虎机", "callback_data": "menu:slots"},
+        ],
     ]),
     "help": ("❓ 帮助中心", [
         [
