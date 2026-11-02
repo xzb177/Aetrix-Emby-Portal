@@ -469,16 +469,22 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         },
     }
     # PA-036：图片端点加鉴权后，网页端 <img> 只能靠 URL 里的 api_key 带凭据，
-    # 账号卡顺带下发一把专用 web token（每次读卡轮换，见
-    # auth.rotate_web_portal_token）。没查看权限 / 外部模式（账号归对方管、
-    # 本项目无权签发它的 token）不下发；签发失败不许拖垮账号卡——前端拿不到
-    # key 时图片走 401 占位，与「未开通」的表现一致。
+    # 账号卡顺带下发一把专用 web token（见 auth.rotate_web_portal_token）。
+    # PA-054：前端读卡时会把手里那把 key 经 X-Web-Image-Key 头带回来，
+    # 带得回来且剩余有效期够长就复用（不轮换），多处视图反复读卡不再互相
+    # 踢掉对方的 key；带不回来时仍走轮换老路。没查看权限 / 外部模式
+    # （账号归对方管、本项目无权签发它的 token）不下发；签发失败不许拖垮
+    # 账号卡——前端拿不到 key 时图片走 401 占位，与「未开通」的表现一致。
+    # 该头只在 JWT 已鉴权的账号卡请求内传递，不记日志、不进 URL。
     card["emby_api_key"] = ""
     if granted and not external:
         try:
             from backend.emby_server.auth import rotate_web_portal_token
 
-            card["emby_api_key"] = rotate_web_portal_token(db, user)
+            current_key = None
+            if request is not None:
+                current_key = (request.headers.get("X-Web-Image-Key") or "").strip() or None
+            card["emby_api_key"] = rotate_web_portal_token(db, user, current_key=current_key)
         except Exception:  # noqa: BLE001
             logger.warning("下发网页端图片 token 失败 user=%s", user.id,
                            exc_info=True)
