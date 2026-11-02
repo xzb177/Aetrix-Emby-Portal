@@ -24,7 +24,7 @@
     <p v-if="searched && !loading && results.length === 0" class="empty">没搜到，换个词试试。</p>
 
     <ul v-if="results.length" class="results">
-      <li v-for="r in results" :key="r.media_type + ':' + r.tmdb_id">
+      <li v-for="r in results" :key="next302ResultKey(r)">
         <button class="result" type="button" @click="openDetails(r)">
           <span class="title">{{ r.title }}<span v-if="r.year">（{{ r.year }}）</span></span>
           <span class="meta">{{ r.media_type === 'tv' ? '剧集' : '电影' }} · {{ r.genres.join(' / ') }}</span>
@@ -63,6 +63,7 @@
 import { ref } from 'vue'
 import {
   next302Api,
+  next302ResultKey,
   type Next302Freshness,
   type Next302PlayStatus,
   type Next302Result,
@@ -111,7 +112,11 @@ async function openDetails(r: Next302Result) {
   playStatus.value = null
   playStatusError.value = ''
   try {
-    detail.value = await next302Api.details(r.media_type, r.tmdb_id)
+    // 库内补排行不在数据集里（可能没有 tmdb_id）：按本地条目 id 取详情，
+    // 拿空 tmdb_id 查数据集详情必然 404。
+    detail.value = !r.dataset_only && r.library_item_id
+      ? await next302Api.detailsByItem(r.library_item_id)
+      : await next302Api.details(r.media_type, r.tmdb_id)
   } catch (e: unknown) {
     error.value = errText(e)
     return

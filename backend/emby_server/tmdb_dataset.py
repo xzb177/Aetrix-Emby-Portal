@@ -223,28 +223,37 @@ def search_local(db: Session, q: str, media_type: str | None = None,
         for row in extra:
             if row.tmdb_id and row.tmdb_id in seen:
                 continue
-            results.append({
-                "tmdb_id": row.tmdb_id or "",
-                "media_type": "tv" if row.item_type == "series"
-                              else "movie",
-                "title": row.name,
-                "original_title": row.original_title or "",
-                "year": row.production_year,
-                "overview": row.overview or "",
-                "genres": [],
-                "poster_path": "",
-                "vote_average": None,
-                "in_library": True,
-                "library_item_id": row.id,
-                "library_known": True,
-                "dataset_only": False,
-            })
+            results.append(_library_item_dict(row))
     results.sort(key=lambda r: _rank_key(
         q_lower, (r["title"] or "").lower(), r["in_library"],
         r["vote_average"]))
     total = len(results)
     return {"results": results[:max(1, limit)], "total": total,
             "freshness": get_freshness(db)}
+
+
+def _library_item_dict(row: em.MediaItem) -> dict:
+    """库内条目行（不在数据集里、或还没刮出 tmdb_id）。
+
+    搜索补排与「按本地条目 id 取详情」共用这一份形状：这类行没有
+    可用的 tmdb_id（可能为空），身份就是 library_item_id，前端按它
+    生成唯一键、按它打开详情，绝不拿空 tmdb_id 去查数据集详情。
+    """
+    return {
+        "tmdb_id": row.tmdb_id or "",
+        "media_type": "tv" if row.item_type == "series" else "movie",
+        "title": row.name,
+        "original_title": row.original_title or "",
+        "year": row.production_year,
+        "overview": row.overview or "",
+        "genres": [],
+        "poster_path": "",
+        "vote_average": None,
+        "in_library": True,
+        "library_item_id": row.id,
+        "library_known": True,
+        "dataset_only": False,
+    }
 
 
 def _dataset_dict(row: em.TmdbDatasetItem, *, in_library: bool,

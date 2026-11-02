@@ -806,6 +806,17 @@ export interface Next302Result {
   dataset_only: boolean
 }
 
+/**
+ * 搜索结果行唯一键：数据集行按 (media_type, tmdb_id)（数据集侧有唯一约束）；
+ * 库内补排行没有可用 tmdb_id（可能为空，多行会撞键），按本地条目 id。
+ * 两命名空间带不同前缀，互不相交。
+ */
+export function next302ResultKey(r: Next302Result): string {
+  return r.dataset_only
+    ? `tmdb:${r.media_type}:${r.tmdb_id}`
+    : `lib:${r.library_item_id}`
+}
+
 export interface Next302Freshness {
   last_success_at: string | null
   total_rows: number
@@ -839,6 +850,10 @@ export const next302Api = {
   /** 详情：库内给播放状态入口，库外只展示、不给播放入口 */
   details: (mediaType: string, tmdbId: string) =>
     api.get<never, Next302Result>(`/api/user/next302/details/${mediaType}/${tmdbId}`),
+
+  /** 详情（库内补排行）：不在数据集里、或没有 tmdb_id 的库内条目按本地条目 id 取 */
+  detailsByItem: (itemId: number) =>
+    api.get<never, Next302Result>(`/api/user/next302/details/item/${itemId}`),
 
   /** 播放状态（E4，只读）：这部库内片能不能播、为什么 */
   playStatus: (itemId: number) =>
