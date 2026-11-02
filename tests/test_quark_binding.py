@@ -22,6 +22,8 @@
 夸克网络全部用桩替身，不碰真实夸克。
 """
 
+import logging
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -82,23 +84,46 @@ class _StubQuarkClient:
     def __init__(self, cookie):
         self.cookie = cookie
 
-    def check(self):
-        type(self).calls["check"] += 1
+    def _behavior_error(self):
+        """行为档 → 要抛的异常（无则 None）；三步验活共用同一口径。"""
         behavior = type(self).behavior
         if behavior == "auth_error":
-            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+            return quarkdrive.QuarkAuthError("夸克登录态失效")
+        if behavior == "auth_detailed":
+            # 生产 binding 427 的真实形状（合成复刻）：验活第一步
+            # HTTP 401 + code=31001 + require login [guest]。
+            return quarkdrive.QuarkAuthError(
+                "夸克返回 HTTP 401（登录态失效），上游 code=31001"
+                "：require login [guest]",
+                step="check", upstream_code=31001,
+                upstream_message="require login [guest]")
+        if behavior == "risk_auth":
+            # 风控文案混着登录字样（合成）：类型是鉴权异常，但
+            # 上游原话是环境风险——不许定性 expired。
+            return quarkdrive.QuarkAuthError(
+                "夸克登录态失效：登录环境存在风险，请稍后再试",
+                step="check", upstream_code=31003,
+                upstream_message="登录环境存在风险，请稍后再试")
         if behavior == "throttled":
-            raise quarkdrive.QuarkError("夸克返回 HTTP 429（请求频繁）")
+            return quarkdrive.QuarkError("夸克返回 HTTP 429（请求频繁）")
         if behavior == "transient":
-            raise quarkdrive.QuarkError("夸克返回 HTTP 500")
+            return quarkdrive.QuarkError("夸克返回 HTTP 500")
+        return None
+
+    def check(self):
+        type(self).calls["check"] += 1
+        err = self._behavior_error()
+        if err is not None:
+            raise err
         if type(self).rotate_to:
             self.cookie = type(self).rotate_to
         return {"ok": True}
 
     def list_root(self):
         type(self).calls["list_root"] += 1
-        if type(self).behavior == "auth_error":
-            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        err = self._behavior_error()
+        if err is not None:
+            raise err
         return []
 
     def list_dir(self, pdir_fid, page_size=100):
@@ -106,8 +131,9 @@ class _StubQuarkClient:
         # 桩与真客户端同形，行为档与前两步一致。
         type(self).calls["list_dir"] = (
             type(self).calls.get("list_dir", 0) + 1)
-        if type(self).behavior == "auth_error":
-            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        err = self._behavior_error()
+        if err is not None:
+            raise err
         return []
 
     def vip_status(self):
@@ -572,3 +598,107 @@ def test_client_vip_status_mini_plus_svip_is_vip(_stub_send):
     _stub_send["resp"] = _FakeResp(body=body)
     client = quarkdrive.QuarkClient(FAKE_COOKIE)
     assert client.vip_status() == "vip"
+
+
+# ---------- 风控误判 expired 修复 + 验活失败留痕（2026-11-02） ----------
+#
+# 背景：新绑定一绑就落 expired 且无从查因。合成信封锁死三件事：
+# 1. 风控/限频文案（哪怕混着登录字样）不许定性 expired，落
+#    throttled（稍后再试），无论它走信封还是 HTTP 401/403 通道；
+# 2. 真鉴权失败（401 guest 形状）照旧 expired，字段齐全；
+# 3. 验活失败必须在绑定层日志留下 step/upstream_code/message
+#    （已脱敏），且日志绝不带 Cookie 值。
+
+
+def test_client_http_401_guest_still_auth_error(_stub_send):
+    # 生产 binding 427 的回话形状（合成复刻）：401 + code=31001
+    # + require login [guest] = 上游眼里根本没登录态 → expired。
+    _stub_send["resp"] = _FakeResp(
+        status_code=401,
+        body={"code": 31001, "message": "require login [guest]"})
+    client = quarkdrive.QuarkClient(FAKE_COOKIE)
+    with pytest.raises(quarkdrive.QuarkAuthError) as excinfo:
+        client.check()
+    assert excinfo.value.step == "check"
+    assert excinfo.value.upstream_code == 31001
+    classified = ub._classify_quark_error(excinfo.value)
+    assert classified is not None and classified[0] == "expired"
+
+
+def test_client_envelope_risk_message_is_throttled_not_auth(_stub_send):
+    # 信封文案混着「登录」二字，但本质是风控：不许 QuarkAuthError。
+    _stub_send["resp"] = _FakeResp(
+        body={"code": 31003, "message": "登录环境存在风险，请稍后再试"})
+    client = quarkdrive.QuarkClient(FAKE_COOKIE)
+    with pytest.raises(quarkdrive.QuarkError) as excinfo:
+        client.check()
+    assert not isinstance(excinfo.value, quarkdrive.QuarkAuthError)
+    classified = ub._classify_quark_error(excinfo.value)
+    assert classified is not None and classified[0] == "throttled"
+
+
+def test_client_http_403_risk_body_is_throttled_not_auth(_stub_send):
+    # HTTP 403 的响应体明说操作频繁：风控优先于 403 的鉴权定性。
+    _stub_send["resp"] = _FakeResp(
+        status_code=403,
+        body={"code": 31001, "message": "操作频繁，请稍后再试"})
+    client = quarkdrive.QuarkClient(FAKE_COOKIE)
+    with pytest.raises(quarkdrive.QuarkError) as excinfo:
+        client.check()
+    assert not isinstance(excinfo.value, quarkdrive.QuarkAuthError)
+    classified = ub._classify_quark_error(excinfo.value)
+    assert classified is not None and classified[0] == "throttled"
+
+
+def test_client_envelope_auth_failure_logged(_stub_send, caplog):
+    # 信封鉴权失败此前抛错前不打日志，失败形状只剩 kind 可见；
+    # 现在须与 HTTP 401/403 同款留痕（step/code/message）。
+    _stub_send["resp"] = _FakeResp(
+        body={"code": 31001, "message": "登录已过期，请重新登录"})
+    client = quarkdrive.QuarkClient(FAKE_COOKIE)
+    with caplog.at_level(logging.WARNING,
+                         logger="backend.emby_server.quarkdrive"):
+        with pytest.raises(quarkdrive.QuarkAuthError):
+            client.check()
+    assert "31001" in caplog.text
+    assert "check" in caplog.text
+
+
+def test_create_quark_risk_auth_persists_throttled(db, _stub_client):
+    # 鉴权异常类型 + 风控原话 → 落 throttled（invalid），不落
+    # expired；文案说人话：临时拦截、稍后再试，不许说已过期。
+    _StubQuarkClient.behavior = "risk_auth"
+    binding = _bind(db)
+    assert binding.status == "invalid"
+    assert binding.last_error_kind == "throttled"
+    data = ub.serialize_binding(binding)
+    assert "登录已过期" not in (data["error_message"] or "")
+    assert "稍后再试" in (data["error_message"] or "")
+
+
+def test_verify_quark_risk_auth_marks_throttled_not_expired(
+        db, _stub_client):
+    _StubQuarkClient.behavior = "auth_error"
+    binding = _bind(db)
+    assert binding.status == "expired"
+    _StubQuarkClient.behavior = "risk_auth"
+    out = ub.verify_binding(db, 7, binding.id)
+    assert out.status == "invalid"
+    assert out.last_error_kind == "throttled"
+
+
+def test_create_quark_auth_failure_logs_detail_without_cookie(
+        db, _stub_client, caplog):
+    # 绑定层留痕：kind/step/upstream_code/上游原话（脱敏）可查，
+    # Cookie 值绝不进日志（FAKE_COOKIE 的 __puus 值 old-token）。
+    _StubQuarkClient.behavior = "auth_detailed"
+    with caplog.at_level(logging.WARNING,
+                         logger="backend.emby_server.user_bindings"):
+        binding = _bind(db)
+    assert binding.status == "expired"
+    assert binding.last_error_kind == "expired"
+    assert "kind=expired" in caplog.text
+    assert "step=check" in caplog.text
+    assert "31001" in caplog.text
+    assert "require login [guest]" in caplog.text
+    assert "old-token" not in caplog.text

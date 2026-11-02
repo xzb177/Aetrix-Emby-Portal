@@ -126,6 +126,22 @@ def _finish_fid(data) -> str:
 _AUTH_HINTS = ("登录", "登陆", "授权", "过期", "token", "unauthorized",
                "login", "auth")
 
+#: 风控/限频信号词：命中即定性 throttled，优先于 _AUTH_HINTS 与
+#: HTTP 401/403 的鉴权定性（2026-11-02）。夸克风控文案常与登录
+#: 字样混排（如「登录环境存在风险」「操作频繁」配 403），按鉴权
+#: 定性会把临时拦截误报成登录过期、让用户白折腾重绑；风控是一
+#: 过性的，落 throttled 待用户稍后重验恢复，不落 expired 终态。
+_THROTTLE_HINTS = ("频繁", "限流", "风控", "风险", "验证码",
+                   "滑块", "安全验证", "too many", "rate limit",
+                   "captcha")
+
+
+def throttle_signal_in(text) -> bool:
+    """文本是否带风控/限频信号（客户端定性与绑定层分类共用同一
+    口径，避免两处词表漂移）。"""
+    lowered = str(text or "").lower()
+    return any(hint in lowered for hint in _THROTTLE_HINTS)
+
 
 class QuarkError(RuntimeError):
     """夸克上游失败（非鉴权类，或未定性）。
@@ -303,6 +319,19 @@ class QuarkClient:
             # 读响应体拿上游真实 code/message（脱敏后进异常与
             # 日志）：此前不读体直接定性，42 条死步不可考。
             up_code, up_message = self._upstream_error_fields(resp)
+            if throttle_signal_in(up_message):
+                # 风控优先于鉴权定性：403 配「操作频繁/环境风险」
+                # 类原话是临时拦截、不是登录过期，抛普通
+                # QuarkError 走 throttled 口径（见 _THROTTLE_HINTS）。
+                logger.warning(
+                    "夸克请求被风控/限频 step=%s http=%s code=%s "
+                    "message=%s",
+                    self._step, resp.status_code, up_code, up_message)
+                raise QuarkError(
+                    f"夸克返回 HTTP {resp.status_code}（风控/限频）"
+                    f"：{up_message}",
+                    step=self._step, upstream_code=up_code,
+                    upstream_message=up_message or None)
             text = f"夸克返回 HTTP {resp.status_code}（登录态失效）"
             if up_code is not None:
                 text += f"，上游 code={up_code}"
@@ -331,7 +360,20 @@ class QuarkClient:
         if code not in (0, None):
             message = str(body.get("message") or "")
             safe_message = _sanitize_upstream_text(message, self.cookie)
+            if throttle_signal_in(message):
+                # 风控优先于鉴权定性（见 _THROTTLE_HINTS）：文案
+                # 混着登录字样也先按临时拦截走 throttled。
+                logger.warning(
+                    "夸克信封风控/限频 step=%s code=%s message=%s",
+                    self._step, code, safe_message)
+                raise QuarkError(
+                    f"夸克返回 code={code}（风控/限频）：{safe_message}",
+                    step=self._step, upstream_code=code,
+                    upstream_message=safe_message or None)
             if any(hint in message.lower() for hint in _AUTH_HINTS):
+                logger.warning(
+                    "夸克信封鉴权失败 step=%s code=%s message=%s",
+                    self._step, code, safe_message)
                 raise QuarkAuthError(
                     f"夸克登录态失效：{safe_message}", step=self._step,
                     upstream_code=code,

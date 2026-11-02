@@ -195,7 +195,13 @@ def quark_bind_vip_check_enabled(db: Session) -> bool:
 #: expired 里点名了 115 的那句；其余档位各 provider 共用
 #: BINDING_ERROR_MESSAGES，不另编新档位）。
 _PROVIDER_ERROR_MESSAGE_OVERRIDES = {
-    "quark": {"expired": "夸克登录已过期，请重新绑定。"},
+    "quark": {
+        "expired": "夸克登录已过期，请重新绑定。",
+        # 风控/限频不是过期：明说临时拦截，免得用户对着好好的
+        # Cookie 反复重绑（2026-11-02 误判修复配套文案）。
+        "throttled": "夸克临时拦截了这次验证（风控或操作频繁），"
+                     "账号没有过期，请稍后再试。",
+    },
 }
 
 
@@ -619,20 +625,39 @@ def _verify_pan115_cookie(cookie: str) -> None:
 def _classify_quark_error(exc: Exception) -> tuple[str, str] | None:
     """夸克失败 → (error_kind, 文案)，一过性失败返回 None（不落状态）。
 
+    - 带风控/限频信号（异常文本或上游原话命中 throttle 词表）→
+      throttled：优先于鉴权定性——风控文案常混着登录字样、也常
+      借 HTTP 403 通道回来，按 expired 报「登录已过期」是误报，
+      会让用户白折腾重绑（2026-11-02）；
     - QuarkAuthError（HTTP 401/403、信封鉴权类错误）→ expired
       （登录态过期，与 115 的 401/403 定性同口径）；
-    - 含限流信号的 QuarkError → throttled；
     - 其余 QuarkError / 网络异常 → None（一过性，不落状态）。
+
+    每次分类都留一条结构化日志（kind/step/upstream_code/上游
+    原话）：此前失败细节只在 quarkdrive 的 HTTP 401/403 一条
+    中文日志里、信封路径干脆不打，用户报「绑定不可用」时无从
+    查因。上游原话在 quarkdrive 抛错点已经 _sanitize_upstream_
+    text 脱敏截断，这里只转述该字段与异常文本（同为脱敏后），
+    Cookie 原文与凭据片段绝不入日志。
     """
-    if isinstance(exc, quarkdrive.QuarkAuthError):
-        return "expired", error_message("expired", PROVIDER_QUARK)
-    if isinstance(exc, quarkdrive.QuarkError):
-        text = str(exc)
-        if ("429" in text or "频繁" in text or "限流" in text
-                or "too many" in text.lower()):
-            return "throttled", error_message("throttled", PROVIDER_QUARK)
+    if not isinstance(exc, quarkdrive.QuarkError):
         return None
-    return None
+    detail = f"{exc} {exc.upstream_message or ''}"
+    if quarkdrive.throttle_signal_in(detail):
+        result: tuple[str, str] | None = (
+            "throttled", error_message("throttled", PROVIDER_QUARK))
+    elif isinstance(exc, quarkdrive.QuarkAuthError):
+        result = ("expired", error_message("expired", PROVIDER_QUARK))
+    else:
+        result = None
+    logger.warning(
+        "quark failure classified: kind=%s step=%s upstream_code=%s "
+        "message=%s",
+        result[0] if result else "transient",
+        exc.step, exc.upstream_code,
+        quarkdrive._sanitize_upstream_text(
+            exc.upstream_message or str(exc)))
+    return result
 
 
 def _quark_verify_steps(client) -> None:
