@@ -477,6 +477,67 @@ _MOUNT_RELAY_TIMEOUT_CONNECT = 10.0
 _MOUNT_RELAY_TIMEOUT_READ = 30.0
 
 
+def _mount_relay_stall_timeout() -> float:
+    """客户端停读多久后放掉上游连接（秒）；``MOUNT_RELAY_STALL_TIMEOUT_SEC``。
+
+    读超时只管「上游不给数据」，管不到「客户端不收数据」：播放器拖动/重开
+    时弃用旧连接却不 close（Infuse、AVPlayer 系实测每会话残留 3-4 条），
+    中继停在 yield 上等 send 排空，上游连接与共享池名额被占到客户端退出。
+    缺省 60 秒（正常播放每块 1MB 的消费间隔远小于此；暂停超过阈值后恢复，
+    播放器按 Range 重连续播）；0 关闭，非法值回落缺省并告警。
+    """
+    raw = os.getenv("MOUNT_RELAY_STALL_TIMEOUT_SEC", "")
+    if not str(raw).strip():
+        return 60.0
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("环境变量 MOUNT_RELAY_STALL_TIMEOUT_SEC=%r 不是数字，使用默认值 60", raw)
+        return 60.0
+    return max(0.0, value)
+
+
+async def _release_upstream_when_stalled(source, resp, url: str, timeout: float):
+    """包一层流：消费方（客户端）停读超过 ``timeout`` 秒就关上游响应。
+
+    只在停在 yield 上（等客户端收）时计时；上游慢由读超时负责。关上游后
+    本流结束——客户端若之后恢复读取，会收到截断的响应并按 Range 重连。
+    """
+    if timeout <= 0:
+        async for chunk in source:
+            yield chunk
+        return
+    loop = asyncio.get_running_loop()
+    waiting_since: Optional[float] = None
+    stalled = False
+
+    async def _watch():
+        nonlocal stalled
+        while True:
+            await asyncio.sleep(min(timeout / 4, 5.0))
+            if waiting_since is not None and loop.time() - waiting_since >= timeout:
+                stalled = True
+                logger.info("远程挂载客户端停读 %.0fs，释放上游连接 %s",
+                            timeout, url.split("?")[0])
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+                return
+
+    watcher = asyncio.create_task(_watch())
+    try:
+        async for chunk in source:
+            waiting_since = loop.time()
+            yield chunk
+            waiting_since = None
+            if stalled:
+                return
+    finally:
+        watcher.cancel()
+        await source.aclose()
+
+
 #: 中继客户端按 event loop 共享（2026-10-30 起播/拖动提速）：旧口径
 #: 「按次创建、用完关闭」让每次拉流/拖动都重付一遍连接建立（VPS 到
 #: 谷歌实测单次 TCP+TLS 约 0.11–0.16s；生产 stream 首字节 1.6–2.2s
@@ -695,7 +756,9 @@ async def serve_mount_relay_async(
         if pt is not None:
             pt.done()
         return StreamingResponse(
-            iter_mount(), status_code=resp.status_code,
+            _release_upstream_when_stalled(
+                iter_mount(), resp, url, _mount_relay_stall_timeout()),
+            status_code=resp.status_code,
             media_type=content_type, headers=passthrough,
         )
     except HTTPException:
