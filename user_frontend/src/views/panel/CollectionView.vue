@@ -75,7 +75,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { collectionsApi, type CollectionDetail, type CollectionMemberItem } from '@/api'
+import { useToast } from '@/composables/useToast'
 
+const toast = useToast()
 const route = useRoute()
 const setId = Number(route.params.id)
 
@@ -143,8 +145,11 @@ function switchTrack(t: 'release' | 'watch') {
 function loadMore() {
   if (loading.value) return
   loading.value = true
+  // PA-044：翻页失败只弹轻提示，不写顶层 error——error 非空会让模板 v-if/v-else
+  // 把已加载的成员列表整页换成错误卡。items 未增长，重试再点「加载更多」时
+  // offset 仍按已加载条数算，续拉的正是失败那一页（与 LedgerView 加载更多同口径）。
   loadItems(false)
-    .catch((err: unknown) => { error.value = errText(err) })
+    .catch((err: unknown) => { toast.error(errText(err)) })
     .finally(() => { loading.value = false })
 }
 
