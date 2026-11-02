@@ -3,7 +3,7 @@ import logging
 import threading
 import time
 from sqlalchemy.orm import Session
-from backend import models
+from backend import models, permanent_whitelist
 from backend.api import economy
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,12 @@ def check_welfare_expiry(db: Session) -> dict:
         if not users:
             break
         checked += len(users)
+        # 永久账号白名单：资格恒有效，整批跳过（不取消、不走保留期、
+        # 也不需要连签续期）。判定单口见 permanent_whitelist.py。
+        permanent = permanent_whitelist.permanent_ids(db, [u.id for u in users])
         for u in users:
+            if u.id in permanent:
+                continue
             try:
                 exp = u.welfare_expires_at
                 if exp is None or exp > now:
@@ -203,7 +208,12 @@ def check_inactive_users(db: Session) -> dict:
         if not users:
             break
         checked += len(users)
+        # 永久账号白名单：永久账号不因长期不活跃被取消资格（同
+        # check_welfare_expiry 口径，判定单口见 permanent_whitelist.py）。
+        permanent = permanent_whitelist.permanent_ids(db, [u.id for u in users])
         for u in users:
+            if u.id in permanent:
+                continue
             try:
                 exp = u.welfare_expires_at
                 if exp is not None and exp <= now:

@@ -11,7 +11,7 @@ from datetime import datetime
 
 from fastapi import HTTPException
 
-from backend import models
+from backend import models, permanent_whitelist
 from backend.api.user import MediaSeekRequest, _create_media_seek_sync
 from backend.tg_bot import layout
 from backend.tg_bot.identity import resolve
@@ -173,13 +173,17 @@ def _pet_summary(db, user_id: int):
     return total_hours, cur, nxt
 
 
-def _welfare_line(user) -> str:
+def _welfare_line(db, user) -> str:
     """公益资格三态：未开通／长期有效／至 YYYY-MM-DD。
 
     口径与 /account 既有写法一致（is_welfare＋welfare_expires_at），只补未开通分支。
+    永久账号白名单用户呈「长期有效」（资格恒有效，判定单口见
+    backend/permanent_whitelist.py）。
     """
     if not bool(getattr(user, "is_welfare", False)):
         return "公益资格：未开通"
+    if permanent_whitelist.is_permanent(db, getattr(user, "id", None)):
+        return "公益资格：长期有效"
     end = getattr(user, "welfare_expires_at", None)
     if end is None:
         return "公益资格：长期有效"
@@ -191,7 +195,11 @@ def _view_unlock_line(db, user_id: int) -> str:
 
     有效性口径与 portal.py 购票校验一致（expires_at IS NULL OR expires_at > now）。
     多行时永久有效优先，否则取最晚到期日；无有效行写未开通。
+    永久账号白名单用户恒有效，直接呈长期有效（判定单口见
+    backend/permanent_whitelist.py）。
     """
+    if permanent_whitelist.is_permanent(db, user_id):
+        return "查看凭证：长期有效"
     now = datetime.now()
     rows = (
         db.query(models.EmbyViewUnlock)
@@ -417,7 +425,7 @@ def user_panel(db, user, display_name: str | None = None) -> str:
     streak_text = _after_colon(_streak_line(db, user.id).removeprefix("📋 "))
     rows = [
         layout.row("🆔", "用户编号", user.id),
-        layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
+        layout.row("📊", "公益资格", _after_colon(_welfare_line(db, user))),
         layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
         layout.row("🍒", "能量余额", int(user.points or 0)),
         layout.row("⚡", "活力数值", vitality_text),
@@ -467,7 +475,7 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
         layout.row("👤", "账号名称", f"<b>{_esc(user.username)}</b>"),
         layout.row("⭐", "当前等级", _level_value(db, user)),
         layout.row("🍒", "能量余额", f"<b>{int(user.points or 0)}</b>"),
-        layout.row("📊", "公益资格", _after_colon(_welfare_line(user))),
+        layout.row("📊", "公益资格", _after_colon(_welfare_line(db, user))),
         layout.row("🎟️", "查看凭证", _after_colon(_view_unlock_line(db, user.id))),
     ]
     identity = _whitelist_identity(db, user)

@@ -79,6 +79,7 @@ from backend.api.admin_apikey import router as admin_apikey_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 from backend.api.admin_player_blacklist import admin_player_blacklist_router
+from backend.api.admin_permanent_whitelist import admin_permanent_whitelist_router
 # v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
 # 只提供能力，密钥一律由管理员自己填。
 from backend.api.capabilities_admin import capabilities_router
@@ -843,6 +844,8 @@ app.include_router(admin_orders_router)
 app.include_router(admin_coupons_router)
 # 播放器登录黑名单（2026-10-30）：规则读写，见 backend/api/admin_player_blacklist.py
 app.include_router(admin_player_blacklist_router)
+# 永久账号白名单（2026-11-01）：名单增删与总开关，见 backend/api/admin_permanent_whitelist.py
+app.include_router(admin_permanent_whitelist_router)
 # 外部服务能力中心（v2.19.0）：能力总览 / 配置 / 测试，见 backend/api/capabilities_admin.py
 app.include_router(capabilities_router)
 # 用户端 AI 助手（v2.19.0）：能力「AI 模型设置」的消费点，见 backend/api/assistant.py

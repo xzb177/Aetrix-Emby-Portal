@@ -372,7 +372,7 @@ def render_whois_lite(db, user, tg_display_name: str | None = None) -> str:
     from backend.tg_bot import features
 
     info = features._level_info(db, user)
-    welfare = features._welfare_line(user).split("：", 1)[-1]
+    welfare = features._welfare_line(db, user).split("：", 1)[-1]
     status = "正常" if bool(getattr(user, "is_active", True)) else "已停用"
     rows = [
         layout.row("👤", "账号",

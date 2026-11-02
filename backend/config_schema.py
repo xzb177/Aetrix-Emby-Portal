@@ -514,6 +514,14 @@ PLAYER_BLACKLIST_CONFIG_SCHEMA: dict[str, tuple] = {
     "player_login_blacklist": ("json_rules",),
 }
 
+# 永久账号白名单（2026-11-01）：总开关，word 风格 ("bool",) 存 "true"/"false"
+# （读侧 permanent_whitelist.whitelist_enabled 只认 "true"，无行默认开）。
+# 名单本体在 permanent_whitelist_entries 表，不走 SystemConfig。
+# 纯 SystemConfig 键，不进 env.example。
+PERMANENT_WHITELIST_CONFIG_SCHEMA: dict[str, tuple] = {
+    "permanent_whitelist_enabled": ("bool",),
+}
+
 # （原 ECONOMY_INT_RANGES / economy_spec 已并入下面的 ECONOMY_CONFIG_SCHEMA，
 # 4-6 迁移后不再有任何调用方，此处删除。）
 
