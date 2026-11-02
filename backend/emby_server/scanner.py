@@ -6275,6 +6275,20 @@ def scan_library_sync(db: Session, library: emby_models.Library,
       使清理阶段跳过——绑定线只做新增/更新，绝不因“只看见一个绑定”
       而删掉库里别的来源的条目。
     """
+    # 扫描隔离（苹果 CMS 媒体库类型，2026-11-02）：CMS 库的内容行是
+    # 同步工人喂的托管行、没有本地文件；走到下面任何一步，空 paths
+    # 都会被清理阶段读成「文件全消失」而整库误删。这里是最后一道
+    # 防线（入队口 scan_queue 已先拦），直接跳过、不写扫描状态。
+    from backend.emby_server import applecms_library as _cms_lib
+
+    if _cms_lib.is_applecms_library(library):
+        logger.info("扫描隔离：苹果 CMS 库「%s」(id=%s) 跳过本地扫描",
+                    getattr(library, "name", "?"),
+                    getattr(library, "id", "?"))
+        stats = {key: 0 for key in SCAN_STATS_KEYS}
+        stats["skipped"] = "applecms_library"
+        stats["duration_ms"] = 0
+        return stats
     snap = snapshot or LibrarySnapshot.of(library)
     # L10：开关开且该库配了策略时，把策略挂到快照上；开关关/未配策略/
     # 挂载失败时原样返回快照，走现行口径（attach 内部已 fail-safe）。

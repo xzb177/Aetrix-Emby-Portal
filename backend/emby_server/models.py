@@ -73,6 +73,18 @@ class Library(Base):
     # 虚拟媒体库：按发行平台（Netflix / Disney+ …）自动生成，没有自己的文件与路径
     is_virtual = Column(Boolean, default=False)
     platform = Column(String(30))  # 虚拟库对应的平台 id（见 scanner.PLATFORM_LABELS）
+    # 库类型判别（苹果 CMS 媒体库类型，2026-11-02）：local = 现有全部库
+    # （本机/挂载扫描喂数）；applecms = 内容由 CMS 同步工人喂托管行、
+    # 没有本地文件与路径。与 is_virtual+platform 是两套语义（虚拟库是
+    # 已有本地行的聚合视图、没有自有内容），不复用、不混淆。老库补列
+    # 后为 'local'，行为与升级前逐字一致（见 database._auto_migrate）。
+    kind = Column(String(20), default="local")
+    # kind=applecms 时本库收哪些上游源（upstream_sources.id，逗号分隔，
+    # 照 mount_ids 的仓库惯例）；一行 CMS 库可收多家源，同步时合并去重。
+    upstream_source_ids = Column(Text, default="")
+    # kind=applecms 时的分类映射（JSON 文本）：源分类名 → "in"/"out"，
+    # 数据驱动、管理员配，不写死站名/分类名；空 = 全收。
+    cms_type_map = Column(Text)
     # 绑定 115 账号配置档（pan115_accounts.id）：不同媒体库可用不同 115 账号转存/下载。
     # 未绑定时回退到默认账号，再回退到服务器级 PAN115_COOKIE（兼容旧部署）。
     account_115_id = Column(Integer)

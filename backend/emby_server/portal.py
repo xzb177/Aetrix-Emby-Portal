@@ -1914,6 +1914,14 @@ class LibraryCreate(BaseModel):
     # 扫描策略开关（v2.44.0，默认开）
     incremental_scan: bool = True
     fs_watch: bool = True
+    # 库类型（苹果 CMS 媒体库类型，2026-11-02）：local（默认）/ applecms。
+    # applecms 时内容来源是上游 CMS 源而非本地路径/挂载：paths 与
+    # mount_ids 不再必填，改由 upstream_source_ids 必填（见 create_library）。
+    kind: str = "local"
+    # kind=applecms 时收哪些苹果 CMS 型上游源（upstream_sources.id）
+    upstream_source_ids: list[int] = []
+    # kind=applecms 时的分类映射：源分类名 → "in"/"out"；省略/空 = 全收
+    cms_type_map: dict[str, str] | None = None
 
 
 class LibraryUpdate(BaseModel):
@@ -1938,6 +1946,12 @@ class LibraryUpdate(BaseModel):
     # 扫描策略开关（v2.44.0）：不传 = 不修改
     incremental_scan: bool | None = None
     fs_watch: bool | None = None
+    # 库类型：建库后不可更改——传了且与现值不同直接 400（见 update_library）
+    kind: str | None = None
+    # kind=applecms 的库可改来源清单；local 库传了直接 400
+    upstream_source_ids: list[int] | None = None
+    # kind=applecms 的分类映射：显式传 null = 清空（回全收），省略 = 不修改
+    cms_type_map: dict[str, str] | None = None
 
 
 def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int]) -> None:
@@ -2094,6 +2108,8 @@ def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session =
 def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
                          realm_id: int | None = None):
     """媒体库清单（按服；realm_id=0 表示全部服）"""
+    from backend.emby_server import applecms_library as _cms_lib
+
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
     query = realms.scope_inclusive(db.query(em.Library), em.Library.realm_id, scope_id)
     libs = query.order_by(em.Library.id).all()
@@ -2171,6 +2187,11 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "scrape_policy": normalize_scrape_policy(lib.scrape_policy),
             "is_virtual": bool(getattr(lib, "is_virtual", False)),
             "platform": lib.platform,
+            # 库类型与 CMS 来源（苹果 CMS 媒体库类型）：kind 给表单分流，
+            # 来源/映射下发解析后的结构，表单不用自己拆逗号/JSON
+            "kind": _cms_lib.library_kind(lib),
+            "upstream_source_ids": _cms_lib.parse_upstream_source_ids(lib),
+            "cms_type_map": _cms_lib.parse_cms_type_map(lib) or None,
             "cover_url": f"/api/admin/emby/libraries/{lib.id}/cover" if lib.cover_path else None,
             # 封面配置：样式回显 + “新片入库后自动更新”开关（老库没这列时按关闭处理）
             "cover_template": lib.cover_template,
@@ -2213,18 +2234,60 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
         ]}
 
 
+def _cms_source_ids_field(db: Session, source_ids) -> str:
+    """校验 CMS 库的来源清单并拼成入库文本（逗号分隔）。
+
+    来源必须存在且是苹果 CMS 型上游源；一家都不给直接 400——CMS 库
+    没有来源就是空库，建出来只会让人以为同步坏了。启用与否不在这里
+    卡：源的启停是源管理页的独立动作，关着的源同步时自动跳过。
+    """
+    from backend.emby_server import applecms_library as cms_lib
+
+    ids = cms_lib.parse_upstream_source_ids(
+        ",".join(str(x) for x in (source_ids or [])))
+    if not ids:
+        raise HTTPException(status_code=400,
+                            detail="苹果 CMS 库至少要选一个 CMS 来源")
+    rows = {s.id: s for s in db.query(em.UpstreamSource)
+            .filter(em.UpstreamSource.id.in_(ids)).all()}
+    for sid in ids:
+        src = rows.get(sid)
+        if src is None:
+            raise HTTPException(status_code=400,
+                                detail=f"上游源不存在: #{sid}")
+        if src.source_type != "applecms":
+            raise HTTPException(
+                status_code=400,
+                detail=f"上游源「{src.name}」不是苹果 CMS 型，不能用作 CMS 库来源")
+    return cms_lib.format_upstream_source_ids(ids)
+
+
 @admin_emby_router.post("/libraries")
 def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     import uuid
 
+    from backend.emby_server import applecms_library as cms_lib
+
+    kind = (req.kind or "local").strip().lower()
+    if kind not in cms_lib.LIBRARY_KINDS:
+        raise HTTPException(status_code=400, detail=f"未知库类型: {req.kind}")
+    is_cms = kind == cms_lib.KIND_APPLECMS
+    cms_source_field = ""
+    cms_map_field = None
+    if is_cms:
+        cms_source_field = _cms_source_ids_field(db, req.upstream_source_ids)
+        cms_map_field = cms_lib.format_cms_type_map(req.cms_type_map)
+
     # 简化形式优先：界面传的是「裸路径 + 存储后端」，mount:// 前缀在后端拼回去
+    # （CMS 库没有本地来源，这一段整体不适用）
     backends_field = ""
-    if req.path_entries is not None:
-        paths_field, backends_field = _library_path_payload(db, req.path_entries)
-        req.paths = paths_field.split(",") if paths_field else []
-    if not req.paths and not req.mount_ids:
-        raise HTTPException(status_code=400, detail="请至少配置一个路径或一个存储挂载")
-    _validate_library_sources(db, req.paths, req.mount_ids)
+    if not is_cms:
+        if req.path_entries is not None:
+            paths_field, backends_field = _library_path_payload(db, req.path_entries)
+            req.paths = paths_field.split(",") if paths_field else []
+        if not req.paths and not req.mount_ids:
+            raise HTTPException(status_code=400, detail="请至少配置一个路径或一个存储挂载")
+        _validate_library_sources(db, req.paths, req.mount_ids)
     guid = uuid.uuid4().hex[:32]
     realm_id = req.realm_id or realms.active_realm_id(db)
     if not realms.get_realm(db, realm_id):
@@ -2238,9 +2301,9 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
             raise HTTPException(status_code=400, detail="这台节点属于另一个服，不能分配本服的媒体库")
     lib = em.Library(
         guid=guid, name=req.name, collection_type=req.collection_type,
-        paths=",".join(req.paths),
+        paths="" if is_cms else ",".join(req.paths),
         storage_backends=backends_field,
-        mount_ids=_mount_ids_field(db, req.mount_ids),
+        mount_ids="" if is_cms else _mount_ids_field(db, req.mount_ids),
         is_enabled=req.is_enabled,
         scrape_policy=normalize_scrape_policy(req.scrape_policy),
         account_115_id=req.account_115_id,
@@ -2250,11 +2313,16 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         cover_auto_regen=bool(req.cover_auto_regen),
         incremental_scan=bool(req.incremental_scan),
         fs_watch=bool(req.fs_watch),
+        kind=kind,
+        upstream_source_ids=cms_source_field,
+        cms_type_map=cms_map_field,
     )
     db.add(lib)
     db.flush()  # 落 id，供新表行引用
-    # 清单第 2 项：保存只写新表，旧列反向同步（双写期）
-    mount_sources.write_library_sources(db, lib, req.paths, req.mount_ids)
+    # 清单第 2 项：保存只写新表，旧列反向同步（双写期）。CMS 库没有
+    # 本地来源行可写，跳过。
+    if not is_cms:
+        mount_sources.write_library_sources(db, lib, req.paths, req.mount_ids)
     db.commit()
     db.refresh(lib)
     return {"success": True, "id": lib.id, "guid": lib.guid}
@@ -2360,6 +2428,29 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
+    # 库类型与 CMS 来源（苹果 CMS 媒体库类型）：类型建库后不可更改
+    # （local 库的内容是扫出来的文件、CMS 库的内容是同步托管行，
+    # 互转等于让两套喂数机制对同一批行打架）；CMS 库没有本地路径/
+    # 挂载，传了直接 400；local 库不许配 CMS 来源/映射。
+    from backend.emby_server import applecms_library as cms_lib
+
+    lib_is_cms = cms_lib.is_applecms_library(lib)
+    if req.kind is not None and req.kind.strip().lower() != cms_lib.library_kind(lib):
+        raise HTTPException(status_code=400, detail="库类型在建库后不可更改")
+    if lib_is_cms:
+        if (req.path_entries is not None or req.paths is not None
+                or req.mount_ids is not None):
+            raise HTTPException(status_code=400,
+                                detail="苹果 CMS 库没有本地路径/挂载，内容由 CMS 同步维护")
+        if req.upstream_source_ids is not None:
+            lib.upstream_source_ids = _cms_source_ids_field(
+                db, req.upstream_source_ids)
+        if "cms_type_map" in req.model_fields_set:
+            lib.cms_type_map = cms_lib.format_cms_type_map(req.cms_type_map)
+    elif (req.upstream_source_ids is not None
+          or "cms_type_map" in req.model_fields_set):
+        raise HTTPException(status_code=400,
+                            detail="只有苹果 CMS 库能配置 CMS 来源与分类映射")
     if req.name is not None:
         lib.name = req.name
     if req.collection_type is not None:
@@ -2552,6 +2643,14 @@ async def scan_library_endpoint(lib_id: int, full: bool = False,
         # 后台线程用独立 Session（请求结束时请求级 Session 会被关闭，复用会导致
         # "transaction is closed" 与 SQLite 写锁冲突）——那一层现在在 scan_queue 里。
         result = scan_queue.enqueue(lib, trigger="manual", force_full=bool(full))
+        if result.get("skipped") == "applecms_library":
+            # 苹果 CMS 库不走本地扫描：如实告诉管理员内容归同步管，
+            # 不假装「已入队」（扫描隔离，见 scan_queue._applecms_skip_result）
+            return {"response": {
+                "success": True, "queued": False, "already": False,
+                "skipped": "applecms_library",
+                "message": "苹果 CMS 库不走本地扫描，内容由 CMS 同步维护",
+                "task": result["task"]}}
         task = result["task"]
         if not result["created"]:
             return {"response": {
