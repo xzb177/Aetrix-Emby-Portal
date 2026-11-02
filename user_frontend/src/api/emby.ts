@@ -14,7 +14,7 @@
  */
 import { shallowRef } from 'vue'
 import api from '@/api'
-import { embyApiKeyRef, setEmbyApiKey, withImageKey } from '@/api/imageKey'
+import { embyApiKeyRef, getEmbyApiKey, setEmbyApiKey, withImageKey } from '@/api/imageKey'
 
 /**
  * 分离部署时，门户 EM 与 Emby EA 是两个地址：
@@ -85,8 +85,13 @@ export function resetEmbyBaseUrl(): void {
 
 function fetchEmbyBase(): Promise<string> {
   if (!embyBasePromise) {
+    // PA-054：同 getAccountCard，把手里那把图片 key 带回去复用（见 imageKey）。
+    const currentKey = getEmbyApiKey()
     embyBasePromise = api
-      .get<never, { base_url?: string; emby_api_key?: string }>('/api/user/emby/server')
+      .get<never, { base_url?: string; emby_api_key?: string }>(
+        '/api/user/emby/server',
+        currentKey ? { headers: { 'X-Web-Image-Key': currentKey } } : undefined,
+      )
       .then((card) => {
         // PA-036：账号卡同时下发图片用的 api_key，一并落地（轮换后旧图失效、
         // 响应式重拼会立刻换上新 key 的地址）
