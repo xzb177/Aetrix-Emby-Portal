@@ -17,6 +17,7 @@ import {
   Radar, RefreshCw, ScanSearch, Sparkles, TriangleAlert,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
+import { parseServerTime } from '@/utils/serverTime'
 /** 重新布局批 3：采样哈希进度降为本页「进度」区（旧 /sample-hash-progress 跳到本页） */
 import SampleHashProgress from './SampleHashProgress.vue'
 import {
@@ -68,7 +69,7 @@ function libChip(status: string | null): { text: string; cls: string } {
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—'
-  const d = new Date(iso)
+  const d = parseServerTime(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
 }
 
@@ -80,7 +81,7 @@ async function load(silent = false) {
   try {
     const res = await fetchTasksOverview()
     cards.value = Array.isArray(res.tasks) ? res.tasks : []
-    fetchedAt.value = res.fetched_at ? new Date(res.fetched_at).toLocaleString() : ''
+    fetchedAt.value = res.fetched_at ? parseServerTime(res.fetched_at).toLocaleString() : ''
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '加载失败'
     if (!silent) cards.value = []

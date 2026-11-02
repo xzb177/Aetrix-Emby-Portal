@@ -16,6 +16,7 @@ import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
+import { parseServerTime } from '@/utils/serverTime'
 import { ListChecks, RefreshCw } from 'lucide-vue-next'
 import {
   bindIdentifyReviewTask,
@@ -107,7 +108,7 @@ function typeLabel(itemType: string | null) {
 
 function fmtTime(iso: string | null) {
   if (!iso) return '—'
-  const d = new Date(iso)
+  const d = parseServerTime(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 

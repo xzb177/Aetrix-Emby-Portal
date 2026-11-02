@@ -12,6 +12,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Plus, RefreshCw, UserX } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
+import { parseServerTime } from '@/utils/serverTime'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -45,7 +46,7 @@ const rowBusyId = ref<number | null>(null)
 
 function fmtTime(v: string | null | undefined): string {
   if (!v) return '—'
-  const d = new Date(v)
+  const d = parseServerTime(v)
   if (Number.isNaN(d.getTime())) return '—'
   const p2 = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`
@@ -54,7 +55,7 @@ function fmtTime(v: string | null | undefined): string {
 /** 状态：与后端 active_suspension 同口径（未撤销且 ends_at 在未来） */
 function stateOf(s: GovernanceSuspensionRow): 'active' | 'revoked' | 'expired' {
   if (s.revoked_at) return 'revoked'
-  const end = s.ends_at ? new Date(s.ends_at).getTime() : NaN
+  const end = s.ends_at ? parseServerTime(s.ends_at).getTime() : NaN
   if (!Number.isNaN(end) && end > Date.now()) return 'active'
   return 'expired'
 }
