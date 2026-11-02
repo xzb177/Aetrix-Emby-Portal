@@ -247,7 +247,8 @@ def delete_upstream_source(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """删除上游源（只删本行；25-2/25-3 落地后删源联动须复核本函数）。"""
+    """删除上游源并联动清理（PA-038：托管行软删＋映射／关系／
+    生命周期／绑定／非 running 任务残留行硬删，见 ups.delete_source）。"""
     ups.delete_source(db, _get_source_or_404(db, source_id))
     db.commit()
     return {"success": True}
