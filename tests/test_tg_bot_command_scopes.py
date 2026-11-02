@@ -89,9 +89,12 @@ def test_group_scope_only_group_executable():
     for name in ("request", "myrequests", "login", "renew", "govlog",
                  "report", "propose", "launch"):
         assert name not in group_set
-    # 账号卡私聊化（2026-11-02）：/me、/account 与指向账号卡的 /level
-    # 群里只回私聊提示，一并排除出群菜单
-    for name in ("me", "account", "level"):
+    # 账号展示一家群里放行（2026-10-28 用户亲定、2026-11-02 重申）：
+    # /me 在 BOT_COMMANDS 里、要进群菜单；/account、/level 是手输别名
+    # 不在菜单表，但 GROUP_COMMANDS 集合口径要含（与 router 一致）
+    assert "me" in group_set
+    for name in ("account", "level"):
+        assert name in command_scopes.GROUP_COMMANDS
         assert name not in group_set
     # P1 个人查询：群里不执行
     for name in ("bindings", "transfers", "whyplay", "wants"):

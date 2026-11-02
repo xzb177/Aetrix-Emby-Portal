@@ -223,11 +223,10 @@ def test_slots_registered_in_all_three_places():
 
 # router 现行群内拦截事实（dispatch 亲读）：以下命令在群里不执行。
 _PRIVATE_ONLY_FACT = {
-    # private_only 集合（me/account/level 指向账号卡，账号卡私聊化后
-    # 于 2026-11-02 一并入集，群里只回私聊提示）
+    # private_only 集合（me/account/level 是账号展示一家、群里放行，
+    # 2026-10-28 定、2026-11-02 重申，不在本集）
     "request", "myrequests", "login", "renew", "govlog",
     "report", "propose", "launch", "reconcile", "rankpush",
-    "me", "account", "level",
     # P1 个人查询：群里不执行
     "bindings", "transfers", "whyplay", "wants",
     # 群里拒执行（删原消息＋提示私聊）
