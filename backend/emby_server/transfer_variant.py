@@ -8398,19 +8398,42 @@ def reclaim_expired_leases(db, now=None):
     return len(expired)
 
 
-def _running_counts_by_owner(db, now=None):
-    """当前 running（租约未过期）按归属计数，用于按用户限流。"""
+def _running_job_rows(db, now=None):
+    """当前 running（租约未过期）的全部任务行（认领计数共用）。"""
     now = now or datetime.now()
-    rows = (db.query(em.TransferJob)
+    return (db.query(em.TransferJob)
             .filter(em.TransferJob.status == "running")
             .filter(
                 (em.TransferJob.lease_expires_at.is_(None))
                 | (em.TransferJob.lease_expires_at > now))
             .all())
+
+
+def _running_counts_by_owner(db, now=None):
+    """当前 running（租约未过期）按归属计数，用于按用户限流。"""
     counts = {}
-    for row in rows:
+    for row in _running_job_rows(db, now=now):
         key = _owner_key(row)
         counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+#: quark 落点 per-owner 在飞上限（硬钳 1，2026-11-02 止血）：
+#: 夸克凭据对并发使用最敏感（__puus 轮换互踩是 403 风暴根因），
+#: 同一用户同时只许 1 单夸克落点转存在飞——与执行侧 per-binding
+#: 锁（user_bindings.quark_binding_lock）协同：一把锁串行凭据
+#: 临界区，这道钳子从调度层先把同用户夸克单串行化，点播当场
+#: 转存与工人队列对同一绑定的互斥走锁、不另起第二套。
+QUARK_PER_OWNER_INFLIGHT = 1
+
+
+def _running_quark_counts_by_owner(db, now=None):
+    """当前 running 的 quark 落点单按归属计数（钳 1 的计数口）。"""
+    counts = {}
+    for row in _running_job_rows(db, now=now):
+        if _dest_scheme(getattr(row, "dest_drive_id", "")) == "quark:":
+            key = _owner_key(row)
+            counts[key] = counts.get(key, 0) + 1
     return counts
 
 
@@ -8449,7 +8472,8 @@ def _is_aged_cross(job, now, cross_aging_sec):
 
 def _pick_candidates(candidates, limit, running_counts, cap, now=None,
                      cross_cap=None, cross_running=0, cross_aging_sec=None,
-                     probeable_ids=None, vip_owners=None):
+                     probeable_ids=None, vip_owners=None,
+                     quark_cap=None, quark_running_counts=None):
     """公平挑单：点播组（trigger=playback）在前、后台组在后；
     每组内按用户轮流取
     （每轮每用户先取 1 单，再取第 2 单……），直至 limit 或取尽。
@@ -8486,6 +8510,11 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
     原公平键（在途数→最老等待→owner 键）排序，per-owner cap 与
     跨槽约束照旧——普通 owner 在同一轮后续轮次仍按原序推进，
     不会被饿死（只是同轮排在 VIP 之后，名额尽时顺延下一轮认领）。
+    quark 落点钳（quark_cap 非 None 时生效，None=现行行为不变）：
+    dest 为 quark: 的单另受 per-owner 在飞上限 quark_cap 约束
+    （计数口径 quark_running_counts＋本轮已挑），同 owner 的其余
+    落点单不受影响——夸克凭据并发敏感，调度层先串行化（见
+    QUARK_PER_OWNER_INFLIGHT）。
     返回挑中的任务行（不改状态，认领在 claim_due_jobs 里做）。"""
     now = now or datetime.now()
     fast = [c for c in candidates
@@ -8500,6 +8529,7 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
                      and cross_cap >= 2 else 0)
     picked = []
     used = dict(running_counts)
+    used_quark = dict(quark_running_counts or {})
     picked_cross = 0
     picked_cross_plain = 0
     for lane in (fast, slow):
@@ -8539,6 +8569,12 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
                 if used.get(key, 0) >= cap:
                     continue
                 job = group[round_no]
+                is_quark_job = (
+                    _dest_scheme(getattr(job, "dest_drive_id", ""))
+                    == "quark:")
+                if (quark_cap is not None and is_quark_job
+                        and used_quark.get(key, 0) >= quark_cap):
+                    continue  # quark 落点 per-owner 钳（见 QUARK_PER_OWNER_INFLIGHT）
                 if cross_cap is not None and _is_cross_job(job):
                     if cross_running + picked_cross >= cross_cap:
                         continue
@@ -8552,6 +8588,8 @@ def _pick_candidates(candidates, limit, running_counts, cap, now=None,
                     picked_cross += 1
                     if not probeable_ids or id(job) not in probeable_ids:
                         picked_cross_plain += 1
+                if is_quark_job:
+                    used_quark[key] = used_quark.get(key, 0) + 1
                 used[key] = used.get(key, 0) + 1
                 progressed = True
             if not progressed:
@@ -8724,7 +8762,9 @@ def claim_due_jobs(db, now=None, limit=None, worker_id=None):
         cross_running=_running_cross_count(db, now=now),
         cross_aging_sec=cross_aging_sec(db),
         probeable_ids=probeable_ids,
-        vip_owners=vip_owners)
+        vip_owners=vip_owners,
+        quark_cap=QUARK_PER_OWNER_INFLIGHT,
+        quark_running_counts=_running_quark_counts_by_owner(db, now=now))
     if not picked:
         return []
     lease_until = now + timedelta(seconds=worker_lease_sec())

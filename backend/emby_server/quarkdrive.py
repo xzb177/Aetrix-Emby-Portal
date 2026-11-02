@@ -128,7 +128,22 @@ _AUTH_HINTS = ("登录", "登陆", "授权", "过期", "token", "unauthorized",
 
 
 class QuarkError(RuntimeError):
-    """夸克上游失败（非鉴权类，或未定性）。"""
+    """夸克上游失败（非鉴权类，或未定性）。
+
+    可观测性字段（2026-11-02）：``step`` 为失败步位名（dir /
+    pre / hash / part / finish / confirm / download 等，由客户
+    端方法在抛错前打上）；``upstream_code`` / ``upstream_message``
+    为 401/403 时从响应体读出的上游真实 code/message（已脱敏、
+    已截断）——此前 _request 不读响应体，死步不可考，这三项让
+    失败落库时能定位死在哪一步、上游到底说了什么。
+    """
+
+    def __init__(self, message="", *, step=None, upstream_code=None,
+                 upstream_message=None):
+        super().__init__(message)
+        self.step = step
+        self.upstream_code = upstream_code
+        self.upstream_message = upstream_message
 
 
 class QuarkAuthError(QuarkError):
@@ -172,6 +187,21 @@ _MEMBER_TYPE_VIP_VALUES = ("SUPER_VIP", "VIP", "Z_VIP")
 _MEMBER_FALSEY_STRINGS = ("", "0", "false", "no", "off", "none", "null")
 
 
+def _sanitize_upstream_text(text, cookie="") -> str:
+    """上游错误文案脱敏：截断到 200 字，并抹掉恰好在文案里出现
+    的本会话 Cookie 字段值（防御式：上游一般不回显凭据，但错误
+    文案要进日志与任务 error_detail，绝不许带凭据原文）。"""
+    out = str(text or "")[:200]
+    for chunk in (cookie or "").split(";"):
+        chunk = chunk.strip()
+        if "=" not in chunk:
+            continue
+        value = chunk.split("=", 1)[1].strip()
+        if len(value) >= 6 and value in out:
+            out = out.replace(value, "***")
+    return out
+
+
 def _member_flag_on(value) -> bool:
     """member_status 某档是否持有：布尔/数字按值，字符串看假值字面。"""
     if isinstance(value, bool):
@@ -203,6 +233,34 @@ class QuarkClient:
 
     def __init__(self, cookie: str):
         self.cookie = cookie or ""
+        #: 当前步位名（各公开方法进入时打上，_request/_oss_send
+        #: 抛错时挂到异常 step 字段，供落库定位死步）。
+        self._step = None
+
+    def _tag_step(self, exc, step=None):
+        """给异常打步位：已有步位（更内层方法打的）优先，不覆盖。"""
+        if isinstance(exc, QuarkError) and not exc.step:
+            exc.step = step or self._step
+        return exc
+
+    def _upstream_error_fields(self, resp):
+        """401/403 响应体里的上游 code/message（脱敏后）。
+
+        读不到/形状不对一律回 (None, "")，绝不因读体失败把鉴权
+        失败变成别的异常。message 经 _sanitize_upstream_text
+        脱敏截断后才许进异常与日志。
+        """
+        body = None
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001 — 读体失败不改变定性
+            body = None
+        if not isinstance(body, dict):
+            return None, ""
+        code = body.get("code")
+        message = _sanitize_upstream_text(body.get("message") or "",
+                                          self.cookie)
+        return code, message
 
     def _absorb_rotated_cookies(self, resp) -> None:
         """回写上游轮换的 __puus/__pus（见模块 docstring）。
@@ -238,36 +296,60 @@ class QuarkClient:
                          headers=headers, json=json_body,
                          timeout=_REQUEST_TIMEOUT)
         except Exception as exc:  # noqa: BLE001 — 网络类收敛成一过性
-            raise QuarkError(f"夸克请求失败：{exc}") from exc
+            raise QuarkError(f"夸克请求失败：{exc}",
+                             step=self._step) from exc
         self._absorb_rotated_cookies(resp)
         if resp.status_code in (401, 403):
-            raise QuarkAuthError(
-                f"夸克返回 HTTP {resp.status_code}（登录态失效）")
+            # 读响应体拿上游真实 code/message（脱敏后进异常与
+            # 日志）：此前不读体直接定性，42 条死步不可考。
+            up_code, up_message = self._upstream_error_fields(resp)
+            text = f"夸克返回 HTTP {resp.status_code}（登录态失效）"
+            if up_code is not None:
+                text += f"，上游 code={up_code}"
+            if up_message:
+                text += f"：{up_message}"
+            logger.warning(
+                "夸克请求鉴权失败 step=%s http=%s code=%s message=%s",
+                self._step, resp.status_code, up_code, up_message)
+            raise QuarkAuthError(text, step=self._step,
+                                 upstream_code=up_code,
+                                 upstream_message=up_message or None)
         if resp.status_code == 429:
-            raise QuarkError("夸克返回 HTTP 429（请求频繁）")
+            raise QuarkError("夸克返回 HTTP 429（请求频繁）",
+                             step=self._step)
         if resp.status_code >= 500:
-            raise QuarkError(f"夸克返回 HTTP {resp.status_code}")
+            raise QuarkError(f"夸克返回 HTTP {resp.status_code}",
+                             step=self._step)
         try:
             body = resp.json()
         except Exception as exc:  # noqa: BLE001
-            raise QuarkError("夸克响应不是 JSON") from exc
+            raise QuarkError("夸克响应不是 JSON",
+                             step=self._step) from exc
         if not isinstance(body, dict):
-            raise QuarkError("夸克响应形状异常")
+            raise QuarkError("夸克响应形状异常", step=self._step)
         code = body.get("code")
         if code not in (0, None):
             message = str(body.get("message") or "")
+            safe_message = _sanitize_upstream_text(message, self.cookie)
             if any(hint in message.lower() for hint in _AUTH_HINTS):
-                raise QuarkAuthError(f"夸克登录态失效：{message}")
-            raise QuarkError(f"夸克返回 code={code}：{message}")
+                raise QuarkAuthError(
+                    f"夸克登录态失效：{safe_message}", step=self._step,
+                    upstream_code=code,
+                    upstream_message=safe_message or None)
+            raise QuarkError(f"夸克返回 code={code}：{safe_message}",
+                             step=self._step, upstream_code=code,
+                             upstream_message=safe_message or None)
         return body.get("data")
 
     def check(self) -> dict:
         """验活第一步：GET /config，code==0 即 Cookie 有效。"""
+        self._step = "check"
         self._request("GET", "/config")
         return {"ok": True}
 
     def list_root(self) -> list:
         """验活第二步：列根目录一页，证明该会话真能读目录。"""
+        self._step = "dir"
         data = self._request("GET", "/file/sort", params={
             "pdir_fid": "0", "_page": "1", "_size": "1",
             "_fetch_total": "1"})
@@ -289,6 +371,7 @@ class QuarkClient:
         不猜。分页直到短页为止，另设 500 页硬顶防上游异常时
         死循环。
         """
+        self._step = "dir"
         out = []
         page = 1
         while page <= 500:
@@ -336,6 +419,7 @@ class QuarkClient:
         详情」口：夸克没有独立的单文件详情端点在本调研范围内
         出现，详情字段以本响应为准（未活体验证）。
         """
+        self._step = "download"
         data = self._request("POST", "/file/download",
                              json_body={"fids": [str(fid)]})
         entry = None
@@ -364,6 +448,7 @@ class QuarkClient:
     def mkdir(self, pdir_fid, name) -> None:
         """建目录：POST /file。同名冲突抛 QuarkError（文案命中
         is_name_conflict_error），调用方按已存在处理。"""
+        self._step = "dir"
         self._request("POST", "/file", json_body={
             "pdir_fid": str(pdir_fid), "file_name": name,
             "dir_path": "", "dir_init_lock": False})
@@ -382,6 +467,7 @@ class QuarkClient:
         猜默认主机把字节打到错地方）。auth_info 原样透传给
         upload_auth。**响应确切嵌套未经活体验证。**
         """
+        self._step = "pre"
         now_ms = int(time.time() * 1000)
         data = self._request("POST", "/file/upload/pre", json_body={
             "ccp_hash_update": True,
@@ -441,6 +527,7 @@ class QuarkClient:
     def upload_hash(self, task_id, md5, sha1) -> bool:
         """秒传判定：POST /file/update/hash。data.finish 为真即
         服务端已有同内容，零字节完成（字段以 OpenList 为准）。"""
+        self._step = "hash"
         data = self._request("POST", "/file/update/hash", json_body={
             "task_id": str(task_id), "md5": md5, "sha1": sha1})
         if isinstance(data, dict):
@@ -455,6 +542,7 @@ class QuarkClient:
         data.auth_key / authorization / auth 里取，全对不上时
         响亮报错。
         """
+        self._step = "part"
         data = self._request("POST", "/file/upload/auth", json_body={
             "task_id": pre["task_id"],
             "auth_info": pre.get("auth_info"),
@@ -496,13 +584,15 @@ class QuarkClient:
             resp = _send(method, url, headers=headers, content=content,
                          timeout=_UPLOAD_TIMEOUT)
         except Exception as exc:  # noqa: BLE001
-            raise QuarkError(f"夸克 OSS 请求失败：{exc}") from exc
+            raise QuarkError(f"夸克 OSS 请求失败：{exc}",
+                             step=self._step) from exc
         self._absorb_rotated_cookies(resp)
         if resp.status_code < 200 or resp.status_code >= 300:
             # OSS 面的 401/403 多半是签名串对不上（auth 段形态
             # 未活体验证），不定性为用户登录失效——绝不许因此
             # 把用户绑定误判 expired。抛普通 QuarkError 走重试。
-            raise QuarkError(f"夸克 OSS 返回 HTTP {resp.status_code}")
+            raise QuarkError(f"夸克 OSS 返回 HTTP {resp.status_code}",
+                             step=self._step)
         return resp
 
     def upload_part(self, pre: dict, part_number: int, data: bytes,
@@ -512,6 +602,7 @@ class QuarkClient:
         content_type 必须与 auth_meta 里签的那个一致（调用方
         upload_file 统一传文件名推得的 format_type）。
         """
+        self._step = "part"
         query = (f"partNumber={part_number}"
                  f"&uploadId={pre['upload_id']}")
         resp = self._oss_send(
@@ -543,6 +634,7 @@ class QuarkClient:
         body = ('<?xml version="1.0" encoding="UTF-8"?>'
                 "<CompleteMultipartUpload>" + items
                 + "</CompleteMultipartUpload>").encode("utf-8")
+        self._step = "finish"
         query = f"uploadId={pre['upload_id']}"
         resp = self._oss_send(
             "POST", self._oss_url(pre, query), auth=auth, date=date,
@@ -559,6 +651,7 @@ class QuarkClient:
     def upload_finish(self, task_id, obj_key) -> dict:
         """收尾：POST /file/upload/finish。返回 data 原样（可能
         带新文件 fid，调用方以目录核对为准、不单信回执）。"""
+        self._step = "finish"
         data = self._request("POST", "/file/upload/finish", json_body={
             "task_id": str(task_id), "obj_key": str(obj_key)})
         return data if isinstance(data, dict) else {}
@@ -620,6 +713,7 @@ class QuarkClient:
         只返 data 原样，形状判定归 vip_status；请求失败照常抛
         QuarkError（鉴权类抛 QuarkAuthError），由调用方定性。
         """
+        self._step = "member"
         return self._request("GET", "/member", params={
             "fetch_subscribe": "false", "_ch": "home",
             "fetch_identity": "false"})

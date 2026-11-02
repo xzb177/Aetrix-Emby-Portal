@@ -101,6 +101,15 @@ class _StubQuarkClient:
             raise quarkdrive.QuarkAuthError("夸克登录态失效")
         return []
 
+    def list_dir(self, pdir_fid, page_size=100):
+        # 验活第三步（list_dir 全量档，2026-11-02 口径对齐）：
+        # 桩与真客户端同形，行为档与前两步一致。
+        type(self).calls["list_dir"] = (
+            type(self).calls.get("list_dir", 0) + 1)
+        if type(self).behavior == "auth_error":
+            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        return []
+
     def vip_status(self):
         type(self).member_calls += 1
         if type(self).vip_result == "raise":
@@ -136,7 +145,7 @@ def test_create_quark_binding_success(db, _stub_client):
     assert binding.status == "active"
     assert binding.provider == "quark"
     assert binding.last_verified_at is not None
-    assert _StubQuarkClient.calls == {"check": 1, "list_root": 1}
+    assert _StubQuarkClient.calls == {"check": 1, "list_root": 1, "list_dir": 1}
     # 凭据只存密封引用，解封后与入参一致；序列化不出凭据材料
     assert _stored_cookie(db, binding) == FAKE_COOKIE
     data = ub.serialize_binding(binding)
@@ -222,7 +231,7 @@ def test_create_quark_non_vip_blocked(db, _stub_client):
     data = ub.serialize_binding(binding)
     assert "会员" in (data["error_message"] or "")
     # 非会员不许说成 Cookie 失效：凭据验活本身是通过的
-    assert _StubQuarkClient.calls == {"check": 1, "list_root": 1}
+    assert _StubQuarkClient.calls == {"check": 1, "list_root": 1, "list_dir": 1}
     assert _StubQuarkClient.member_calls == 1
 
 

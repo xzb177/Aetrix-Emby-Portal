@@ -374,6 +374,23 @@ class _FakeQuarkClient:
             self.cookie = type(self).rotated
         return "https://cdn/quark-file"
 
+    # 判死复核的验活三步（resolve 取链单次鉴权失败后走）：死
+    # Cookie 在验活面同样失败，活 Cookie 全过。
+    def check(self):
+        if type(self).behavior == "auth":
+            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        return {"ok": True}
+
+    def list_root(self):
+        if type(self).behavior == "auth":
+            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        return []
+
+    def list_dir(self, pdir_fid, page_size=100):
+        if type(self).behavior == "auth":
+            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        return []
+
 
 @pytest.fixture()
 def fake_quark(monkeypatch):
@@ -582,6 +599,18 @@ class _FakeQuarkExecClient:
             return [{"fid": self.dir_fid, "name": "aetrix-transfer",
                      "size": 0, "is_dir": True}]
         return list(self.files)
+
+    # 判死复核的验活步（转存单次鉴权失败后走）：auth 行为 =
+    # Cookie 真死，验活同样抛鉴权错；其余行为验活通过。
+    def check(self):
+        if type(self).behavior == "auth":
+            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        return {"ok": True}
+
+    def list_root(self):
+        if type(self).behavior == "auth":
+            raise quarkdrive.QuarkAuthError("夸克登录态失效")
+        return []
 
     def mkdir(self, pdir_fid, name):  # pragma: no cover - 目录已备好
         raise AssertionError("目录已存在，不应再建")

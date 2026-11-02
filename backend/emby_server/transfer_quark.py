@@ -191,7 +191,9 @@ def run_cross_to_quark(db, job, item, drive_api):
     夸克上传（秒传优先、未命中分片）→ 目录核对 → 登记 ready。
 
     失败分类照既有跨执行器口径：
-    - 用户夸克 Cookie 失效 → 绑定落 expired + failed/auth_error；
+    - 用户夸克 Cookie 失效 → 先验活复核（recheck_quark_binding），
+      复核也鉴权失败才绑定落 expired + failed/auth_error；复核
+      未判死按 retriable 重排、不落绑定死（2026-11-02 去单点化）；
     - 源侧凭据（SA / 服主 115）失效 → failed/auth_error，绝不
       碰用户绑定；
     - 源已死 → failed/dead；目录核不到 → failed/copy_unresolved
@@ -209,15 +211,6 @@ def run_cross_to_quark(db, job, item, drive_api):
     if binding is None:
         return tv._fail_job(db, job, "no_binding",
                             "用户夸克绑定已失效或不存在（不重试）")
-    try:
-        cookie = ub.binding_quark_cookie(db, user_id, binding.id)
-    except ub.BindingError as exc:
-        if exc.kind == "auth_error":
-            return tv._fail_job(db, job, "auth_error", str(exc))
-        if exc.kind == "not_found":
-            return tv._fail_job(db, job, "no_binding", str(exc))
-        return {"job_id": job.id,
-                "outcome": tv._schedule_retry(db, job, exc)}
     name = tv._copy_name_for_item(item)
     provider = (getattr(job, "provider", "") or "").strip()
 
@@ -304,28 +297,89 @@ def run_cross_to_quark(db, job, item, drive_api):
     md5_hex = dual.md5_hexdigest() or ""
     sha1_hex = stream_sha1 or src_sha1_hint
 
-    # ---- 夸克侧：建目录 → 上传 → 核对 ----
+    # ---- 夸克侧：取凭据 → 建目录 → 上传 → 核对 ----
+    # 凭据临界区（解封→用→回写）全程持 per-binding 锁，与点播
+    # 取链/手动重验串行（user_bindings.quark_binding_lock）；
+    # 锁只罩夸克侧——源解析/哈希遍不经手夸克凭据，不持锁。
+    with ub.quark_binding_lock(binding.id):
+        return _run_quark_side(
+            db, job, item, binding, user_id, name, size, fetch,
+            md5_hex=md5_hex, sha1_hex=sha1_hex,
+            stream_sha1=stream_sha1, src_sha1_hint=src_sha1_hint)
+
+
+def _auth_detail(exc, step: str) -> str:
+    """鉴权失败落库文案：[步位名] + 异常原文 + 上游 code。
+
+    步位名 dir/pre/hash/part/finish/confirm 让死步可考（异常自
+    带 step 时由 _auth_fail 传入）；上游 code 在原文里没有时从
+    异常的 upstream_code 字段补上（quarkdrive 在 401/403 时读
+    响应体记录，见其 QuarkError 字段）。文案不含凭据原文。
+    """
+    text = str(exc)
+    code = getattr(exc, "upstream_code", None)
+    if code is not None and f"code={code}" not in text:
+        text = f"{text}（上游 code={code}）"
+    return f"[{step}] {text}"
+
+
+def _run_quark_side(db, job, item, binding, user_id, name, size,
+                    fetch, *, md5_hex, sha1_hex, stream_sha1,
+                    src_sha1_hint):
+    """夸克侧执行（锁内）：取凭据 → 建目录 → 上传 → 目录核对
+    → 登记 ready。失败分类见 run_cross_to_quark docstring。"""
+    from backend.emby_server import user_bindings as ub
+
+    try:
+        cookie = ub.binding_quark_cookie(db, user_id, binding.id)
+    except ub.BindingError as exc:
+        if exc.kind == "auth_error":
+            return tv._fail_job(db, job, "auth_error", str(exc))
+        if exc.kind == "not_found":
+            return tv._fail_job(db, job, "no_binding", str(exc))
+        return {"job_id": job.id,
+                "outcome": tv._schedule_retry(db, job, exc)}
     client = _make_quark_client(cookie)
 
     def _absorb():
-        ub.absorb_quark_cookie_rotation(db, binding, cookie, client.cookie)
+        ub.absorb_quark_cookie_rotation(db, binding, cookie,
+                                        client.cookie)
 
-    def _auth_fail(exc):
+    def _auth_fail(exc, step=None):
         _absorb()
-        try:
-            ub._mark_failed(db, binding, "expired")
-            db.commit()
-        except Exception:  # noqa: BLE001 — 落态失败不掩盖原错误
+        step = step or getattr(exc, "step", None) or "unknown"
+        detail = _auth_detail(exc, step)
+        # 判死去单点化（2026-11-02）：单次鉴权失败先用库内最新
+        # Cookie 验活复核，复核也鉴权失败才落 expired +
+        # failed/auth_error；复核未判死（alive/unknown）说明这
+        # 次 401 多半是并发轮换互踩的一过性失败——绑定不落死、
+        # 本单按 retriable 重排。此前是任一步抛 QuarkAuthError
+        # 即打死绑定，同用户其余 pending 单随即被认领前复核
+        # 秒判 no_binding（24h 内级联 71 条）。
+        verdict = ub.recheck_quark_binding(
+            db, binding, client_factory=_make_quark_client)
+        if verdict == "dead":
             try:
-                db.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-        return tv._fail_job(db, job, "auth_error", str(exc))
+                ub._mark_failed(db, binding, "expired")
+                db.commit()
+            except Exception:  # noqa: BLE001 — 落态失败不掩盖原错误
+                try:
+                    db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+            return tv._fail_job(db, job, "auth_error", detail)
+        logger.warning(
+            "夸克转存单次鉴权失败但复核未判死 job=%s step=%s "
+            "verdict=%s，按可重试重排（不落绑定死）",
+            job.id, step, verdict)
+        return {"job_id": job.id,
+                "outcome": tv._schedule_retry(
+                    db, job, RuntimeError(detail))}
 
     try:
         dest_dir = ensure_quark_transfer_dir(client)
     except quarkdrive.QuarkAuthError as exc:
-        return _auth_fail(exc)
+        return _auth_fail(exc, "dir")
     except Exception as exc:
         _absorb()
         return {"job_id": job.id,
@@ -351,7 +405,7 @@ def run_cross_to_quark(db, job, item, drive_api):
             client, dest_dir, name, size,
             expected_fid=(result or {}).get("fid") or None)
     except quarkdrive.QuarkAuthError as exc:
-        return _auth_fail(exc)
+        return _auth_fail(exc, "confirm")
     except Exception as exc:
         _absorb()
         return {"job_id": job.id,
