@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import logging
 
-from backend import admin_roles, models
+from backend import admin_roles, library_scope, models
 from backend.emby_server.async_db import release_db_before_response
 from backend.database import SessionLocal, get_db
 from backend.emby_server import image_store
 from backend.emby_server import models as em
-from backend.emby_server.auth import get_emby_user, get_play_user, parse_emby_authorization, resolve_token
+from backend.emby_server.auth import bearer_scheme, get_emby_user, get_play_user, parse_emby_authorization, resolve_token
 from backend.emby_server.streaming import (
     serve_file,
     serve_image,
@@ -25,6 +25,7 @@ from backend.emby_server.streaming import (
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 import os
@@ -173,11 +174,62 @@ def _virtual_season_series(db: Session, item_id: str):
     )
 
 
+def optional_emby_user(request: Request,
+                       db: Session = Depends(get_db),
+                       credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    """图片端点专用鉴权：分清「没带凭据」与「带了凭据但无效」
+
+    - 完全没带凭据（无 api_key / 令牌头 / Bearer）→ 返回 None，交回
+      端点按无凭据兼容口径判定（仅公开库 Primary，见 ``item_image``）；
+    - 带了任何凭据形态但校验不过 → 照旧抛 401，绝不降级成匿名
+      （失效 / 被轮换的旧 key 必须明确失败，不能悄悄按公开图放行）；
+    - 有效凭据 → 与 ``get_emby_user`` 逐字同一用户（含令牌活跃时间节流写）。
+    """
+    presented = bool(credentials and credentials.credentials)
+    if not presented:
+        from backend.emby_server.auth import _token_from_request
+
+        presented = bool(_token_from_request(request))
+    try:
+        return get_emby_user(request, db, credentials)
+    except HTTPException:
+        if presented:
+            raise
+        return None
+
+
+#: 无凭据出图的每 IP 限额（张/分钟）：海报墙整页刷新约百张量级，
+#: 600 给足正常客户端（含同 NAT 多设备），只挡批量扒图。
+_ANON_IMAGE_LIMIT_PER_MIN = 600
+
+
+def _anon_image_gate(db: Session, request: Request, image_type: str, item) -> None:
+    """无凭据出图门禁（Reflix/Lenna/Yamby 等纯 URL 取图客户端的兼容口径）
+
+    只放行「公开库条目的 Primary 图」：类型不是 Primary、条目所在库
+    不是对全体登录用户可见（``library_scope.library_publicly_visible``，
+    拿不准按受限）→ 401，与 PA-036 凭据缺失时的对外形态一致，不泄露
+    「条目存在但受限」与「条目不存在」的区别。放行前过一道按 IP 的
+    限流（复用 ``backend.ratelimit``，与认证限流同一套桶实现）。
+    """
+    if image_type != "Primary":
+        raise HTTPException(status_code=401, detail="Invalid access token")
+    if not library_scope.library_publicly_visible(
+            db, getattr(item, "library_id", None)):
+        raise HTTPException(status_code=401, detail="Invalid access token")
+    from backend.ratelimit import check_rate_limit, client_ip
+
+    allowed, _retry = check_rate_limit(
+        f"image-anon:{client_ip(request)}", _ANON_IMAGE_LIMIT_PER_MIN, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Too many requests")
+
+
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}")
 @emby_router.get("/Items/{item_id}/Images/{image_type}")
 def item_image(item_id: str, image_type: str, request: Request,
                db: Session = Depends(get_db),
-               user: models.WebUser = Depends(get_emby_user),
+               user: models.WebUser = Depends(optional_emby_user),
                maxWidth: str | None = None, maxHeight: str | None = None,
                w: str | None = None, h: str | None = None):
     """条目图片
@@ -188,6 +240,15 @@ def item_image(item_id: str, image_type: str, request: Request,
     Emby token（``api_key`` 查询参数是 <img> 的唯一带凭据形态，用户已知晓
     token 进 URL 的暴露面并定夺接受），条目按 ``_item_visible`` 校验、
     库封面按 ``_library_scope`` 校验，不可见一律 403。
+
+    无凭据兼容（2026-11-02 站主发 Reflix 截图亲令）：PA-036 落地当天，
+    Reflix / Lenna / Yamby 等客户端的图片加载器不带任何凭据（纯 URL
+    取图），海报墙整排 401 灰卡。站主定版兼容边界（不整体回滚 PA-036）：
+    **完全无凭据时只放行公开库条目的 Primary 图**（见 ``_anon_image_gate``：
+    库须对全体登录用户可见、按 IP 限流、出图缓存头沿用 private）；
+    受限库条目图、Backdrop/Art/Logo/Thumb、库封面、演员图无凭据一律
+    401/403 不变；带凭据（含带了但无效 → 401，不降级匿名）维持
+    PA-036 全口径。季/集回退链按最终解析出的条目所在库判定。
 
     三处修正：
 
@@ -207,6 +268,12 @@ def item_image(item_id: str, image_type: str, request: Request,
     if image_type == "Primary":
         lib = db.query(em.Library).filter(em.Library.guid == item_id).first()
         if lib is not None:
+            # 库封面（含虚拟库借成员海报的派生封面）不在无凭据兼容范围内：
+            # 无凭据一律 401（_library_scope 对 None 用户返回不过滤，
+            # 不挡会把封面匿名放行，必须在这里先挡）。
+            if user is None:
+                raise HTTPException(status_code=401,
+                                    detail="Invalid access token")
             # PA-036：库封面也是受限内容——库不在该用户可见范围内直接 403，
             # 不许靠猜中 guid 绕过 _library_scope（与列表 / 浏览同一口径）。
             _allowed_libs = _library_scope(db, user)
@@ -245,6 +312,10 @@ def item_image(item_id: str, image_type: str, request: Request,
             person = db.query(em.EmbyPerson).filter(
                 em.EmbyPerson.id == int(item_id)).first()
             if person is not None:
+                # 演员图不在无凭据兼容范围内（与 /Persons 端点同口径）
+                if user is None:
+                    raise HTTPException(status_code=401,
+                                        detail="Invalid access token")
                 return _serve_person_image(person.name, db, ew, eh)
         # WS5：#1092 的虚拟季（vseason-<剧 db id>-<季号>）没有独立行，
         # guid 查不到。显示口径上回退到父剧的图片链（只影响显示、不写库），
@@ -257,8 +328,14 @@ def item_image(item_id: str, image_type: str, request: Request,
     # PA-036：条目可见范围校验（与 _require_visible_item 同口径；这里条目已经
     # 过回退链解析出来——含虚拟库派生封面借的代表条目与虚拟季的父剧——统一
     # 在出图前挡一道，受限库的图不许凭 guid 直取）。
-    if not _item_visible(db, user, item):
-        raise HTTPException(status_code=403, detail="Library not accessible")
+    # 无凭据兼容：user 为 None 时不走 _item_visible（它对匿名口径无意义），
+    # 改走 _anon_image_gate——只许公开库 Primary、其余 401；判定按此处
+    # 最终解析出的条目（回退链终点）所在库，与任务口径一致。
+    if user is not None:
+        if not _item_visible(db, user, item):
+            raise HTTPException(status_code=403, detail="Library not accessible")
+    else:
+        _anon_image_gate(db, request, image_type, item)
     if image_type not in ("Primary", "Backdrop", "Art", "Thumb", "Logo"):
         raise HTTPException(status_code=404, detail="Image not found")
     kind = "Primary" if image_type == "Primary" else "Backdrop"
@@ -303,7 +380,7 @@ def item_image(item_id: str, image_type: str, request: Request,
 @emby_router.get("/Items/{item_id}/Images/{image_type}/{index}")
 def item_image_index(item_id: str, image_type: str, index: str, request: Request,
                       db: Session = Depends(get_db),
-                      user: models.WebUser = Depends(get_emby_user),
+                      user: models.WebUser = Depends(optional_emby_user),
                       maxWidth: str | None = None, maxHeight: str | None = None,
                       w: str | None = None, h: str | None = None):
     # 客户端普遍请求 /Images/Backdrop/0、/Images/Primary/0 这类带序号的地址。

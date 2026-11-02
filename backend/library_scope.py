@@ -261,6 +261,38 @@ def item_allowed(db: Session, user, item) -> bool:
     return library_allowed(db, user, getattr(item, "library_id", None))
 
 
+def library_publicly_visible(db: Session, library_id) -> bool:
+    """这个库是否对**全体登录用户**可见（图片端点无凭据兼容口径专用）
+
+    判定 = 服务器默认范围不排除它，且没有任何一个启用中的用户覆盖
+    把它排除在外——即按 ``effective_ids`` 的口径反推：任取一个登录
+    用户算出的可见集合，要么不过滤、要么包含这个库。与 ``effective_ids``
+    的回落语义对齐：默认开关开着但名单解析为空 = 不过滤；某用户的覆盖
+    开着但名单解析为空 = 该用户回落默认，不构成限制。
+
+    fail-closed：``library_id`` 为空或读取过程任何异常 → False（按
+    受限处理）。工作人员豁免不算「全体可见」的依据（那是个别身份）。
+    """
+    if library_id is None:
+        return False
+    try:
+        lid = int(library_id)
+        dp = default_policy(db)
+        if dp["enabled"] and dp["library_ids"] and lid not in dp["library_ids"]:
+            return False
+        for override in user_overrides(db).values():
+            if not override.get("enabled"):
+                continue
+            ids = _resolve(db, override.get("libraries") or [])
+            if ids and lid not in ids:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 — 读失败按受限处理，不放大成公开
+        logger.warning("判定媒体库是否全体可见失败，按受限处理 library=%s",
+                       library_id, exc_info=True)
+        return False
+
+
 # ==================== 写入 ====================
 
 

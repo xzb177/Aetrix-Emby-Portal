@@ -20,6 +20,15 @@ URL（进反代 / CDN 日志、浏览器历史与 Referer）」的前提下选�
 代价（如实记录）：登录页海报拼贴（未登录、无凭据）在新口径下取不到图，
 前端已有的「加载失败即隐藏 + 静态背景兜底」会接住，登录页退化为静态背景。
 
+无凭据兼容（2026-11-02 晚，站主发 Reflix 截图亲令「做一下兼容」）：
+Reflix / Lenna / Yamby 的图片加载器纯 URL 取图、不带任何凭据，PA-036
+落地当天海报墙整排 401。定版边界：完全无凭据时只放行「公开库条目的
+Primary 图」（库对全体登录用户可见才算公开，见
+``library_scope.library_publicly_visible``）；受限库条目图、Backdrop 等
+非 Primary、库封面、演员图无凭据仍 401/403；带了凭据但无效照旧 401
+（不降级匿名）。本文件相应更新：公开库 Primary 无凭据 200（Reflix
+形态 tag=1&maxHeight=600）、其余无凭据用例维持 401/403。
+
 覆盖：无凭据 401 / 坏凭据 401 / api_key 与 X-Emby-Token 两形态 200 /
 集→剧回退 / maxWidth 缩略图 / 受限库条目 403 / 库封面可见 200、受限 403 /
 虚拟库派生封面（借可见成员 200、库本身不可见 403、借受限成员 403）/
@@ -250,8 +259,32 @@ def _h(token):
 # ---------- 鉴权门 ----------
 
 @pytest.mark.parametrize("which", ["series", "episode"])
-def test_image_requires_credentials(client, seed, which):
-    r = client.get(f"/emby/Items/{seed[which]}/Images/Primary")
+def test_public_library_primary_allows_no_credentials(client, seed, which):
+    # 无凭据兼容：公开库（lib_a 对全体登录用户可见）的 Primary 放行；
+    # 集按回退链解析到剧（同库）判定。用例形态与 Reflix 一致：
+    # 无任何鉴权头 / api_key，只有 tag 与 maxHeight 查询参数。
+    r = client.get(
+        f"/emby/Items/{seed[which]}/Images/Primary?tag=1&maxHeight=600")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("image/")
+    assert r.content
+    assert "private" in r.headers.get("cache-control", "")
+
+
+def test_public_library_primary_index_allows_no_credentials(client, seed):
+    r = client.get(f"/emby/Items/{seed['series']}/Images/Primary/0")
+    assert r.status_code == 200, r.text
+
+
+def test_restricted_library_primary_no_credentials_is_401(client, seed):
+    # lib_b 被播种用户的覆盖排除 → 不是全体可见 → 无凭据不放行
+    r = client.get(f"/emby/Items/{seed['movie_b']}/Images/Primary")
+    assert r.status_code == 401, r.text
+
+
+def test_public_library_backdrop_no_credentials_is_401(client, seed):
+    # 无凭据兼容只限 Primary：公开库的 Backdrop 照旧要凭据
+    r = client.get(f"/emby/Items/{seed['series']}/Images/Backdrop")
     assert r.status_code == 401, r.text
 
 
