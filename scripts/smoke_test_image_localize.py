@@ -212,8 +212,30 @@ os.remove(item.poster_path)
 chain_gone = emby_api._image_chain(item, "Primary", db)
 check("本地缓存丢了就退回远程地址（行为与本地化之前一致）",
       chain_gone and chain_gone[0] == item.primary_image_url, str(chain_gone[:2]))
+# PA-036 起图片端点必须带 Emby token（裸请求 401，守卫见
+# tests/test_image_public_access.py）：造个普通用户拿 token 再取图。
+# 本库没有可见范围限制，普通用户即可见（_library_scope 无配置时不过滤）。
+from backend import models as _web_models  # noqa: E402
+from backend.security import hash_password as _hash_pw  # noqa: E402
+
+_viewer = _web_models.WebUser(
+    username="imglocalize_viewer", password_hash="x", is_active=True,
+    emby_username="emby_imglocalize_viewer",
+    emby_password=_hash_pw("imglocalize-pw"))
+db.add(_viewer)
+db.commit()
+_auth = client.post(
+    "/Users/AuthenticateByName",
+    json={"Username": "imglocalize_viewer", "Pw": "imglocalize-pw"},
+    headers={"X-Emby-Authorization":
+             'MediaBrowser Client="SmokeLocalize", Device="Test", '
+             'DeviceId="imglocalize-dev", Version="1.0"'})
+check("取图前 viewer 登录拿到 token", _auth.status_code == 200,
+      f"HTTP {_auth.status_code} {_auth.text[:120]}")
+_img_h = {"X-Emby-Token": _auth.json()["AccessToken"]}
+
 downloads.clear()
-resp = client.get(f"/Items/{item.guid}/Images/Primary")
+resp = client.get(f"/Items/{item.guid}/Images/Primary", headers=_img_h)
 check("取图时按需重新落一份并直接发出（自愈）",
       resp.status_code == 200 and resp.content == POSTER_BYTES,
       f"HTTP {resp.status_code} 长度={len(resp.content)}")

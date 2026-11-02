@@ -55,6 +55,7 @@
 import { onMounted, ref } from 'vue'
 import { Clapperboard, Star } from 'lucide-vue-next'
 import { embyApi, type PortalMediaItem } from '@/api'
+import { imageAuthUrl } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
@@ -75,7 +76,8 @@ function errText(err: unknown): string {
 function posterSrc(m: PortalMediaItem): string {
   if (brokenPosters.value.has(m.id)) return ''
   const url = m.poster_url
-  return typeof url === 'string' && url.trim() !== '' ? url : ''
+  // PA-036：后端给的 poster_url 不带凭据，渲染前补 api_key（图片端点已鉴权）
+  return typeof url === 'string' && url.trim() !== '' ? imageAuthUrl(url) : ''
 }
 
 function onPosterError(id: string) {

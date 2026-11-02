@@ -33,6 +33,7 @@ from backend.emby_server.api import (
     emby_router,
     _first_image,
     _item_visible,
+    _library_scope,
     _play_target,
     _queue_image_repair,
     _require_visible_item,
@@ -134,7 +135,8 @@ def serve_thumbnail(path: str) -> Response:
         headers={
             "ETag": f'"{int(st.st_mtime)}-{st.st_size}"',
             "Last-Modified": formatdate(st.st_mtime, usegmt=True),
-            "Cache-Control": "public, max-age=86400",
+            # PA-036：图片端点已鉴权，缩略图是受限内容，不许共享缓存复用
+            "Cache-Control": "private, max-age=86400",
         },
     )
 
@@ -175,9 +177,17 @@ def _virtual_season_series(db: Session, item_id: str):
 @emby_router.get("/Items/{item_id}/Images/{image_type}")
 def item_image(item_id: str, image_type: str, request: Request,
                db: Session = Depends(get_db),
+               user: models.WebUser = Depends(get_emby_user),
                maxWidth: str | None = None, maxHeight: str | None = None,
                w: str | None = None, h: str | None = None):
     """条目图片
+
+    PA-036（2026-11-02 口径翻转，用户亲点字面修法）：本端点历史上公开
+    出图（H2 时期口径），审计实测任何人凭 guid 即可取海报 / 背景 / 库封面，
+    且完全绕过库可见范围。现与详情 / PlaybackInfo 等端点同口径：必须带
+    Emby token（``api_key`` 查询参数是 <img> 的唯一带凭据形态，用户已知晓
+    token 进 URL 的暴露面并定夺接受），条目按 ``_item_visible`` 校验、
+    库封面按 ``_library_scope`` 校验，不可见一律 403。
 
     三处修正：
 
@@ -196,6 +206,13 @@ def item_image(item_id: str, image_type: str, request: Request,
     _derived_item = None
     if image_type == "Primary":
         lib = db.query(em.Library).filter(em.Library.guid == item_id).first()
+        if lib is not None:
+            # PA-036：库封面也是受限内容——库不在该用户可见范围内直接 403，
+            # 不许靠猜中 guid 绕过 _library_scope（与列表 / 浏览同一口径）。
+            _allowed_libs = _library_scope(db, user)
+            if _allowed_libs is not None and lib.id not in _allowed_libs:
+                raise HTTPException(status_code=403,
+                                    detail="Library not accessible")
         cover_rel = getattr(lib, "cover_path", None) if lib is not None else None
         if cover_rel:
             import os as _os
@@ -218,7 +235,7 @@ def item_image(item_id: str, image_type: str, request: Request,
                 return Response(
                     content=_lc.SVG_PLACEHOLDER_BYTES,
                     media_type="image/svg+xml",
-                    headers={"Cache-Control": "public, max-age=86400"},
+                    headers={"Cache-Control": "private, max-age=86400"},
                 )
     item = _derived_item if _derived_item is not None else db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
@@ -237,6 +254,11 @@ def item_image(item_id: str, image_type: str, request: Request,
             item = _vseries
         else:
             raise HTTPException(status_code=404, detail="Item not found")
+    # PA-036：条目可见范围校验（与 _require_visible_item 同口径；这里条目已经
+    # 过回退链解析出来——含虚拟库派生封面借的代表条目与虚拟季的父剧——统一
+    # 在出图前挡一道，受限库的图不许凭 guid 直取）。
+    if not _item_visible(db, user, item):
+        raise HTTPException(status_code=403, detail="Library not accessible")
     if image_type not in ("Primary", "Backdrop", "Art", "Thumb", "Logo"):
         raise HTTPException(status_code=404, detail="Image not found")
     kind = "Primary" if image_type == "Primary" else "Backdrop"
@@ -266,7 +288,8 @@ def item_image(item_id: str, image_type: str, request: Request,
         return Response(
             content=r.content,
             media_type=r.headers.get("content-type", "image/jpeg"),
-            headers={"Cache-Control": "public, max-age=86400"},
+            # PA-036：已鉴权内容不许共享缓存复用（否则受限图会被缓存发给他人）
+            headers={"Cache-Control": "private, max-age=86400"},
         )
     if not os.path.isfile(src):
         # 数据库有图、本地文件已丢（换盘/迁移/挂载掉线）
@@ -280,11 +303,12 @@ def item_image(item_id: str, image_type: str, request: Request,
 @emby_router.get("/Items/{item_id}/Images/{image_type}/{index}")
 def item_image_index(item_id: str, image_type: str, index: str, request: Request,
                       db: Session = Depends(get_db),
+                      user: models.WebUser = Depends(get_emby_user),
                       maxWidth: str | None = None, maxHeight: str | None = None,
                       w: str | None = None, h: str | None = None):
     # 客户端普遍请求 /Images/Backdrop/0、/Images/Primary/0 这类带序号的地址。
     # 旧实现只注册了 Primary，其它类型（Backdrop/Thumb 等）会直接 404。
-    return item_image(item_id, image_type, request, db,
+    return item_image(item_id, image_type, request, db, user,
                       maxWidth=maxWidth, maxHeight=maxHeight, w=w, h=h)
 
 
@@ -292,10 +316,13 @@ def item_image_index(item_id: str, image_type: str, index: str, request: Request
 @emby_router.get("/Persons/{name}/Images/Primary")
 def person_image(name: str, request: Request,
                  db: Session = Depends(get_db),
+                 user: models.WebUser = Depends(get_emby_user),
                  maxWidth: str | None = None, maxHeight: str | None = None,
                  w: str | None = None, h: str | None = None):
     """演员头像（v2.51.0）：``_item_dto`` 里 People 条目的 ``PrimaryImageTag``
     指向这里，对标 Emby 官方的 ``/emby/Persons/{Name}/Images/Primary``。
+
+    PA-036：与条目图片同口径加鉴权（演员头像不按库分范围，登录即可取）。
 
     同名演员取第一条有头像的行（``ORDER BY id``，行为稳定）。图片来源是
     ``emby_people.image`` 存的 TMDB 远程 URL——与 ``item_image`` 同口径：

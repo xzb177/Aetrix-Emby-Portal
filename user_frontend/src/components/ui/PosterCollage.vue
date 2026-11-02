@@ -48,7 +48,9 @@ const columns = computed((): LoginPoster[][] => {
 const durations = ['60s', '85s', '70s']
 
 function posterSrc(id: string): string {
-  // 直连 EA 公开图片端点（基地址由后端下发；登录页未登录时 embyBaseRef 为空，不能用 imageUrl()）
+  // PA-036 后图片端点已鉴权，而登录页未登录、没有凭据：这里拼出的地址会 401，
+  // hideBrokenPoster 把裂图隐藏、拼贴退化为静态背景。这是字面修法的既定代价
+  // （用户 2026-11-02 定夺），登录后的海报面走 imageUrl()/imageAuthUrl 带 key。
   return `${props.embyBaseUrl}/emby/Items/${encodeURIComponent(id)}/Images/Primary?maxWidth=320`
 }
 

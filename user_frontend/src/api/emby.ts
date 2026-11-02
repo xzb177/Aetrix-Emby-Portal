@@ -14,6 +14,7 @@
  */
 import { shallowRef } from 'vue'
 import api from '@/api'
+import { embyApiKeyRef, setEmbyApiKey, withImageKey } from '@/api/imageKey'
 
 /**
  * 分离部署时，门户 EM 与 Emby EA 是两个地址：
@@ -75,17 +76,23 @@ function setEmbyBase(base: string): string {
   return embyBaseCache
 }
 
-/** 登出时清掉，避免下个登录用户拿到上一个人的 EA 地址 */
+/** 登出时清掉，避免下个登录用户拿到上一个人的 EA 地址与图片 key */
 export function resetEmbyBaseUrl(): void {
   embyBasePromise = null
   setEmbyBase('')
+  setEmbyApiKey('')
 }
 
 function fetchEmbyBase(): Promise<string> {
   if (!embyBasePromise) {
     embyBasePromise = api
-      .get<never, { base_url?: string }>('/api/user/emby/server')
-      .then((card) => setEmbyBase(card?.base_url || ''))
+      .get<never, { base_url?: string; emby_api_key?: string }>('/api/user/emby/server')
+      .then((card) => {
+        // PA-036：账号卡同时下发图片用的 api_key，一并落地（轮换后旧图失效、
+        // 响应式重拼会立刻换上新 key 的地址）
+        if (card?.emby_api_key) setEmbyApiKey(card.emby_api_key)
+        return setEmbyBase(card?.base_url || '')
+      })
       .catch((error) => {
         embyBasePromise = null
         throw error
@@ -450,10 +457,25 @@ export function backdropUrl(item: EmbyItem, maxWidth = 1280): string {
  * Thumb：服务端按横版背景图（Backdrop 链）出图，用作海报缺失时的兜底。
  */
 export function imageUrl(itemId: string, kind: 'Primary' | 'Backdrop' | 'Thumb', maxWidth = 0): string {
-  // H2 安全：URL 里不带任何凭据（JWT 会进反代 / CDN 日志、浏览器历史与 Referer）。
-  // 条目图片端点本身是公开的（不校验 token / Cookie），<img> 跨域直接加载即可。
-  const q = maxWidth > 0 ? `?maxWidth=${maxWidth}` : ''
+  // PA-036（口径翻转，用户 2026-11-02 定夺）：图片端点已加鉴权，<img> 只能靠
+  // URL 里的 api_key 带凭据——拼的是账号卡下发的专用 Emby token，不是门户
+  // JWT（H2 的「JWT 不进 URL」仍然成立）。token 进日志 / 历史 / Referer 的
+  // 暴露面已向用户明示并接受；key 由后端轮换、前端响应式重拼地址。
+  const params: string[] = []
+  if (maxWidth > 0) params.push(`maxWidth=${maxWidth}`)
+  const key = embyApiKeyRef.value
+  if (key) params.push(`api_key=${encodeURIComponent(key)}`)
+  const q = params.length ? `?${params.join('&')}` : ''
   return `${embyBaseRef.value}/emby/Items/${encodeURIComponent(itemId)}/Images/${kind}${q}`
+}
+
+/**
+ * 给后端下发的图片地址补 api_key：门户接口给的 poster_url 是不带凭据的相对
+ * 地址（/emby/Items/{guid}/Images/Primary），PA-036 后必须在渲染点补上，
+ * 否则收藏 / 心愿单的海报全部 401。
+ */
+export function imageAuthUrl(url: string): string {
+  return withImageKey(url)
 }
 
 /** 进度条百分比 */

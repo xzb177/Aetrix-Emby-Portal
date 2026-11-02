@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi, tokenStore, type AuthUser } from '@/api'
-import { resetEmbyBaseUrl } from '@/api/emby'
+import { resetEmbyBaseUrl, refreshEmbyBaseUrl } from '@/api/emby'
 
 export type { AuthUser as User }
 
@@ -49,6 +49,9 @@ export const useUserStore = defineStore('user', () => {
     sessionSeq.value += 1
     tokenStore.set(response.access_token, response.refresh_token)
     localStorage.setItem('user', JSON.stringify(response.user))
+    // PA-036：登录后立刻拉一次账号卡，把图片 api_key 落地——否则首屏海报
+    // 要等别的页面顺带读卡才有凭据（App 启动预取在未登录时是跳过的）
+    refreshEmbyBaseUrl()
   }
 
   async function login(username: string, password: string, captchaToken?: string) {
