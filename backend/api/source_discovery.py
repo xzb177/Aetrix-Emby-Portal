@@ -101,6 +101,71 @@ def _failed(
     )
 
 
+def _throttled_confirm_response(
+    db: Session,
+    item,
+    user_id: int,
+    provider: str,
+    local_item_id: int | None,
+    source_id: int | None,
+    upstream_item_id: str | None,
+) -> ConfirmOut | None:
+    """PA-039：节流命中时确认分支的分流。
+
+    返回 ConfirmOut 表示本分支已定论；返回 None 表示沿用原
+    already_queued 行为（窗内有在途单，或最新单非失败终态）。
+
+    - 窗内有 pending/running 在途单 → already_queued 指着最新的在途单，
+      绝不指着死单（原逻辑用不限状态的 _latest_job，混有失败单时会指错）。
+    - 窗内无在途单、且最新单 status 为 failed → 走门禁同款 force 口径重建
+      一单（TransferJob.status 域以模型为准：pending/running/done/failed，
+      无 cancelled 等其它终态；done 不重建）。
+    - 其余情况（最新单为 done、或窗内无行）→ 返回 None。
+    """
+    recent = tv._recent_user_jobs(db, item.id, str(user_id))
+    live = [j for j in recent if j.status in ("pending", "running")]
+    if live:
+        newest_live = max(live, key=lambda j: j.id)
+        return ConfirmOut(
+            state="already_queued",
+            job_id=newest_live.id,
+            local_item_id=local_item_id,
+            source_id=source_id,
+            upstream_item_id=upstream_item_id,
+            message=ALREADY_QUEUED_MESSAGE,
+        )
+    newest = max(recent, key=lambda j: j.id) if recent else None
+    if newest is None or newest.status != "failed":
+        return None
+    try:
+        job = tv.create_user_job(
+            db, item, user_id, provider,
+            trigger=SOURCE_DISCOVERY_TRIGGER, force=True,
+        )
+    except tv.TransferError as exc:
+        if exc.kind == "no_source_fid":
+            message = NO_SOURCE_FID_MESSAGE
+        elif exc.kind == "no_drive":
+            message = NO_DRIVE_MESSAGE
+        elif exc.kind == "master_off":
+            message = MASTER_OFF_MESSAGE
+        else:
+            message = exc.message or "转存任务创建失败"
+        return _failed(local_item_id, source_id, upstream_item_id, message)
+    logger.info(
+        "找源确认终态失败后重建 job_id=%s item_id=%s source_id=%s",
+        job.id, item.id, source_id,
+    )
+    return ConfirmOut(
+        state="queued",
+        job_id=job.id,
+        local_item_id=local_item_id,
+        source_id=source_id,
+        upstream_item_id=upstream_item_id,
+        message=QUEUED_MESSAGE,
+    )
+
+
 @router.post("/confirm", response_model=ConfirmOut)
 def confirm_source(
     body: ConfirmIn,
@@ -181,6 +246,12 @@ def confirm_source(
         )
     except tv.TransferError as exc:
         if exc.kind == "throttled":
+            retry = _throttled_confirm_response(
+                db, item, user.id, provider,
+                local_item_id, source_id, upstream_item_id,
+            )
+            if retry is not None:
+                return retry
             existing = tv._latest_job(db, item.id, "user", str(user.id))
             if existing is not None:
                 return ConfirmOut(
