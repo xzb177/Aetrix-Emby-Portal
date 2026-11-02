@@ -102,6 +102,7 @@ import { facilityStamp } from '@/config/game'
 import { pointsApi, type PointsLogEntry } from '@/api/economy'
 import { humanizeError } from '@/composables/usePanelApi'
 import { useToast } from '@/composables/useToast'
+import { parseServerTime } from '@/utils/serverTime'
 
 const toast = useToast()
 
@@ -194,7 +195,8 @@ function fmtNum(n: number | null | undefined) {
 function fmtTime(iso?: string | null) {
   if (!iso) return '—'
   // R54-42：new Date 解析失败（非法日期）不再回退原始 ISO 串，改人话占位
-  const d = new Date(iso)
+  // PA-047：服务端下发 UTC naive 串，须按 UTC 解析再转本地
+  const d = parseServerTime(iso)
   if (isNaN(d.getTime())) return '时间未知'
   const m = d.getMonth() + 1
   const day = d.getDate()
@@ -268,7 +270,7 @@ const todayIncome = computed(() => {
   let sum = 0
   for (const l of logs.value) {
     if (!l.created_at || !isIncome(l)) continue
-    if (dayKey(new Date(l.created_at)) === key) {
+    if (dayKey(parseServerTime(l.created_at)) === key) {
       // R54-38：amount 缺失/非数值时 Math.abs 会得到 NaN，先做数值兜底再累加
       const amt = Math.abs(Number(l.amount))
       if (Number.isFinite(amt)) sum += amt
@@ -306,7 +308,7 @@ const filteredGroups = computed<DayGroup[]>(() => {
     let title: string
     let sub: string
     if (l.created_at) {
-      const d = new Date(l.created_at)
+      const d = parseServerTime(l.created_at)
       const k = dayKey(d)
       const md = `${d.getMonth() + 1}.${d.getDate()}`
       if (k === todayK) {

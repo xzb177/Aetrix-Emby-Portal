@@ -96,6 +96,7 @@ import { staminaText } from '@/config/stamina'
 import { checkinApi, pointsApi, type CheckinStatus } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
+import { parseServerTime } from '@/utils/serverTime'
 
 const now = new Date()
 const year = ref(now.getFullYear())
@@ -206,7 +207,8 @@ async function load() {
       const days = new Set<number>()
       for (const l of log.logs) {
         if (!l.created_at) continue
-        const d = new Date(l.created_at)
+        // PA-047：created_at 是 UTC naive 串，new Date 会按本地解释错 8 小时
+        const d = parseServerTime(l.created_at)
         if (d.getFullYear() === year.value && d.getMonth() === month.value) {
           days.add(d.getDate())
         }
