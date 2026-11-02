@@ -1233,6 +1233,45 @@ def _is_user_drive_copy_variant(variant) -> bool:
     return drive_id.startswith("userdrive:")
 
 
+def _variant_copy_scheme(variant) -> str:
+    """本人 ready 副本行的落盘方案前缀（取流 provider 分流口径）。
+
+    只认选路（交付计划 / resolve_play_file_id）会采用的行：归属
+    本人（owner_scope=user）、状态 ready、未吃过死链 strike
+    （与门禁 _newest_ready 对 stale 行的口径一致：吃过 strike
+    的行不再直用，走门禁任务逻辑重建）。命中回 ``quark:`` /
+    ``pan115:`` / ``userdrive:``；其余（无变体、服主行、未就绪、
+    认不出）回 ""——不参与分流，原流程逐字不变。
+    """
+    if variant is None:
+        return ""
+    if getattr(variant, "owner_scope", None) != "user":
+        return ""
+    if getattr(variant, "status", None) != "ready":
+        return ""
+    if (getattr(variant, "stale_count", 0) or 0) >= 1:
+        return ""
+    drive_id = str(getattr(variant, "variant_drive_id", "") or "")
+    for scheme in ("quark:", "pan115:", "userdrive:"):
+        if drive_id.startswith(scheme):
+            return scheme
+    return ""
+
+
+def _is_non_drive_variant(variant) -> bool:
+    """变体行是否为非 Drive 落盘（夸克 / 115 副本）。
+
+    这类行的 variant_file_id 是别家网盘的 fid：喂给 Google
+    files.get / usercontent 只会得 404 还原样出门（2026-11-02
+    user 829 播夸克 ready 副本实锤），Drive 各出口一律先挡。
+    """
+    if variant is None:
+        return False
+    drive_id = str(getattr(variant, "variant_drive_id", "") or "")
+    return drive_id.startswith("quark:") or \
+        drive_id.startswith("pan115:")
+
+
 def _apply_usercopy_direct(db, user, source, file_id) -> bool:
     """用户副本直链：免凭证 usercontent 地址 + 空头。
 
@@ -6341,6 +6380,31 @@ async def video_stream(
             _tv.ensure_user_copy_gate, db, item, user,
             play_sign_consume=_play_sign_consume)
         _gate_verdict = (_transfer_gate or {}).get("verdict")
+        # 取流 provider 分流（2026-11-02 夸克副本串线修复）：选路
+        # （交付计划 plan_ready_leg / resolve_play_file_id）已采用
+        # 本人 ready 的非 Drive 副本时，取流路按副本落盘定，与
+        # 门禁本次为何 proceed 无关——尤其 play_sign 已下发链接
+        # 消费时门禁按口径直接 proceed、根本不看变体，此前夸克
+        # fid 就这样落进 Drive 快路被喂给 Google files.get，
+        # 404 原样出门（user 829 播 696679 实锤：转存单 done、
+        # 变体 ready、EA 侧 quark.cn 请求数为 0）。改判到与门禁
+        # 自报时完全相同的 serve 分支（下方整段复用，含出流端
+        # 开关复核与打点）；Drive 副本（userdrive:）不进这里，
+        # 行为逐字不变。
+        if _gate_verdict == "proceed":
+            _selected_scheme = _variant_copy_scheme(_play_variant)
+            if _selected_scheme == "quark:":
+                _transfer_gate = {
+                    "verdict": "serve_quark_copy",
+                    "reason": "selected_variant",
+                    "variant": _play_variant}
+                _gate_verdict = "serve_quark_copy"
+            elif _selected_scheme == "pan115:":
+                _transfer_gate = {
+                    "verdict": "serve_115_copy",
+                    "reason": "selected_variant",
+                    "variant": _play_variant}
+                _gate_verdict = "serve_115_copy"
         # 准备中态等流（2026-10-27 极限优化）：准备中不再直接 409
         # 让播放器拿无签地址连探 404、等它自己再查 PlaybackInfo
         # （实测约 24 秒感知等待）。流请求本身在这里等：每 0.2 秒
@@ -6850,6 +6914,16 @@ async def video_stream(
     if (_drive_switch_on and await run_db(_strategy.drive_relay_enabled, db)
             and (_requested_variant is None
                  or _requested_variant == play_variants.DRIVE_RELAY)):
+        # Drive 中继护栏（2026-11-02 夸克副本串线修复）：非 Drive
+        # 副本（quark:/pan115: 落盘）的 fid 绝不喂 Google 中继。
+        # 正常路径下这类副本已在门禁块按 provider 分流返回；走到
+        # 这里说明选路与门禁口径漂移（如变体吃过 strike 被分流
+        # 拒用）——响亮 409，不许把别家 fid 当 Drive 文件取流，
+        # 更不许静默改走共享原件。
+        if _is_non_drive_variant(_play_variant):
+            raise HTTPException(
+                status_code=409,
+                detail="播放副本不在谷歌盘，已拦截串线取流")
         _evt_t0 = time.perf_counter()
         # 转存变体：有副本时中继凭据走副本所在盘（v1 与原件同盘，凭据
         # 与原件盘一致）；无副本时仍按原件定位。显式 DRIVE_RELAY 且无
@@ -7074,6 +7148,18 @@ async def video_stream(
             return serve_file(
                 _ms_path, request, media_type,
                 cache_control=cdn.cache_control_for(str(request.url.path)))
+    # Drive 直链护栏（2026-11-02 夸克副本串线修复）：非 Drive
+    # 副本的 fid 绝不喂 Google 存在性校验 / usercontent 302——
+    # 本块（fast302）与尾部 _play_target 回落里的 drive 302 共用
+    # 此一道闸。正常路径下这类副本已在门禁块按 provider 分流
+    # 返回，走到这里即口径漂移，响亮 409，不许静默改走共享
+    # 原件。显式 byos115_direct 不消费 _play_fid（按条目现签），
+    # 不在此挡。
+    if (_is_non_drive_variant(_play_variant)
+            and _requested_variant != play_variants.BYOS115_DIRECT):
+        raise HTTPException(
+            status_code=409,
+            detail="播放副本不在谷歌盘，已拦截串线取流")
     _fast302 = False
     _evt_t0 = time.perf_counter()
     if _drive_switch_on:
