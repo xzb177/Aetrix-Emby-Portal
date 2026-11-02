@@ -6,14 +6,16 @@
 鉴权与可见性：沿用用户端 ``get_current_user``；条目先查活行，
 再按 ``library_scope.item_allowed`` 判定该用户可见，不可见 → 403，
 不存在 → 404。开关关 → 403（先于查库，避免开关关时泄露条目存在性）。
-生成的双语轨只落服务端字幕缓存区，接口只回文件名与条数，
-不回显服务器绝对路径。
+生成的双语轨只落服务端字幕缓存区，生成接口只回文件名与条数，
+不回显服务器绝对路径；取用口按请求用户自己的文件名取轨，
+与字幕投递同款 ``ensure_playback_allowed`` 门禁。
 """
 from __future__ import annotations
 
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -22,6 +24,7 @@ from backend.api.user import get_current_user
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server import smart_subtitles as ss
+from backend.subscriptions import ensure_playback_allowed
 from backend import library_scope
 
 router = APIRouter(prefix="/api/user", tags=["用户端"])
@@ -91,10 +94,11 @@ def create_bilingual(item_id: int, req: BilingualRequest,
         if req.translations is not None:
             result = ss.generate_bilingual_track(
                 item_id, req.source_text, req.source_lang, req.target_lang,
-                translations=req.translations, db=db)
+                translations=req.translations, db=db, user_id=user.id)
         elif req.translate:
             result = ss.generate_bilingual_track(
-                item_id, req.source_text, req.source_lang, req.target_lang, db=db)
+                item_id, req.source_text, req.source_lang, req.target_lang,
+                db=db, user_id=user.id)
         else:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="须提供 translations，或将 translate 置 true 走配置化翻译")
@@ -108,3 +112,43 @@ def create_bilingual(item_id: int, req: BilingualRequest,
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail=str(exc))
     return {"item_id": item_id, **result}
+
+
+@router.get("/smart-subtitles/{item_id}/bilingual/{source_lang}-{target_lang}")
+def get_bilingual(item_id: int, source_lang: str, target_lang: str,
+                  user=Depends(get_current_user),
+                  db: Session = Depends(get_db)):
+    """取用自己生成的双语轨（PA-040）：开关 → 可见性 → 播放门禁 → 回文件内容。
+
+    门禁口径与既有字幕投递一致：条目可见性走本模块 ``_visible_item``，
+    播放门槛走 ``ensure_playback_allowed``（字幕与播放同一门槛，避免
+    非会员绕过付费墙拿到内容文本）。文件名按请求用户自己的用户维
+    拼出，他人的轨按构造就取不到；路径解析后仍须落在缓存区内，
+    否则 404（不回显服务器绝对路径）。
+    """
+    if not ss.resolve_enabled(db):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="智能字幕未开启")
+    _visible_item(db, user, item_id)
+    ensure_playback_allowed(db, user)
+    try:
+        path = ss.bilingual_cache_path(item_id, source_lang, target_lang,
+                                       user_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=str(exc))
+    from backend.emby_server import subtitles as _subs
+    base = _subs.SUB_CACHE_DIR
+    try:
+        resolved_base = os.path.realpath(base)
+        resolved = os.path.realpath(str(path))
+        inside = (resolved == resolved_base
+                  or resolved.startswith(resolved_base + os.sep))
+    except OSError:
+        inside = False
+    if not inside or not os.path.isfile(resolved):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="双语轨不存在，请先生成")
+    with open(resolved, encoding="utf-8") as fh:
+        content = fh.read()
+    return PlainTextResponse(content, media_type="text/vtt; charset=utf-8")
