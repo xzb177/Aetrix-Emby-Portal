@@ -29,7 +29,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend import models, permanent_whitelist
+from backend import models
 from backend.api.economy import _add_points
 
 logger = logging.getLogger(__name__)
@@ -51,27 +51,17 @@ def eligible_ids_query(db: Session, scope: str, now: datetime | None = None):
     - all：现存全部 web_users 行。WebUser 无软删列，注销即行不存在，
       天然不在结果里；is_active 是禁用态、与注销不同口径，不排除。
     - welfare：is_welfare 且资格未过期（welfare_expires_at 为空＝永久，
-      或晚于当前时间），与 welfare_expiry 的现行口径一致；永久账号
-      白名单用户资格恒有效，到期已过也计入（permanent_whitelist）。
+      或晚于当前时间），与 welfare_expiry 的现行口径一致。
     """
     q = db.query(models.WebUser.id)
     if scope == "welfare":
         now = now or datetime.now()
-        valid = or_(
-            models.WebUser.welfare_expires_at.is_(None),
-            models.WebUser.welfare_expires_at > now,
-        )
-        # 永久账号白名单：资格恒有效，到期时间已过也算有效公益用户
-        # （判定单口见 permanent_whitelist.py；总开关关时不拼这一支）。
-        if permanent_whitelist.whitelist_enabled(db):
-            valid = or_(
-                valid,
-                models.WebUser.id.in_(
-                    permanent_whitelist.permanent_id_subquery(db)),
-            )
         q = q.filter(
             models.WebUser.is_welfare == True,  # noqa: E712
-            valid,
+            or_(
+                models.WebUser.welfare_expires_at.is_(None),
+                models.WebUser.welfare_expires_at > now,
+            ),
         )
     return q
 

@@ -53,8 +53,6 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "upstream_aggregate": config_schema.UPSTREAM_AGGREGATE_CONFIG_SCHEMA,
     # 播放器登录黑名单（2026-10-30）：规则数组 JSON 校验
     "player_blacklist": config_schema.PLAYER_BLACKLIST_CONFIG_SCHEMA,
-    # 永久账号白名单（2026-11-01）：只有总开关一个键，名单本体在数据表
-    "permanent_whitelist": config_schema.PERMANENT_WHITELIST_CONFIG_SCHEMA,
     "welfare": config_schema.WELFARE_CONFIG_SCHEMA,
     # 4-6：economy 家族（设计报告说的 44 键，实查 49 键；校验语义与迁移前
     # economy_spec 的历史行为逐字一致，str/secret 用 ("raw",) 原样存库；

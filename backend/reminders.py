@@ -35,7 +35,7 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend import models, permanent_whitelist, realms
+from backend import models, realms
 from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.emby_server.env_util import env_int
 
@@ -182,10 +182,6 @@ def collect_due(db: Session, now: Optional[datetime] = None) -> dict:
 
         # 本页已发送 kind 一次取回，循环里不再逐条查库
         sent_map = _sent_kinds_batch(db, [s.id for s in page])
-        # 永久账号白名单：订阅对名单用户恒有效，不给他们发续费提醒
-        # （判定单口见 permanent_whitelist.py）。
-        permanent = permanent_whitelist.permanent_ids(
-            db, [s.user_id for s in page])
         plan_ids = [s.plan_id for s in page if s.plan_id]
         plan_names = {
             p.id: p.name for p in db.query(models.SubscriptionPlan).filter(
@@ -194,8 +190,6 @@ def collect_due(db: Session, now: Optional[datetime] = None) -> dict:
         } if plan_ids else {}
 
         for sub in page:
-            if sub.user_id in permanent:
-                continue
             end = sub.end_date
             if end is None:
                 continue

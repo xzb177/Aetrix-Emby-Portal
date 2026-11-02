@@ -1806,30 +1806,6 @@ class LotteryBlacklist(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
-class PermanentWhitelistEntry(Base):
-    """永久账号白名单（2026-11-01 用户亲令，判定单口见 backend/permanent_whitelist.py）。
-
-    名单里的账号是永久账号：公益资格、查看凭证、订阅三处过期判定对他们
-    恒有效（不扣费、不提示续费、不因到期拦截）。名单本身只存「谁在名单
-    里」这一件事——三处判定仍在各自原判定点前查本表，不新造第二套判定。
-    由管理后台维护（/api/admin/permanent-whitelist/*）。
-    """
-    __tablename__ = 'permanent_whitelist_entries'
-
-    __table_args__ = (
-        UniqueConstraint('user_id', name='uq_permanent_whitelist_user'),
-        Index('idx_permanent_whitelist_user', 'user_id'),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey('web_users.id', ondelete='CASCADE'), nullable=False)
-    note = Column(String(255), nullable=True)  # 备注（服主自记，如「站主小号」）
-    added_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)  # 添加人（管理员）
-    created_at = Column(DateTime, default=datetime.now)
-
-    user = relationship("WebUser", foreign_keys=[user_id])
-
-
 class RedPacket(Base):
     """红包表（积分红包）"""
     __tablename__ = 'red_packets'

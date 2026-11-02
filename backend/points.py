@@ -41,7 +41,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend import models, permanent_whitelist
+from backend import models
 from backend.api import economy
 
 logger = logging.getLogger(__name__)
@@ -362,11 +362,6 @@ def get_welfare_status(db: Session, user: models.WebUser) -> dict:
     row = db.query(models.WebUser).filter(models.WebUser.id == user.id).first()
     if row is None:
         return {"is_welfare": False, "welfare_expires_at": None}
-    # 永久账号白名单：资格恒有效，对外呈永久口径（expires_at=None 与
-    # 「永不过期」同义，判定单口见 permanent_whitelist.py）；库里存的
-    # 到期时间不动，只是展示不再报一个已经失效的日期。
-    if bool(getattr(row, "is_welfare", False)) and permanent_whitelist.is_permanent(db, row.id):
-        return {"is_welfare": True, "welfare_expires_at": None}
     exp = getattr(row, "welfare_expires_at", None)
     return {
         "is_welfare": bool(getattr(row, "is_welfare", False)),

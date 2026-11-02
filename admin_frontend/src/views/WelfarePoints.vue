@@ -8,13 +8,12 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeftRight, Bot, Coins, Crown, Dices, Gift, KeyRound, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { ArrowLeftRight, Bot, Coins, Dices, Gift, KeyRound, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
 import { fetchViewUnlockSettings, updateViewUnlockSettings } from '@/api/admin'
 import { createGiftBatch, fetchGiftBatches, previewGiftAll, type GiftAllPreview, type GiftAllScope, type GiftBatchRow } from '@/api/economy'
-import { addPermanentEntry, fetchPermanentEntries, removePermanentEntry, savePermanentConfig, searchPermanentUsers, type PermanentEntry, type PermanentSearchUser } from '@/api/permanentWhitelist'
 
 const { isPhone } = useBreakpoint()
 /** 窄屏标签放到输入框上方，120px 的左侧标签会把输入框挤出屏幕 */
@@ -170,8 +169,6 @@ async function load() {
   }
   // 全员赠送批次历史走独立 endpoint，一边失败不影响另一边
   await loadGiftBatches()
-  // 永久账号白名单走独立 endpoint，一边失败不影响另一边
-  await loadPermanent()
 }
 
 async function save() {
@@ -268,103 +265,6 @@ async function doGiftCreate() {
     /* 失败由请求拦截器统一弹错 */
   } finally {
     giftCreating.value = false
-  }
-}
-
-// ==================== 永久账号白名单 ====================
-// 名单里的账号是永久账号：公益资格、查看凭证、订阅三处过期判定恒有效
-// （不扣费、不提示续费、不因到期拦截）。独立 endpoint 独立保存，
-// 不随上方配置表单走。总开关默认开，关后名单保留、全站回原过期口径。
-const pwEnabled = ref(true)
-const pwEntries = ref<PermanentEntry[]>([])
-const pwLoading = ref(false)
-const pwLoaded = ref(false)
-const pwSavingConfig = ref(false)
-const pwPick = ref<number | null>(null)
-const pwOptions = ref<PermanentSearchUser[]>([])
-const pwSearching = ref(false)
-const pwNote = ref('')
-const pwAdding = ref(false)
-
-async function loadPermanent() {
-  pwLoading.value = true
-  try {
-    const res = await fetchPermanentEntries()
-    pwEntries.value = res.entries ?? []
-    pwEnabled.value = res.enabled ?? true
-    pwLoaded.value = true
-  } catch {
-    /* 列表加载失败只影响本卡片 */
-  } finally {
-    pwLoading.value = false
-  }
-}
-
-async function onPwEnabledChange(v: boolean) {
-  pwSavingConfig.value = true
-  try {
-    const res = await savePermanentConfig(v)
-    pwEnabled.value = res.enabled ?? v
-    ElMessage.success(v ? '永久白名单已开启' : '永久白名单已关闭（名单保留，全站回原过期口径）')
-  } catch {
-    pwEnabled.value = !v
-  } finally {
-    pwSavingConfig.value = false
-  }
-}
-
-async function onPwSearch(query: string) {
-  if (!query.trim()) {
-    pwOptions.value = []
-    return
-  }
-  pwSearching.value = true
-  try {
-    const res = await searchPermanentUsers(query.trim())
-    pwOptions.value = res.users ?? []
-  } catch {
-    pwOptions.value = []
-  } finally {
-    pwSearching.value = false
-  }
-}
-
-async function doPwAdd() {
-  if (!pwPick.value) {
-    ElMessage.warning('请先搜索并选择要加入的用户')
-    return
-  }
-  pwAdding.value = true
-  try {
-    await addPermanentEntry({ user_id: pwPick.value, note: pwNote.value.trim() || undefined })
-    ElMessage.success('已加入永久名单')
-    pwPick.value = null
-    pwNote.value = ''
-    pwOptions.value = []
-    await loadPermanent()
-  } catch {
-    /* 失败由请求拦截器统一弹错（重复添加后端回 409） */
-  } finally {
-    pwAdding.value = false
-  }
-}
-
-async function doPwRemove(row: PermanentEntry) {
-  try {
-    await ElMessageBox.confirm(
-      `把「${row.username ?? row.user_id}」移出永久名单？移除后该账号即刻回到原来的过期口径（资格/凭证/订阅数据本身不动）。`,
-      '确认移除',
-      { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  try {
-    await removePermanentEntry(row.user_id)
-    ElMessage.success('已移出永久名单')
-    await loadPermanent()
-  } catch {
-    /* 失败由请求拦截器统一弹错 */
   }
 }
 
@@ -614,71 +514,6 @@ onMounted(load)
       </el-table>
       <div style="margin-top: 8px">
         <el-button text :loading="giftBatchesLoading" @click="loadGiftBatches">刷新历史</el-button>
-      </div>
-    </SectionCard>
-
-    <!-- 永久账号白名单：独立 endpoint 独立保存（不随上方配置表单走） -->
-    <SectionCard
-      title="永久账号白名单"
-      :icon="Crown"
-      description="名单里的账号是永久账号：公益资格、查看凭证、订阅都不过期，不用续费、不弹续费提醒；两个服通用"
-      style="margin-top: 16px"
-    >
-      <el-form :label-position="labelPosition" label-width="120px" class="config-form">
-        <el-form-item label="总开关">
-          <el-switch :model-value="pwEnabled" :loading="pwSavingConfig" @change="onPwEnabledChange" />
-          <span class="field-hint">默认开；关闭后名单保留不删，但全站回到原来的过期口径，重开即刻恢复</span>
-        </el-form-item>
-        <el-form-item label="添加账号">
-          <el-select
-            v-model="pwPick"
-            filterable
-            remote
-            clearable
-            :remote-method="onPwSearch"
-            :loading="pwSearching"
-            placeholder="搜索用户名 / 邮箱 / 用户 ID"
-            class="field-input"
-            style="width: 260px"
-          >
-            <el-option
-              v-for="u in pwOptions"
-              :key="u.id"
-              :label="`${u.username}（#${u.id}）`"
-              :value="u.id"
-              :disabled="u.already_listed"
-            >
-              <span>{{ u.username }}（#{{ u.id }}）</span>
-              <span v-if="u.already_listed" class="field-hint" style="flex-basis: auto; margin-left: 8px">已在名单</span>
-            </el-option>
-          </el-select>
-          <el-input v-model="pwNote" maxlength="255" placeholder="备注（可选，如：站主小号）" class="field-input" style="width: 220px; margin-left: 8px" />
-          <el-button type="primary" :loading="pwAdding" style="margin-left: 8px" @click="doPwAdd">加入名单</el-button>
-          <span class="field-hint">活力值不在白名单豁免范围内：名单里的公益账号仍会被每日扣活力、活力不足仍会拦播放</span>
-        </el-form-item>
-      </el-form>
-
-      <el-table v-loading="pwLoading" :data="pwEntries" size="small" style="margin-top: 8px">
-        <el-table-column label="用户" min-width="160">
-          <template #default="{ row }">{{ row.username ?? '（已注销）' }}（#{{ row.user_id }}）</template>
-        </el-table-column>
-        <el-table-column label="身份" width="90">
-          <template #default="{ row }">{{ row.is_welfare ? '公益' : '普通' }}</template>
-        </el-table-column>
-        <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="added_by_name" label="添加人" width="110" />
-        <el-table-column label="添加时间" min-width="150">
-          <template #default="{ row }">{{ row.created_at ? row.created_at.replace('T', ' ').slice(0, 19) : '' }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="90">
-          <template #default="{ row }">
-            <el-button text type="danger" @click="doPwRemove(row)">移除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <div v-if="pwLoaded && !pwEntries.length" class="field-hint" style="margin-top: 8px">名单是空的，还没有永久账号。</div>
-      <div style="margin-top: 8px">
-        <el-button text :loading="pwLoading" @click="loadPermanent">刷新名单</el-button>
       </div>
     </SectionCard>
   </div>
