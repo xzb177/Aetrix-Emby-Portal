@@ -176,10 +176,12 @@ def test_home_from_slots_result_photo_edit_rejected_falls_back(db, monkeypatch):
     assert len(bodies) == 1                 # 只发一份新面板
     assert "请选择功能" in bodies[0]        # 目标是主菜单
     assert "再来一局" not in bodies[0]      # 不是重发老虎机结果卡
-    # 顺序：删旧在发新之前，且删的是被点的那条消息
-    dele = next(p for m, p in tp.calls if m == "deleteMessage")
-    assert dele["message_id"] == 999
-    assert methods.index("deleteMessage") < methods.index(
+    # 顺序：删旧在发新之前，且删的是被点的那条消息。
+    # 只认 message_id==999 的那次删除：外部自毁定时器可能在窗口内
+    # 到期、把删别条消息的 deleteMessage 抢先塞进 calls（同上）。
+    del_idx = next(i for i, (m, p) in enumerate(tp.calls)
+                   if m == "deleteMessage" and p["message_id"] == 999)
+    assert del_idx < methods.index(
         "sendPhoto" if "sendPhoto" in methods else "sendMessage")
 
 
@@ -225,7 +227,10 @@ def test_home_from_slots_opening_photo_edit_rejected_falls_back(db, monkeypatch)
     # 再点主界面：这次编辑被拒，必须删旧＋发主菜单新面板
     callbacks.handle_callback(db, _cq("menu:main", mid=998, photo=True, cq_id="cq-home"))
 
-    assert deleted and deleted[0]["message_id"] == 998
+    # 只断言「删了被点的那条（998）」，不许写 deleted[0]：外部自毁
+    # 定时器（如别的测试重挂的群面板 Timer）可能在打补丁窗口内到期，
+    # 把它自己的 deleteMessage 抢先塞进 deleted（全量偶红实证）。
+    assert any(p["message_id"] == 998 for p in deleted)
     bodies = [p.get("caption") or p.get("text") or "" for _m, p in sent]
     assert any("请选择功能" in b for b in bodies)
     assert all("再来一局" not in b for b in bodies)
@@ -255,5 +260,8 @@ def test_home_edit_success_no_fallback(db, monkeypatch):
 
     methods = tp.methods()
     assert "editMessageCaption" in methods
-    assert "deleteMessage" not in methods
+    # 不许删被点的这条（999）：外部自毁定时器在窗口内到期删别条
+    # 消息不算本测试的回落，故按 message_id 过滤后再断言（同上）。
+    assert not [p for m, p in tp.calls
+                if m == "deleteMessage" and p["message_id"] == 999]
     assert tp.sent_bodies() == []

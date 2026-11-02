@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.emby_server import models as em
-from backend.tg_bot import callbacks, features, handlers, poller, sender
+from backend.tg_bot import callbacks, ephemeral, features, handlers, poller, sender
 
 TICKS = 10_000_000
 GROUP = -100123
@@ -32,6 +32,38 @@ def db():
     finally:
         session.close()
         engine.dispose()
+
+
+class _FakeTimer:
+    """假 Timer：只登记、永不真挂线程、永不到期。
+
+    群菜单测试走 callbacks 面板编辑成功路径会调 ephemeral.rearm_delete
+    → schedule_delete → 真 threading.Timer(30s)；真定时器会在之后别的
+    测试的 sender 打补丁窗口内到期，把 deleteMessage(-100123, 5) 塞进
+    别人的调用记录（slots 全量偶红实证，见仓库 AGENTS.md 2026-11-02
+    条）。本文件所有测试一律把 ephemeral.Timer 换成这个假货，从源头
+    堵泄漏；schedule_delete 的登记/顶替/取消语义照常走完。
+    """
+
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval = interval
+        self.function = function
+        self.args = args or ()
+        self.kwargs = kwargs or {}
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+
+@pytest.fixture(autouse=True)
+def _no_real_timers(monkeypatch):
+    monkeypatch.setattr(ephemeral, "Timer", _FakeTimer)
 
 
 def _user(db, tg=TG, name="alice", points=42, vitality=14):
