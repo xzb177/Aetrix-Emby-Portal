@@ -558,7 +558,11 @@ def unlock_emby_view(
 
     幂等：已解锁且未过期直接返回成功，不重复扣费。扣费是 SQL 级原子
     更新（余额检查写在 WHERE 里），并发下不会扣成负数；解锁记录有
-    (user_id, realm_id) 唯一约束，建记录冲突时回滚重读走幂等路径。
+    (user_id, realm_id) 唯一约束一人一服一行——已有行过期走原地续开
+    （从现在重算到期，与 codes 打包发放同口径），不新建；只有无行时
+    才新建，建行冲突时回滚重读、只认未过期行才报幂等成功（PA-022：
+    旧实现对过期行也新建，撞约束回滚后却不滤过期谎报 already 成功，
+    钱没扣、权限没给）。
     付费服不走这里——查看权限来自有效订阅。
     """
     realm_id = req.realm_id or realms.active_realm_id(db)
@@ -595,17 +599,34 @@ def unlock_emby_view(
     _append_points_log(db, request_user.id, -price_points, balance, "view_unlock",
                        f"解锁{realm.name}查看权限", f"emby-view:{realm_id}")
     expires_at = None if price_days <= 0 else now + timedelta(days=price_days)
-    db.add(models.EmbyViewUnlock(user_id=request_user.id, realm_id=realm_id,
-                                 unlocked_at=now, expires_at=expires_at,
-                                 points_spent=price_points))
+    # 一人一服一行：已有行（走到这里必为过期行，未过期已在上方幂等返回）
+    # 原地续开。续开用条件 UPDATE（仍过期才更新）防并发双扣：另一请求
+    # 先续开/建行后本条命中 0 行，落到新建分支撞唯一约束→回滚撤销本次
+    # 扣费→重读按未过期口径裁决，绝不出现「报成功但没生效」。
+    renewed = (db.query(models.EmbyViewUnlock)
+                 .filter(models.EmbyViewUnlock.user_id == request_user.id,
+                         models.EmbyViewUnlock.realm_id == realm_id,
+                         models.EmbyViewUnlock.expires_at.isnot(None),
+                         models.EmbyViewUnlock.expires_at <= now)
+                 .update({models.EmbyViewUnlock.expires_at: expires_at,
+                          models.EmbyViewUnlock.unlocked_at: now,
+                          models.EmbyViewUnlock.points_spent: price_points},
+                         synchronize_session="fetch"))
+    if not renewed:
+        db.add(models.EmbyViewUnlock(user_id=request_user.id, realm_id=realm_id,
+                                     unlocked_at=now, expires_at=expires_at,
+                                     points_spent=price_points))
     try:
         db.commit()
     except IntegrityError:
-        # 并发下另一请求已建记录：回滚后走幂等路径（对方那次扣费有效）
+        # 并发下另一请求已建记录：回滚后走幂等路径（对方那次扣费有效）。
+        # 重读必须与前置检查同口径只认未过期行——仍过期绝不报成功。
         db.rollback()
         existing = (db.query(models.EmbyViewUnlock)
                       .filter(models.EmbyViewUnlock.user_id == request_user.id,
-                              models.EmbyViewUnlock.realm_id == realm_id)
+                              models.EmbyViewUnlock.realm_id == realm_id,
+                              or_(models.EmbyViewUnlock.expires_at.is_(None),
+                                  models.EmbyViewUnlock.expires_at > datetime.now()))
                       .first())
         if existing:
             return {"success": True, "already": True,
