@@ -3,6 +3,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
+import { parseServerTime } from '@/utils/serverTime'
 import { MessageSquareText, RefreshCw } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import { fetchWallPosts, deleteWallPost } from '@/api/admin'
@@ -31,7 +32,7 @@ function statusLabel(p: WallPost): string {
 
 function fmtTime(v: string | null): string {
   if (!v) return '—'
-  const d = new Date(v)
+  const d = parseServerTime(v)
   if (Number.isNaN(d.getTime())) return '—'
   const p2 = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`

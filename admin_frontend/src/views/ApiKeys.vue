@@ -10,6 +10,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
+import { parseServerTime } from '@/utils/serverTime'
 import { KeyRound, Plus, RefreshCw, Copy, Trash2, Pencil } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
 import {
@@ -62,7 +63,7 @@ function scopeClass(s: string) {
 function fmtTime(t: string | null) {
   if (!t) return '—'
   try {
-    return new Date(t).toLocaleString('zh-CN', { hour12: false })
+    return parseServerTime(t).toLocaleString('zh-CN', { hour12: false })
   } catch {
     return t
   }
@@ -70,7 +71,7 @@ function fmtTime(t: string | null) {
 
 function isExpired(k: ApiKeyRow) {
   if (!k.expires_at) return false
-  return new Date(k.expires_at).getTime() < Date.now()
+  return parseServerTime(k.expires_at).getTime() < Date.now()
 }
 
 async function load() {

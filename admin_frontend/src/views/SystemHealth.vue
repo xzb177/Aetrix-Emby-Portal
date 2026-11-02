@@ -17,6 +17,7 @@ import {
   sendTestAlert,
 } from '@/api/admin'
 import type { EmbySessionRow, StorageMount } from '@/types'
+import { parseServerTime } from '@/utils/serverTime'
 import type { PanelHealth } from '@/api/admin'
 import type { BackupConfig, BackupFileInfo, TgBotStatus } from '@/api/admin'
 import type {
@@ -279,7 +280,7 @@ function alertCooldownLabel(sec: unknown): string {
 }
 function alertTimeLabel(v: string | null | undefined): string {
   if (!v) return '—'
-  const d = new Date(v)
+  const d = parseServerTime(v)
   return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString()
 }
 const alertEnabled = computed(() => !!alertSettings.value?.enabled)

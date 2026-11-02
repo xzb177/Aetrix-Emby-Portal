@@ -25,6 +25,7 @@ import {
   updateUser, type PlanRow,
 } from '@/api/admin'
 import { adjustUserPoints } from '@/api/economy'
+import { parseServerTime } from '@/utils/serverTime'
 import { bulkExtendWelfare, grantWelfare, revokeWelfare } from '@/api/welfare'
 import type { AdminUserRow, DeviceRow, UserDetail, UserGrantCard, UserGrants } from '@/types'
 import { useAuthStore } from '@/stores/auth'
@@ -768,7 +769,7 @@ function fmtCount(n: number | null | undefined): string {
             <span class="au-badge au-badge-green">公益服</span>
             <div class="user-sub">
               <span
-                v-if="row.welfare_expires_at && new Date(row.welfare_expires_at) < new Date()"
+                v-if="row.welfare_expires_at && parseServerTime(row.welfare_expires_at) < new Date()"
                 class="welfare-expired"
               >已过期</span>
               <span v-else>{{ fmtWelfareDate(row.welfare_expires_at) }}</span>

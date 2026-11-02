@@ -14,6 +14,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Flag, Inbox, RefreshCw } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
+import { parseServerTime } from '@/utils/serverTime'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -109,7 +110,7 @@ function targetLabel(r: GovernanceReportRow): string {
 
 function fmtTime(v: string | null | undefined): string {
   if (!v) return '—'
-  const d = new Date(v)
+  const d = parseServerTime(v)
   if (Number.isNaN(d.getTime())) return '—'
   const p2 = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`
