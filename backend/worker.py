@@ -768,6 +768,34 @@ def main() -> int:
                 logger.info("苹果 CMS 同步未开启，定时同步不启动")
         except Exception as e:
             logger.warning(f"启动苹果 CMS 定时同步失败（可忽略）: {e}")
+        # 苹果 CMS 媒体库同步（新库类型一期）：仅
+        # APPLECMS_LIBRARY_SYNC_ENABLED=1 时启动；关时不启动、不发
+        # 任何上游请求。本块只加自己的启动行，不动上面的接线行。
+        try:
+            from backend.emby_server import applecms_library_sync
+
+            if applecms_library_sync.start_library_sync_scheduler(
+                    _shutdown_event):
+                started.append("applecms_library_sync")
+                logger.info("✅ 苹果 CMS 媒体库同步已启动")
+            else:
+                logger.info("苹果 CMS 媒体库同步未开启，调度不启动")
+        except Exception as e:
+            logger.warning(f"启动苹果 CMS 媒体库同步失败（可忽略）: {e}")
+        # 苹果 CMS 月度全量对账（新库类型一期）：独立开关
+        # APPLECMS_LIBRARY_RECONCILE_ENABLED，与增量同步分开两道
+        # 闸；关时不启动。本块只加自己的启动行。
+        try:
+            from backend.emby_server import applecms_reconcile
+
+            if applecms_reconcile.start_reconcile_scheduler(
+                    _shutdown_event):
+                started.append("applecms_library_reconcile")
+                logger.info("✅ 苹果 CMS 月度对账已启动")
+            else:
+                logger.info("苹果 CMS 月度对账未开启，调度不启动")
+        except Exception as e:
+            logger.warning(f"启动苹果 CMS 月度对账失败（可忽略）: {e}")
         # 上游聚合定时调度（准备线，开关默认关）：仅
         # UPSTREAM_AGGREGATE_SCHEDULE_ENABLED=1 时启动；关时不启动、
         # 不发任何上游请求，全站行为逐字不变。本块只加自己的启动行，
