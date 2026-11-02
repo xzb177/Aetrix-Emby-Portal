@@ -32,9 +32,10 @@ def _bound_user(db, tg_user: dict):
 # 白名单专属称号不在本文件定义：唯一来源是 backend.codes.WHITELIST_TITLE
 # （与身份组 #1680 共用一份），取值点在 _whitelist_identity。
 
-# 创世编号的只读探查面：编号由身份组单落库，本单不落库、不编号——
-# user 属性、codes helper、codes 名单行三处任一有值就展示，都没有时
-# 只显示称号行（编号字段未落地不阻塞本单）。
+# 创世编号的只读口径：编号由身份组单（#1680）落库 whitelist_serials 表，
+# 全站唯一读取口是 codes.whitelist_serial_for(db, user_id)，_whitelist_serial
+# 显式优先走它；下面的 user 属性、codes helper、codes 名单行三处探查面
+# 保留作兜底，都没有时只显示称号行（编号未分配不阻塞面板）。
 _SERIAL_ATTRS = ("whitelist_no", "whitelist_serial", "whitelist_genesis_no",
                  "genesis_no")
 _SERIAL_FUNCS = ("whitelist_serial", "whitelist_number",
@@ -53,14 +54,22 @@ def _coerce_serial(value):
 
 
 def _whitelist_serial(db, user):
-    """创世编号只读：三处探查面任一命中即返回，都没有返回 None。"""
+    """创世编号只读：唯一口径 codes.whitelist_serial_for 显式优先，
+    三处探查面保留作兜底，都没有返回 None。"""
+    _codes = None
+    try:
+        from backend import codes as _codes
+
+        serial = _coerce_serial(_codes.whitelist_serial_for(db, user.id))
+        if serial is not None:
+            return serial
+    except Exception:
+        pass
     for attr in _SERIAL_ATTRS:
         serial = _coerce_serial(getattr(user, attr, None))
         if serial is not None:
             return serial
-    try:
-        from backend import codes as _codes
-    except Exception:
+    if _codes is None:
         return None
     for name in _SERIAL_FUNCS:
         fn = getattr(_codes, name, None)
