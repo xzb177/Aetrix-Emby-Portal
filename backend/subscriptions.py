@@ -36,7 +36,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
-from backend import models, permanent_whitelist, realms, vitality as _vitality
+from backend import models, realms, vitality as _vitality
 
 logger = logging.getLogger(__name__)
 
@@ -110,21 +110,6 @@ def view_grant(db: Session, user: models.WebUser,
     """
     target = _scoped_realm_id(db, realm_id)
     if realms.is_free_realm(db, target):
-        # 永久账号白名单：查看凭证对名单用户恒有效——凭证已过期、甚至
-        # 从未解锁过也视为已授权（判定单口见 permanent_whitelist.py）。
-        # 返回的 unlock 行仍给最近一条真实行（展示用到期日），没有行时
-        # 为 None、granted 照样 True，调用方须以 granted 为准。
-        if permanent_whitelist.is_permanent(db, user.id):
-            latest = (
-                db.query(models.EmbyViewUnlock)
-                .filter(
-                    models.EmbyViewUnlock.user_id == user.id,
-                    models.EmbyViewUnlock.realm_id == target,
-                )
-                .order_by(models.EmbyViewUnlock.unlocked_at.desc())
-                .first()
-            )
-            return True, latest
         now = datetime.now()
         unlock = (
             db.query(models.EmbyViewUnlock)
@@ -150,13 +135,7 @@ FREE_REALM_DOWNLOAD_MESSAGE = realms.DEFAULT_FREE_DOWNLOAD_NOTE
 
 
 def has_active_subscription(db: Session, user_id: int, realm_id: Optional[int] = None) -> bool:
-    """是否持有「生效中且未到期」的订阅（可按服判定）
-
-    永久账号白名单用户恒为 True：订阅过期、甚至从未订阅都不拦
-    （判定单口见 permanent_whitelist.py）。非白名单口径逐字不变。
-    """
-    if permanent_whitelist.is_permanent(db, user_id):
-        return True
+    """是否持有「生效中且未到期」的订阅（可按服判定）"""
     target = resolve_realm_id(realm_id)
     query = db.query(models.UserSubscription).filter(
         models.UserSubscription.user_id == user_id,
@@ -352,7 +331,7 @@ def auto_renew_subscriptions(db: Session, now: Optional[datetime] = None) -> dic
                     "notices": []}
 
     candidates = (
-        db.query(models.UserSubscription.id, models.UserSubscription.user_id)
+        db.query(models.UserSubscription.id)
         .filter(
             models.UserSubscription.status == "active",
             models.UserSubscription.auto_renew == True,  # noqa: E712
@@ -362,14 +341,7 @@ def auto_renew_subscriptions(db: Session, now: Optional[datetime] = None) -> dic
         .order_by(models.UserSubscription.end_date.asc())
         .all()
     )
-    # 永久账号白名单：订阅对名单用户恒有效，不再为他们扣能量自动续订
-    # （跳过不算失败、不发 renew_failed 提醒）。
-    permanent = permanent_whitelist.permanent_ids(
-        db, [uid for (_sid, uid) in candidates])
-    for (sub_id, sub_user_id) in candidates:
-        if sub_user_id in permanent:
-            result["skipped"] += 1
-            continue
+    for (sub_id,) in candidates:
         try:
             outcome = _auto_renew_one(db, sub_id, now)
         except Exception as exc:  # noqa: BLE001 — 一条失败不能带走整轮
