@@ -582,6 +582,7 @@ import { humanizeError } from '@/composables/usePanelApi'
 import { panelApi } from '@/composables/usePanelApi'
 import { toastCopy, confirmCopy } from '@/constants/toastMessages'
 import { toUserMessage } from '@/utils/toUserMessage'
+import { parseServerTime } from '@/utils/serverTime'
 
 const userStore = useUserStore()
 const router = useRouter()
@@ -841,7 +842,8 @@ const LH_PAGE = 20
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '时间未知'
-  const d = new Date(iso)
+  // PA-047：登录记录是 UTC naive 串，须按 UTC 解析再转本地
+  const d = parseServerTime(iso)
   if (Number.isNaN(d.getTime())) return iso
   return d.toLocaleString('zh-CN', { hour12: false })
 }
@@ -905,7 +907,8 @@ async function handleRemoveDevice(device: MyDevice) {
 function deviceAgo(iso?: string | null, isBlocked = false) {
   if (isBlocked) return '已禁用'
   if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
+  // PA-047：last_seen_at 是 UTC naive 串，须按 UTC 解析，否则时长多算 8 小时
+  const diff = Date.now() - parseServerTime(iso).getTime()
   if (Number.isNaN(diff)) return '—'
   if (diff < 0) return '刚刚'
   const mins = Math.floor(diff / 60000)
