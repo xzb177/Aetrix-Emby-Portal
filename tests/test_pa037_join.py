@@ -260,17 +260,21 @@ def test_media_library_recent_excludes_deleted(db):
     assert "pa037-vis" in _dump(rows)
 
 
-def test_sort_projection_page_excludes_deleted(db):
+def test_sort_projection_orphan_row_falls_back_and_excludes_deleted(db):
     from backend.emby_server import item_sort_projection as isp
     user = _user(db)
     lib = _lib(db)
     vis_a = _item(db, "pa037-proj-a")
     vis_b = _item(db, "pa037-proj-b")
     dele = _item(db, "pa037-proj-del", deleted=True)
-    # 孤行场景：投影表里有可见 A、B 与已下架 D。注意 _live_items_query 用
-    # Query.count()（PA-035 同款盲区：子查询包装后钩子看不见），活数按
-    # 3 算，故投影行也放 3 行才对得上、走到分页查询；旧实现按页返回会把 D
-    # 带出来（该 count() 本身是计数口径问题，不在本单联结范围内改）。
+    # 孤行场景：投影表里有可见 A、B 与已下架 D。PA-042 之前本用例假定
+    # _live_items_query 的 Query.count() 有子查询盲区、活数按 3 算，
+    # 故 3 行投影能对上计数、走到分页查询；PA-042 把计数改成
+    # with_entities(func.count()).scalar() 后钩子正常过滤，活数是 2、
+    # 与 3 行投影对不上——覆盖校验正确判定为陈旧覆盖、返回 None 回落
+    # 现算（回落路径同样过滤已下架）。本用例改按新口径断言：内层
+    # _projection_page 返回 None（回落信号），公开口 load_page 走回落
+    # 后仍只返回可见条目，已下架绝不冒出来。
     db.add(em.MediaItemSortProjection(library_id=lib.id, item_id=vis_a,
                                       title_key="a"))
     db.add(em.MediaItemSortProjection(library_id=lib.id, item_id=vis_b,
@@ -278,12 +282,35 @@ def test_sort_projection_page_excludes_deleted(db):
     db.add(em.MediaItemSortProjection(library_id=lib.id, item_id=dele,
                                       title_key="d"))
     db.commit()
-    page = isp._projection_page(db, lib.id, "title", None, None, 10)
-    assert page is not None
-    names = [it.name for _proj, it in page[0]]
+    assert isp._projection_page(db, lib.id, "title", None, None, 10) is None
+    items, _cursor = isp.load_page(db, lib.id, "title", None, None, 10)
+    names = [it.name for it in items]
     assert "pa037-proj-del" not in names
     assert "pa037-proj-a" in names
     assert "pa037-proj-b" in names
+
+
+def test_sort_projection_join_filter_excludes_deleted_when_counts_match(db):
+    from backend.emby_server import item_sort_projection as isp
+    user = _user(db)
+    lib = _lib(db)
+    vis_a = _item(db, "pa037-proj2-a")
+    vis_b = _item(db, "pa037-proj2-b")
+    dele = _item(db, "pa037-proj2-del", deleted=True)
+    # 联结过滤本身的行为级钉子：投影行故意摆成 A＋已下架 D（B 活着但
+    # 缺投影行），活数与投影数恰好都是 2、覆盖校验放行，真正走到分页
+    # 查询；此时只有联结里的显式 deleted_at 条件能把 D 挡在页外——
+    # 若有人把该条件改丢，本用例会把 D 带出来而失败。
+    now = datetime.now()
+    db.add(em.MediaItemSortProjection(library_id=lib.id, item_id=vis_a,
+                                      title_key="a", computed_at=now))
+    db.add(em.MediaItemSortProjection(library_id=lib.id, item_id=dele,
+                                      title_key="d", computed_at=now))
+    db.commit()
+    page = isp._projection_page(db, lib.id, "title", None, None, 10)
+    assert page is not None
+    names = [it.name for _proj, it in page[0]]
+    assert names == ["pa037-proj2-a"]
 
 
 def test_transfer_preheat_signal_ignores_deleted(db):
