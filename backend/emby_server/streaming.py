@@ -892,8 +892,10 @@ def serve_image(path: Optional[str]) -> FileResponse:
     """图片响应：带 ETag / Last-Modified 与 24h 客户端强制缓存
 
     浏览媒体库时同一张海报会被反复请求（滚动、返回、切页），旧实现每次整文件重发。
-    现在响应带 ``ETag`` / ``Last-Modified`` 与 ``Cache-Control: public, max-age=86400``，
+    现在响应带 ``ETag`` / ``Last-Modified`` 与 ``Cache-Control: private, max-age=86400``，
     浏览器与客户端在有效期内直接命中本地缓存，不再为同一张图重复付出磁盘 I/O 与带宽。
+    PA-036 起图片端点已鉴权：private 是为了不让共享缓存（反代 / CDN）把
+    受限库的图复用给其他人，客户端本地缓存不受影响。
     """
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Image not found")
@@ -909,7 +911,7 @@ def serve_image(path: Optional[str]) -> FileResponse:
     headers = {
         "ETag": etag,
         "Last-Modified": last_modified,
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": "private, max-age=86400",
         "Accept-Ranges": "bytes",
     }
     return FileResponse(path, media_type=media_type, headers=headers)

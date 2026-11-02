@@ -173,8 +173,9 @@ assert r.status_code == 206, (r.status_code, r.text[:200])
 assert r.headers.get("content-range", "").startswith("bytes 0-1023/")
 print("OK Direct stream with Range (206)")
 
-# 图片（应 404 或 200，不能 500）
-r = client.get(f"/emby/Items/{movie['Id']}/Images/Primary")
+# 图片（PA-036 起端点必须带 token，裸请求 401 由 tests/test_image_public_access.py
+# 守卫；这里带凭据取图，应 404 或 200，不能 500）
+r = client.get(f"/emby/Items/{movie['Id']}/Images/Primary", headers=H)
 assert r.status_code in (200, 404), r.status_code
 print("OK Images endpoint")
 

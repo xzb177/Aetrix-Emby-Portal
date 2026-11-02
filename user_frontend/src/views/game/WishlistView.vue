@@ -118,7 +118,7 @@
                 class="cand"
                 @click="selectCandidate(c)"
               >
-                <img v-if="c.poster_url" :src="c.poster_url" :alt="c.name" class="cand-poster">
+                <img v-if="c.poster_url" :src="imageAuthUrl(c.poster_url)" :alt="c.name" class="cand-poster">
                 <span v-else class="cand-ph" aria-hidden="true">🎬</span>
                 <span class="cand-main">
                   <b>{{ c.name }}</b>
@@ -134,7 +134,7 @@
         </div>
 
         <div v-if="picked" class="picked-card">
-          <img v-if="picked.poster_url" :src="picked.poster_url" :alt="picked.name" class="picked-poster">
+          <img v-if="picked.poster_url" :src="imageAuthUrl(picked.poster_url)" :alt="picked.name" class="picked-poster">
           <span v-else class="picked-ph" aria-hidden="true">🎬</span>
           <div class="picked-info">
             <b>{{ picked.name }}</b>
@@ -185,6 +185,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { facilityStamp } from '@/config/game'
 import { mediaSeekApi, type MediaSeekCandidate, type TvSeason, type MediaSeekRequest, type HotMediaSeekRequest } from '@/api'
+import { imageAuthUrl } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
 

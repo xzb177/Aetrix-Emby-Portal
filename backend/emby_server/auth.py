@@ -186,6 +186,54 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
     return token_value, row
 
 
+#: 门户网页端图片专用 token 的设备标识（账号卡下发、前端拼进图片 URL 的 api_key）
+WEB_PORTAL_DEVICE_ID = "aetrix-web-portal"
+WEB_PORTAL_APP_NAME = "Aetrix Web"
+
+
+def rotate_web_portal_token(db: Session, user: models.WebUser) -> str:
+    """为门户网页端签发图片用的专用 Emby token，返回明文（PA-036 字面修法）。
+
+    背景：图片端点加鉴权后，网页端 <img> 只能靠 URL 里的 api_key 带凭据；
+    门户用户手里没有 Emby 客户端 token（门户 JWT 不许进 URL，H2），所以由
+    账号卡（GET /api/user/emby/server，JWT 已鉴权）下发一把专用 token。
+
+    口径：
+    - token 明文只在签发瞬间存在（库里只存哈希），无法「读回旧的」，故每次
+      调用都吊销该用户旧的专用行、签发新行（轮换）。前端把 key 存
+      localStorage 并响应式重拼图片 URL，轮换后旧 URL 立即失效、新 URL 接上。
+    - 不走 ``issue_token``：账号卡是只读 GET，设备登记 / 设备数上限 /
+      播放器黑名单是 AuthenticateByName 登录路径的职责，不该在读卡时触发；
+      专用行仍是标准 EmbyApiToken（哈希存储、30 天过期），改密时的全量
+      吊销同样覆盖它。
+    - 专用 token 与普通客户端 token 同权：这是字面修法的既定代价
+      （用户 2026-11-02 知晓 token 进 URL 的暴露面后定夺）。
+    """
+    from backend.emby_server import play_sign
+
+    token_value = secrets.token_hex(20)
+    (
+        db.query(emby_models.EmbyApiToken)
+        .filter(
+            emby_models.EmbyApiToken.user_id == user.id,
+            emby_models.EmbyApiToken.device_id == WEB_PORTAL_DEVICE_ID,
+            emby_models.EmbyApiToken.is_revoked == False,  # noqa: E712
+        )
+        .update({"is_revoked": True}, synchronize_session=False)
+    )
+    row = emby_models.EmbyApiToken(
+        token=hash_emby_token(token_value),
+        user_id=user.id,
+        device_id=WEB_PORTAL_DEVICE_ID,
+        app_name=WEB_PORTAL_APP_NAME,
+        app_version="1.0",
+        expires_at=play_sign.token_expiry_default(),
+    )
+    db.add(row)
+    db.commit()
+    return token_value
+
+
 def _token_from_request(request: Request) -> Optional[str]:
     token = request.headers.get("X-Emby-Token") or request.headers.get("X-MediaBrowser-Token")
     if token:

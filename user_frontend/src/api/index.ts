@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { toUserMessage } from '@/utils/toUserMessage'
+import { setEmbyApiKey } from '@/api/imageKey'
 
 // 使用空 baseURL，让请求自动适配当前域名（前后端同源部署）
 const api = axios.create({
@@ -386,6 +387,9 @@ export interface AccountCard {
   allow_download?: boolean
   /** 我在这几个服各自的地址与会员（多服时客户端该连哪台一目了然） */
   realms?: AccountRealmCard[]
+  /** PA-036：图片端点鉴权后网页端拼图用的专用 Emby token（每次读卡轮换，
+   *  没查看权限 / 外部模式为空串）；由 getAccountCard 同步进 imageKey 持有者 */
+  emby_api_key?: string
 }
 
 export interface WatchStats {
@@ -516,7 +520,13 @@ export interface SetEmbyPasswordResult {
 
 export const embyApi = {
   // 账号卡（服务器地址 / Emby 用户名 / 播放器一键导入 scheme，scheme 不含密码）
-  getAccountCard: () => api.get<never, AccountCard>('/api/user/emby/server'),
+  getAccountCard: () =>
+    api.get<never, AccountCard>('/api/user/emby/server').then((card) => {
+      // PA-036：账号卡每次读都会轮换图片 key，顺手同步进持有者，
+      // 否则旧 key 被吊销后海报会一直 401 到下次整页刷新
+      if (card?.emby_api_key) setEmbyApiKey(card.emby_api_key)
+      return card
+    }),
 
   // 公益服：花能量解锁 Emby 账号/线路查看权限（幂等）
   unlockView: (realmId?: number) =>
