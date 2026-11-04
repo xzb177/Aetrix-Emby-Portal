@@ -1,5 +1,15 @@
 """BYOS_EXTRA_BINDING_PROVIDERS：无对应挂载时也开放绑定入口。"""
+import pytest
+
 from backend.emby_server import user_bindings as ub
+
+
+@pytest.fixture(autouse=True)
+def _binding_switch_on(monkeypatch):
+    # 本套件用 _DB 桩测 env 额外名单口径，写于 Drive 绑定开关
+    # （2026-11-04）之前：把开关读取桩成常开，开关关/开两态由
+    # test_drive_binding_switch.py 专门覆盖。
+    monkeypatch.setattr(ub, "drive_binding_enabled", lambda db: True)
 
 
 class _Q:

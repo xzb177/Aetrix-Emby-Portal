@@ -23,6 +23,7 @@ from backend import models as base_models
 from backend.emby_server import models as em
 from backend.emby_server import drive_oauth as do
 from backend.emby_server import user_bindings as ub
+from backend.integrations import store
 from backend.emby_server.upstream_sources import seal_secret, unseal_secret
 
 
@@ -38,8 +39,16 @@ def db_factory():
 @pytest.fixture()
 def db(db_factory):
     session = db_factory()
+    # 播种 Drive 绑定开关=开（2026-11-04 新增、默认关）：本套件测
+    # OAuth 全流程，开关关时发起/完成会被拒；开关两态由
+    # test_drive_binding_switch.py 专门覆盖。
+    session.add(base_models.SystemConfig(
+        key="drive_binding_enabled", value="true"))
+    session.commit()
+    store.invalidate()
     yield session
     session.close()
+    store.invalidate()
 
 
 @pytest.fixture(autouse=True)

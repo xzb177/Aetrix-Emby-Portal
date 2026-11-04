@@ -912,6 +912,20 @@ def delivery_plan_update_config(
 
 class DriveApiConfigRequest(BaseModel):
     qps: float = 8.0
+    # 谷歌 Drive 绑定开关：None = 本次不改开关（老前端只传 qps 时
+    # 不许顺手把开关写成某个默认值）；True/False 才落库。
+    binding_enabled: bool | None = None
+
+
+def _drive_api_payload(db: Session) -> dict:
+    """Drive API 配置卡片的完整读数：限速（drive_changes）+ Drive
+    绑定开关现值（user_bindings.drive_binding_enabled，默认关）。"""
+    from backend.emby_server import drive_changes, user_bindings
+
+    payload = drive_changes.config_payload(db)
+    payload["binding_enabled"] = user_bindings.drive_binding_enabled(db)
+    payload["defaults"]["binding_enabled"] = False
+    return payload
 
 
 @admin_router.get("/drive-api-config")
@@ -919,10 +933,8 @@ def drive_api_get_config(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Drive API 限速读取：全局令牌桶 QPS（含默认值）。"""
-    from backend.emby_server import drive_changes
-
-    return drive_changes.config_payload(db)
+    """Drive API 配置读取：全局令牌桶 QPS + Drive 绑定开关（含默认值）。"""
+    return _drive_api_payload(db)
 
 
 @admin_router.put("/drive-api-config")
@@ -931,19 +943,29 @@ def drive_api_update_config(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Drive API 限速写入：超 [1, 20] 时 400（中文信息），保存即生效
+    """Drive API 配置写入：QPS 超 [1, 20] 时 400（中文信息），保存即生效
     （本进程强刷；api/ea/worker 其余进程有界延迟内跟上，见
-    drive_changes.refresh_api_qps）。"""
+    drive_changes.refresh_api_qps）。binding_enabled 传了才改绑定
+    开关（走 config_service 的 drive_api 家族校验，写时失效、本
+    进程立即生效）；不传则开关原样不动。"""
+    from backend import config_service
     from backend.emby_server import drive_changes
 
     try:
-        result = drive_changes.write_config(db, qps=request.qps)
+        drive_changes.write_config(db, qps=request.qps)
+        if request.binding_enabled is not None:
+            config_service.save_config(
+                db, {"drive_binding_enabled": request.binding_enabled},
+                schema="drive_api")
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    details = {"qps": request.qps}
+    if request.binding_enabled is not None:
+        details["binding_enabled"] = request.binding_enabled
     _audit(db, current_admin, "drive_api_update_config", "system", None,
-           {"qps": request.qps})
+           details)
     db.commit()
-    return result
+    return _drive_api_payload(db)
 
 
 # ---------- 经济统计 ----------

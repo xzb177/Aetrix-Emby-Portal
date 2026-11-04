@@ -59,6 +59,12 @@ def db_factory():
 @pytest.fixture()
 def db(db_factory):
     session = db_factory()
+    # 播种 Drive 绑定开关=开（2026-11-04 新增、默认关）：本套件含
+    # OAuth 发起/回调与 portal 路由直调，开关关时会被拒；开关两态
+    # 由 test_drive_binding_switch.py 专门覆盖。
+    session.add(base_models.SystemConfig(
+        key="drive_binding_enabled", value="true"))
+    session.commit()
     store.invalidate()
     yield session
     session.close()

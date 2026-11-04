@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from backend import models as base_models
 from backend.emby_server import models as em
 from backend.emby_server import user_bindings as ub
+from backend.integrations import store
 
 
 @pytest.fixture()
@@ -26,8 +27,16 @@ def db_factory():
 @pytest.fixture()
 def db(db_factory):
     session = db_factory()
+    # Drive 绑定开关（2026-11-04）默认关会把 drive 从名单摘掉；本套件
+    # 测的是挂载映射口径，播种开关=开，开关两态由
+    # test_drive_binding_switch.py 专门覆盖。
+    session.add(base_models.SystemConfig(
+        key="drive_binding_enabled", value="true"))
+    session.commit()
+    store.invalidate()
     yield session
     session.close()
+    store.invalidate()
 
 
 def _mount(db, name, mount_type, is_enabled=True):

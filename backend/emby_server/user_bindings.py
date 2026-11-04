@@ -115,6 +115,33 @@ REMOVED_PROVIDER_MESSAGE = "该网盘已下线，请改绑 Google Drive。"
 ERROR_KIND_TO_STATUS["provider_removed"] = "invalid"
 BINDING_ERROR_MESSAGES["provider_removed"] = REMOVED_PROVIDER_MESSAGE
 
+#: 谷歌 Drive 绑定开关（SystemConfig 键，2026-11-04 站主亲令：绑定
+#: 能力保留，但弄一个开关把绑定关掉、现置关）。管理端在既有
+#: 「Drive API 限速」卡片上可见可改（写入走 config_service 家族
+#: drive_api 校验，word 风格存 "true"/"false"）。
+#: 开关只管「新建 Drive 绑定」一个动作：OAuth 发起与回调完成被拒、
+#: providers 名单不返回 drive；已有绑定记录、解绑、状态查询与已绑
+#: 用户的既有能力（播放/取流/转存）一律不受影响。
+KEY_DRIVE_BINDING_ENABLED = "drive_binding_enabled"
+
+#: 开关关闭时新建绑定的拒绝文案（用户端原样展示）。
+DRIVE_BINDING_DISABLED_MESSAGE = "网盘绑定暂未开放。"
+
+
+def drive_binding_enabled(db: Session) -> bool:
+    """Drive 绑定开关现值（读取唯一实现）。
+
+    默认关：无配置行 / 值非法 / 读取异常一律按关处理，只有字面
+    "true" 才算开（word 风格，与 register_gift_* 开关同口径）。
+    读口径走 store 热读（60 秒 TTL + 写时失效），管理端保存后
+    本进程立即生效、其余进程在 TTL 内跟上。
+    """
+    try:
+        raw = store.get_value(db, KEY_DRIVE_BINDING_ENABLED, "")
+    except Exception:  # noqa: BLE001 配置层异常不许把绑定入口打成 500
+        return False
+    return str(raw).strip().lower() == "true"
+
 
 class BindingError(RuntimeError):
     """绑定操作失败（带可分类的 kind，供调用方定状态码与文案）。
@@ -124,6 +151,7 @@ class BindingError(RuntimeError):
     validation（入参/上限，400）、conflict（同名绑定且凭据不同，
     409）、unsupported（P1 不支持的 provider，如 drive，400）、
     not_found（非本人或不存在，404）、
+    disabled（Drive 绑定开关关闭，403，不落状态）、
     transient（一过性失败，不落状态，调用方按 502 处理）。
     """
 
@@ -192,6 +220,7 @@ def list_binding_providers(db: Session) -> list[str]:
 
     只返回映射后的 provider 名，不返回挂载路径、凭据、账号等任何敏感字段；
     只有 is_enabled 的挂载行才计入（NULL 按列默认值启用计）。
+    drive 另受绑定开关管辖：开关关时（默认关）即使有启用挂载也不返回。
     """
     rows = (
         db.query(em.StorageMount.mount_type)
@@ -209,6 +238,11 @@ def list_binding_providers(db: Session) -> list[str]:
     # 两侧都过滤，前端据此整块不渲染这两家）。
     for removed in REMOVED_PROVIDERS:
         found.discard(removed)
+    # Drive 绑定开关关时 drive 永不出现在名单里：与挂载驱动口径
+    # 叠加，挂载映射与 env 额外名单两侧都压过——两个条件任一不
+    # 满足都不给绑（开关见 KEY_DRIVE_BINDING_ENABLED）。
+    if not drive_binding_enabled(db):
+        found.discard(PROVIDER_DRIVE)
     # 固定顺序输出；前端只做 includes 判断，不依赖顺序
     return [p for p in ("drive", "pan115", "quark") if p in found]
 
