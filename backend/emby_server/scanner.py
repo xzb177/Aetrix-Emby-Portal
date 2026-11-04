@@ -7034,7 +7034,23 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item.episode_number = ep_no
                     ep_nfo = _pending.nfo_data
                     ep_title = (ep_nfo or {}).get("title")
-                    item.name = _episode_display_name(ep_title or parsed["name"], season_no, ep_no)
+                    if ep_title:
+                        # 有真实集名（单集 NFO 标题）：展示名拼接口径不变，
+                        # 仍走 _episode_display_name（标题 + SxxExx 去重拼接）。
+                        item.name = _episode_display_name(
+                            ep_title, season_no, ep_no)
+                    elif ep_no is not None:
+                        # N2-1（Nova 口径，2026-11-05 立项）：无元数据标题时
+                        # 集名只写「第 N 集」，不再拼「剧名 SxxExx」——剧名由
+                        # series 行承载、季集号有独立字段，集名里不必重复。
+                        # _episode_display_name 本身不改：它还服务于有标题
+                        # 的拼接路径，语义不同，不许顺手改它的契约。
+                        item.name = f"第 {ep_no} 集"
+                    else:
+                        # 只有季号、没有集号（整季包文件）：没有集号可写
+                        # 「第 N 集」，沿用旧拼接口径（片名 Sxx），不猜集号。
+                        item.name = _episode_display_name(
+                            parsed["name"], season_no, ep_no)
                     if ep_nfo:
                         # 单集 NFO：简介与评分（标题已用于展示名）
                         nfo_lib.apply_nfo(item, ep_nfo, "episode")
