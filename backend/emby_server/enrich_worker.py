@@ -2913,7 +2913,8 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                                          images_lang=fetched.get("tmdb_images_lang"))
         if nfo_data:
             nfo_lib.apply_nfo(item, nfo_data, kind,
-                                          skip_overview=_ep_skip_overview)
+                                          skip_overview=_ep_skip_overview,
+                                          db=db)
     elif fetched.get("tmdb_hit"):
         tmdb_client.apply(item, fetched["tmdb_hit"], kind)
         details = fetched.get("tmdb_details")
@@ -2927,10 +2928,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             tmdb_client.apply_details(item, details)
         if nfo_data:
             nfo_lib.apply_nfo(item, nfo_data, kind,
-                                          skip_overview=_ep_skip_overview)
+                                          skip_overview=_ep_skip_overview,
+                                          db=db)
     elif nfo_data and not item.overview:
         nfo_lib.apply_nfo(item, nfo_data, kind,
-                                          skip_overview=_ep_skip_overview)
+                                          skip_overview=_ep_skip_overview,
+                                          db=db)
 
     # 3.5 演员表（v2.51.0）：details 自带 credits；幂等，只在没有演员行时写。
     _apply_cast(db, item, fetched.get("tmdb_details"))

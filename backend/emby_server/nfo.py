@@ -4,12 +4,15 @@
 扫描时优先使用它，不再调 TMDB 搜索（B 方案：TMDB 只用来补海报/背景图）。
 """
 
+import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from backend.emby_server.pinyin_sort import make_sort_name
+
+logger = logging.getLogger(__name__)
 
 # 支持的 NFO 根标签：电影 / 剧集 / 单集 / 季
 _NFO_ROOTS = {"movie", "tvshow", "episodedetails", "season"}
@@ -169,6 +172,32 @@ def _pick_fanart(root: ET.Element) -> str:
     return ""
 
 
+def _parse_actors(root: ET.Element) -> List[Dict[str, str]]:
+    """解析 ``<actor>`` 列表（Emby/Jellyfin/Kodi 标准结构，Nova N3-1）。
+
+    ``<actor><name>…</name><role>…</role><type>Actor</type><thumb>URL</thumb></actor>``
+    → ``[{"name", "role", "image"}]``，保持文档顺序（即戏份顺序）。
+    - 无 ``<name>`` 的丢弃；同名重复只留第一条；
+    - ``<type>`` 明确写了非 Actor（如 Director）的不是演员，不收；
+    - 头像只收 http(s)（与 ``_pick_thumb`` 同口径：相对路径在网盘语境取不到）。
+    """
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for el in root.findall("actor"):
+        name = _text(el, "name")
+        if not name or name in seen:
+            continue
+        ptype = _text(el, "type")
+        if ptype and ptype.lower() != "actor":
+            continue
+        seen.add(name)
+        thumb = _text(el, "thumb")
+        if not thumb.startswith(("http://", "https://")):
+            thumb = ""
+        out.append({"name": name, "role": _text(el, "role"), "image": thumb})
+    return out
+
+
 def parse_nfo(text: str) -> Optional[Dict[str, Any]]:
     """解析 NFO 文本 → 元数据 dict；解析失败或没有可用字段返回 None。"""
     if not text or not isinstance(text, str):
@@ -201,6 +230,8 @@ def parse_nfo(text: str) -> Optional[Dict[str, Any]]:
         # 本地自带图（整理工具常把海报/背景地址写进 NFO）：落库只填空缺
         "poster": _pick_thumb(root),
         "fanart": _pick_fanart(root),
+        # 演员（name/role/头像）：落库走 apply_nfo 的 db 分支（N3-1）
+        "actors": _parse_actors(root),
     }
     # 媒体流信息（fileinfo/streamdetails）：NFO 优先于文件名解析
     data["streamdetails"] = _parse_streamdetails(root)
@@ -219,8 +250,58 @@ def _merge_aliases(item: Any, names: List[Optional[str]]) -> None:
         item.aliases = ",".join(dict.fromkeys(merged))[:2000]
 
 
+def _apply_nfo_cast(db: Any, item: Any, actors: List[Dict[str, str]]) -> None:
+    """把 NFO 演员写进既有 ``emby_people`` 管道（Nova N3-1，不新造一套）。
+
+    边界与既有演员管道（enrich ``_apply_cast`` / ``_apply_douban_cast``）同款：
+    - 条目还没有演员行时才新增（name/role/头像按 NFO，顺序即 sort_order）；
+    - 已有演员行（TMDB/豆瓣先写或上轮写过）时不新增、不删、不重排，只按
+      名字给已有行补空 role / 空头像——NFO 与在线演员表不互相整表覆盖；
+    - 演员是增强信息：失败只记日志，绝不影响 NFO 文本落库主流程。
+    """
+    if not actors or getattr(item, "id", None) is None:
+        return
+    try:
+        from backend.emby_server import models as em
+
+        existing = db.query(em.EmbyPerson).filter(
+            em.EmbyPerson.item_id == item.id).all()
+        missing_image = False
+        if existing:
+            by_name = {a["name"]: a for a in actors}
+            for p in existing:
+                a = by_name.get(p.name)
+                if a:
+                    if a.get("role") and not p.role:
+                        p.role = str(a["role"])[:200]
+                    if a.get("image") and not p.image:
+                        p.image = str(a["image"])[:1024]
+                missing_image = missing_image or not p.image
+        else:
+            for idx, a in enumerate(actors):
+                db.add(em.EmbyPerson(
+                    item_id=item.id,
+                    name=str(a["name"])[:200],
+                    role=str(a.get("role") or "")[:200],
+                    image=str(a.get("image") or "")[:1024],
+                    sort_order=idx,
+                    person_tmdb_id="",
+                ))
+                missing_image = missing_image or not a.get("image")
+        if missing_image:
+            # 有演员没头像：唤醒演员补全线程按名补图（与 _apply_cast 同款），
+            # 写事务里不碰网络。
+            try:
+                from backend.emby_server import refresh_person_worker as _rpw
+                _rpw.kick()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001 — 演员落库失败不该影响主流程
+        logger.debug("NFO 演员落库失败 %s: %s", getattr(item, "name", ""), exc)
+
+
 def apply_nfo(item: Any, data: Dict[str, Any], kind: str,
-              skip_overview: bool = False) -> None:
+              skip_overview: bool = False, db: Any = None) -> None:
     """把 NFO 元数据落到 MediaItem 上（用户整理的文本优先于 TMDB）。
 
     kind: movie / series / episode / season。episode / season 只写简介与评分，
@@ -229,6 +310,10 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str,
 
     skip_overview: 批3（单集分项开关）——episode 的简介分项关时跳过 plot 写入，
     其它字段（评分/流信息）不受影响。默认 False = 现状行为。
+
+    db: 传 DB 会话时（扫描/enrich 的落库点）把 NFO 演员一并写进
+    ``emby_people``（仅 movie / series，见 ``_apply_nfo_cast`` 的边界）；
+    不传 db 时行为与旧版逐字一致（纯字段落库）。
     """
     if kind in ("movie", "series"):
         if data.get("title"):
@@ -279,3 +364,7 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str,
         item.overview = data["plot"]
     if data.get("rating") is not None:
         item.community_rating = data["rating"]
+    # 演员（N3-1）：与文本字段同门控——只有 movie / series 落库；
+    # episode / season 的 NFO 演员不在本项范围（Nova 未实证、口径未定版）。
+    if db is not None and kind in ("movie", "series"):
+        _apply_nfo_cast(db, item, data.get("actors") or [])

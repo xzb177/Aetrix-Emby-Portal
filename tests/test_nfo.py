@@ -228,6 +228,65 @@ def test_apply_nfo_art_fills_only_when_empty():
     assert item2.backdrop_image_url == "https://image.tmdb.org/t/p/original/y.jpg"
 
 
+# ==================== NFO 演员（Nova N3-1） ====================
+
+# Nova 深测样本同款结构（novaemby-deep-raw §3b）：两名演员带 role，
+# normal/readonly 两库都逐项落库；Aetrix 此前完全不解析 <actor>。
+MOVIE_NFO_WITH_CAST = """<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<movie>
+  <title>NFO Custom Title Deep</title>
+  <originaltitle>NFO Original Deep</originaltitle>
+  <plot>Custom plot</plot>
+  <year>2019</year>
+  <rating>8.7</rating>
+  <uniqueid type="tmdb" default="true">999002</uniqueid>
+  <genre>Drama</genre>
+  <actor>
+    <name>NFO Actor One</name>
+    <role>Lead Role</role>
+    <type>Actor</type>
+  </actor>
+  <actor>
+    <name>NFO Actor Two</name>
+    <role>Support Role</role>
+  </actor>
+</movie>
+"""
+
+
+def test_parse_nfo_actors_with_roles():
+    """<actor><name>/<role> 解析：名字、角色、文档顺序都要在"""
+    data = nfo_lib.parse_nfo(MOVIE_NFO_WITH_CAST)
+    assert data["actors"] == [
+        {"name": "NFO Actor One", "role": "Lead Role", "image": ""},
+        {"name": "NFO Actor Two", "role": "Support Role", "image": ""},
+    ]
+
+
+def test_parse_nfo_without_actors_empty_list():
+    """无演员 NFO：actors 是空列表而不是缺失/None（回归口径不变）"""
+    data = nfo_lib.parse_nfo(MOVIE_NFO)
+    assert data["actors"] == []
+
+
+def test_parse_nfo_actor_thumb_and_filters():
+    """演员 thumb 只收 http(s)；无名演员丢弃；同名重复只留第一条；
+    <type> 非 Actor（如 Director）不进演员表。"""
+    data = nfo_lib.parse_nfo(
+        "<movie><title>X</title>"
+        "<actor><name>甲</name><role>主角</role>"
+        "<thumb>https://img.example.com/a.jpg</thumb></actor>"
+        "<actor><name>乙</name><thumb>poster.jpg</thumb></actor>"
+        "<actor><role>无名</role></actor>"
+        "<actor><name>甲</name><role>重复</role></actor>"
+        "<actor><name>丙</name><type>Director</type></actor>"
+        "</movie>")
+    assert data["actors"] == [
+        {"name": "甲", "role": "主角", "image": "https://img.example.com/a.jpg"},
+        {"name": "乙", "role": "", "image": ""},
+    ]
+
+
 # ==================== 候选文件名 ====================
 
 
