@@ -595,7 +595,14 @@ def start_drive_oauth(db: Session, user_id: int, account_label: str,
     换凭据（不新增行、不改 label、不改绑定 id），回调失败时目标行
     落失败态（不另建失败行）。重绑中途放弃：旧绑定原样不动，
     不像“先删后绑”那样丢行。
+
+    绑定开关（drive_binding_enabled，默认关）关时在最前面拒绝
+    （kind=disabled，403）：不建 state 行，重绑发起同样受管——
+    开关只管「新建绑定」这个动作，既有绑定的播放/维护不走本口。
     """
+    if not ub.drive_binding_enabled(db):
+        raise DriveOAuthError(
+            "disabled", ub.DRIVE_BINDING_DISABLED_MESSAGE)
     if not _client_id() or not _client_secret():
         raise DriveOAuthError(
             "validation",
@@ -680,7 +687,13 @@ def complete_drive_oauth(db: Session, state: str, code: str,
     pending；旧 refresh_token 尽力吊销（失败不挡重绑）；失败属三档
     内时目标行落失败态（不另建行）；目标行中途已删时响亮拒绝，
     不另建行（防 label 唯一约束冲突）。
+    绑定开关（drive_binding_enabled，默认关）关时在消费 state
+    之前拒绝（kind=disabled，403）：发起后开关被关掉的中途流程
+    同样建不了新绑定，state 行不烧、开关重开后仍可用（未过期时）。
     """
+    if not ub.drive_binding_enabled(db):
+        raise DriveOAuthError(
+            "disabled", ub.DRIVE_BINDING_DISABLED_MESSAGE)
     uri = redirect_uri_value or redirect_uri()
     row = (
         db.query(em.DriveOAuthState)

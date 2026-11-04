@@ -767,6 +767,10 @@ def _binding_error_status(exc) -> int:
         return 502
     if exc.kind == "conflict":
         return 409
+    if exc.kind == "disabled":
+        # Drive 绑定开关关闭（drive_binding_enabled）：明确拒绝新建
+        # 绑定，detail 是给用户看的人话（「网盘绑定暂未开放。」）。
+        return 403
     return 400
 
 
@@ -791,6 +795,8 @@ def list_storage_binding_providers(
     才计入；前端按这份名单渲染对应 provider 的块，名单里没有的 provider 整个块
     不渲染，连该 provider 已绑的行也不展示（以名单为准；与“列表只出自己的行”
     口径的冲突点已写进 PR 描述，等父代理审）。
+    drive 另受绑定开关（drive_binding_enabled，默认关）管辖：关时名单
+    不返回 drive，前端整块不渲染，OAuth 发起口同时 403 拒绝。
     """
     from backend.emby_server import user_bindings
 

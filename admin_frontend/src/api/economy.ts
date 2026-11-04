@@ -497,10 +497,12 @@ export const updateMountServingConfig = (payload: MountServingConfigPayload) =>
 export interface DriveApiConfig {
   /** Drive API 全局速率上限（QPS）：扫描列举与 Changes 增量共用，默认 8，范围 1~20 */
   qps: number
-  defaults: { qps: number }
+  /** 谷歌 Drive 绑定开关：关时用户不能新建绑定（已有绑定不受影响），默认关 */
+  binding_enabled: boolean
+  defaults: { qps: number; binding_enabled: boolean }
 }
 
-export type DriveApiConfigPayload = { qps: number }
+export type DriveApiConfigPayload = { qps: number; binding_enabled?: boolean }
 
 export const fetchDriveApiConfig = () =>
   get<DriveApiConfig>('/drive-api-config')

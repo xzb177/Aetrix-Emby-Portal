@@ -31,6 +31,7 @@ from backend.emby_server import delivery_plan as dp
 from backend.emby_server import playback_gate as gate
 from backend.emby_server import transfer_variant as tv
 from backend.emby_server import user_bindings as ub
+from backend.integrations import store
 
 
 @pytest.fixture()
@@ -45,8 +46,16 @@ def db_factory():
 @pytest.fixture()
 def db(db_factory):
     session = db_factory()
+    # 播种 Drive 绑定开关=开（2026-11-04 新增、默认关）：本套件测
+    # 已下线 provider 的收敛口径，期望名单含 drive；开关两态由
+    # test_drive_binding_switch.py 专门覆盖。
+    session.add(base_models.SystemConfig(
+        key="drive_binding_enabled", value="true"))
+    session.commit()
+    store.invalidate()
     yield session
     session.close()
+    store.invalidate()
 
 
 _counter = [0]

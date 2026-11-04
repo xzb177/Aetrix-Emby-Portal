@@ -947,12 +947,13 @@ async function saveMountServingCore(): Promise<boolean> {
 }
 
 /** ==================== Drive API 限速卡片（独立 endpoint，非通用分组） ==================== */
-const driveApi = reactive({ qps: 8 })
-const driveApiOriginal = reactive({ qps: 8 })
+const driveApi = reactive({ qps: 8, binding_enabled: false })
+const driveApiOriginal = reactive({ qps: 8, binding_enabled: false })
 const driveApiLoading = ref(false)
 
 function applyDriveApi(data: DriveApiConfig) {
   driveApi.qps = Number(data.qps) || 8
+  driveApi.binding_enabled = data.binding_enabled === true
   Object.assign(driveApiOriginal, driveApi)
 }
 
@@ -967,7 +968,10 @@ async function loadDriveApi() {
   }
 }
 
-const driveApiDirty = computed(() => driveApi.qps !== driveApiOriginal.qps)
+const driveApiDirty = computed(
+  () => driveApi.qps !== driveApiOriginal.qps
+    || driveApi.binding_enabled !== driveApiOriginal.binding_enabled,
+)
 
 /** Drive API 限速保存核心：返回是否成功，失败时拦截器/校验已提示。 */
 async function saveDriveApiCore(): Promise<boolean> {
@@ -976,7 +980,10 @@ async function saveDriveApiCore(): Promise<boolean> {
     return false
   }
   try {
-    applyDriveApi(await updateDriveApiConfig({ qps: driveApi.qps }))
+    applyDriveApi(await updateDriveApiConfig({
+      qps: driveApi.qps,
+      binding_enabled: driveApi.binding_enabled,
+    }))
     return true
   } catch {
     // 拦截器已提示
@@ -2101,7 +2108,7 @@ watch(
             id="group-drive-api"
             title="Drive API 限速"
             :icon="Gauge"
-            description="扫描列举与 Changes 增量轮询共用的 Drive API 全局请求速率上限。调高能加快扫描，也会更贴近谷歌配额；保存后本页所在进程立即生效，其余进程在一分多钟内陆续跟上。"
+            description="扫描列举与 Changes 增量轮询共用的 Drive API 全局请求速率上限。调高能加快扫描，也会更贴近谷歌配额；保存后本页所在进程立即生效，其余进程在一分多钟内陆续跟上。同卡管理谷歌 Drive 绑定开关（默认关）。"
             :tone="driveApiDirty ? 'accent' : 'default'"
             class="group-card"
           >
@@ -2124,6 +2131,15 @@ watch(
                     <span class="field-suffix">次/秒</span>
                   </div>
                   <span class="field-hint">全部 Drive API 请求合计不超过这个速率，默认 8。谷歌 per-user 配额约 10 次/秒，实际靠 SA 池轮换分摊到多个账号</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="Google Drive 绑定开关">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch v-model="driveApi.binding_enabled" />
+                    <span class="field-suffix">{{ driveApi.binding_enabled ? '已开放新建绑定' : '已关闭新建绑定' }}</span>
+                  </div>
+                  <span class="field-hint">关：用户不能新建 Drive 绑定——发起授权会被拒绝、「我的网盘」也不再显示 Drive 入口；已经绑定的用户与播放不受影响。开：恢复新建绑定入口。默认关</span>
                 </div>
               </el-form-item>
             </el-form>
