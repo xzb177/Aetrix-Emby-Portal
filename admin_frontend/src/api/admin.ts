@@ -1839,6 +1839,28 @@ export const fetchUpstreamFetchConcurrencyConfig = () =>
 export const updateUpstreamFetchConcurrencyConfig = (concurrency: number) =>
   put<UpstreamFetchConcurrencyConfig>(`${E}/upstream-fetch-concurrency-config`, { concurrency })
 
+/** 白名单专属线路（2026-11-04）：名单内的源，白名单用户播无界片时
+ * 多一条经飞牛家宽回源的「专属线路」，普通用户不可见、直调被拒。
+ * 名单增删走全量回写；飞牛基址含路径 token，后端只回已配状态
+ * （pilot_configured），重设时一次性提交原文（不传 = 不动，
+ * 传空串 = 清除、专属线整体惰性）。 */
+export interface UpstreamExclusiveLineConfig {
+  source_ids: number[]
+  pilot_configured: boolean
+}
+
+export const fetchUpstreamExclusiveLineConfig = () =>
+  get<UpstreamExclusiveLineConfig>(`${E}/upstream-exclusive-line-config`)
+
+export const updateUpstreamExclusiveLineConfig = (
+  sourceIds: number[],
+  pilotBaseUrl?: string,
+) =>
+  put<UpstreamExclusiveLineConfig>(`${E}/upstream-exclusive-line-config`, {
+    source_ids: sourceIds,
+    ...(pilotBaseUrl !== undefined ? { pilot_base_url: pilotBaseUrl } : {}),
+  })
+
 /** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。
  *  只做手动触发，不做自动调度、不做自动播放兜底。
  *  POST 立刻返回任务（queued），聚合在后台跑；用

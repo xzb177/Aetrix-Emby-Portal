@@ -453,6 +453,19 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     # upstream_playback.demoted_source_ids（store 热读）。纯
     # SystemConfig 键，不进 env.example。
     "upstream_aggregate_demoted_source_ids": ("int_list", 1, 1000000),
+    # 白名单专属线路（2026-11-04）：名单内的源，白名单用户播无界片
+    # 时多一条经飞牛家宽回源的「专属线路」，普通用户不可见。无默认：
+    # 无行/空行＝空集＝功能惰性；种子（飞牛试点已验的暴风/如意）经
+    # 配置落，不进代码。读取唯一实现 upstream_playback
+    # .exclusive_source_ids（store 热读）。管理入口在管理后台
+    # 「上游源」页（/upstream-exclusive-line-config）。纯 SystemConfig
+    # 键，不进 env.example。
+    "upstream_aggregate_exclusive_source_ids": ("int_list", 1, 1000000),
+    # 飞牛试点基址：形如 https://pilot.135505.autos/p/<TOKEN>，路径
+    # token 只许经配置注入（从飞牛本地 token.txt 读出后写入），不许
+    # 进代码与仓库。空串/无行＝未配，专属线路整体惰性。读取唯一实现
+    # upstream_playback.feiniu_pilot_base_url。纯 SystemConfig 键。
+    "feiniu_pilot_base_url": ("str",),
     # O-09 映射抽样巡检（第 1、2 层常驻 janitor）：默认开、默认
     # 每 7 天一轮、每 evidence 层默认抽 30 条；不一致率超默认
     # 5% 响亮报红。读取唯一实现在 upstream_mapping_patrol，范围

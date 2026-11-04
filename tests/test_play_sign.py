@@ -207,8 +207,11 @@ class TestWiring:
         # + #1764 清单代理二级端点 upstream_playlist_media，
         # 同款 get_play_user 验签，故同样计入；
         # + #1818 借帧修复段端点 upstream_graft_segment，
-        # 同款 get_play_user 验签 + 付费墙 + 绑定门禁，故同样计入）
-        assert content.count("Depends(get_play_user)") == 8
+        # 同款 get_play_user 验签 + 付费墙 + 绑定门禁，故同样计入；
+        # + 白名单专属线路取流口 upstream_wl_stream（2026-11-04），
+        # 同款 get_play_user 验签 + 付费墙 + 绑定门禁，其后另加白名单
+        # 现算，故同样计入）
+        assert content.count("Depends(get_play_user)") == 9
         # 防盗链检查挂在 video_stream（video_hls 转交 video_stream，
         # 同一检查点覆盖两个入口）
         assert content.count("play_sign.check_referer") == 1
