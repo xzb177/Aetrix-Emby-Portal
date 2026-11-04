@@ -1511,8 +1511,14 @@ def _synthetic_cms_base_source(item, mapping, base: str,
         rest = [s for s in dto["MediaStreams"]
                 if (s.get("Type") or "").lower() != "video"]
         dto["MediaStreams"] = [_strip_nulls(video)] + rest
-        dto["DefaultAudioStreamIndex"] = _default_audio_stream_index(
-            dto["MediaStreams"])
+        # 无音频轨时 _default_audio_stream_index 返回 None：本函数在
+        # _media_source 的 _strip_nulls 之后赋值，直接赋 None 会把
+        # "DefaultAudioStreamIndex":null 漏给严格序列化客户端
+        # （2026-11-04 Yamby 实拍 SerializationException）——算不出
+        # 就不赋，与真 Emby 省略 null 字段的行为对齐。
+        _audio_index = _default_audio_stream_index(dto["MediaStreams"])
+        if _audio_index is not None:
+            dto["DefaultAudioStreamIndex"] = _audio_index
     if not any((s.get("Type") or "").lower() == "video"
                for s in dto["MediaStreams"]):
         # 无画质缓存（或缓存只有带宽/时长、没宽高）时补一条视频轨
@@ -1587,7 +1593,12 @@ def _upstream_line_for_mapping(item, mapping, source, base_source,
         "DirectStreamUrl": url,
     })
     line.pop("TranscodingUrl", None)
-    return line
+    # 单一收口：线路组装在各基础源的 _strip_nulls 之后又写入了
+    # "Path": None 等键，合成源还可能带上游原样拷贝的 null 轨道
+    # 字段——返回前统一剥 null，保证任何消费面（详情 DTO 无路由
+    # 级兜底，曾漏出 "DefaultAudioStreamIndex":null 噎死严格
+    # 序列化客户端，2026-11-04 实拍）拿到的线路都零 null。
+    return _strip_nulls(line)
 
 
 def _signed_wl_line_url(item, base: str, user_id, db,

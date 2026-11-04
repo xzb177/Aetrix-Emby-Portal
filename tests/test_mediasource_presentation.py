@@ -358,6 +358,57 @@ def test_cms_line_without_quality_cache_still_has_video_stream(
     assert real["Width"] == 3840 and real["Height"] == 2160
 
 
+def _assert_no_null_values(node, path="$"):
+    """MediaSources 内任何层级都不许出现 JSON null（严格客户端口径）。"""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            assert value is not None, f"{path}.{key} 下发了 null"
+            _assert_no_null_values(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for idx, value in enumerate(node):
+            _assert_no_null_values(value, f"{path}[{idx}]")
+
+
+def test_cms_sources_json_has_no_null_fields(client, token, seed):
+    """2026-11-04 实拍回归：Yamby 严格序列化被详情 JSON 的
+    "DefaultAudioStreamIndex":null 噎死（SerializationException:
+    Unexpected symbol 'n' in numeric literal）。
+
+    触发条件＝CMS 线路画质缓存带宽高（取流回填过）而条目无音频轨：
+    合成源在 _strip_nulls 之后赋值、线路组装又在 strip 之后塞
+    "Path": None，null 一路漏到详情面（PlaybackInfo 面有路由末尾
+    strip 兜底、详情面没有）。钉死口径：详情与 PlaybackInfo 两面
+    的 MediaSources 内零 null；默认轨道数值字段出现时必为整数
+    （与真 Emby 省略 null 字段的行为对齐）。
+    """
+    headers = {"X-Emby-Token": token}
+    # —— PlaybackInfo 面 ——
+    r = client.post(f"/emby/Items/{seed['cms']}/PlaybackInfo",
+                    headers=headers, json={})
+    assert r.status_code == 200, r.text
+    assert '"DefaultAudioStreamIndex":null' not in r.text
+    _assert_no_null_values(r.json()["MediaSources"], "$.MediaSources")
+    # —— 详情面（本次漏出点） ——
+    db = SessionLocal()
+    try:
+        uid = db.query(models.WebUser.id).filter(
+            models.WebUser.username == BOUND).scalar()
+    finally:
+        db.close()
+    r = client.get(f"/emby/Users/{uid}/Items/{seed['cms']}",
+                   headers=headers)
+    assert r.status_code == 200, r.text
+    assert '"DefaultAudioStreamIndex":null' not in r.text
+    sources = r.json()["MediaSources"]
+    assert sources, "详情面应带线路"
+    _assert_no_null_values(sources, "$.MediaSources")
+    for source in sources:
+        for key in ("DefaultAudioStreamIndex",
+                    "DefaultSubtitleStreamIndex"):
+            if key in source:
+                assert isinstance(source[key], int)
+
+
 # ---------------------------------------------------------------------------
 # 身份组聚合（2026-11-03 回归）：同片重复行线路互通
 # ---------------------------------------------------------------------------
