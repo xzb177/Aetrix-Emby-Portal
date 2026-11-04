@@ -211,14 +211,20 @@ const todoTotal = computed(() => todos.value.reduce((s, t) => s + t.count, 0))
 // ==================== 交付链数据卡 ====================
 
 
-/** 扫描状态：正常 / 异常（partial、failed）/ 正在扫 / 从没扫过 */
+/**
+ * 扫描状态：正常 / 异常（只有 failed）/ 部分完成（partial，单独呈现、
+ * 不计入异常——它表示「有来源这轮没读到、已跳过」，不是故障）/ 正在扫 /
+ * 从没扫过。2026-11-04 口径修复：此前 partial 与 failed 一起算「异常」，
+ * 无界库长期 partial 时卡面恒显「异常 9」，误报。
+ */
 const scanSummary = computed(() => {
   const list = libraries.value
   const statusOf = (l: EmbyLibrary) => (l.is_scanning ? 'running' : l.last_scan?.status || '')
   return {
     total: list.length,
     ok: list.filter((l) => statusOf(l) === 'success').length,
-    bad: list.filter((l) => statusOf(l) === 'partial' || statusOf(l) === 'failed').length,
+    bad: list.filter((l) => statusOf(l) === 'failed').length,
+    partial: list.filter((l) => statusOf(l) === 'partial').length,
     scanning: list.filter((l) => statusOf(l) === 'running').length,
     never: list.filter((l) => !l.last_scan && !l.is_scanning).length,
   }
@@ -241,6 +247,11 @@ const mountSummary = computed(() => {
   const failed = local.filter((l) => l.local_dirs_readable === false)
   return {
     total: libs.length,
+    // 可判定的来源数（有本机目录可读性结论的库）：卡面分母用它，
+    // 不拿全部库数当分母——纯远程库 local_dirs_readable 恒为 null、
+    // 不参与判定，全算进分母会恒显「0 个正常/共 N 条来源」式误报
+    // （2026-11-04 截图点名）。
+    checked: local.length,
     ok: local.filter((l) => l.local_dirs_readable === true).length,
     failed: failed.length,
     unchecked: libs.length - local.length,
@@ -285,20 +296,21 @@ const kpis = computed<{
       foot: scan.total
         ? [
             scan.bad ? `异常 ${scan.bad}` : '',
+            scan.partial ? `部分完成 ${scan.partial}` : '',
             scan.scanning ? `扫描中 ${scan.scanning}` : '',
             scan.never ? `未扫过 ${scan.never}` : '',
           ].filter(Boolean).join('\n') || '全部正常'
         : '还没有媒体库',
       to: '/emby', icon: ScanSearch,
-      tone: scan.bad ? 'warn' : scan.scanning ? 'info' : scan.total ? 'ok' : 'plain',
+      tone: scan.bad ? 'warn' : scan.partial || scan.scanning ? 'info' : scan.total ? 'ok' : 'plain',
       title: '媒体库与扫描',
     },
     {
-      key: 'mounts', label: '存储健康', value: `${mount.ok} 个正常/共 ${mount.total} 条来源`,
+      key: 'mounts', label: '存储健康', value: mount.checked ? `${mount.ok} 个正常/共 ${mount.checked} 条来源` : '无本机目录来源',
       foot: mount.total
         ? [
             mount.failed ? `异常 ${mount.failed}${mount.failedNames ? `（${mount.failedNames}${mount.failedMore ? ' 等' : ''}）` : ''}` : '',
-            mount.unchecked ? `未体检 ${mount.unchecked}` : '',
+            mount.unchecked ? `纯远程来源 ${mount.unchecked}（无需体检）` : '',
             mount.blocked ? `播放节点够不着 ${mount.blocked}` : '',
           ].filter(Boolean).join('\n') || '全部正常'
         : '还没有存储来源',

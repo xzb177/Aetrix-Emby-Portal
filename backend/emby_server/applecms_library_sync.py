@@ -176,6 +176,10 @@ def _zero_stats(library_id: int) -> Dict[str, object]:
         "skipped_no_identity": 0, "skipped_identity_conflict": 0,
         "detail_errors": 0, "detail_fetches": 0,
         "dedupe_hits": 0, "errors": [], "seen_by_source": {},
+        # 已停用源：管理员主动停的，不算失败——只记名单供明细回显，
+        # 绝不进 errors（2026-11-04 口径误报修复：停用源曾让整库
+        # 永远 partial、驾驶舱永远报「异常」）。
+        "skipped_disabled": [],
         # 剧集路径计数（电影库恒 0）：集行增/存量、无直链组跳过、
         # detail 已消失跳过（detail 请求失败共用上面的 detail_errors）。
         "episodes_added": 0, "episodes_existing": 0,
@@ -611,7 +615,9 @@ def _sync_source(db: Session, library, source_id: int, stats: dict,
         stats["errors"].append(f"source_not_applecms:{source_id}")
         return
     if not getattr(source, "enabled", False):
-        stats["errors"].append(f"source_disabled:{source_id}")
+        # 停用是配置决定、不是同步失败：只记 skipped_disabled，
+        # 不进 errors、不影响 scan_status（见 _write_progress 口径）。
+        stats["skipped_disabled"].append(source_id)
         return
     headers = _source_headers(source)
     seen: List[str] = []
@@ -1217,6 +1223,7 @@ def _write_progress(db: Session, library, stats: dict,
         "skipped_detail_missing": stats["skipped_detail_missing"],
         "posters_filled": stats["posters_filled"],
         "errors": list(stats["errors"]),
+        "skipped_disabled": list(stats["skipped_disabled"]),
         "sources": list(stats["seen_by_source"].keys()),
     }
     payload = {
@@ -1227,9 +1234,23 @@ def _write_progress(db: Session, library, stats: dict,
     }
     try:
         library.last_scan_at = datetime.now()
-        library.scan_status = "failed" if (
-            stats["errors"] and not stats["seen_by_source"]
-        ) else ("partial" if stats["errors"] else "success")
+        # 扫描状态口径（2026-11-04 定案，回归见
+        # tests/test_applecms_scan_status_caliber.py）：
+        # - errors 只装启用源的真失败（source_error / source_truncated
+        #   / source_missing / source_not_applecms）；已停用源走
+        #   skipped_disabled，不参与判定；
+        # - 全部启用源完成＝success；有真失败但整轮有产出（pages>0）
+        #   ＝partial；有真失败且整轮零产出＝failed；
+        # - 一个启用源都没跑（全停用）＝failed：整轮等于没同步，
+        #   与本口径修复前该边界的落定一致，不静默装健康。
+        if stats["errors"] and stats["pages"] <= 0:
+            library.scan_status = "failed"
+        elif stats["errors"]:
+            library.scan_status = "partial"
+        elif not stats["seen_by_source"] and stats["skipped_disabled"]:
+            library.scan_status = "failed"
+        else:
+            library.scan_status = "success"
         library.scan_stats = json.dumps(payload, ensure_ascii=False)
         db.commit()
     except Exception:
