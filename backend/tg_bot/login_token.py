@@ -130,6 +130,14 @@ def build_login_url(db, user) -> str | None:
             or ""
         ).rstrip("/")
         if not base:
+            # 站点地址未配置时入口按钮会被主菜单的 if url 守卫静默吞掉，
+            # 必须留告警痕迹（2026-11-04 生产实证：site_url 为空导致免密
+            # 入口长期不展示，且全链路日志零记录、无从察觉）。
+            logger.warning(
+                "tg_login_url 未生成：站点地址 site_url 未配置，"
+                "机器人免密登录入口将不展示 user_id=%s",
+                getattr(user, "id", None),
+            )
             return None
         token = create_login_token(user.id, user.telegram_id)
         if token is None:

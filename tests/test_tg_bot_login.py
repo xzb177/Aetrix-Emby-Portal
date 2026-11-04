@@ -67,6 +67,23 @@ def test_build_login_url_without_base_url(db):
     assert login_token.build_login_url(db, user) is None
 
 
+def test_build_login_url_without_base_url_warns(db, caplog):
+    """站点地址未配置时不许静默失败：必须留 WARNING 告警。
+
+    2026-11-04 生产实证：site_url 为空 → 主菜单免密按钮被 if url 守卫
+    静默吞掉、全链路零日志，用户长期以为功能没做完。
+    """
+    import logging
+
+    user = _make_user(db, 1005)
+    with caplog.at_level(logging.WARNING, logger="backend.tg_bot.login_token"):
+        assert login_token.build_login_url(db, user) is None
+    assert any(
+        record.levelno == logging.WARNING and "site_url" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_handle_start_bound_returns_tuple(db):
     store.write_values(db, {"site_base_url": "https://example.com"})
     _make_user(db, 1004)
