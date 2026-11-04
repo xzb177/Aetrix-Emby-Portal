@@ -1202,6 +1202,49 @@ def _collect_multisource(item: Any, kind: str, result: dict) -> bool:
                 _ms_fields.get("title"), _ms_fields.get("year"))
             result["multisource_strict_rejected"] = True
             return False
+    # 多源桥 tmdb 候选复核（2026-11-04 续修）：归并出的 tmdb 编号在
+    # extract_binding 里记 confidence=search 落账——与直搜候选同性质。
+    # 引擎的 TMDB 腿同走 tmdb_client.search，无精确条目时同样退化；
+    # 直搜候选被取数复核门拒后，桥还会把同一错号提交（生产实证：
+    # 1784692 在复核门 title_mismatch 拒绝后数十秒内经桥落账 4 条）。
+    # 故桥候选落进 fetched 前过同一道门（编号详情 → 现行认亲门 +
+    # search 标题核验）；不过只摘归并结果的 tmdb 键，其余来源的编号
+    # 与字段不连坐；判不出（详情瞬态）同样摘除留痕，本轮不落 tmdb、
+    # 下轮重采再议——绝不放行未复核的桥 tmdb 编号。
+    _ms_tmdb = (collected.external_ids or {}).get("tmdb")
+    if (_ms_tmdb
+            and str(_ms_tmdb) != str(getattr(item, "tmdb_id", None) or "")
+            and kind in ("series", "movie")):
+        from backend.emby_server import tmdb as _ms_tmdb_mod
+        if _ms_tmdb_mod.tmdb_client.configured:
+            _ms_reason: Optional[str] = None
+            try:
+                _ms_details = _ms_tmdb_mod.tmdb_client.details(
+                    str(_ms_tmdb), kind)
+            except _ms_tmdb_mod.TmdbTransientError:
+                _ms_reason = "details_transient"
+                _ms_details = None
+            if _ms_reason is None:
+                if not _ms_details:
+                    _ms_reason = "details_not_found"
+                else:
+                    from backend.emby_server.identify_two_stage import (
+                        binding_reject_reason_for_item as _ms_reject_for_item,
+                    )
+                    from backend.emby_server.identify_two_stage import (
+                        search_binding_title_reject_reason as _ms_title_check,
+                    )
+                    _ms_reason = (
+                        _ms_reject_for_item(_ms_details, kind, item)
+                        or _ms_title_check(_ms_details, item))
+            if _ms_reason:
+                logger.warning(
+                    "多源桥 tmdb 候选复核拒绝 id=%s name=%r tmdb_id=%s "
+                    "reason=%s",
+                    getattr(item, "id", "?"), getattr(item, "name", ""),
+                    _ms_tmdb, _ms_reason)
+                collected.external_ids.pop("tmdb", None)
+                result["multisource_tmdb_rejected"] = _ms_reason
     result["multisource"] = collected.as_dict()
     return True
 
