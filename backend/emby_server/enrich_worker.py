@@ -3169,19 +3169,22 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             _fc_minor = [f for f in ENRICH_COMPLETENESS_MINOR_FIELDS
                          if f in _fc_missing]
             if _fc_has_core and _fc_minor:
-                if item.enrich_priority == ENRICH_PRIORITY_FIELD_REFILL:
+                if getattr(item, "enrich_field_refill_done", False):
                     # ★ 防反复重刮（v2.49.0 教训）：这条已经为"补次要字段"多跑过
-                    # 一轮（本轮就是那一轮：认领时 priority=-10 的就是它）——无论
-                    # 这一轮拿到与否，直接按新口径终态化，不再为简介/类型/演员
-                    # 反复进队列。每条目为"补次要字段"最多多跑一轮。
-                    # 标记就是 priority 本身：_reclaim_stale 回收僵尸租约时不动
-                    # priority，崩溃重认领回来仍然是 -10，照样终态化，不会多跑。
+                    # 一轮——无论这一轮拿到与否，直接按新口径终态化，不再为简介/
+                    # 类型/演员反复进队列。每条目为"补次要字段"最多多跑一轮。
+                    # 轻量化 P5：标记改独立列 enrich_field_refill_done，不再复用
+                    # priority 值——旧标记 -10 与 CMS 入库优先级撞值，CMS 条目
+                    # 首轮缺次要字段时会被误判已补过、直接终态，从未得到设计中
+                    # 的那一轮补齐。_reclaim_stale 回收僵尸租约时不动该标记，
+                    # 崩溃重认领回来仍然终态化，不会多跑。
                     _field_completeness_counters["refill_terminalized"] += 1
                     logger.info("字段级口径：补次要字段已跑过一轮，直接终态化 "
                                 "(仍缺=%s) id=%s", ",".join(_fc_minor), item.id)
                 else:
                     item.enrich_status = "pending"
                     item.enrich_priority = ENRICH_PRIORITY_FIELD_REFILL
+                    item.enrich_field_refill_done = True
                     item.enrich_attempts = 0
                     item.enrich_next_retry_at = None
                     _fc_refill_enqueued = True
@@ -3304,9 +3307,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     item.enrich_claim_token = None
     # 优先级消费完归零（处方 4）：repair 的 100 在上面已随 repair_requested_at
     # 清除；重试未匹配的 50 也一样——残留值会让这个条目在未来的重试里永久插队。
-    # Step 5 例外：低优先级补一轮的 -10 不能在这里清零——它是"已跑过一轮"的
-    # 标记，留给补完那一轮的 _enrich_apply 识别并终态化（不清零就终态不了，
-    # 会反复进低优先级队列）。
+    # Step 5 例外：低优先级补一轮的 -10 不能在这里清零——它是补齐轮的排队值，
+    # 必须留到补完那一轮认领时仍排在主队列之后（"已跑过一轮"的标记已改由
+    # enrich_field_refill_done 独立列承担，见轻量化 P5；清零会让补齐轮插队）。
     if not _fc_refill_enqueued and not _douban_backfill_enqueued:
         item.enrich_priority = 0
 
@@ -3955,6 +3958,19 @@ def _janitor_loop() -> None:
                     if nfd:
                         logger.info("补全 janitor 假完成巡检翻回 %d 条"
                                     "（done → pending）", nfd)
+                # P5 存量回捞巡检（2026-11-04）：-10 撞值期误终态的 CMS 存量
+                # 翻回 pending 补一轮；每 30 轮（约 30 分钟）一次、单轮硬上限
+                # 2000 条；幂等（见 enrich_field_refill_recovery）。
+                if patrol_round % _FIELD_REFILL_RECOVERY_EVERY_ROUNDS == 0:
+                    try:
+                        nrec = enrich_field_refill_recovery(db)
+                    except Exception:
+                        logger.warning("补全 janitor P5 回捞巡检异常",
+                                       exc_info=True)
+                        nrec = 0
+                    if nrec:
+                        logger.info("补全 janitor P5 回捞 %d 条误终态 CMS 条目"
+                                    "（done → pending 补一轮）", nrec)
                 # 干净度巡检（2026-10-31）：默认开、面板开关可关；约每日
                 # 一轮（1440 轮 × 60s），单轮候选上限 200 条，details
                 # 复核抽样同上限。计数日志在 dirty_done_patrol 内打。
@@ -4283,6 +4299,108 @@ def enrich_failed_auto_reschedule(db) -> int:
                             purged)
         except Exception as exc:  # noqa: BLE001 — 缓存清理失败不影响重试入队
             logger.debug("failed 定时回捞清理 TMDB 搜索缓存失败: %s", exc)
+    return n
+
+
+# 补资料轻量化 P5 回捞巡检（2026-11-04）：每 30 轮（约 30 分钟）一次、单轮硬上限
+# 2000 条（与 none/failed 回捞同量级）。只捞 -10 撞值期被误终态的 CMS 存量。
+_FIELD_REFILL_RECOVERY_EVERY_ROUNDS = 30
+_FIELD_REFILL_RECOVERY_PER_ROUND = 2000
+
+
+def enrich_field_refill_recovery(db, limit: int = _FIELD_REFILL_RECOVERY_PER_ROUND) -> int:
+    """P5 存量回捞：-10 撞值期被误终态的 CMS 条目翻回 pending 补一轮。
+
+    口径（与 Step 5 的判定逐字对齐，见 _field_completeness_missing）：
+    - done + 未删 + 未合并 + 未锁定 + CMS 库（library.upstream_source_ids 非空）；
+    - 核心字段齐（tmdb_id，或标题/年份/海报三者有其二）；
+    - 缺次要字段（简介空，或类型空，或无演员行）；
+    - 未跑过补齐轮（enrich_field_refill_done 非 True；NULL 视同未补过，
+      与 metadata_locked 的 NULL 容忍同口径）；
+    - metadata_source 非 'none'（'none' 是"搜过没有"的终态，不是 Step 5 终态）。
+    翻回动作：pending + priority=-10（低优先级排队值）+ attempts=0 +
+    next_retry_at=None + enrich_field_refill_done=True（补齐轮入场标记）。
+    幂等：翻回后行是 pending 不再命中；补齐轮终态后标记为 True 不再命中；
+    补齐轮拿到字段后正常 done，不再缺次要字段也不再命中。三路都不重捞。
+    无 tmdb_id 的行补齐轮会重搜：同 none 回捞，顺带清掉旧搜索阴性缓存
+    （best-effort，失败不影响入队）。
+    返回本轮实际翻回的条数。
+    """
+    from sqlalchemy import case as _case
+    from sqlalchemy import exists as _exists
+    from sqlalchemy import func as _func
+    from sqlalchemy import or_ as _or
+    from sqlalchemy import select as _select
+
+    cms_lib_ids = [r[0] for r in db.query(em.Library.id).filter(
+        em.Library.upstream_source_ids.isnot(None),
+        em.Library.upstream_source_ids != "",
+        em.Library.upstream_source_ids != "[]").all()]
+    if not cms_lib_ids:
+        return 0
+
+    def _nonblank(col):
+        return (col.isnot(None)) & (_func.trim(col) != "")
+
+    core_n = (
+        _case((_nonblank(em.MediaItem.name), 1), else_=0)
+        + _case((em.MediaItem.production_year.isnot(None), 1), else_=0)
+        + _case((_or(_nonblank(em.MediaItem.poster_path),
+                     _nonblank(em.MediaItem.primary_image_url)), 1), else_=0)
+    )
+    core = _or(
+        (em.MediaItem.tmdb_id.isnot(None)) & (em.MediaItem.tmdb_id != ""),
+        core_n >= 2)
+    has_cast = _exists(
+        _select(em.EmbyPerson.id).where(
+            em.EmbyPerson.item_id == em.MediaItem.id).correlate(em.MediaItem))
+    minor_missing = _or(
+        em.MediaItem.overview.is_(None)
+        | (_func.trim(em.MediaItem.overview) == ""),
+        em.MediaItem.genres.is_(None)
+        | (_func.trim(em.MediaItem.genres) == ""),
+        ~has_cast)
+    cands = (db.query(em.MediaItem.id, em.MediaItem.name,
+                      em.MediaItem.production_year, em.MediaItem.item_type)
+             .filter(em.MediaItem.enrich_status == "done",
+                     em.MediaItem.deleted_at.is_(None),
+                     em.MediaItem.merged_into_id.is_(None),
+                     em.MediaItem.metadata_locked.isnot(True),
+                     em.MediaItem.library_id.in_(cms_lib_ids),
+                     em.MediaItem.enrich_field_refill_done.isnot(True),
+                     _or(em.MediaItem.metadata_source.is_(None),
+                         em.MediaItem.metadata_source != "none"),
+                     core, minor_missing)
+             .order_by(em.MediaItem.id.asc())
+             .limit(limit)
+             .all())
+    if not cands:
+        return 0
+    ids = [r[0] for r in cands]
+    affected = {(r[1], r[2], r[3]) for r in cands}
+    n = (db.query(em.MediaItem).filter(em.MediaItem.id.in_(ids))
+         .update({"enrich_status": "pending",
+                  "enrich_attempts": 0,
+                  "enrich_next_retry_at": None,
+                  "enrich_priority": ENRICH_PRIORITY_FIELD_REFILL,
+                  "enrich_field_refill_done": True},
+                 synchronize_session=False))
+    db.commit()
+    logger.info("P5 存量回捞：%d 条误终态 CMS 条目翻回 pending 补一轮"
+                "（priority=-10，标记已置）", n)
+    if n:
+        try:
+            from backend.emby_server import tmdb_cache
+            from backend.emby_server.tmdb import preferred_language
+            lang = preferred_language()
+            purged = 0
+            for name, year, item_type in affected:
+                purged += tmdb_cache.invalidate_search(name, year, item_type, lang)
+            if purged:
+                logger.info("P5 存量回捞：已清掉 %d 份旧搜索缓存"
+                            "（下轮补搜真打 TMDB）", purged)
+        except Exception as exc:  # noqa: BLE001 — 缓存清理失败不影响重试入队
+            logger.debug("P5 存量回捞清理 TMDB 搜索缓存失败: %s", exc)
     return n
 
 

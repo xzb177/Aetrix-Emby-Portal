@@ -1145,6 +1145,13 @@ def _auto_migrate():
         ("cms_graft_repairs", [
             ("method", "VARCHAR(20)", "'graft'"),
         ]),
+        # 补资料轻量化 P5（2026-11-04）：字段补齐「已跑过一轮」独立标记列。
+        # 旧口径复用 enrich_priority=-10 当标记，与 CMS 入库优先级撞值。
+        # 老库补列后为 0（False）= 未补过；存量误终态行由 janitor 回捞巡检
+        # 按新口径重新纳入补齐轮（见 enrich_worker.enrich_field_refill_recovery）。
+        ("emby_items", [
+            ("enrich_field_refill_done", "BOOLEAN", "0"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

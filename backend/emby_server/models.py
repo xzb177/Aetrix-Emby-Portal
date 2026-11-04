@@ -376,6 +376,11 @@ class MediaItem(Base):
     # 跨库公平由按库轮转保证（见 enrich_worker._claim_batch）。
     # probe_priority 的先例：Integer 列即可，无需新表。
     enrich_priority = Column(Integer, default=0)
+    # 轻量化 P5（2026-11-04）：字段补齐「已跑过一轮」的独立标记。旧口径复用
+    # enrich_priority=-10 当标记，与 CMS 入库优先级（同为 -10）撞值，致 CMS
+    # 条目首轮缺次要字段时被误判已补过、直接终态。改独立列后，-10 只剩排队值
+    # 语义。老库补列后为 0（False）= 未补过（见 database._auto_migrate）。
+    enrich_field_refill_done = Column(Boolean, default=False)
     # 元数据锁定（手动识别 P3，Emby 式）：管理员手动整理过的条目置 True，
     # 后台自动补全（enrich worker 抢单）不再碰它——自动刷新不会覆盖手动成果。
     # 手动操作（手动绑定 bind-tmdb、手动重刮 rescrape）不受锁定影响：
