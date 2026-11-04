@@ -415,6 +415,120 @@ def test_migration_apply_moves_only_bucketed_rows(db):
     assert rows["a2"].library_id == total.id    # 其他地区留总库
 
 
+def _seed_stock_bulk(db, specs):
+    """按 specs=[(vod, area 或特殊标记)] 批量种存量行。
+
+    area 为 "HTTP500" 表示 detail 失败（unresolved）；vod 以
+    "nomap-" 开头表示不建映射行（no_mapping）；其余按 area 判桶。
+    返回 (total, oumei, rows_by_vod)。
+    """
+    _seed_source(db, 7, "s7.example")
+    total = _seed_lib(db, "lib-total", "在线电影", "7")
+    oumei = _seed_lib(db, "lib-oumei", "欧美电影", "7", bucket="oumei")
+    details = {}
+    rows = {}
+    for vod, area in specs:
+        row = em.MediaItem(
+            guid=f"hosted-7-{vod}", library_id=total.id,
+            item_type="movie", name=f"片-{vod}",
+            production_year=2021, upstream_source_id=7,
+            probe_status="done")
+        db.add(row)
+        db.flush()
+        rows[vod] = row
+        if not vod.startswith("nomap-"):
+            db.add(em.UpstreamItemMapping(
+                local_item_id=row.id, source_id=7, upstream_item_id=vod,
+                confidence=0.7, evidence="title+year"))
+        if area == "HTTP500":
+            details[vod] = "HTTP500"
+        elif not vod.startswith("nomap-"):
+            details[vod] = _detail(vod, f"片-{vod}", area=area)
+    db.commit()
+    http = FakeHttpGet()
+    http.details["s7.example"] = details
+    return total, oumei, rows, http
+
+
+def test_migration_loads_rows_in_chunks_not_all_at_once(db, monkeypatch):
+    """分页回归：现规模下不许再一次性 .all() 全量载入。
+
+    把分页大小压到 2、种 5 行，监听主表（emby_items）扫描语句：
+    分块实现至少发 3 次主表查询；旧的全量实现只发 1 次。
+    """
+    from sqlalchemy import event
+
+    specs = [(f"b{i}", "美国") for i in range(5)]
+    total, oumei, rows, http = _seed_stock_bulk(db, specs)
+    monkeypatch.setattr(aam, "_PAGE_SIZE", 2, raising=False)
+
+    engine = db.get_bind()
+    statements = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        if "FROM emby_items" in statement:
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        result = aam.run_area_migration(
+            db, from_library_id=total.id, targets={"oumei": oumei.id},
+            apply=True, http_get=http)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert result["scanned"] == 5
+    assert result["moved"] == 5
+    assert result["buckets"] == {"oumei": 5}
+    assert len(statements) >= 3, (
+        f"主表扫描只发了 {len(statements)} 次查询，仍是全量载入")
+    for row in rows.values():
+        db.refresh(row)
+        assert row.library_id == oumei.id
+
+
+def test_migration_paginated_result_matches_unpaginated_semantics(
+        db, monkeypatch):
+    """分页等价：跨页混合口径（迁/其他/未知/失败/无映射）逐行对账。
+
+    7 行、页大小 2（跨 4 页）：计数 dict 与每行最终归属必须与
+    旧全量实现口径逐字一致，一行不多、一行不少。
+    """
+    specs = [
+        ("m1", "美国"),        # oumei → 迁
+        ("m2", "印度"),        # other → 留
+        ("m3", "美国"),        # oumei → 迁
+        ("m4", ""),            # unknown → 留
+        ("m5", "HTTP500"),     # unresolved → 留
+        ("nomap-6", None),     # no_mapping → 留
+        ("m7", "美国"),        # oumei → 迁（末页）
+    ]
+    total, oumei, rows, http = _seed_stock_bulk(db, specs)
+    monkeypatch.setattr(aam, "_PAGE_SIZE", 2, raising=False)
+
+    result = aam.run_area_migration(
+        db, from_library_id=total.id, targets={"oumei": oumei.id},
+        apply=True, http_get=http)
+
+    assert result["scanned"] == 7
+    assert result["moved"] == 3
+    assert result["buckets"] == {"oumei": 3}
+    assert result["other"] == 1
+    assert result["unknown"] == 1
+    assert result["unresolved"] == 1
+    assert result["no_mapping"] == 1
+    assert result["no_source"] == 0
+    expected = {
+        "m1": oumei.id, "m2": total.id, "m3": oumei.id,
+        "m4": total.id, "m5": total.id, "nomap-6": total.id,
+        "m7": oumei.id,
+    }
+    for vod, want_lib in expected.items():
+        db.refresh(rows[vod])
+        assert rows[vod].library_id == want_lib, vod
+        assert rows[vod].guid == f"hosted-7-{vod}"  # guid 不动
+
+
 # ---------------------------------------------------------------------------
 # 管理端 API：建库/改库收发地区桶
 # ---------------------------------------------------------------------------
