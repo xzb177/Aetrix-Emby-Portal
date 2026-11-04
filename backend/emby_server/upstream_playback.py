@@ -1398,8 +1398,16 @@ def demoted_source_ids(db) -> frozenset:
         return DEFAULT_DEMOTED_SOURCE_IDS
     if raw is None or raw == _DEMOTED_IDS_UNSET:
         return DEFAULT_DEMOTED_SOURCE_IDS
+    return _parse_source_id_list(raw)
+
+
+def _parse_source_id_list(raw) -> frozenset:
+    """源 id 名单的唯一解析口径（降权名单与专属名单共用）：
+
+    逗号分隔（全角逗号兼容）、坏项跳过、只收 >= 1 的整数。
+    """
     out = set()
-    for part in str(raw).replace("，", ",").split(","):
+    for part in str(raw or "").replace("，", ",").split(","):
         part = part.strip()
         if not part:
             continue
@@ -1410,6 +1418,90 @@ def demoted_source_ids(db) -> frozenset:
         if n >= 1:
             out.add(n)
     return frozenset(out)
+
+
+# ---------------------------------------------------------------------------
+# 白名单专属线路（2026-11-04 用户亲令）：飞牛家宽回源线只给白名单
+#
+# 哪些源算「专属」不写死在代码里：名单是 SystemConfig
+# ``upstream_aggregate_exclusive_source_ids``（upstream_aggregate 家族，
+# int_list），管理后台「上游源」页可增删，服务端选线热读执法（store
+# 60 秒 TTL＋写时失效，与降权名单同口径）。粒度落在「源」：选线模型
+# 里用户看到的线路是逐条目的映射（十万级、随条目生灭，无法当管理
+# 单位），而飞牛可达性本来就是按源/分片域名验的（试点按源取样），
+# 源粒度与证据同构；同一源的全部映射统一待遇，也与降权名单先例一致。
+#
+# 与降权名单的关键差异：专属名单**没有代码默认**——无配置行/空行/
+# 读失败一律空集＝功能惰性（普通选线零影响）。这是白名单权益面，
+# 读不到名单时宁可不发专属线（fail-closed），不许凭代码默认把线
+# 发出去。飞牛试点线（暴风 9 / 如意 13，试点已验）作为第一条种子
+# 数据经配置落入名单，不经代码常量。
+# ---------------------------------------------------------------------------
+
+#: 白名单专属源名单 SystemConfig 键（upstream_aggregate 家族）。
+KEY_EXCLUSIVE_SOURCE_IDS = "upstream_aggregate_exclusive_source_ids"
+
+#: 飞牛试点基址 SystemConfig 键：形如
+#: ``https://pilot.135505.autos/p/<TOKEN>``——路径 token 只许经配置
+#: 注入（从飞牛本地 token.txt 读出后写入），不许进代码/仓库/报告。
+KEY_FEINIU_PILOT_BASE_URL = "feiniu_pilot_base_url"
+
+
+def exclusive_source_ids(db) -> frozenset:
+    """读白名单专属源名单（源 id 集合），口径：
+
+    - 无配置行 / 空行 → 空集（管理员未配或显式清空＝专属线关）；
+    - db=None 或读异常 → 空集：这是权益面，fail-closed，不发线；
+    - 解析与降权名单共用 _parse_source_id_list 唯一口径。
+    """
+    if db is None:
+        return frozenset()
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, KEY_EXCLUSIVE_SOURCE_IDS, "")
+    except Exception:  # noqa: BLE001 — 读失败回空集，见上方口径
+        return frozenset()
+    return _parse_source_id_list(raw)
+
+
+def feiniu_pilot_base_url(db) -> str:
+    """读飞牛试点基址（尾部斜杠剥净）；未配/读失败回空串。"""
+    if db is None:
+        return ""
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, KEY_FEINIU_PILOT_BASE_URL, "")
+    except Exception:  # noqa: BLE001 — 读失败当未配，专属线不发
+        return ""
+    return str(raw or "").strip().rstrip("/")
+
+
+def exclusive_line_ready(db) -> bool:
+    """专属线路整体可用性：名单非空且试点基址已配，缺一即惰性。"""
+    return bool(feiniu_pilot_base_url(db)) and bool(exclusive_source_ids(db))
+
+
+def feiniu_pilot_rewrite(base_url: str, upstream_url: str):
+    """把上游播放地址改写成飞牛试点通用代理地址；形态不对回 None。
+
+    ``{base}/x/{host}{path}[?{query}]``——飞牛侧通用 location 按
+    host 把请求原样代理到该播放主机（清单与分段同路，分段走缓存）。
+    只收 http/https 且有主机名的地址；上游路径/查询串原样保留
+    （分段相对名由播放器以本地址为基准拼接，自然回到飞牛路径）。
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(str(upstream_url or ""))
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    out = f"{base}/x/{parts.hostname}{parts.path or '/'}"
+    if parts.query:
+        out += f"?{parts.query}"
+    return out
 
 
 def _mapping_health_sort_key(store, mapping, source,

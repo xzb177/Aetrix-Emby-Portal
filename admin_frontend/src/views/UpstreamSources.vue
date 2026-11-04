@@ -22,9 +22,11 @@ import {
   enableUpstreamSource,
   fetchUpstreamAggregateTask,
   fetchUpstreamDetailLineConfig,
+  fetchUpstreamExclusiveLineConfig,
   fetchUpstreamFetchConcurrencyConfig,
   fetchUpstreamSources,
   updateUpstreamDetailLineConfig,
+  updateUpstreamExclusiveLineConfig,
   updateUpstreamFetchConcurrencyConfig,
   updateUpstreamSource,
 } from '@/api/admin'
@@ -219,6 +221,90 @@ async function onFetchConcurrencyChange(value: number | undefined) {
     void loadFetchConcurrencyConfig()
   } finally {
     fetchConcurrencySaving.value = false
+  }
+}
+
+// 白名单专属线路（2026-11-04）：名单内的源（限苹果 CMS 型），白名单
+// 用户播无界片时多一条经飞牛家宽回源的专属线路；名单由本页增删、
+// 服务端选线热读执法，删掉一条该线立刻不可达。飞牛基址含路径
+// token：后端只回已配状态，此处只提供重设（留空提交 = 不动）。
+const exclusiveSourceIds = ref<number[]>([])
+const exclusiveSaving = ref(false)
+const exclusivePilotConfigured = ref(false)
+const exclusivePilotInput = ref('')
+const exclusiveAddId = ref<number | undefined>(undefined)
+
+/** 名单内源的展示行：名字从已加载的源列表查，源被删了显示 #id。 */
+const exclusiveRows = computed(() =>
+  exclusiveSourceIds.value.map((id) => {
+    const src = sources.value.find((s) => s.id === id)
+    return { id, name: src ? src.name : `#${id}`, type: src?.source_type ?? '' }
+  }),
+)
+/** 可添加的源：苹果 CMS 型且不在名单内（飞牛线只服务 CMS 播放主机）。 */
+const exclusiveCandidates = computed(() =>
+  sources.value.filter(
+    (s) => s.source_type === 'applecms' && !exclusiveSourceIds.value.includes(s.id),
+  ),
+)
+
+async function loadExclusiveLineConfig() {
+  try {
+    const res = await fetchUpstreamExclusiveLineConfig()
+    exclusiveSourceIds.value = res.source_ids
+    exclusivePilotConfigured.value = res.pilot_configured
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+  }
+}
+
+async function saveExclusiveLine(sourceIds: number[], pilotBaseUrl?: string) {
+  exclusiveSaving.value = true
+  try {
+    const res = await updateUpstreamExclusiveLineConfig(sourceIds, pilotBaseUrl)
+    exclusiveSourceIds.value = res.source_ids
+    exclusivePilotConfigured.value = res.pilot_configured
+    return true
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+    void loadExclusiveLineConfig()
+    return false
+  } finally {
+    exclusiveSaving.value = false
+  }
+}
+
+async function onExclusiveAdd() {
+  if (exclusiveAddId.value == null) return
+  const next = [...exclusiveSourceIds.value, exclusiveAddId.value]
+  if (await saveExclusiveLine(next)) {
+    ElMessage.success('已加入专属名单，白名单用户选线即刻生效')
+    exclusiveAddId.value = undefined
+  }
+}
+
+async function onExclusiveRemove(id: number) {
+  const next = exclusiveSourceIds.value.filter((x) => x !== id)
+  if (await saveExclusiveLine(next)) {
+    ElMessage.success('已移出专属名单，该专属线路即刻下线')
+  }
+}
+
+async function onExclusivePilotSave() {
+  const value = exclusivePilotInput.value.trim()
+  if (!value) {
+    ElMessage.warning('基址为空，未改动；如需清除基址请用「清除」按钮')
+    return
+  }
+  if (await saveExclusiveLine(exclusiveSourceIds.value, value)) {
+    exclusivePilotInput.value = ''
+    ElMessage.success('飞牛试点基址已更新')
+  }
+}
+
+async function onExclusivePilotClear() {
+  if (await saveExclusiveLine(exclusiveSourceIds.value, '')) {
+    ElMessage.success('飞牛试点基址已清除，专属线路整体停用')
   }
 }
 
@@ -426,6 +512,7 @@ onMounted(() => {
   void loadSources()
   void loadDetailLineConfig()
   void loadFetchConcurrencyConfig()
+  void loadExclusiveLineConfig()
 })
 onUnmounted(() => {
   aggregatePageToken += 1
@@ -525,6 +612,79 @@ onUnmounted(() => {
           inactive-text="关闭"
           @change="onDetailLineToggle"
         />
+      </div>
+    </SectionCard>
+    <SectionCard title="白名单专属线路">
+      <div class="detail-line-hint" style="margin-bottom: 12px">
+        名单内的源（限苹果 CMS 型），白名单用户播放无界片时会在选线列表里
+        多一条经飞牛家宽回源的「专属线路」；普通用户看不见、直接调用也会被拒。
+        在这里添加 / 删除即刻生效（服务端选线热读名单）；名单为空或飞牛基址
+        未配置时，专属线路整体不出现，对普通选线无任何影响。
+      </div>
+      <div v-if="exclusiveRows.length" class="exclusive-list">
+        <div v-for="row in exclusiveRows" :key="row.id" class="exclusive-row">
+          <span>{{ row.name }}<span class="exclusive-id">（源 #{{ row.id }}）</span></span>
+          <el-button
+            size="small"
+            type="danger"
+            plain
+            :disabled="exclusiveSaving"
+            @click="onExclusiveRemove(row.id)"
+          >
+            删除
+          </el-button>
+        </div>
+      </div>
+      <div v-else class="detail-line-hint">专属名单为空，专属线路未启用。</div>
+      <div class="exclusive-add">
+        <el-select
+          v-model="exclusiveAddId"
+          placeholder="选择要加入的源（苹果 CMS 型）"
+          clearable
+          style="width: 280px"
+        >
+          <el-option
+            v-for="s in exclusiveCandidates"
+            :key="s.id"
+            :label="`${s.name}（#${s.id}）`"
+            :value="s.id"
+          />
+        </el-select>
+        <el-button
+          type="primary"
+          :disabled="exclusiveAddId == null || exclusiveSaving"
+          @click="onExclusiveAdd"
+        >
+          添加到专属名单
+        </el-button>
+      </div>
+      <div class="detail-line-row" style="margin-top: 16px">
+        <div>
+          <div>飞牛试点基址</div>
+          <div class="detail-line-hint">
+            当前状态：{{ exclusivePilotConfigured ? '已配置' : '未配置' }}。
+            基址含试点路径口令，页面不回显原文；需要变更时在右侧输入新基址保存，
+            清除后专属线路整体停用。
+          </div>
+        </div>
+        <div class="exclusive-pilot">
+          <el-input
+            v-model="exclusivePilotInput"
+            type="password"
+            show-password
+            placeholder="https://pilot.135505.autos/p/…"
+            style="width: 300px"
+          />
+          <el-button :disabled="exclusiveSaving" @click="onExclusivePilotSave">保存基址</el-button>
+          <el-button
+            type="danger"
+            plain
+            :disabled="exclusiveSaving || !exclusivePilotConfigured"
+            @click="onExclusivePilotClear"
+          >
+            清除
+          </el-button>
+        </div>
       </div>
     </SectionCard>
     <SectionCard title="聚合拉取">
@@ -787,6 +947,31 @@ onUnmounted(() => {
   margin-top: 4px;
   font-size: 12px;
   color: var(--au-text-3);
+}
+.exclusive-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.exclusive-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.exclusive-id { color: var(--au-text-3); font-size: 12px; }
+.exclusive-add {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.exclusive-pilot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 640px) {

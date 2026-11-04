@@ -421,6 +421,70 @@ def put_upstream_detail_line_config(
     return {"enabled": _up.detail_line_enabled(db)}
 
 
+class UpstreamExclusiveLineConfigIn(BaseModel):
+    """白名单专属线路配置写入体（2026-11-04）。
+
+    source_ids＝专属名单全量替换（管理页列表增删后回写整表）；
+    pilot_base_url 缺省（None）＝基址不动，非 None 时写入
+    （空串＝清掉基址、专属线整体惰性）。
+    """
+
+    source_ids: list[int] = Field(default_factory=list)
+    pilot_base_url: Optional[str] = None
+
+
+def _exclusive_line_config_view(db: Session) -> dict:
+    """专属线路配置读视图：名单回 id 列表；基址只回「已配/未配」，
+
+    基址含飞牛路径 token，原文不回浏览器（页面只需状态＋重设入口）。
+    """
+    from backend.emby_server import upstream_playback as _up
+
+    return {
+        "source_ids": sorted(_up.exclusive_source_ids(db)),
+        "pilot_configured": bool(_up.feiniu_pilot_base_url(db)),
+    }
+
+
+@admin_emby_router.get("/upstream-exclusive-line-config")
+def get_upstream_exclusive_line_config(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读白名单专属线路配置（名单 + 飞牛基址配置状态）。"""
+    return _exclusive_line_config_view(db)
+
+
+@admin_emby_router.put("/upstream-exclusive-line-config")
+def put_upstream_exclusive_line_config(
+    payload: UpstreamExclusiveLineConfigIn,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """写白名单专属线路配置（走 config_service 统一保存通道）。
+
+    名单经 upstream_aggregate 家族 schema 校验（int_list）；保存即
+    失效配置缓存，选线热读立刻按新名单执法（store 口径最坏 60 秒
+    TTL 内收敛）。删掉一条后白名单用户立刻不再拿到该线；名单清空
+    或基址清空时专属线路整体惰性、普通选线零影响。审计由
+    /api/admin/emby/* 中间件统一记录。
+    """
+    from backend import config_service
+    from backend.emby_server import upstream_playback as _up
+
+    # int_list 的保存口径是逗号串（config_schema 校验）；空名单存
+    # None＝删行（与「无行＝空集惰性」的读取口径正好合拢）。
+    ids_value = (
+        ",".join(str(int(i)) for i in payload.source_ids)
+        if payload.source_ids else None)
+    values = {_up.KEY_EXCLUSIVE_SOURCE_IDS: ids_value}
+    if payload.pilot_base_url is not None:
+        values[_up.KEY_FEINIU_PILOT_BASE_URL] = payload.pilot_base_url
+    config_service.save_config(db, values, schema="upstream_aggregate")
+    db.commit()
+    return _exclusive_line_config_view(db)
+
+
 class UpstreamFetchConcurrencyConfigIn(BaseModel):
     """聚合拉取并发写入体（2026-11-01 加速）。"""
 
