@@ -7020,7 +7020,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             details = ctx.nfo_series_details.get(series_guid)
                             if details is not None and not _series_rej:
                                 _tmdb.tmdb_client.apply_images(series, details)
-                        nfo_lib.apply_nfo(series, series_nfo, "series")
+                        nfo_lib.apply_nfo(series, series_nfo, "series", db=db)
                         stats["nfo"] = stats.get("nfo", 0) + 1
 
                     season_guid = _pending.season_guid
@@ -7074,7 +7074,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             _tmdb.tmdb_client.apply_details(item, _pending.tmdb_details)
                         if needs_repair or not (item.poster_path or item.primary_image_url):
                             _tmdb.tmdb_client.apply_images(item, _pending.tmdb_details)
-                        nfo_lib.apply_nfo(item, nfo_data, kind)
+                        nfo_lib.apply_nfo(item, nfo_data, kind, db=db)
                         stats["nfo"] = stats.get("nfo", 0) + 1
                         if needs_repair:
                             item.repair_requested_at = None
@@ -7098,11 +7098,11 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                     stats["scraped"] += 1
                             if nfo_data:
                                 # 有 NFO 但无 tmdb_id：TMDB 打底，NFO 文本优先
-                                nfo_lib.apply_nfo(item, nfo_data, kind)
+                                nfo_lib.apply_nfo(item, nfo_data, kind, db=db)
                                 stats["nfo"] = stats.get("nfo", 0) + 1
                         elif nfo_data and not item.overview:
                             # 策略不要求重刮、但条目缺简介且远端有 NFO：补上（幂等，不调 TMDB）
-                            nfo_lib.apply_nfo(item, nfo_data, kind)
+                            nfo_lib.apply_nfo(item, nfo_data, kind, db=db)
                             stats["nfo"] = stats.get("nfo", 0) + 1
                         # 已有 TMDB 命中但缺 IMDb Id / 多别名 → 用详情接口补齐
                         # （中英文、繁简、多别名搜索依赖 aliases）
