@@ -157,6 +157,7 @@ def get_login_posters(db: Session = Depends(get_db), request: Request = None):
                 db.query(MediaItem.guid, MediaItem.name)
                 .filter(
                     MediaItem.deleted_at.is_(None),
+                    MediaItem.is_hidden == False,  # noqa: E712  # PA-011
                     MediaItem.item_type.in_(("movie", "series")),
                     or_(
                         and_(
