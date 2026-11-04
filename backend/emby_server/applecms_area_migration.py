@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 200
 
+#: 存量扫描分页大小：按主键分块读，内存只驻留一页，规模再涨
+#: 也不会像全量 ``.all()`` 一样把整库行一次载入被 OOM 杀掉。
+_PAGE_SIZE = 500
+
 
 def _validate(db: Session, from_library, targets: Dict[str, int]) -> None:
     if from_library is None:
@@ -73,6 +77,10 @@ def run_area_migration(db: Session, *, from_library_id: int,
 
     ``targets`` 是桶键 → 目标库 id。``apply=False`` 为干跑：只
     计数（含把 detail 打进缓存），不改任何行。
+
+    存量行按主键分块逐页读（``_PAGE_SIZE``），不全量载入：
+    现规模（十万级）下整表 ``.all()`` 会被 OOM 杀掉，分块后
+    内存只驻留一页，计数与迁移口径与全量版逐字一致。
     """
     from_library = db.get(em.Library, from_library_id)
     _validate(db, from_library, targets)
@@ -82,58 +90,69 @@ def run_area_migration(db: Session, *, from_library_id: int,
         "buckets": {}, "other": 0, "unknown": 0, "unresolved": 0,
         "no_mapping": 0, "no_source": 0,
     }
-    rows = (
-        db.query(em.MediaItem)
-        .filter(em.MediaItem.library_id == from_library_id,
-                em.MediaItem.item_type == "movie")
-        .order_by(em.MediaItem.id)
-        .all())
     sources: Dict[int, object] = {}
     pending = 0
-    for row in rows:
-        result["scanned"] += 1
-        mapping = (
-            db.query(em.UpstreamItemMapping)
-            .filter(em.UpstreamItemMapping.local_item_id == row.id,
-                    em.UpstreamItemMapping.episode_index.is_(None))
-            .order_by(em.UpstreamItemMapping.id)
-            .first())
-        if mapping is None:
-            result["no_mapping"] += 1
-            continue
-        source_id = int(mapping.source_id)
-        if source_id not in sources:
-            sources[source_id] = us.get_source(db, source_id)
-        source = sources[source_id]
-        if source is None:
-            result["no_source"] += 1
-            continue
-        harvest, _kind, _fetched = als.get_or_fetch_detail_harvest(
-            db, source, str(mapping.upstream_item_id), http_get=http_get)
-        if harvest is None:
-            result["unresolved"] += 1
-            continue
-        bucket = acl.area_bucket(harvest.get("area"))
-        if bucket in acl.AREA_BUCKETS:
-            result["buckets"][bucket] = \
-                result["buckets"].get(bucket, 0) + 1
-            if bucket not in targets:
-                # 判出了桶但没给目标库：如实计数，不许乱塞。
-                result.setdefault("no_target", {})
-                result["no_target"][bucket] = \
-                    result["no_target"].get(bucket, 0) + 1
+    # 按主键分块（keyset）逐页扫：分页键是 id 不是 library_id，
+    # 真跑把行迁出源库也不会让后续页错位或重复扫到已处理行。
+    last_id = 0
+    while True:
+        page = (
+            db.query(em.MediaItem)
+            .filter(em.MediaItem.library_id == from_library_id,
+                    em.MediaItem.item_type == "movie",
+                    em.MediaItem.id > last_id)
+            .order_by(em.MediaItem.id)
+            .limit(_PAGE_SIZE)
+            .all())
+        if not page:
+            break
+        last_id = page[-1].id
+        for row in page:
+            result["scanned"] += 1
+            mapping = (
+                db.query(em.UpstreamItemMapping)
+                .filter(em.UpstreamItemMapping.local_item_id == row.id,
+                        em.UpstreamItemMapping.episode_index.is_(None))
+                .order_by(em.UpstreamItemMapping.id)
+                .first())
+            if mapping is None:
+                result["no_mapping"] += 1
                 continue
-            if apply:
-                row.library_id = targets[bucket]
-                result["moved"] += 1
-                pending += 1
-                if pending >= _COMMIT_EVERY:
-                    db.commit()
-                    pending = 0
-        elif bucket == acl.AREA_OTHER:
-            result["other"] += 1
-        else:
-            result["unknown"] += 1
+            source_id = int(mapping.source_id)
+            if source_id not in sources:
+                sources[source_id] = us.get_source(db, source_id)
+            source = sources[source_id]
+            if source is None:
+                result["no_source"] += 1
+                continue
+            harvest, _kind, _fetched = als.get_or_fetch_detail_harvest(
+                db, source, str(mapping.upstream_item_id), http_get=http_get)
+            if harvest is None:
+                result["unresolved"] += 1
+                continue
+            bucket = acl.area_bucket(harvest.get("area"))
+            if bucket in acl.AREA_BUCKETS:
+                result["buckets"][bucket] = \
+                    result["buckets"].get(bucket, 0) + 1
+                if bucket not in targets:
+                    # 判出了桶但没给目标库：如实计数，不许乱塞。
+                    result.setdefault("no_target", {})
+                    result["no_target"][bucket] = \
+                        result["no_target"].get(bucket, 0) + 1
+                    continue
+                if apply:
+                    row.library_id = targets[bucket]
+                    result["moved"] += 1
+                    pending += 1
+                    if pending >= _COMMIT_EVERY:
+                        db.commit()
+                        pending = 0
+            elif bucket == acl.AREA_OTHER:
+                result["other"] += 1
+            else:
+                result["unknown"] += 1
+        if len(page) < _PAGE_SIZE:
+            break
     # 干跑同样提交：提交的只有 detail 缓存（抓取备忘，与工人
     # 共享），行上一列没动；真跑则把 library_id 变更一并落库。
     db.commit()
