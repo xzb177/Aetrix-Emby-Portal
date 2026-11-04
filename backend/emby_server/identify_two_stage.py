@@ -240,6 +240,38 @@ def binding_reject_reason_for_item(data, kind, item) -> Optional[str]:
     return None
 
 
+def search_binding_title_reject_reason(data, item) -> Optional[str]:
+    """search 来源绑定的标题复核（2026-11-04 两段式错绑定案，全仓共用）。
+
+    只判一件事：条目名与候选载荷的官方标题（name / title / 原名）
+    归一后是否毫无交集。归一走 tmdb._norm_text（与搜索 Tier 判定同
+    一套），交集 = 任一侧归一串是另一侧的子串（与复核门既有「名字
+    对账」同语义、只是归一后比，免得全角标点/空白差异假报零交集）。
+
+    背景：TMDB 无精确条目时搜索退化，confidence=search 的首命中可以
+    是完全无关的条目——《仙逆院线剧场版》（1784692，Planned、无日期）
+    被绑到 29 条「剧场版」开头的日系特摄/动画剧场版上：条目年份为空、
+    TMDB 条目无日期，年份门判不出；kind 又同为 movie——只剩标题能拦，
+    而当时复核门的名字对账只记日志。search 来源落账前必须过本核验，
+    零交集返回 "title_mismatch"；条目名为空、或载荷一个标题都没有
+    （判不出）返回 None，不拿缺证据当错绑。非 search 来源（NFO /
+    别名按 id 取数 / 多源桥）不归本函数管，调用方按来源决定是否调用。
+    """
+    from backend.emby_server.tmdb import _norm_text
+
+    item_name = _norm_text(str(getattr(item, "name", "") or ""))
+    if not item_name or not isinstance(data, dict):
+        return None
+    names = [_norm_text(str(data.get(k) or "")) for k in
+             ("name", "title", "original_name", "original_title")]
+    names = [n for n in names if n]
+    if not names:
+        return None
+    if any(item_name in n or n in item_name for n in names):
+        return None
+    return "title_mismatch"
+
+
 def extract_binding(item, fetched: dict) -> Optional[dict]:
     """从已采集证据里抽身份绑定（纯函数，不写库）。
 
@@ -788,6 +820,23 @@ def apply_identity(db, item, fetched: dict, tmdb_details_fetcher=None) -> Option
                         getattr(item, "id", "?"), binding["tmdb_id"],
                         _reason)
                     return None
+                elif (binding.get("evidence") or {}).get(
+                        "tmdb_id_source") == "search":
+                    # search 来源标题硬门（2026-11-04 两段式错绑定案）：
+                    # 搜索无精确条目时退化、首命中可与条目毫无关系
+                    # （《仙逆院线剧场版》绑到 29 条「剧场版」条目，
+                    # 年份/kind 都判不出）；落账前再过标题核验，条目名
+                    # 与候选官方标题归一后零交集即拒。证据钉
+                    # tmdb_id_source == "search" 才走本门——NFO / 别名 /
+                    # 多源桥等非 search 来源不归本门管，口径不变。
+                    _title_reason = search_binding_title_reject_reason(
+                        _det, item)
+                    if _title_reason:
+                        logger.warning(
+                            "识别段绑定复核拒绝 id=%s tmdb_id=%s reason=%s",
+                            getattr(item, "id", "?"), binding["tmdb_id"],
+                            _title_reason)
+                        return None
     from backend.emby_server import ai_policy as _aip
 
     if _aip.ai_policy_enabled():

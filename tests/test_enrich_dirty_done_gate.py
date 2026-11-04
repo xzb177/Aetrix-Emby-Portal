@@ -336,3 +336,141 @@ def test_patrol_leaves_good_and_fresh_rows(db):
     assert good.enrich_status == "done"
     assert fresh.enrich_status == "done"
     assert stats["requeued"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 6. search 来源绑定标题零交集硬拒（2026-11-04 两段式错绑定案）
+#
+# 生产实证：TMDB 1784692《仙逆院线剧场版》（Planned、无日期）被绑到
+# 29 条日系特摄/动画剧场版上——条目在 TMDB 无精确条目时搜索退化，
+# 两段式识别段以 confidence=search 提交了与条目名毫无交集的首命中；
+# 条目年份为空、TMDB 条目又无日期，年份门判不出、kind 也对得上，
+# 复核门的名字对账当时只记日志不拦截，眼睁睁放行。摘除后约 2.5
+# 分钟被工人自动绑回 25 条。修复口径：search 来源的绑定在复核门
+# （取数后门与识别段提交门共用）必须过标题核验——条目名与候选
+# 官方标题归一后零交集即硬拒；NFO / 别名按 id 取数的非 search
+# 来源维持原口径（权威文件/库内别名，不归本门管）。
+# ---------------------------------------------------------------------------
+
+_INCIDENT_NAME = "剧场版 超时空要塞F 虚空歌姬"
+_INCIDENT_HIT = {"id": 1784692, "title": "仙逆院线剧场版",
+                 "original_title": "仙逆院线剧场版：七式斩天"}
+_INCIDENT_DETAILS = {"id": 1784692, "title": "仙逆院线剧场版",
+                     "original_title": "仙逆院线剧场版：七式斩天"}
+
+
+def _run_post_ctx(db, item, ctx, batch_out, fake_details):
+    fake_client = mock.MagicMock()
+    fake_client.configured = True
+    fake_client.details.side_effect = \
+        lambda tid, kind: fake_details
+    fake_client.images_with_language.return_value = None
+    result = {"nfo_data": None}
+    with mock.patch("backend.emby_server.tmdb.tmdb_client", fake_client), \
+            mock.patch("backend.emby_server.tmdb.poster_language",
+                       lambda: "system"), \
+            mock.patch.object(ew, "_douban_ban_downgrade_active",
+                              lambda: False), \
+            mock.patch.object(ew, "_douban_fallback_on_tmdb_miss",
+                              lambda *a: False), \
+            mock.patch.object(ew, "_unified_fallback_flag_on",
+                              lambda: False), \
+            mock.patch.object(ew, "_should_multisource_on_tmdb_miss",
+                              lambda *a: False):
+        ew._enrich_fetch_tmdb_post(result, item, ctx,
+                                   batch_out=batch_out)
+    return result
+
+
+def _movie_search_ctx():
+    return {"kind": "movie", "needs_repair": False,
+            "tmdb_plan": {"op": "search", "name": _INCIDENT_NAME,
+                          "year": None, "kind": "movie",
+                          "existing_id": None}}
+
+
+def test_fetch_gate_rejects_search_hit_with_disjoint_title(db):
+    """事故复现：search 首命中标题与条目名零交集、年份无从判 → 硬拒。"""
+    it = _make_item(db, name=_INCIDENT_NAME, item_type="movie")
+    out = {"hit": dict(_INCIDENT_HIT), "details": dict(_INCIDENT_DETAILS),
+           "transient": False}
+    result = _run_post_ctx(db, it, _movie_search_ctx(), out,
+                           dict(_INCIDENT_DETAILS))
+    assert result.get("tmdb_gate_rejected") == "title_mismatch"
+    assert not result.get("tmdb_hit")
+    assert not result.get("tmdb_id")
+
+
+def test_two_stage_rejects_search_binding_with_disjoint_title(db):
+    """识别段提交门同口径：confidence=search 且标题零交集 → 不落账。"""
+    it = _make_item(db, name=_INCIDENT_NAME, item_type="movie")
+    fetched = {"tmdb_hit": dict(_INCIDENT_HIT),
+               "tmdb_details": dict(_INCIDENT_DETAILS),
+               "nfo_data": None}
+    res = ts.apply_identity(db, it, fetched)
+    assert res is None
+    db.flush()
+    db.expire(it)
+    assert not it.tmdb_id
+
+
+def test_fetch_gate_keeps_exact_search_hit_cjk(db):
+    """对照（绿）：search 精确命中（标题全等）必须照常保留。"""
+    it = _make_item(db, name="超时空要塞F 虚空歌姬", item_type="movie",
+                    production_year=2009)
+    details = {"id": 4242, "title": "超时空要塞F 虚空歌姬",
+               "release_date": "2009-11-21"}
+    out = {"hit": {"id": 4242, "title": "超时空要塞F 虚空歌姬",
+                   "release_date": "2009-11-21"},
+           "details": details, "transient": False}
+    result = _run_post_ctx(db, it, _movie_search_ctx(), out, details)
+    assert not result.get("tmdb_gate_rejected")
+    assert result.get("tmdb_hit", {}).get("id") == 4242
+
+
+def test_two_stage_commits_exact_search_hit(db):
+    """对照（绿）：两段式对 search 精确命中必须照常落账。"""
+    it = _make_item(db, name="超时空要塞F 虚空歌姬", item_type="movie",
+                    production_year=2009)
+    fetched = {"tmdb_hit": {"id": 4242, "title": "超时空要塞F 虚空歌姬",
+                            "release_date": "2009-11-21"},
+               "tmdb_details": {"id": 4242, "title": "超时空要塞F 虚空歌姬",
+                                "release_date": "2009-11-21"},
+               "nfo_data": None}
+    res = ts.apply_identity(db, it, fetched)
+    assert res is not None
+    assert res["tmdb_id"] == "4242"
+    # apply_identity 不 commit（调用方提交）：显式 flush 后再 expire
+    # 重读落库值——不依赖会话 autoflush 的跨文件配置漂移状态。
+    db.flush()
+    db.expire(it)
+    assert it.tmdb_id == "4242"
+
+
+def test_two_stage_nfo_binding_not_title_gated(db):
+    """对照（绿）：NFO 来源（explicit）标题对不上也不归本门管，照常落账。"""
+    it = _make_item(db, name=_INCIDENT_NAME, item_type="movie")
+    fetched = {"tmdb_id": "999",
+               "nfo_data": {"tmdb_id": "999"},
+               "tmdb_details": {"id": 999,
+                                "title": "Completely Unrelated Title"}}
+    res = ts.apply_identity(db, it, fetched)
+    assert res is not None
+    db.flush()
+    db.expire(it)
+    assert it.tmdb_id == "999"
+
+
+def test_fetch_gate_alias_binding_disjoint_title_stays(db):
+    """对照（绿）：别名按 id 取数（非 search 来源）标题零交集维持原口径。"""
+    it = _make_item(db, name=_INCIDENT_NAME, item_type="movie")
+    ctx = {"kind": "movie", "needs_repair": False,
+           "tmdb_plan": {"op": "details", "why": "alias",
+                         "tmdb_id": "555", "kind": "movie",
+                         "name": _INCIDENT_NAME, "year": None}}
+    details = {"id": 555, "title": "Totally Different",
+               "release_date": "2020-01-01"}
+    out = {"hit": None, "details": details, "transient": False}
+    result = _run_post_ctx(db, it, ctx, out, details)
+    assert not result.get("tmdb_gate_rejected")
+    assert result.get("tmdb_id") == "555"

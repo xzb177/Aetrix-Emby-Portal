@@ -2069,8 +2069,9 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
         # 一律丢弃绑定、走搜不中/兜底路径，不许带着错绑标 done。生产样本：
         # 《网球王子》绑同年无关条目、《原子少年》绑的 id 按 tv 查不到。
         # NFO 给的 id 是本地权威文件、条目已有 id 不是本轮新绑定，都不在
-        # 门内（存量由干净度巡检 dirty_done_patrol 兜底）。名字对账只记
-        # 参考日志不做硬门（译名差异大）。
+        # 门内（存量由干净度巡检 dirty_done_patrol 兜底）。名字对账对非
+        # search 来源只记参考日志不做硬门（译名差异大）；search 来源
+        # 零交集硬拒（2026-11-04 两段式错绑定案，见下方硬门）。
         _gate_hit = result.get("tmdb_hit") or {}
         _gate_cand = result.get("tmdb_id") or (
             str(_gate_hit["id"]) if _gate_hit.get("id") else None)
@@ -2137,21 +2138,54 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                     result.pop("tmdb_details", None)
                     result["tmdb_gate_rejected"] = _reason
                 else:
-                    # 名字对账（参考日志）：归一后无任何交集时留痕供复核，
-                    # 不做硬门（译名/原名差异大，硬卡误伤太多）。
-                    _det = _gate_evidence or {}
-                    _det_names = [str(_det.get(k) or "") for k in
-                                  ("name", "title", "original_name",
-                                   "original_title")]
-                    _item_name = str(getattr(item, "name", "") or "")
-                    if _item_name and any(_det_names) and not any(
-                            _item_name in n or n in _item_name
-                            for n in _det_names if n):
-                        logger.info(
-                            "绑定复核门名字对账无交集（仅记录）id=%s "
-                            "name=%r tmdb_id=%s details_names=%r",
-                            getattr(item, "id", "?"), _item_name,
-                            _gate_cand, _det_names)
+                    # search 来源标题硬门（2026-11-04 两段式错绑定案）：
+                    # 候选来自搜索命中（tmdb_hit）且条目名与候选官方
+                    # 标题归一后零交集 → 与年份/kind 同级硬拒，不再只
+                    # 记日志放行——TMDB 无精确条目时搜索退化，首命中
+                    # 可与条目毫无关系（《仙逆院线剧场版》绑 29 条
+                    # 「剧场版」条目，年份/kind 都判不出、只剩标题能
+                    # 拦）。非 search 来源（NFO / 别名按 id 取数）维持
+                    # 下方仅记录口径，不动。
+                    _from_search = bool(_gate_hit.get("id")) and str(
+                        _gate_hit["id"]) == str(_gate_cand)
+                    _title_reason = None
+                    if _from_search:
+                        from backend.emby_server.identify_two_stage import (
+                            search_binding_title_reject_reason as
+                            _search_title_reason)
+                        _title_reason = _search_title_reason(
+                            _gate_evidence, item)
+                    if _title_reason:
+                        logger.warning(
+                            "绑定复核门拒绝 id=%s name=%r tmdb_id=%s "
+                            "reason=%s details_names=%r",
+                            getattr(item, "id", "?"),
+                            getattr(item, "name", ""), _gate_cand,
+                            _title_reason,
+                            [str((_gate_evidence or {}).get(k) or "")
+                             for k in ("name", "title", "original_name",
+                                       "original_title")])
+                        result.pop("tmdb_id", None)
+                        result.pop("tmdb_hit", None)
+                        result.pop("tmdb_details", None)
+                        result["tmdb_gate_rejected"] = _title_reason
+                    else:
+                        # 名字对账（参考日志）：归一后无任何交集时留痕
+                        # 供复核，非 search 来源不做硬门（译名/原名差异
+                        # 大，硬卡误伤太多）。
+                        _det = _gate_evidence or {}
+                        _det_names = [str(_det.get(k) or "") for k in
+                                      ("name", "title", "original_name",
+                                       "original_title")]
+                        _item_name = str(getattr(item, "name", "") or "")
+                        if _item_name and any(_det_names) and not any(
+                                _item_name in n or n in _item_name
+                                for n in _det_names if n):
+                            logger.info(
+                                "绑定复核门名字对账无交集（仅记录）id=%s "
+                                "name=%r tmdb_id=%s details_names=%r",
+                                getattr(item, "id", "?"), _item_name,
+                                _gate_cand, _det_names)
 # 原语言海报（StrmAssistant #10）：IO 阶段预取语言偏好的海报，
         # 写库阶段直接用（写事务里不碰网络，见模块注释处方 1）。
         # poster_language() == "system" 时 images_with_language 返回 None，不额外请求。

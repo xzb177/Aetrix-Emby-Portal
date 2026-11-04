@@ -57,13 +57,17 @@ def _make_item(db, name="诅咒2025", **kw):
     return item
 
 
-def _fetched_for(tmdb_id, release_date, imdb_id=None):
-    details = {"id": tmdb_id, "title": "候选片",
+def _fetched_for(tmdb_id, release_date, imdb_id=None, title="候选片"):
+    # title 默认占位名只供纯函数（binding_reject_reason_for_item）用；
+    # 走 apply_identity 的用例须传与条目名有交集的标题——search 来源
+    # 落账现另有标题硬门（2026-11-04 两段式错绑定案），占位标题与条目
+    # 名零交集会被标题门先拒，年份门的行为就测不到了。
+    details = {"id": tmdb_id, "title": title,
                "release_date": release_date, "overview": "简介"}
     if imdb_id:
         details["imdb_id"] = imdb_id
     return {
-        "tmdb_hit": {"id": tmdb_id, "title": "候选片",
+        "tmdb_hit": {"id": tmdb_id, "title": title,
                      "release_date": release_date},
         "tmdb_details": details,
     }
@@ -131,9 +135,14 @@ def test_wrapper_rejects_on_any_known_year_conflict():
 # ---------- ③ apply_identity 落账 ----------
 
 def test_apply_identity_rejects_cursed_misbinding(db):
-    """生产样本复刻：名尾 2025、production_year 空、候选 Cursed(2005)。"""
+    """生产样本复刻：名尾 2025、production_year 空、候选 Cursed(2005)。
+
+    候选标题用 Cursed 的真实中文名《诅咒》（与条目名有交集、过标题
+    门），钉死拒绝必须来自年份门而非标题门。
+    """
     item = _make_item(db, name="诅咒2025")
-    fetched = _fetched_for(10012, "2005-02-25", imdb_id="tt0257516")
+    fetched = _fetched_for(10012, "2005-02-25", imdb_id="tt0257516",
+                           title="诅咒")
     assert ts.apply_identity(db, item, fetched) is None
     db.flush()
     assert not item.tmdb_id
@@ -143,7 +152,7 @@ def test_apply_identity_rejects_cursed_misbinding(db):
 
 def test_apply_identity_accepts_matching_year(db):
     item = _make_item(db, name="诅咒2025")
-    fetched = _fetched_for(888001, "2025-06-01")
+    fetched = _fetched_for(888001, "2025-06-01", title="诅咒")
     binding = ts.apply_identity(db, item, fetched)
     db.flush()
     assert binding is not None
@@ -152,15 +161,18 @@ def test_apply_identity_accepts_matching_year(db):
 
 def test_apply_identity_bracketed_title_year_rejects(db):
     item = _make_item(db, name="某片 (2024)")
-    fetched = _fetched_for(10012, "2005-02-25")
+    fetched = _fetched_for(10012, "2005-02-25", title="某片")
     assert ts.apply_identity(db, item, fetched) is None
     assert not item.tmdb_id
 
 
 def test_apply_identity_no_year_evidence_keeps_legacy_behavior(db):
-    """年份全未知：不新降门槛，候选按既有口径照常落账。"""
+    """年份全未知：不新降门槛，候选按既有口径照常落账。
+
+    候选标题与条目名一致（过标题门），钉死的是年份维度不新设门槛。
+    """
     item = _make_item(db, name="无年份的片")
-    fetched = _fetched_for(10012, "2005-02-25")
+    fetched = _fetched_for(10012, "2005-02-25", title="无年份的片")
     binding = ts.apply_identity(db, item, fetched)
     db.flush()
     assert binding is not None
