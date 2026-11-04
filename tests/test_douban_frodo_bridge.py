@@ -86,6 +86,9 @@ def _clean_state(monkeypatch, tmp_path):
     monkeypatch.setenv("PROVIDER_BREAKER_COOLDOWN_SEC", "60")
     monkeypatch.setenv("PROVIDER_BREAKER_FAST_SEC", "60")
     monkeypatch.setenv("DOUBAN_FRODO_MIN_INTERVAL", "0")
+    # P6：本文件测的是已配 key 的 Frodo 路径（HTTP 全 mock），须显式配 key，
+    # 否则 fail-fast 门会直接跳过、不发请求。
+    monkeypatch.setenv("DOUBAN_FRODO_APIKEY", "test-key")
     # 缓存落到临时目录，别污染开发机上的真实 TMDB 缓存目录
     monkeypatch.setenv("EMBY_TMDB_CACHE_DIR", str(tmp_path / "cache"))
     yield

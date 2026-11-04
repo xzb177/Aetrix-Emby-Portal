@@ -109,6 +109,19 @@ def _cfg_apikey() -> str:
     return (os.getenv("DOUBAN_FRODO_APIKEY", "").strip() or _DEFAULT_APIKEY)
 
 
+def _has_custom_apikey() -> bool:
+    """是否配了自备 key（P6 fail-fast 判据，2026-11-04）。
+
+    内置公开 apikey 已被豆瓣拒（见模块头注），未配自备 key 时任何 Frodo
+    请求恒 400——直接不尝试，不发请求、不喂熔断、不占限速。配上
+    ``DOUBAN_FRODO_APIKEY`` 后恢复尝试；熔断器仍保留作已配 key 失败时的兜底。
+    判据只认「凭据是否缺失」：env 未设、空串、或显式填回内置默认值，
+    一律视同未配（内置值本身已死，填它等于没填）。
+    """
+    return os.getenv("DOUBAN_FRODO_APIKEY", "").strip() not in (
+        "", _DEFAULT_APIKEY)
+
+
 def _cfg_ua() -> str:
     return os.getenv("DOUBAN_FRODO_UA", "").strip() or _DEFAULT_UA
 
@@ -160,6 +173,12 @@ def _request_json(url: str):
     熔断开着时直接返回 None、不发请求——豆瓣腿被拒后靠冷却 + 半开
     探测自愈，不逐条硬撞。
     """
+    if not _has_custom_apikey():
+        # P6 配置级 fail-fast：未配自备 key 时内置 key 恒 400，不尝试。
+        # 放在熔断检查之前：这种跳过不是失败，不喂熔断、不占限速、不留
+        # 探测日志噪声；配上 key 后下一次调用即恢复尝试。
+        logger.debug("[douban-frodo] 未配自备 key，跳过请求 %s", url)
+        return None
     if not provider_breaker.allow(PROVIDER):
         logger.debug("[douban-frodo] 熔断中，跳过请求 %s", url)
         return None
