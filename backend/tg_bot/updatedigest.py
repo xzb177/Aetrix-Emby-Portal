@@ -86,9 +86,10 @@ def interval_minutes(db) -> int:
 
 
 def _base_conditions(window_start: datetime) -> list:
-    """候选行公共条件：近窗口内入库、未软删、非合并副本、未播报过。"""
+    """候选行公共条件：近窗口内入库、未软删、未隐藏、非合并副本、未播报过。"""
     return [
         em.MediaItem.deleted_at.is_(None),
+        em.MediaItem.is_hidden == False,  # noqa: E712  # PA-011
         em.MediaItem.merged_into_id.is_(None),
         em.MediaItem.date_added.isnot(None),
         em.MediaItem.date_added >= window_start,

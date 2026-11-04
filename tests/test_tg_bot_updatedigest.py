@@ -285,6 +285,29 @@ def test_disabled_and_no_group(db, monkeypatch):
     assert sent["messages"] == []
 
 
+def test_hidden_items_excluded(db, monkeypatch):
+    """PA-011 补漏：is_hidden=true 的带身份新行（隐形墓碑形态）不进播报候选，
+    可见行照常播；隐藏集行所属剧也不许因它出现在电视栏。"""
+    _ready(db)
+    _item(db, "movie", "隐形墓碑片", year=2026, tmdb="201", is_hidden=True)
+    _item(db, "movie", "正常新片", year=2026, tmdb="202")
+    series = _item(db, "series", "普通新剧", year=2026,
+                   external='{"douban": "777"}')
+    _item(db, "episode", "第1集", series_id=series.id,
+          season_number=1, episode_number=1, is_hidden=True)
+
+    sent = _capture_send(monkeypatch)
+    res = updatedigest.push_digest(db, NOW)
+    assert res["pushed"] and res["reason"] == "ok"
+    text = sent["messages"][0]["text"]
+    assert "🎬正常新片 (2026)" in text
+    assert "隐形墓碑片" not in text
+    assert "普通新剧" not in text  # 唯一一集是隐藏行 → 整剧不报
+    # 隐藏行不落已播记录（日后取消隐藏仍可正常播报）
+    sent_names = db.query(models.TgUpdateDigestSent).count()
+    assert sent_names == 1
+
+
 def test_tick_interval_pacing(db, monkeypatch):
     _ready(db)
     _item(db, "movie", "第一批", year=2026, tmdb="1")
