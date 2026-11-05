@@ -509,6 +509,18 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动多版本合并 worker 失败（可忽略）: {e}")
 
+        # 无界起播暖地址保鲜：按信号集（追剧新集/继续观看/新入库
+        # 热门）在后台提前解析+探活，把地址喂进已验活快路缓存，
+        # 用户首播直接命中。只吃闲置产能（负载/起播繁忙自动让
+        # 路），见 emby_server/upstream_warm_worker 模块头。
+        try:
+            from backend.emby_server import upstream_warm_worker
+            if upstream_warm_worker.start():
+                started.append("upstream_warm_worker")
+                logger.info("✅ 上游地址保鲜 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动上游地址保鲜 worker 失败（可忽略）: {e}")
+
         try:
             from backend.emby_server import sample_hash_worker
             if sample_hash_worker.start():

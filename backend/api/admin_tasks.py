@@ -415,6 +415,60 @@ def _task_chase_new(db: Session) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 6. 上游地址保鲜（暖地址）
+# ---------------------------------------------------------------------------
+
+def _task_upstream_warm(db: Session) -> dict:
+    from backend.emby_server import upstream_warm_worker
+
+    snap = _cached_snapshot(
+        "upstream_warm_status",
+        lambda: upstream_warm_worker.status_snapshot())
+    last = snap.get("last_round") or {}
+    signals = last.get("signals") or {}
+    metrics = [
+        {"label": "上轮信号条目",
+         "value": f"{int(last.get('items') or 0)} 条"},
+        {"label": "保鲜成功",
+         "value": f"{int(last.get('warmed') or 0)} 条线路"},
+        {"label": "已新鲜跳过",
+         "value": f"{int(last.get('fresh') or 0)} 条"},
+        {"label": "保鲜失败",
+         "value": f"{int(last.get('failed') or 0)} 条"},
+        {"label": "信号构成",
+         "value": (f"追剧 {int(signals.get('follow') or 0)} / "
+                   f"续看 {int(signals.get('resume') or 0)} / "
+                   f"热门 {int(signals.get('hot') or 0)}")},
+        {"label": "上轮耗时",
+         "value": f"{float(last.get('elapsed_sec') or 0):.1f} 秒"},
+    ]
+    if not snap.get("enabled", True):
+        status, status_text = "disabled", "已关闭"
+        summary = "地址保鲜关了（环境变量），无界首播仍要现验线路"
+    elif not last:
+        status, status_text = "idle", "没跑过"
+        summary = "保鲜工人还没跑过第一轮"
+    elif last.get("reason") in ("busy", "load"):
+        status, status_text = "ok", "让路中"
+        summary = "上一轮检测到起播繁忙或系统负载高，主动跳过让路"
+    elif last.get("reason") == "fastpath_off":
+        status, status_text = "warning", "留意"
+        summary = "已验活快路被关了（APPLECMS_VERIFIED_PLAY_TTL_SEC=0），保鲜无处落、整轮免跑"
+    elif int(last.get("failed") or 0) and not int(last.get("warmed") or 0):
+        status, status_text = "warning", "留意"
+        summary = "上一轮保鲜全军覆没，多半是上游源集体不健康"
+    else:
+        status, status_text = "ok", "正常"
+        summary = (f"上一轮提前验好 {int(last.get('warmed') or 0)} 条线路，"
+                   "信号集里的片点开可直接命中已验活地址")
+    return _card(
+        "upstream_warm", "上游地址保鲜", status, status_text, summary,
+        metrics=metrics, last_run=last.get("finished_at"),
+        last_run_label="最近一轮保鲜",
+    )
+
+
+# ---------------------------------------------------------------------------
 # 聚合入口
 # ---------------------------------------------------------------------------
 
@@ -424,6 +478,7 @@ _BUILDERS = (
     ("enrich", "元数据刮削", "_task_enrich"),
     ("thumbnail", "缩略图补生成", "_task_thumbnail"),
     ("chase_new", "追新（新资源监听）", "_task_chase_new"),
+    ("upstream_warm", "上游地址保鲜", "_task_upstream_warm"),
 )
 # 注：存函数名而不是函数对象，测试时 monkeypatch 模块属性才能生效。
 
