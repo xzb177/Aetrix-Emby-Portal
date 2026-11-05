@@ -408,6 +408,84 @@ def evict_cms_detail(source_id, vod_id) -> None:
         pass
 
 
+# ---------------------------------------------------------------- 已验活
+# 地址快路（起播解析慢治理，2026-11-05 生产实证）：成功起播
+# resolve_ms p50 2864ms / p95 10657ms，大头不是解析、是每播必做
+# 的同步探活——探活单跳直达 CDN，但 CDN 对服务器机房位置的首字
+# 节耗时实测 1.9~9.7 秒；detail 缓存只省取 detail，省不掉探活。
+# 而 46% 的播放是同一条目 30 秒内的复播，照样全额再探一遍。
+# 快路口径：同一条映射线路刚下发过的地址，在短窗口内复播、且该
+# 地址仍在本份 detail 的候选内时，免探活直接下发同一个地址——
+# 读的正是探活刚写下的现成结论，不关探活、不关择优/熔断（线路
+# 排序与健康记录照常喂数）；窗口外、地址已不在候选、无映射 id
+# （显式上游口）一律逐字回现行逐候选探活。窗口只需覆盖复播
+# 间隔：地址本身的时效另有 detail TTL 与探活淘汰守着，窗口内
+# 地址恰好死亡的最坏后果与今日「探活刚过地址就死」同形态（播
+# 放器报错、用户换线），窗口一过自动恢复逐发探活。
+#: 已验活地址快路窗口 env 键（秒）：0 = 关闭快路（回今日行为）。
+APPLECMS_VERIFIED_PLAY_TTL_ENV = "APPLECMS_VERIFIED_PLAY_TTL_SEC"
+
+#: 已验活地址快路默认窗口（秒）。
+CMS_VERIFIED_PLAY_TTL_DEFAULT_SEC = 300
+
+
+def cms_verified_play_ttl() -> int:
+    """已验活地址快路窗口（秒）：0/负数 = 关闭；脏值回默认。"""
+    raw = str(os.getenv(APPLECMS_VERIFIED_PLAY_TTL_ENV, "") or "").strip()
+    if not raw:
+        return CMS_VERIFIED_PLAY_TTL_DEFAULT_SEC
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return CMS_VERIFIED_PLAY_TTL_DEFAULT_SEC
+    return max(0, value)
+
+
+def cms_verified_play_key(mapping_id) -> str:
+    """已验活地址缓存键：按映射 id 一条一份（映射 = 一条下发线路）。"""
+    return f"cmsvp:{int(mapping_id)}"
+
+
+def read_verified_play_address(mapping_id) -> Optional[str]:
+    """读已验活地址：无映射/快路关/无记录/记录坏了都返回 None。
+
+    调用方拿到 None 即回现行探活路径，不报错（与 detail 缓存
+    同口径：缓存只是补强，故障不外溢）。
+    """
+    if mapping_id is None or cms_verified_play_ttl() <= 0:
+        return None
+    try:
+        from backend.database import CacheManager
+        raw = CacheManager.get(cms_verified_play_key(mapping_id))
+    except Exception:  # noqa: BLE001 — 同 read_cms_detail 口径
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, dict):
+        address = data.get("address")
+        if isinstance(address, str) and address:
+            return address
+    return None
+
+
+def store_verified_play_address(mapping_id, address) -> None:
+    """记一条已验活地址（下发成功时写）。全程 fail-safe。"""
+    ttl = cms_verified_play_ttl()
+    if mapping_id is None or not address or ttl <= 0:
+        return
+    try:
+        from backend.database import CacheManager
+        CacheManager.set(
+            cms_verified_play_key(mapping_id),
+            json.dumps({"address": address}, ensure_ascii=False), ttl=ttl)
+    except Exception:  # noqa: BLE001 — 同 store_cms_detail 口径
+        pass
+
+
 # ---------------------------------------------------------------- 探活分级
 # （件一）：同一主机连续 403 满 3 次即跳过探活——恒 403 主机（如区
 # 域拒绝型 CDN）每次点播省掉 1.5–3.8 秒探活等待；跳过时返回的
@@ -1041,6 +1119,11 @@ def _play_from_cms_detail(source, detail, episode_index, *,
     **首候选**的错误（404 仍包装为 ``_CmsEvictableFailure``，使
     缓存淘汰＋重取重试的既有机制仍只触发一轮；其余状态走
     ``_classify_probe_status`` 原样分类）。
+
+    探活前先查已验活地址快路（``read_verified_play_address``）：
+    同一映射刚下发过的地址仍在候选内时免探活直发，下发时（探活
+    通过与 403 软放行两条返回路）顺手记账；快路不改变任何一次
+    下发的地址选择，只省复播时对同一地址的重复验活等待。
     """
     from backend.emby_server import applecms_fetcher as acf
     try:
@@ -1067,6 +1150,17 @@ def _play_from_cms_detail(source, detail, episode_index, *,
             messages.get(reason, "该条目暂无直链可播"),
             source_id=source.id)
     candidates = result[1]
+    # 已验活地址快路（见 read_verified_play_address 一节）：同一条
+    # 线路刚下发过的地址仍在本份 detail 候选内时免探活直发，省的
+    # 是复播时对同一地址再验一遍的 CDN 首字节等待；候选 membership
+    # 现算，detail 一变（换组/换地址）立刻回现行探活，不发旧地址。
+    verified = read_verified_play_address(quality_mapping_id)
+    if verified is not None and any(
+            address == verified for _group_name, address
+            in candidates[:CMS_CANDIDATE_PROBE_LIMIT]):
+        _capture_cms_quality_async(source, quality_mapping_id, detail,
+                                   verified, http_get_text=http_get_text)
+        return verified
     probe = _default_http_range_probe if http_probe is None else http_probe
     first_error: Optional[UpstreamPlaybackError] = None
     for _group_name, address in candidates[:CMS_CANDIDATE_PROBE_LIMIT]:
@@ -1086,6 +1180,7 @@ def _play_from_cms_detail(source, detail, episode_index, *,
             # 统一分类（404 判死 / 401 凭据 / 429 额度 / 5xx 不可用）；
             # Emby/Jellyfin 分支不经这里，403 仍判 upstream_forbidden。
             logger.info("cms_probe_soft_pass source_id=%s", source.id)
+            store_verified_play_address(quality_mapping_id, address)
             _capture_cms_quality_async(source, quality_mapping_id, detail,
                                        address, http_get_text=http_get_text)
             return address
@@ -1101,6 +1196,7 @@ def _play_from_cms_detail(source, detail, episode_index, *,
                 first_error = exc
             continue
         logger.info("上游播放解析成功 source_id=%s", source.id)
+        store_verified_play_address(quality_mapping_id, address)
         _capture_cms_quality_async(source, quality_mapping_id, detail,
                                    address, http_get_text=http_get_text)
         return address
