@@ -77,7 +77,12 @@
       <div class="reward" v-if="status && status.enabled">
         <template v-if="status.points_enabled">
           <span aria-hidden="true">🎁</span> <b>报到奖励</b>：能量 +{{ status.base_points }}<span aria-hidden="true">⚡</span><br>
-          <span aria-hidden="true">🔥</span> <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}<span aria-hidden="true">⚡</span>（上限 +{{ status.streak_max_bonus }}<span aria-hidden="true">⚡</span>）
+          <span aria-hidden="true">🔥</span> <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}<span aria-hidden="true">⚡</span>（上限 +{{ status.streak_max_bonus }}<span aria-hidden="true">⚡</span>）<br>
+          <!-- 2026-11-05 用户亲点：按连报天数动态显示实数。实得取后端记录值 today_points（不按公式重算）；可得只算基础+连签加成，不含暴击/惩罚/里程碑 -->
+          <span aria-hidden="true">⚡</span>
+          <template v-if="status.checked_today && status.today_points != null"><b>今日实得</b>：+{{ status.today_points }}<span aria-hidden="true">⚡</span> · <b>明日报到可得</b>：{{ upcomingEstimateText }}<span aria-hidden="true">⚡</span></template>
+          <template v-else-if="status.checked_today"><b>明日报到可得</b>：{{ upcomingEstimateText }}<span aria-hidden="true">⚡</span></template>
+          <template v-else><b>今日报到可得</b>：{{ upcomingEstimateText }}<span aria-hidden="true">⚡</span></template>
         </template>
         <template v-else>
           <span aria-hidden="true">🔥</span> 报到只记连击，能量奖励是公益服专属
@@ -93,7 +98,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import StaminaBar from '@/components/game/StaminaBar.vue'
 import { staminaText } from '@/config/stamina'
-import { checkinApi, pointsApi, type CheckinStatus } from '@/api/economy'
+import { checkinApi, pointsApi, estimateCheckinReward, formatCheckinEstimate, type CheckinStatus } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
 import { parseServerTime } from '@/utils/serverTime'
@@ -119,6 +124,19 @@ const monthLabel = computed(() => `${month.value + 1}月`)
 /** R103-2：星期头文案，与 weeks 的周日起始（getDay 周日=0）对齐 */
 const weekNames = ['日', '一', '二', '三', '四', '五', '六']
 const signedCount = computed(() => signedDays.value.size)
+/**
+ * 下一次报到（已报到=明日、未报到=今日）可得预估文案：报到后连签数恒为
+ * 当前 streak+1（status 的 streak 已报到含今日、未报到为昨日连签，口径一致）；
+ * 只算基础+连签加成，基础范围缺省（旧后端）时以 base_points 兜底。
+ */
+const upcomingEstimateText = computed(() => {
+  const s = status.value
+  if (!s) return ''
+  const est = estimateCheckinReward(
+    s.base_min ?? s.base_points, s.base_max ?? s.base_points,
+    s.streak + 1, s.streak_bonus, s.streak_max_bonus)
+  return formatCheckinEstimate(est)
+})
 /** ARIA grid 需要行结构：按 7 个一组分周，第一周开头用 null 补齐空位 */
 const weeks = computed((): Array<Array<number | null>> => {
   const firstWeekday = new Date(year.value, month.value, 1).getDay()

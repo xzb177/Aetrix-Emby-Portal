@@ -506,6 +506,9 @@ class CheckinStatusResponse(BaseModel):
     milestone_days: list = []
     full_attendance_points: int = 30
     crit_pct: int = 5
+    # 2026-11-05 报到页动态实数：今日实得＝今日记录 points_awarded（当日基础
+    # 奖励，含暴击放大；里程碑/全勤独立台账不在内），未报到为 None。
+    today_points: Optional[int] = None
 
 
 @router.get("/checkin/status", response_model=CheckinStatusResponse)
@@ -514,10 +517,15 @@ def checkin_status(
     db: Session = Depends(get_db),
 ):
     today = _today_start()
-    checked = db.query(models.CheckinRecord).filter(
+    today_record = db.query(models.CheckinRecord).filter(
         models.CheckinRecord.user_id == current_user.id,
         models.CheckinRecord.checkin_date >= today,
-    ).first() is not None
+    ).order_by(models.CheckinRecord.checkin_date.desc()).first()
+    checked = today_record is not None
+    today_points: Optional[int] = None
+    if today_record is not None:
+        today_points = (today_record.points_awarded
+                        if today_record.points_awarded is not None else 0)
 
     # 连签数：今日已签按当日记录，未签则按昨天回溯。
     # PA-016：回溯须有“昨天”下界——只认昨天或今天的记录，否则断签用户
@@ -550,6 +558,7 @@ def checkin_status(
         milestone_days=rules["milestone_days"],
         full_attendance_points=rules["full_attendance_points"],
         crit_pct=rules["crit_pct"],
+        today_points=today_points,
     )
 
 

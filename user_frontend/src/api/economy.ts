@@ -44,6 +44,36 @@ export interface CheckinStatus {
   points: number
   /** R103-1：当前用户是否为公益服（是否会获得能量），后端 CheckinStatusResponse.points_enabled（2026-10-09 已上线） */
   points_enabled: boolean
+  /** 基础奖励范围（后端 base_min/base_max，固定值时两数相等；旧后端缺省时以 base_points 兜底） */
+  base_min?: number
+  base_max?: number
+  /** 今日实得：今日记录 points_awarded（当日基础奖励含暴击放大），未报到为 null（后端 2026-11-05 新增） */
+  today_points?: number | null
+}
+
+/** 连签加成：报到后连签达 streakAfter 天时的加成，min(每天加成×(天数-1), 封顶)，与后端 _do_checkin_core 同口径 */
+export function checkinStreakBonus(streakAfter: number, streakBonus: number, streakMaxBonus: number): number {
+  if (streakAfter <= 1) return 0
+  return Math.min(streakBonus * (streakAfter - 1), streakMaxBonus)
+}
+
+export interface CheckinRewardEstimate { min: number; max: number }
+
+/**
+ * 「可得」预估：只算基础＋连签加成，不含暴击/惩罚/里程碑（随机或独立台账项，
+ * 不许算进预估向用户承诺）。基础是范围时返回范围，固定值时 min=max。
+ */
+export function estimateCheckinReward(
+  baseMin: number, baseMax: number, streakAfter: number,
+  streakBonus: number, streakMaxBonus: number,
+): CheckinRewardEstimate {
+  const bonus = checkinStreakBonus(streakAfter, streakBonus, streakMaxBonus)
+  return { min: Math.min(baseMin, baseMax) + bonus, max: Math.max(baseMin, baseMax) + bonus }
+}
+
+/** 预估展示文案：固定值 "+8"，范围 "+7~12" */
+export function formatCheckinEstimate(e: CheckinRewardEstimate): string {
+  return e.min === e.max ? `+${e.min}` : `+${e.min}~${e.max}`
 }
 
 export interface PointsLogEntry {
