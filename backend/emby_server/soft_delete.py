@@ -265,6 +265,37 @@ def rehome_merged_children(db, item, skip_ids=frozenset()) -> str:
     return action
 
 
+def detach_merged_children(db, item_ids) -> int:
+    """物理删除前的兜底：把指向待删行的合并引用一律解开（merged_into_id 置 NULL）。
+
+    与 :func:`rehome_merged_children` 的分工：rehome 是软删/回收的「保家族」
+    处置（改指到其它可见 root，尽量不让分身露面）；本函数是**没有 rehome
+    守卫的真删路径**的最后防线，语义定版为「只解开、不改指」——分身该并到
+    哪一行是数据修复的决策，删除路径不许顺手做。置 NULL 后分身恢复为独立
+    行（``deleted_at`` 不动：可见分身恢复显示，已软删分身保持隐藏，等它
+    自己的删除轮次），删除本身照常进行。
+
+    - 待删集合内部互相指向的行不解：它们随本批一起消失；
+    - 已软删分身同样要解：UPDATE 不走 ORM 可见性钩子（钩子只管 SELECT），
+      一条批量语句全覆盖，不需要 ``include_deleted``；
+    - 幂等：没有入向引用时返回 0。
+
+    返回实际解开的行数。
+    """
+    from backend.emby_server.models import MediaItem
+
+    ids = {int(i) for i in item_ids if i}
+    if not ids:
+        return 0
+    detached = int(db.query(MediaItem).filter(
+        MediaItem.merged_into_id.in_(ids),
+        ~MediaItem.id.in_(ids),
+    ).update({"merged_into_id": None}, synchronize_session=False) or 0)
+    if detached:
+        logger.info("物理删除兜底：解开 %d 行指向待删条目的合并引用", detached)
+    return detached
+
+
 def mark_soft_deleted(db, item_ids: list) -> int:
     """把条目标记为已删除（不碰从属数据：进度、收藏都留着等它回来）
 

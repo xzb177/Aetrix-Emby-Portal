@@ -5135,8 +5135,15 @@ def _purge_items(db: Session, item_ids: list) -> None:
     从属表清单共用 :func:`soft_delete.delete_item_child_rows`：只 `db.delete(item)`
     会留下指向不存在条目的孤儿行（UserMediaData 等没有级联），且在 PG 上漏掉
     任何一张 FK 子表都会让条目 DELETE 直接撞外键；清单只在此一处维护。
+
+    入向合并引用同样在这里统一兜底（:func:`soft_delete.detach_merged_children`）：
+    本函数是扫描清理（软删关分支）、byos 清理、软删回收共用的真删原语，调用方
+    多数没有 rehome 守卫——删前不解开指向待删行的 merged_into_id，就会留下
+    悬空合并（生产实账 2026-11-05：2339 行指向不存在的目标、10929 集不可见）。
     """
     ids = list(item_ids)
+    # 物理删除兜底：先解开入向合并引用（只解开不改指），再删子表与本体行。
+    _soft_delete.detach_merged_children(db, ids)
     # 媒体信息 JSON 清理（对标 DeleteMediaInfoJson）：先取 guid 再删库，
     # 否则删库后算不出 JSON 路径，/data/mediainfo 只增不减
     try:
