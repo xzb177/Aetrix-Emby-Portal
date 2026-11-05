@@ -1446,6 +1446,27 @@ KEY_EXCLUSIVE_SOURCE_IDS = "upstream_aggregate_exclusive_source_ids"
 #: 注入（从飞牛本地 token.txt 读出后写入），不许进代码/仓库/报告。
 KEY_FEINIU_PILOT_BASE_URL = "feiniu_pilot_base_url"
 
+# ---------------------------------------------------------------------------
+# pilot 独立入口（2026-11-05 用户亲定，专属线路形态改定）：pilot 域名
+# 本身成为独立反代入口——飞牛 nginx 把 /p/ 之外路径反代到本站并注入
+# 标记头 X-Aetrix-Pilot-Entry，后端据此认定 pilot 入口。标记头的值
+# 必须与 pilot_entry_secret 完全一致且 pilot_entry_enabled 为开：
+# 外部用户可直连 emby 域名并自带任意同名头，值不对/未配密钥/开关关
+# 一律按普通入口处理，绝不凭一个头名就冒充 pilot 入口。两键均为纯
+# SystemConfig 键（upstream_aggregate 家族），密钥原文只许经管理后台
+# 写入，不许进代码/仓库/日志。
+# ---------------------------------------------------------------------------
+
+#: pilot 入口总开关 SystemConfig 键（upstream_aggregate 家族）。
+KEY_PILOT_ENTRY_ENABLED = "pilot_entry_enabled"
+
+#: pilot 入口标记密钥 SystemConfig 键：飞牛 nginx 注入的
+#: X-Aetrix-Pilot-Entry 头值必须与它逐字一致。
+KEY_PILOT_ENTRY_SECRET = "pilot_entry_secret"
+
+#: pilot 入口标记头名（飞牛 nginx 反代时注入）。
+PILOT_ENTRY_HEADER = "X-Aetrix-Pilot-Entry"
+
 
 def exclusive_source_ids(db) -> frozenset:
     """读白名单专属源名单（源 id 集合），口径：
@@ -1479,6 +1500,88 @@ def feiniu_pilot_base_url(db) -> str:
 def exclusive_line_ready(db) -> bool:
     """专属线路整体可用性：名单非空且试点基址已配，缺一即惰性。"""
     return bool(feiniu_pilot_base_url(db)) and bool(exclusive_source_ids(db))
+
+
+def pilot_entry_enabled(db) -> bool:
+    """pilot 独立入口总开关：默认关（无行＝关，入口形态未启用前
+    任何标记头都不生效）。读取失败回关（fail-closed）。"""
+    return _system_config_bool(db, KEY_PILOT_ENTRY_ENABLED, False)
+
+
+def pilot_entry_secret(db) -> str:
+    """读 pilot 入口标记密钥；未配/读失败回空串（＝入口永不认定）。"""
+    if db is None:
+        return ""
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, KEY_PILOT_ENTRY_SECRET, "")
+    except Exception:  # noqa: BLE001 — 读失败当未配，入口不认定
+        return ""
+    return str(raw or "").strip()
+
+
+def pilot_entry_origin(db) -> str:
+    """飞牛 pilot 域名 origin（scheme://host[:port]）：从飞牛基址派生。
+
+    基址形如 https://pilot.135505.autos/p/<TOKEN>，origin 即
+    https://pilot.135505.autos——pilot 入口下发的取流地址只借这个
+    域名，基址的 /p/<TOKEN> 路径段是飞牛口令门、绝不进播放地址。
+    未配/形态不对回空串。
+    """
+    base = feiniu_pilot_base_url(db)
+    if not base:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(base)
+    except ValueError:
+        return ""
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _pilot_header_value(request):
+    """从请求取 pilot 标记头值：Starlette 头大小写不敏感；鸭子类型
+    （测试桩的普通 dict）按大小写不敏感扫描兜底。取不到回空串。"""
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        value = headers.get(PILOT_ENTRY_HEADER)
+    except Exception:  # noqa: BLE001
+        value = None
+    if value:
+        return str(value)
+    try:
+        items = headers.items()
+    except Exception:  # noqa: BLE001
+        return ""
+    for key, val in items:
+        if str(key).lower() == PILOT_ENTRY_HEADER.lower() and val:
+            return str(val)
+    return ""
+
+
+def is_pilot_entry(db, request) -> bool:
+    """本次请求是否经 pilot 独立入口进入（唯一认定口径）。
+
+    三项全满足才算：开关开、密钥已配、标记头值与密钥逐字一致
+    （compare_digest 定长比较）。任一不满足按普通入口处理——
+    外部伪造同名头直连 emby 域名时，值不对就只是普通请求，
+    不报错、也不给 pilot 待遇。
+    """
+    if db is None or request is None:
+        return False
+    if not pilot_entry_enabled(db):
+        return False
+    secret = pilot_entry_secret(db)
+    if not secret:
+        return False
+    value = _pilot_header_value(request)
+    if not value:
+        return False
+    import secrets as _secrets
+    return _secrets.compare_digest(value, secret)
 
 
 def feiniu_pilot_rewrite(base_url: str, upstream_url: str):

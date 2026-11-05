@@ -1847,6 +1847,15 @@ export const updateUpstreamFetchConcurrencyConfig = (concurrency: number) =>
 export interface UpstreamExclusiveLineConfig {
   source_ids: number[]
   pilot_configured: boolean
+  /** pilot 独立入口开关（2026-11-05）：开时标记头合法的请求才被认定为 pilot 入口 */
+  pilot_entry_enabled: boolean
+  /** pilot 入口密钥只回已配状态，原文不回浏览器（重设时一次性提交） */
+  pilot_entry_configured: boolean
+}
+
+export interface PilotEntryUpdate {
+  enabled?: boolean
+  secret?: string
 }
 
 export const fetchUpstreamExclusiveLineConfig = () =>
@@ -1855,10 +1864,17 @@ export const fetchUpstreamExclusiveLineConfig = () =>
 export const updateUpstreamExclusiveLineConfig = (
   sourceIds: number[],
   pilotBaseUrl?: string,
+  pilotEntry?: PilotEntryUpdate,
 ) =>
   put<UpstreamExclusiveLineConfig>(`${E}/upstream-exclusive-line-config`, {
     source_ids: sourceIds,
     ...(pilotBaseUrl !== undefined ? { pilot_base_url: pilotBaseUrl } : {}),
+    ...(pilotEntry?.enabled !== undefined
+      ? { pilot_entry_enabled: pilotEntry.enabled }
+      : {}),
+    ...(pilotEntry?.secret !== undefined
+      ? { pilot_entry_secret: pilotEntry.secret }
+      : {}),
   })
 
 /** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。

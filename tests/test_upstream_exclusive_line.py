@@ -1,16 +1,18 @@
 """白名单专属线路（飞牛家宽回源，2026-11-04 用户亲令）回归。
 
+2026-11-05 形态改定后本文件锁的是「旧形态残留口径」：普通入口
+（详情/PlaybackInfo）不再下发 :wl 专属线（pilot 独立入口的新口径
+在 test_pilot_entry.py）；专属名单与 wl-stream 取流口的旧三查
+执法保留给存量 :wl 地址，逐字不回归。
+
 锁住的口径：
 - 专属名单是 SystemConfig（upstream_aggregate_exclusive_source_ids，
   管理后台可增删），粒度＝源；无默认——未配/空＝整体惰性，普通
   选线零影响。飞牛基址（feiniu_pilot_base_url，含路径 token）未配
   同样惰性；
-- 白名单用户（codes.is_whitelist_account，#1668 唯一口径）播无界
-  片时，名单内 applecms 型源的映射在普通线路之后多一条专属线：
-  Id=<guid>:upstream:<映射 id>:wl、Name 带「专属线路」、取流地址
-  走专属口 /emby/Videos/<guid>/upstream/wl-stream；
-- 普通用户：列表里没有专属线（响应全文不出现 wl-stream）；拿自己
-  合法播放签名轨伪造专属地址打专属口 → 403
+- 普通入口对所有用户（含白名单）都不再出专属线：响应全文不出现
+  wl-stream、MediaSource 无 :wl 后缀；
+- 普通用户拿自己合法播放签名轨伪造专属地址打专属口 → 403
   exclusive_line_whitelist_only（签名只绑 (uid, guid)，线路资格
   在取流口现算白名单）；
 - 专属口执法：基址/名单未配 → 404 exclusive_line_unavailable；
@@ -286,35 +288,26 @@ def _path_of(url):
 
 def test_playbackinfo_whitelist_gets_exclusive_line(
         client, wl_token, seed, wl_config):
-    body = _playback_info(client, wl_token, seed["item_in"]).json()
-    regular = _regular_lines(body)
-    wl = _wl_lines(body)
-    assert len(regular) == 1, body.get("MediaSources")
-    assert len(wl) == 1, body.get("MediaSources")
-    line = wl[0]
-    # 专属线排在全部普通线路之后（不抢默认首选）
-    assert body["MediaSources"][-1] is line or body["MediaSources"][-1] == line
-    assert line["Id"] == f"{seed['item_in']}:upstream:{seed['map_in']}:wl"
-    assert line["Name"].endswith("专属线路")
-    url = line["DirectStreamUrl"]
-    assert line["DirectPlayUrl"] == url
-    assert urlsplit(url).path == (
-        f"/emby/Videos/{seed['item_in']}/upstream/wl-stream")
-    q = _qs(url)
-    assert q.get("MediaSourceId") == line["Id"]
-    assert play_sign.verify_play_sign(
-        int(q["uid"]), seed["item_in"], int(q["exp"]), q["sign"])
-    # 上游坐标不裸下发：响应全文不得出现上游域名/上游条目 id/试点 token
+    # 2026-11-05 形态改定：普通入口不再追加 :wl 专属线（已撤除，
+    # 专属走线改走 pilot 独立入口，见 test_pilot_entry.py）。本例
+    # 改锁「普通入口白名单用户也只有普通线路」。
     r = _playback_info(client, wl_token, seed["item_in"])
+    body = r.json()
+    regular = _regular_lines(body)
+    assert len(regular) == 1, body.get("MediaSources")
+    assert _wl_lines(body) == []
+    assert "wl-stream" not in r.text
+    # 上游坐标不裸下发：响应全文不得出现上游域名/上游条目 id/试点 token
     assert "TESTTOKEN" not in r.text
     assert "vod-in-1" not in r.text
 
 
 def test_detail_whitelist_gets_exclusive_line(
         client, wl_token, seed, wl_config):
+    # 同上改定：详情面普通入口同样不再追加专属线。
     r = client.get(f"/emby/Items/{seed['item_in']}", headers=_h(wl_token))
     assert r.status_code == 200, r.text
-    assert len(_wl_lines(r.json())) == 1
+    assert _wl_lines(r.json()) == []
 
 
 def test_playbackinfo_plain_user_no_exclusive_line(
@@ -358,8 +351,23 @@ def test_playbackinfo_emby_source_listed_still_no_exclusive_line(
 
 
 def _wl_url(client, token, guid):
-    body = _playback_info(client, token, guid).json()
-    return _wl_lines(body)[0]["DirectStreamUrl"]
+    """手工拼旧专属线地址（:wl 形态）：普通入口已不下发此形态，
+    存量地址靠 (uid, guid) 播放签名自签——签名不绑线路形态，
+    专属口现算资格执法（见模块 docstring）。"""
+    db = SessionLocal()
+    try:
+        item = db.query(em.MediaItem).filter(
+            em.MediaItem.guid == guid).first()
+        mapping = db.query(em.UpstreamItemMapping).filter(
+            em.UpstreamItemMapping.local_item_id == item.id).first()
+        user = db.query(models.WebUser).filter(
+            models.WebUser.username == WL_USER).first()
+        exp, sign = play_sign.issue_play_sign(user.id, guid)
+        return (f"/emby/Videos/{guid}/upstream/wl-stream"
+                f"?MediaSourceId={guid}:upstream:{mapping.id}:wl"
+                f"&uid={user.id}&exp={exp}&sign={sign}")
+    finally:
+        db.close()
 
 
 def test_wl_stream_redirects_to_pilot(
@@ -499,7 +507,9 @@ def test_admin_exclusive_line_config_roundtrip(admin_app, seed):
     try:
         r = admin_app.get("/api/admin/emby/upstream-exclusive-line-config")
         assert r.status_code == 200, r.text
-        assert r.json() == {"source_ids": [], "pilot_configured": False}
+        assert r.json() == {"source_ids": [], "pilot_configured": False,
+                            "pilot_entry_enabled": False,
+                            "pilot_entry_configured": False}
         r = admin_app.put(
             "/api/admin/emby/upstream-exclusive-line-config",
             json={"source_ids": [seed["src_in"]],

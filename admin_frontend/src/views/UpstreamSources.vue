@@ -233,6 +233,10 @@ const exclusiveSaving = ref(false)
 const exclusivePilotConfigured = ref(false)
 const exclusivePilotInput = ref('')
 const exclusiveAddId = ref<number | undefined>(undefined)
+// pilot 独立入口（2026-11-05）：开关 + 密钥已配状态（原文不回显）。
+const pilotEntryEnabled = ref(false)
+const pilotEntryConfigured = ref(false)
+const pilotEntrySecretInput = ref('')
 
 /** 名单内源的展示行：名字从已加载的源列表查，源被删了显示 #id。 */
 const exclusiveRows = computed(() =>
@@ -253,17 +257,25 @@ async function loadExclusiveLineConfig() {
     const res = await fetchUpstreamExclusiveLineConfig()
     exclusiveSourceIds.value = res.source_ids
     exclusivePilotConfigured.value = res.pilot_configured
+    pilotEntryEnabled.value = res.pilot_entry_enabled
+    pilotEntryConfigured.value = res.pilot_entry_configured
   } catch (e) {
     ElMessage.error(toAdminError(e))
   }
 }
 
-async function saveExclusiveLine(sourceIds: number[], pilotBaseUrl?: string) {
+async function saveExclusiveLine(
+  sourceIds: number[],
+  pilotBaseUrl?: string,
+  pilotEntry?: { enabled?: boolean; secret?: string },
+) {
   exclusiveSaving.value = true
   try {
-    const res = await updateUpstreamExclusiveLineConfig(sourceIds, pilotBaseUrl)
+    const res = await updateUpstreamExclusiveLineConfig(sourceIds, pilotBaseUrl, pilotEntry)
     exclusiveSourceIds.value = res.source_ids
     exclusivePilotConfigured.value = res.pilot_configured
+    pilotEntryEnabled.value = res.pilot_entry_enabled
+    pilotEntryConfigured.value = res.pilot_entry_configured
     return true
   } catch (e) {
     ElMessage.error(toAdminError(e))
@@ -271,6 +283,30 @@ async function saveExclusiveLine(sourceIds: number[], pilotBaseUrl?: string) {
     return false
   } finally {
     exclusiveSaving.value = false
+  }
+}
+
+async function onPilotEntryToggle(enabled: boolean) {
+  if (await saveExclusiveLine(exclusiveSourceIds.value, undefined, { enabled })) {
+    ElMessage.success(enabled ? 'pilot 独立入口已开启' : 'pilot 独立入口已关闭')
+  }
+}
+
+async function onPilotEntrySecretSave() {
+  const value = pilotEntrySecretInput.value.trim()
+  if (!value) {
+    ElMessage.warning('密钥为空，未改动；如需清除请用「清除」按钮')
+    return
+  }
+  if (await saveExclusiveLine(exclusiveSourceIds.value, undefined, { secret: value })) {
+    pilotEntrySecretInput.value = ''
+    ElMessage.success('pilot 入口密钥已更新（飞牛侧注入值须与它一致）')
+  }
+}
+
+async function onPilotEntrySecretClear() {
+  if (await saveExclusiveLine(exclusiveSourceIds.value, undefined, { secret: '' })) {
+    ElMessage.success('pilot 入口密钥已清除，pilot 入口不再被认定')
   }
 }
 
@@ -616,10 +652,10 @@ onUnmounted(() => {
     </SectionCard>
     <SectionCard title="白名单专属线路">
       <div class="detail-line-hint" style="margin-bottom: 12px">
-        名单内的源（限苹果 CMS 型），白名单用户播放无界片时会在选线列表里
-        多一条经飞牛家宽回源的「专属线路」；普通用户看不见、直接调用也会被拒。
-        在这里添加 / 删除即刻生效（服务端选线热读名单）；名单为空或飞牛基址
-        未配置时，专属线路整体不出现，对普通选线无任何影响。
+        白名单用户现经 pilot 独立入口（下方）播放：入口内全部苹果 CMS 线路
+        都走飞牛家宽回源，不按名单筛选。本名单只作用于存量旧专属地址
+        （带 :wl 的直调）在取流口的放行查；在这里添加 / 删除即刻生效
+        （服务端热读名单），对普通选线无任何影响。
       </div>
       <div v-if="exclusiveRows.length" class="exclusive-list">
         <div v-for="row in exclusiveRows" :key="row.id" class="exclusive-row">
@@ -681,6 +717,52 @@ onUnmounted(() => {
             plain
             :disabled="exclusiveSaving || !exclusivePilotConfigured"
             @click="onExclusivePilotClear"
+          >
+            清除
+          </el-button>
+        </div>
+      </div>
+      <div class="detail-line-row" style="margin-top: 16px">
+        <div>
+          <div>pilot 独立入口</div>
+          <div class="detail-line-hint">
+            开启后，白名单用户把播放器服务器地址填成 pilot 域名即可经飞牛
+            回源播放（入口内全部苹果 CMS 线路走飞牛腿）；非白名单在登录与
+            播放信息两处被拒。飞牛反代注入的标记头值必须与下方密钥一致，
+            值不对的请求一律按普通入口处理。
+          </div>
+        </div>
+        <el-switch
+          :model-value="pilotEntryEnabled"
+          :loading="exclusiveSaving"
+          active-text="开启"
+          inactive-text="关闭"
+          @change="onPilotEntryToggle"
+        />
+      </div>
+      <div class="detail-line-row" style="margin-top: 12px">
+        <div>
+          <div>入口密钥</div>
+          <div class="detail-line-hint">
+            当前状态：{{ pilotEntryConfigured ? '已配置' : '未配置' }}。
+            密钥原文不回显；需要变更时在右侧输入新密钥保存（须同步改飞牛
+            侧注入值），清除后 pilot 入口不再被认定。
+          </div>
+        </div>
+        <div class="exclusive-pilot">
+          <el-input
+            v-model="pilotEntrySecretInput"
+            type="password"
+            show-password
+            placeholder="输入新的入口密钥"
+            style="width: 300px"
+          />
+          <el-button :disabled="exclusiveSaving" @click="onPilotEntrySecretSave">保存密钥</el-button>
+          <el-button
+            type="danger"
+            plain
+            :disabled="exclusiveSaving || !pilotEntryConfigured"
+            @click="onPilotEntrySecretClear"
           >
             清除
           </el-button>
