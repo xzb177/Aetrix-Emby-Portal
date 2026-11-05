@@ -132,6 +132,18 @@ def _set_config(ids=None, base="__keep__"):
 
 def _clear_config():
     _set_config(ids=None, base=None)
+    # 专属线路能力化：其他模块的管理口用例可能已把线路落到
+    # exclusive_lines 新键；新键存在时旧键不再是判定来源，本文件
+    # 的旧键口径用例开工前必须把它清掉。
+    from backend import config_service
+    db = SessionLocal()
+    try:
+        config_service.save_config(
+            db, {up.KEY_EXCLUSIVE_LINES: None},
+            schema="upstream_aggregate")
+        db.commit()
+    finally:
+        db.close()
 
 
 @pytest.fixture(scope="module")

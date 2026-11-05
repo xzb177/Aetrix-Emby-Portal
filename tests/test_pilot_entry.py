@@ -137,6 +137,10 @@ def _set_pilot_config(ids="__keep__", base="__keep__",
 
 def _clear_config():
     _set_pilot_config(ids=None, base=None, enabled=None, secret=None)
+    # 专属线路能力化后管理口会把配置落到 exclusive_lines 新键；
+    # 不清掉它，旧键在本文件后续用例与全量套件后续模块里会被
+    # 新键影子盖住（新键存在时旧键不再是判定来源）。
+    _save({up.KEY_EXCLUSIVE_LINES: None})
 
 
 @pytest.fixture(scope="module")
