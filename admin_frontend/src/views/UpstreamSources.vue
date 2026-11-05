@@ -21,16 +21,21 @@ import {
   disableUpstreamSource,
   enableUpstreamSource,
   fetchUpstreamAggregateTask,
+  createExclusiveLine,
+  deleteExclusiveLine,
+  fetchExclusiveLines,
   fetchUpstreamDetailLineConfig,
-  fetchUpstreamExclusiveLineConfig,
   fetchUpstreamFetchConcurrencyConfig,
   fetchUpstreamSources,
+  resetExclusiveLineSecret,
+  updateExclusiveLine,
   updateUpstreamDetailLineConfig,
-  updateUpstreamExclusiveLineConfig,
   updateUpstreamFetchConcurrencyConfig,
   updateUpstreamSource,
 } from '@/api/admin'
 import type {
+  ExclusiveLine,
+  ExclusiveLineUpdate,
   UpstreamAggregateResult,
   UpstreamAggregateTask,
   UpstreamSource,
@@ -224,123 +229,186 @@ async function onFetchConcurrencyChange(value: number | undefined) {
   }
 }
 
-// 白名单专属线路（2026-11-04）：名单内的源（限苹果 CMS 型），白名单
-// 用户播无界片时多一条经飞牛家宽回源的专属线路；名单由本页增删、
-// 服务端选线热读执法，删掉一条该线立刻不可达。飞牛基址含路径
-// token：后端只回已配状态，此处只提供重设（留空提交 = 不动）。
-const exclusiveSourceIds = ref<number[]>([])
-const exclusiveSaving = ref(false)
-const exclusivePilotConfigured = ref(false)
-const exclusivePilotInput = ref('')
-const exclusiveAddId = ref<number | undefined>(undefined)
-// pilot 独立入口（2026-11-05）：开关 + 密钥已配状态（原文不回显）。
-const pilotEntryEnabled = ref(false)
-const pilotEntryConfigured = ref(false)
-const pilotEntrySecretInput = ref('')
+// 专属线路通用能力（2026-11-05）：线路＝一条配置记录、可多条，
+// 在此统一增删改。入口地址对用户展示（够格用户在门户「我的」里
+// 能看到并复制）；取流基址（含路径口令）与入口密钥是内部配置，
+// 后端只回已配状态、原文永不回显，编辑时留空 = 不动。
+// 现行 pilot 线即第一条（迁移线路，id=pilot），行为与单线时一致。
+const exclusiveLines = ref<ExclusiveLine[]>([])
+const exclusiveLinesSaving = ref(false)
+const lineDialogVisible = ref(false)
+const lineEditingId = ref<string | null>(null)
+const lineForm = ref({
+  name: '',
+  entry_url: '',
+  stream_base_url: '',
+  entry_secret: '',
+  audience: 'whitelist',
+  scope_mode: 'all' as 'all' | 'sources',
+  scope_source_ids: [] as number[],
+  legacy_source_ids: [] as number[],
+  enabled: true,
+  stream_configured: false,
+  secret_configured: false,
+})
 
-/** 名单内源的展示行：名字从已加载的源列表查，源被删了显示 #id。 */
-const exclusiveRows = computed(() =>
-  exclusiveSourceIds.value.map((id) => {
+/** 范围/名单选源候选：苹果 CMS 型（专属线路只服务 CMS 播放主机）。 */
+const lineSourceCandidates = computed(() =>
+  sources.value.filter((s) => s.source_type === 'applecms'),
+)
+
+function lineScopeText(line: ExclusiveLine) {
+  if (line.scope_mode === 'all') return '全部无界资源'
+  const names = line.scope_source_ids.map((id) => {
     const src = sources.value.find((s) => s.id === id)
-    return { id, name: src ? src.name : `#${id}`, type: src?.source_type ?? '' }
-  }),
-)
-/** 可添加的源：苹果 CMS 型且不在名单内（飞牛线只服务 CMS 播放主机）。 */
-const exclusiveCandidates = computed(() =>
-  sources.value.filter(
-    (s) => s.source_type === 'applecms' && !exclusiveSourceIds.value.includes(s.id),
-  ),
-)
+    return src ? src.name : `#${id}`
+  })
+  return names.length ? `指定源：${names.join('、')}` : '指定源：（空）'
+}
 
-async function loadExclusiveLineConfig() {
+async function loadExclusiveLines() {
   try {
-    const res = await fetchUpstreamExclusiveLineConfig()
-    exclusiveSourceIds.value = res.source_ids
-    exclusivePilotConfigured.value = res.pilot_configured
-    pilotEntryEnabled.value = res.pilot_entry_enabled
-    pilotEntryConfigured.value = res.pilot_entry_configured
+    const res = await fetchExclusiveLines()
+    exclusiveLines.value = res.lines
   } catch (e) {
     ElMessage.error(toAdminError(e))
   }
 }
 
-async function saveExclusiveLine(
-  sourceIds: number[],
-  pilotBaseUrl?: string,
-  pilotEntry?: { enabled?: boolean; secret?: string },
-) {
-  exclusiveSaving.value = true
+function openLineCreate() {
+  lineEditingId.value = null
+  lineForm.value = {
+    name: '', entry_url: '', stream_base_url: '', entry_secret: '',
+    audience: 'whitelist', scope_mode: 'all', scope_source_ids: [],
+    legacy_source_ids: [], enabled: true,
+    stream_configured: false, secret_configured: false,
+  }
+  lineDialogVisible.value = true
+}
+
+function openLineEdit(line: ExclusiveLine) {
+  lineEditingId.value = line.id
+  lineForm.value = {
+    name: line.name, entry_url: line.entry_url,
+    // 基址/密钥原文不回显：输入框留空 = 不动，已配状态单独展示
+    stream_base_url: '', entry_secret: '',
+    audience: line.audience, scope_mode: line.scope_mode,
+    scope_source_ids: [...line.scope_source_ids],
+    legacy_source_ids: [...line.legacy_source_ids],
+    enabled: line.enabled,
+    stream_configured: line.stream_configured,
+    secret_configured: line.secret_configured,
+  }
+  lineDialogVisible.value = true
+}
+
+/** 生成随机入口密钥填入表单（管理员抄去改反代侧注入值用）。 */
+function generateLineSecret() {
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  lineForm.value.entry_secret = Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function onLineSave() {
+  const f = lineForm.value
+  if (!f.name.trim()) {
+    ElMessage.warning('线路名称不能为空')
+    return
+  }
+  exclusiveLinesSaving.value = true
   try {
-    const res = await updateUpstreamExclusiveLineConfig(sourceIds, pilotBaseUrl, pilotEntry)
-    exclusiveSourceIds.value = res.source_ids
-    exclusivePilotConfigured.value = res.pilot_configured
-    pilotEntryEnabled.value = res.pilot_entry_enabled
-    pilotEntryConfigured.value = res.pilot_entry_configured
-    return true
+    if (lineEditingId.value === null) {
+      await createExclusiveLine({
+        name: f.name.trim(),
+        entry_url: f.entry_url.trim(),
+        stream_base_url: f.stream_base_url.trim() || undefined,
+        entry_secret: f.entry_secret.trim() || undefined,
+        audience: f.audience,
+        scope_mode: f.scope_mode,
+        scope_source_ids: f.scope_source_ids,
+        legacy_source_ids: f.legacy_source_ids,
+        enabled: f.enabled,
+      })
+      ElMessage.success('线路已创建，入口认定即刻生效')
+    } else {
+      const payload: ExclusiveLineUpdate = {
+        name: f.name.trim(),
+        entry_url: f.entry_url.trim(),
+        audience: f.audience,
+        scope_mode: f.scope_mode,
+        scope_source_ids: f.scope_source_ids,
+        legacy_source_ids: f.legacy_source_ids,
+        enabled: f.enabled,
+      }
+      // 基址/密钥留空 = 不动（原文不回显，无从回填）
+      if (f.stream_base_url.trim()) payload.stream_base_url = f.stream_base_url.trim()
+      if (f.entry_secret.trim()) payload.entry_secret = f.entry_secret.trim()
+      await updateExclusiveLine(lineEditingId.value, payload)
+      ElMessage.success('线路已保存，入口认定即刻生效')
+    }
+    lineDialogVisible.value = false
+    void loadExclusiveLines()
   } catch (e) {
     ElMessage.error(toAdminError(e))
-    void loadExclusiveLineConfig()
-    return false
   } finally {
-    exclusiveSaving.value = false
+    exclusiveLinesSaving.value = false
   }
 }
 
-async function onPilotEntryToggle(enabled: boolean) {
-  if (await saveExclusiveLine(exclusiveSourceIds.value, undefined, { enabled })) {
-    ElMessage.success(enabled ? 'pilot 独立入口已开启' : 'pilot 独立入口已关闭')
+async function onLineToggle(line: ExclusiveLine, enabled: boolean) {
+  exclusiveLinesSaving.value = true
+  try {
+    await updateExclusiveLine(line.id, { enabled })
+    line.enabled = enabled
+    ElMessage.success(enabled ? '线路已启用' : '线路已停用，入口不再被认定')
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+    void loadExclusiveLines()
+  } finally {
+    exclusiveLinesSaving.value = false
   }
 }
 
-async function onPilotEntrySecretSave() {
-  const value = pilotEntrySecretInput.value.trim()
-  if (!value) {
-    ElMessage.warning('密钥为空，未改动；如需清除请用「清除」按钮')
+async function onLineResetSecret(line: ExclusiveLine) {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '输入新的入口密钥（须同步把反代侧注入的标记头值改成同值；旧密钥立即失效）',
+      `重置「${line.name}」的入口密钥`,
+      { inputType: 'password', confirmButtonText: '重置', cancelButtonText: '取消' },
+    )
+    const secret = (value || '').trim()
+    if (!secret) {
+      ElMessage.warning('密钥为空，未改动')
+      return
+    }
+    await resetExclusiveLineSecret(line.id, secret)
+    ElMessage.success('入口密钥已重置（反代侧注入值须同步修改）')
+    void loadExclusiveLines()
+  } catch {
+    // 用户取消 prompt：不提示
+  }
+}
+
+async function onLineDelete(line: ExclusiveLine) {
+  try {
+    await ElMessageBox.confirm(
+      `删除线路「${line.name}」？删后该入口不再被认定，用户端不再展示。`,
+      '删除专属线路',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
     return
   }
-  if (await saveExclusiveLine(exclusiveSourceIds.value, undefined, { secret: value })) {
-    pilotEntrySecretInput.value = ''
-    ElMessage.success('pilot 入口密钥已更新（飞牛侧注入值须与它一致）')
-  }
-}
-
-async function onPilotEntrySecretClear() {
-  if (await saveExclusiveLine(exclusiveSourceIds.value, undefined, { secret: '' })) {
-    ElMessage.success('pilot 入口密钥已清除，pilot 入口不再被认定')
-  }
-}
-
-async function onExclusiveAdd() {
-  if (exclusiveAddId.value == null) return
-  const next = [...exclusiveSourceIds.value, exclusiveAddId.value]
-  if (await saveExclusiveLine(next)) {
-    ElMessage.success('已加入专属名单，白名单用户选线即刻生效')
-    exclusiveAddId.value = undefined
-  }
-}
-
-async function onExclusiveRemove(id: number) {
-  const next = exclusiveSourceIds.value.filter((x) => x !== id)
-  if (await saveExclusiveLine(next)) {
-    ElMessage.success('已移出专属名单，该专属线路即刻下线')
-  }
-}
-
-async function onExclusivePilotSave() {
-  const value = exclusivePilotInput.value.trim()
-  if (!value) {
-    ElMessage.warning('基址为空，未改动；如需清除基址请用「清除」按钮')
-    return
-  }
-  if (await saveExclusiveLine(exclusiveSourceIds.value, value)) {
-    exclusivePilotInput.value = ''
-    ElMessage.success('飞牛试点基址已更新')
-  }
-}
-
-async function onExclusivePilotClear() {
-  if (await saveExclusiveLine(exclusiveSourceIds.value, '')) {
-    ElMessage.success('飞牛试点基址已清除，专属线路整体停用')
+  exclusiveLinesSaving.value = true
+  try {
+    await deleteExclusiveLine(line.id)
+    ElMessage.success('线路已删除')
+    void loadExclusiveLines()
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+  } finally {
+    exclusiveLinesSaving.value = false
   }
 }
 
@@ -548,7 +616,7 @@ onMounted(() => {
   void loadSources()
   void loadDetailLineConfig()
   void loadFetchConcurrencyConfig()
-  void loadExclusiveLineConfig()
+  void loadExclusiveLines()
 })
 onUnmounted(() => {
   aggregatePageToken += 1
@@ -650,125 +718,145 @@ onUnmounted(() => {
         />
       </div>
     </SectionCard>
-    <SectionCard title="白名单专属线路">
+    <SectionCard title="专属线路">
+      <template #actions>
+        <el-button type="primary" @click="openLineCreate">新增线路</el-button>
+        <el-button @click="loadExclusiveLines">刷新</el-button>
+      </template>
       <div class="detail-line-hint" style="margin-bottom: 12px">
-        白名单用户现经 pilot 独立入口（下方）播放：入口内全部苹果 CMS 线路
-        都走飞牛家宽回源，不按名单筛选。本名单只作用于存量旧专属地址
-        （带 :wl 的直调）在取流口的放行查；在这里添加 / 删除即刻生效
-        （服务端热读名单），对普通选线无任何影响。
+        线路是一条独立入口：够格用户把播放器服务器地址填成线路的入口地址，
+        请求经该线反代进入时带专属标记（标记头值与线路的入口密钥一致才认定），
+        入口内适用范围里的苹果 CMS 线路走该线的取流基址回源；不够格用户在登录
+        与播放信息两处被拒。够格用户能在门户「我的」里看到自己线路的地址。
+        取流基址（含路径口令）与入口密钥只显示已配状态、原文不回显；所有改动
+        保存即刻生效。现行 pilot 线是迁移来的第一条，行为与此前一致；「存量旧
+        地址名单」只管带 :wl 的存量旧地址在取流口的放行查。
       </div>
-      <div v-if="exclusiveRows.length" class="exclusive-list">
-        <div v-for="row in exclusiveRows" :key="row.id" class="exclusive-row">
-          <span>{{ row.name }}<span class="exclusive-id">（源 #{{ row.id }}）</span></span>
-          <el-button
-            size="small"
-            type="danger"
-            plain
-            :disabled="exclusiveSaving"
-            @click="onExclusiveRemove(row.id)"
-          >
-            删除
-          </el-button>
+      <div v-if="exclusiveLines.length" class="exclusive-list">
+        <div v-for="line in exclusiveLines" :key="line.id" class="exclusive-row">
+          <span>
+            {{ line.name }}
+            <span class="exclusive-id">{{ line.entry_url || '（未填入口地址）' }}</span>
+            <span class="exclusive-id">
+              · {{ line.audience === 'whitelist' ? '白名单' : line.audience }}
+              · {{ lineScopeText(line) }}
+              · 基址{{ line.stream_configured ? '已配' : '未配' }}
+              · 密钥{{ line.secret_configured ? '已配' : '未配' }}
+            </span>
+          </span>
+          <span class="exclusive-actions">
+            <el-switch
+              :model-value="line.enabled"
+              :loading="exclusiveLinesSaving"
+              active-text="启用"
+              inactive-text="停用"
+              @change="(v: boolean) => onLineToggle(line, v)"
+            />
+            <el-button size="small" :disabled="exclusiveLinesSaving" @click="openLineEdit(line)">
+              编辑
+            </el-button>
+            <el-button size="small" :disabled="exclusiveLinesSaving" @click="onLineResetSecret(line)">
+              重置密钥
+            </el-button>
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :disabled="exclusiveLinesSaving"
+              @click="onLineDelete(line)"
+            >
+              删除
+            </el-button>
+          </span>
         </div>
       </div>
-      <div v-else class="detail-line-hint">专属名单为空，专属线路未启用。</div>
-      <div class="exclusive-add">
-        <el-select
-          v-model="exclusiveAddId"
-          placeholder="选择要加入的源（苹果 CMS 型）"
-          clearable
-          style="width: 280px"
-        >
-          <el-option
-            v-for="s in exclusiveCandidates"
-            :key="s.id"
-            :label="`${s.name}（#${s.id}）`"
-            :value="s.id"
-          />
-        </el-select>
-        <el-button
-          type="primary"
-          :disabled="exclusiveAddId == null || exclusiveSaving"
-          @click="onExclusiveAdd"
-        >
-          添加到专属名单
-        </el-button>
-      </div>
-      <div class="detail-line-row" style="margin-top: 16px">
-        <div>
-          <div>飞牛试点基址</div>
-          <div class="detail-line-hint">
-            当前状态：{{ exclusivePilotConfigured ? '已配置' : '未配置' }}。
-            基址含试点路径口令，页面不回显原文；需要变更时在右侧输入新基址保存，
-            清除后专属线路整体停用。
-          </div>
-        </div>
-        <div class="exclusive-pilot">
-          <el-input
-            v-model="exclusivePilotInput"
-            type="password"
-            show-password
-            placeholder="https://pilot.135505.autos/p/…"
-            style="width: 300px"
-          />
-          <el-button :disabled="exclusiveSaving" @click="onExclusivePilotSave">保存基址</el-button>
-          <el-button
-            type="danger"
-            plain
-            :disabled="exclusiveSaving || !exclusivePilotConfigured"
-            @click="onExclusivePilotClear"
-          >
-            清除
-          </el-button>
-        </div>
-      </div>
-      <div class="detail-line-row" style="margin-top: 16px">
-        <div>
-          <div>pilot 独立入口</div>
-          <div class="detail-line-hint">
-            开启后，白名单用户把播放器服务器地址填成 pilot 域名即可经飞牛
-            回源播放（入口内全部苹果 CMS 线路走飞牛腿）；非白名单在登录与
-            播放信息两处被拒。飞牛反代注入的标记头值必须与下方密钥一致，
-            值不对的请求一律按普通入口处理。
-          </div>
-        </div>
-        <el-switch
-          :model-value="pilotEntryEnabled"
-          :loading="exclusiveSaving"
-          active-text="开启"
-          inactive-text="关闭"
-          @change="onPilotEntryToggle"
-        />
-      </div>
-      <div class="detail-line-row" style="margin-top: 12px">
-        <div>
-          <div>入口密钥</div>
-          <div class="detail-line-hint">
-            当前状态：{{ pilotEntryConfigured ? '已配置' : '未配置' }}。
-            密钥原文不回显；需要变更时在右侧输入新密钥保存（须同步改飞牛
-            侧注入值），清除后 pilot 入口不再被认定。
-          </div>
-        </div>
-        <div class="exclusive-pilot">
-          <el-input
-            v-model="pilotEntrySecretInput"
-            type="password"
-            show-password
-            placeholder="输入新的入口密钥"
-            style="width: 300px"
-          />
-          <el-button :disabled="exclusiveSaving" @click="onPilotEntrySecretSave">保存密钥</el-button>
-          <el-button
-            type="danger"
-            plain
-            :disabled="exclusiveSaving || !pilotEntryConfigured"
-            @click="onPilotEntrySecretClear"
-          >
-            清除
-          </el-button>
-        </div>
-      </div>
+      <div v-else class="detail-line-hint">暂无线路。新增一条并配好取流基址与入口密钥后，够格用户即可使用。</div>
     </SectionCard>
+    <el-dialog
+      v-model="lineDialogVisible"
+      :title="lineEditingId === null ? '新增专属线路' : '编辑专属线路'"
+      width="560px"
+    >
+      <el-form label-width="110px">
+        <el-form-item label="名称">
+          <el-input v-model="lineForm.name" placeholder="如：白名单专属线路" />
+        </el-form-item>
+        <el-form-item label="入口地址">
+          <el-input v-model="lineForm.entry_url" placeholder="https://pilot.135505.autos" />
+          <div class="detail-line-hint">对用户展示的公网地址，用户在播放器里填这个。</div>
+        </el-form-item>
+        <el-form-item label="取流基址">
+          <el-input
+            v-model="lineForm.stream_base_url"
+            type="password"
+            show-password
+            :placeholder="lineEditingId !== null && lineForm.stream_configured ? '已配置（留空 = 不动）' : 'https://…/p/…'"
+          />
+          <div class="detail-line-hint">内部回源地址，含路径口令，原文不回显；编辑时留空 = 不动。</div>
+        </el-form-item>
+        <el-form-item label="入口密钥">
+          <div class="exclusive-pilot">
+            <el-input
+              v-model="lineForm.entry_secret"
+              type="password"
+              show-password
+              :placeholder="lineEditingId !== null && lineForm.secret_configured ? '已配置（留空 = 不动）' : '输入或生成'"
+              style="width: 300px"
+            />
+            <el-button @click="generateLineSecret">生成</el-button>
+          </div>
+          <div class="detail-line-hint">反代注入的标记头值必须与它一致；编辑时留空 = 不动。</div>
+        </el-form-item>
+        <el-form-item label="准入人群">
+          <el-select v-model="lineForm.audience" style="width: 200px">
+            <el-option label="白名单用户" value="whitelist" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="适用范围">
+          <el-radio-group v-model="lineForm.scope_mode">
+            <el-radio value="all">全部无界资源</el-radio>
+            <el-radio value="sources">指定源</el-radio>
+          </el-radio-group>
+          <el-select
+            v-if="lineForm.scope_mode === 'sources'"
+            v-model="lineForm.scope_source_ids"
+            multiple
+            placeholder="选择源（苹果 CMS 型）"
+            style="width: 100%; margin-top: 8px"
+          >
+            <el-option
+              v-for="s in lineSourceCandidates"
+              :key="s.id"
+              :label="`${s.name}（#${s.id}）`"
+              :value="s.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="存量旧地址名单">
+          <el-select
+            v-model="lineForm.legacy_source_ids"
+            multiple
+            placeholder="带 :wl 的存量旧地址可放行的源"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="s in lineSourceCandidates"
+              :key="s.id"
+              :label="`${s.name}（#${s.id}）`"
+              :value="s.id"
+            />
+          </el-select>
+          <div class="detail-line-hint">迁移线路从旧专属名单带入；新线路一般留空。</div>
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="lineForm.enabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="lineDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="exclusiveLinesSaving" @click="onLineSave">保存</el-button>
+      </template>
+    </el-dialog>
     <SectionCard title="聚合拉取">
       <div class="detail-line-row">
         <div>
@@ -1043,10 +1131,10 @@ onUnmounted(() => {
   gap: 16px;
 }
 .exclusive-id { color: var(--au-text-3); font-size: 12px; }
-.exclusive-add {
+.exclusive-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .exclusive-pilot {

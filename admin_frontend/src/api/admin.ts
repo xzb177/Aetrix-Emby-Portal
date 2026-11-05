@@ -1845,43 +1845,66 @@ export const fetchUpstreamFetchConcurrencyConfig = () =>
 export const updateUpstreamFetchConcurrencyConfig = (concurrency: number) =>
   put<UpstreamFetchConcurrencyConfig>(`${E}/upstream-fetch-concurrency-config`, { concurrency })
 
-/** 白名单专属线路（2026-11-04）：名单内的源，白名单用户播无界片时
- * 多一条经飞牛家宽回源的「专属线路」，普通用户不可见、直调被拒。
- * 名单增删走全量回写；飞牛基址含路径 token，后端只回已配状态
- * （pilot_configured），重设时一次性提交原文（不传 = 不动，
- * 传空串 = 清除、专属线整体惰性）。 */
-export interface UpstreamExclusiveLineConfig {
-  source_ids: number[]
-  pilot_configured: boolean
-  /** pilot 独立入口开关（2026-11-05）：开时标记头合法的请求才被认定为 pilot 入口 */
-  pilot_entry_enabled: boolean
-  /** pilot 入口密钥只回已配状态，原文不回浏览器（重设时一次性提交） */
-  pilot_entry_configured: boolean
+/** 专属线路通用能力（2026-11-05）：线路＝一条配置记录、可多条。
+ * 取流基址含路径口令、入口密钥是内部配置：后端所有读口只回
+ * 「已配/未配」（stream_configured / secret_configured），原文
+ * 永不回浏览器；写入时一次性提交原文（编辑时不传 = 不动，
+ * 传空串 = 清除）。旧单线口 upstream-exclusive-line-config 已
+ * 改为默认线路的兼容门面，本页不再使用。 */
+export interface ExclusiveLine {
+  id: string
+  name: string
+  entry_url: string
+  /** 准入人群（本期只有 whitelist） */
+  audience: string
+  /** 适用范围：all = 全部无界资源；sources = 指定源 */
+  scope_mode: 'all' | 'sources'
+  scope_source_ids: number[]
+  /** 存量旧地址（:wl 形态）的放行名单，迁移带入 */
+  legacy_source_ids: number[]
+  enabled: boolean
+  stream_configured: boolean
+  secret_configured: boolean
 }
 
-export interface PilotEntryUpdate {
+export interface ExclusiveLineCreate {
+  name: string
+  entry_url?: string
+  stream_base_url?: string
+  entry_secret?: string
+  audience?: string
+  scope_mode?: 'all' | 'sources'
+  scope_source_ids?: number[]
+  legacy_source_ids?: number[]
   enabled?: boolean
-  secret?: string
 }
 
-export const fetchUpstreamExclusiveLineConfig = () =>
-  get<UpstreamExclusiveLineConfig>(`${E}/upstream-exclusive-line-config`)
+export interface ExclusiveLineUpdate {
+  name?: string
+  entry_url?: string
+  stream_base_url?: string
+  entry_secret?: string
+  audience?: string
+  scope_mode?: 'all' | 'sources'
+  scope_source_ids?: number[]
+  legacy_source_ids?: number[]
+  enabled?: boolean
+}
 
-export const updateUpstreamExclusiveLineConfig = (
-  sourceIds: number[],
-  pilotBaseUrl?: string,
-  pilotEntry?: PilotEntryUpdate,
-) =>
-  put<UpstreamExclusiveLineConfig>(`${E}/upstream-exclusive-line-config`, {
-    source_ids: sourceIds,
-    ...(pilotBaseUrl !== undefined ? { pilot_base_url: pilotBaseUrl } : {}),
-    ...(pilotEntry?.enabled !== undefined
-      ? { pilot_entry_enabled: pilotEntry.enabled }
-      : {}),
-    ...(pilotEntry?.secret !== undefined
-      ? { pilot_entry_secret: pilotEntry.secret }
-      : {}),
-  })
+export const fetchExclusiveLines = () =>
+  get<{ lines: ExclusiveLine[] }>(`${E}/exclusive-lines`)
+
+export const createExclusiveLine = (payload: ExclusiveLineCreate) =>
+  post<{ line: ExclusiveLine }>(`${E}/exclusive-lines`, payload)
+
+export const updateExclusiveLine = (id: string, payload: ExclusiveLineUpdate) =>
+  put<{ line: ExclusiveLine }>(`${E}/exclusive-lines/${id}`, payload)
+
+export const resetExclusiveLineSecret = (id: string, secret: string) =>
+  post<{ secret_configured: boolean }>(`${E}/exclusive-lines/${id}/reset-secret`, { secret })
+
+export const deleteExclusiveLine = (id: string) =>
+  del<{ deleted: boolean }>(`${E}/exclusive-lines/${id}`)
 
 /** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。
  *  只做手动触发，不做自动调度、不做自动播放兜底。

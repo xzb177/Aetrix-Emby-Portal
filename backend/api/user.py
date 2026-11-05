@@ -1282,6 +1282,26 @@ async def my_member_info(
     return await run_in_threadpool(_info)
 
 
+# ==================== 我的专属线路 ====================
+
+@user_router.get("/exclusive-lines")
+def my_exclusive_lines(
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """当前用户有资格使用的专属线路（启用中且人群命中才出现）。
+
+    无资格 → 空列表（用户端据此不渲染该分组）；判定唯一口径在
+    pilot_entry.lines_for_user（人群判定与入口执法共用一份）。
+    """
+    from backend.emby_server import pilot_entry as _pilot
+
+    lines = _pilot.lines_for_user(db, current_user)
+    return {"lines": [
+        {"name": line["name"], "entry_url": line["entry_url"]}
+        for line in lines]}
+
+
 # ==================== 导出 ====================
 
 __all__ = ["user_router"]

@@ -438,18 +438,20 @@ class UpstreamExclusiveLineConfigIn(BaseModel):
 
 
 def _exclusive_line_config_view(db: Session) -> dict:
-    """专属线路配置读视图：名单回 id 列表；基址与 pilot 密钥只回
+    """专属线路配置读视图（默认线路的派生视图，旧口兼容门面）。
 
-    「已配/未配」——两者都含口令/密钥，原文不回浏览器（页面只需
-    状态＋重设入口）；pilot 入口开关回当前生效值。
+    名单回 id 列表；基址与入口密钥只回「已配/未配」——两者都含
+    口令/密钥，原文不回浏览器（页面只需状态＋重设入口）；入口
+    开关回当前生效值。真源是默认线路记录（见 _line_view 的新口）。
     """
     from backend.emby_server import upstream_playback as _up
 
+    line = _up.default_line(db)
     return {
-        "source_ids": sorted(_up.exclusive_source_ids(db)),
-        "pilot_configured": bool(_up.feiniu_pilot_base_url(db)),
-        "pilot_entry_enabled": bool(_up.pilot_entry_enabled(db)),
-        "pilot_entry_configured": bool(_up.pilot_entry_secret(db)),
+        "source_ids": sorted(line["legacy_source_ids"]) if line else [],
+        "pilot_configured": bool(line and line["stream_base_url"]),
+        "pilot_entry_enabled": bool(line and line["enabled"]),
+        "pilot_entry_configured": bool(line and line["entry_secret"]),
     }
 
 
@@ -458,7 +460,7 @@ def get_upstream_exclusive_line_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """读白名单专属线路配置（名单 + 飞牛基址配置状态）。"""
+    """读白名单专属线路配置（默认线路视图，旧口兼容门面）。"""
     return _exclusive_line_config_view(db)
 
 
@@ -468,32 +470,227 @@ def put_upstream_exclusive_line_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """写白名单专属线路配置（走 config_service 统一保存通道）。
+    """写白名单专属线路配置（旧口兼容门面，落到默认线路记录）。
 
-    名单经 upstream_aggregate 家族 schema 校验（int_list）；保存即
-    失效配置缓存，选线热读立刻按新名单执法（store 口径最坏 60 秒
-    TTL 内收敛）。删掉一条后白名单用户立刻不再拿到该线；名单清空
-    或基址清空时专属线路整体惰性、普通选线零影响。审计由
-    /api/admin/emby/* 中间件统一记录。
+    能力化后配置真源是线路记录集：本口把 source_ids → 默认线路
+    的 legacy 名单、pilot_base_url → 取流基址、pilot_entry_* →
+    启用开关/入口密钥，经 save_exclusive_lines 统一落库（保存即
+    失效配置缓存，热读立刻按新值执法）。无线路时按迁移线路的
+    形状新建默认线路。管理端新界面走 /exclusive-lines 系列口，
+    本口只作存量兼容。审计由 /api/admin/emby/* 中间件统一记录。
     """
-    from backend import config_service
     from backend.emby_server import upstream_playback as _up
 
-    # int_list 的保存口径是逗号串（config_schema 校验）；空名单存
-    # None＝删行（与「无行＝空集惰性」的读取口径正好合拢）。
-    ids_value = (
-        ",".join(str(int(i)) for i in payload.source_ids)
-        if payload.source_ids else None)
-    values = {_up.KEY_EXCLUSIVE_SOURCE_IDS: ids_value}
+    lines = _up.exclusive_lines(db)
+    # 必须改 lines 列表里的那个 dict 本身（default_line 是另一次
+    # 解析出的副本，改它不会落到待保存的列表上）。
+    line = None
+    for cand in lines:
+        if cand["id"] == _up.MIGRATED_LINE_ID:
+            line = cand
+            break
+    if line is None and lines:
+        line = lines[0]
+    if line is None:
+        line = {
+            "id": _up.MIGRATED_LINE_ID, "name": _up.MIGRATED_LINE_NAME,
+            "entry_url": "", "stream_base_url": "", "entry_secret": "",
+            "audience": _up.AUDIENCE_WHITELIST, "scope_mode": "all",
+            "scope_source_ids": [], "legacy_source_ids": [],
+            "enabled": False,
+        }
+        lines = [line]
+    line["legacy_source_ids"] = _up._coerce_id_list(payload.source_ids)
     if payload.pilot_base_url is not None:
-        values[_up.KEY_FEINIU_PILOT_BASE_URL] = payload.pilot_base_url
+        line["stream_base_url"] = payload.pilot_base_url
+        if line["stream_base_url"]:
+            origin = _up._origin_of(line["stream_base_url"])
+            if origin:
+                line["entry_url"] = origin
     if payload.pilot_entry_enabled is not None:
-        values[_up.KEY_PILOT_ENTRY_ENABLED] = payload.pilot_entry_enabled
+        line["enabled"] = payload.pilot_entry_enabled
     if payload.pilot_entry_secret is not None:
-        values[_up.KEY_PILOT_ENTRY_SECRET] = payload.pilot_entry_secret
-    config_service.save_config(db, values, schema="upstream_aggregate")
+        line["entry_secret"] = payload.pilot_entry_secret
+    _up.save_exclusive_lines(db, lines)
     db.commit()
     return _exclusive_line_config_view(db)
+
+
+# ---------------------------------------------------------------------------
+# 专属线路通用能力（2026-11-05）：线路记录 CRUD（管理端统一入口）
+#
+# 一条线路＝名称/入口地址/取流基址/入口密钥/准入人群/适用范围/
+# 启用开关/存量旧地址名单。取流基址与入口密钥含口令/密钥：所有
+# 读口只回「已配/未配」，原文永不回浏览器；写入走
+# upstream_playback.save_exclusive_lines 统一通道（config_service
+# 校验＋缓存失效），保存即热读生效。审计由 /api/admin/emby/* 中
+# 间件统一记录。
+# ---------------------------------------------------------------------------
+
+
+def _line_view(line: dict) -> dict:
+    """线路读视图：基址与密钥只回已配状态，原文不回显。"""
+    return {
+        "id": line["id"],
+        "name": line["name"],
+        "entry_url": line["entry_url"],
+        "audience": line["audience"],
+        "scope_mode": line["scope_mode"],
+        "scope_source_ids": list(line["scope_source_ids"]),
+        "legacy_source_ids": list(line["legacy_source_ids"]),
+        "enabled": bool(line["enabled"]),
+        "stream_configured": bool(line["stream_base_url"]),
+        "secret_configured": bool(line["entry_secret"]),
+    }
+
+
+class ExclusiveLineIn(BaseModel):
+    """新建线路写入体（基址/密钥创建时可一并给，后续可改）。"""
+
+    name: str
+    entry_url: str = ""
+    stream_base_url: Optional[str] = None
+    entry_secret: Optional[str] = None
+    audience: str = "whitelist"
+    scope_mode: str = "all"
+    scope_source_ids: list[int] = Field(default_factory=list)
+    legacy_source_ids: list[int] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class ExclusiveLineUpdateIn(BaseModel):
+    """编辑线路写入体：None＝不动；基址/密钥空串＝清除。"""
+
+    name: Optional[str] = None
+    entry_url: Optional[str] = None
+    stream_base_url: Optional[str] = None
+    entry_secret: Optional[str] = None
+    audience: Optional[str] = None
+    scope_mode: Optional[str] = None
+    scope_source_ids: Optional[list[int]] = None
+    legacy_source_ids: Optional[list[int]] = None
+    enabled: Optional[bool] = None
+
+
+class ExclusiveLineResetSecretIn(BaseModel):
+    """重置入口密钥写入体：新值由管理员提供（须同步改反代侧注入
+    值）；响应只回已配状态，原文不回显（与全线口径一致）。"""
+
+    secret: str
+
+
+def _get_line_or_404(db: Session, line_id: str):
+    from backend.emby_server import upstream_playback as _up
+
+    lines = _up.exclusive_lines(db)
+    for line in lines:
+        if line["id"] == line_id:
+            return lines, line
+    raise HTTPException(status_code=404, detail="专属线路不存在")
+
+
+@admin_emby_router.get("/exclusive-lines")
+def list_exclusive_lines(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """线路列表（含迁移视图：旧四键未落库时第一条即迁移线路）。"""
+    from backend.emby_server import upstream_playback as _up
+
+    return {"lines": [_line_view(l) for l in _up.exclusive_lines(db)]}
+
+
+@admin_emby_router.post("/exclusive-lines")
+def create_exclusive_line(
+    payload: ExclusiveLineIn,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """新建一条线路（id 服务端生成）；保存即入口认定/选线热生效。"""
+    import uuid as _uuid
+
+    from backend.emby_server import upstream_playback as _up
+
+    lines = _up.exclusive_lines(db)
+    line = {
+        "id": _uuid.uuid4().hex[:12],
+        "name": payload.name,
+        "entry_url": payload.entry_url,
+        "stream_base_url": payload.stream_base_url or "",
+        "entry_secret": payload.entry_secret or "",
+        "audience": payload.audience,
+        "scope_mode": payload.scope_mode,
+        "scope_source_ids": payload.scope_source_ids,
+        "legacy_source_ids": payload.legacy_source_ids,
+        "enabled": payload.enabled,
+    }
+    lines.append(line)
+    saved = _up.save_exclusive_lines(db, lines)
+    db.commit()
+    created = next(l for l in saved if l["id"] == line["id"])
+    return {"line": _line_view(created)}
+
+
+@admin_emby_router.put("/exclusive-lines/{line_id}")
+def update_exclusive_line(
+    line_id: str,
+    payload: ExclusiveLineUpdateIn,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """编辑线路：None 字段不动；基址/密钥传空串＝清除该项。"""
+    from backend.emby_server import upstream_playback as _up
+
+    lines, line = _get_line_or_404(db, line_id)
+    for field in ("name", "entry_url", "stream_base_url", "entry_secret",
+                  "audience", "scope_mode", "scope_source_ids",
+                  "legacy_source_ids", "enabled"):
+        value = getattr(payload, field)
+        if value is not None:
+            line[field] = value
+    saved = _up.save_exclusive_lines(db, lines)
+    db.commit()
+    updated = next(l for l in saved if l["id"] == line_id)
+    return {"line": _line_view(updated)}
+
+
+@admin_emby_router.post("/exclusive-lines/{line_id}/reset-secret")
+def reset_exclusive_line_secret(
+    line_id: str,
+    payload: ExclusiveLineResetSecretIn,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """重置线路入口密钥：只回已配状态，新旧值都不回显。
+
+    重置后旧密钥命中的请求立刻按普通入口处理；反代侧注入值须
+    由管理员同步改成同值，线路才重新被认定。
+    """
+    from backend.emby_server import upstream_playback as _up
+
+    if not payload.secret or not payload.secret.strip():
+        raise HTTPException(status_code=400, detail="密钥不能为空")
+    lines, line = _get_line_or_404(db, line_id)
+    line["entry_secret"] = payload.secret
+    _up.save_exclusive_lines(db, lines)
+    db.commit()
+    return {"secret_configured": True}
+
+
+@admin_emby_router.delete("/exclusive-lines/{line_id}")
+def delete_exclusive_line(
+    line_id: str,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """删除线路：删后该线入口不再被认定、用户端不再展示。"""
+    from backend.emby_server import upstream_playback as _up
+
+    lines, _line = _get_line_or_404(db, line_id)
+    lines = [l for l in lines if l["id"] != line_id]
+    _up.save_exclusive_lines(db, lines)
+    db.commit()
+    return {"deleted": True}
 
 
 class UpstreamFetchConcurrencyConfigIn(BaseModel):

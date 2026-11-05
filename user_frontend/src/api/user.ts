@@ -14,6 +14,23 @@ export async function setPlayLine(_line: PlayLine): Promise<PlayLine> {
   return 'relay'
 }
 
+/** 我的专属线路（GET /api/user/exclusive-lines）：只有名称与入口
+ * 地址，取流基址与入口密钥是内部配置、永不下发用户端。无资格时
+ * 后端回空列表，页面据此不渲染该分组；请求失败同样按空处理。 */
+export interface MyExclusiveLine {
+  name: string
+  entry_url: string
+}
+
+export async function getMyExclusiveLines(): Promise<MyExclusiveLine[]> {
+  try {
+    const res = await api.get<never, { lines: MyExclusiveLine[] }>('/api/user/exclusive-lines')
+    return Array.isArray(res?.lines) ? res.lines : []
+  } catch {
+    return []
+  }
+}
+
 /** 注册页开关状态（公开接口，未登录可调） */
 export interface RegisterConfig {
   registration_mode: 'open' | 'closed'

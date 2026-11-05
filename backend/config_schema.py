@@ -476,6 +476,16 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     # env.example。
     "pilot_entry_enabled": ("bool",),
     "pilot_entry_secret": ("str",),
+    # 专属线路通用能力（2026-11-05）：线路记录集（JSON 数组文本），
+    # 一条线路＝名称/入口地址/取流基址/入口密钥/准入人群/适用范围/
+    # 启用开关/存量旧地址名单。上面四个旧键（exclusive_source_ids /
+    # feiniu_pilot_base_url / pilot_entry_enabled /
+    # pilot_entry_secret）只在新键缺失时被一次性迁移读取，新键落库
+    # 后不再是运行时判定来源。读写唯一实现在 upstream_playback
+    # .exclusive_lines / save_exclusive_lines（store 热读）。取流
+    # 基址与入口密钥含口令/密钥，只回已配状态、原文不回浏览器。
+    # 纯 SystemConfig 键，不进 env.example。
+    "exclusive_lines": ("str",),
     # O-09 映射抽样巡检（第 1、2 层常驻 janitor）：默认开、默认
     # 每 7 天一轮、每 evidence 层默认抽 30 条；不一致率超默认
     # 5% 响亮报红。读取唯一实现在 upstream_mapping_patrol，范围

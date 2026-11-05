@@ -56,6 +56,21 @@
         />
       </section>
 
+      <!-- 我的专属线路：只有够格用户后端才回数据，无资格整组不渲染 -->
+      <section v-if="myLines.length" class="v4-sec" aria-label="我的专属线路">
+        <div class="v4-sec-title">我的专属线路</div>
+        <div class="v4-sec-sub">在播放器里添加服务器时填下面的地址，就走你的专属线路进服。</div>
+        <div class="v4-card">
+          <div v-for="line in myLines" :key="line.entry_url" class="acct-row">
+            <span class="acct-row-main">
+              <span class="acct-row-text">{{ line.name }}</span>
+              <span class="acct-row-meta">{{ line.entry_url }}</span>
+            </span>
+            <button type="button" class="v4-mini-btn" @click="copyLineUrl(line.entry_url)">复制地址</button>
+          </div>
+        </div>
+      </section>
+
       <!-- 我的网盘：行式列表，一行一家，展开即该家原绑定卡全部内容（providers 名单驱动） -->
       <section v-if="providersError || (providersLoaded && hasProvider('drive'))" id="my-drive" class="v4-sec" aria-label="我的网盘">
         <div class="acct-title-row">
@@ -462,6 +477,7 @@ import { facilityStamp } from '@/config/game'
 import { authApi, subscriptionApi, embyApi, isExpiringSoon, type MySubscription, type AccountCard, type LoginHistoryItem } from '@/api'
 import { deviceApi, storageBindingApi, seriesFollowApi, welfareApi, memberApi, checkinApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type SeriesFollow } from '@/api/economy'
 import { tgApi } from '@/api/tg'
+import { getMyExclusiveLines, type MyExclusiveLine } from '@/api/user'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
@@ -475,6 +491,20 @@ import { parseServerTime } from '@/utils/serverTime'
 const userStore = useUserStore()
 const router = useRouter()
 const toast = useToast()
+
+// ===== 我的专属线路（无资格时后端回空列表，整组不渲染） =====
+const myLines = ref<MyExclusiveLine[]>([])
+async function loadMyLines() {
+  myLines.value = await getMyExclusiveLines()
+}
+async function copyLineUrl(url: string) {
+  try {
+    await navigator.clipboard.writeText(url)
+    toast.success('线路地址已复制，去播放器里添加服务器时粘贴它')
+  } catch {
+    toast.error('复制失败，请长按地址手动复制')
+  }
+}
 
 // ===== 修改登录密码（ProfileView 移植） =====
 const showChangePwd = ref(false)
@@ -1215,6 +1245,7 @@ async function handleEntryLogout() {
 
 onMounted(() => {
   void loadLoginHistory(true)
+  void loadMyLines()
   loadFollows()
   loadSubs()
   if (userStore.isFreeRealm) void loadRenewal()

@@ -1564,12 +1564,12 @@ KEY_PILOT_ENTRY_SECRET = "pilot_entry_secret"
 PILOT_ENTRY_HEADER = "X-Aetrix-Pilot-Entry"
 
 
-def exclusive_source_ids(db) -> frozenset:
-    """读白名单专属源名单（源 id 集合），口径：
+def _old_exclusive_source_ids(db) -> frozenset:
+    """旧键名单直读——只许迁移构造（_migrated_line）调用。
 
-    - 无配置行 / 空行 → 空集（管理员未配或显式清空＝专属线关）；
-    - db=None 或读异常 → 空集：这是权益面，fail-closed，不发线；
-    - 解析与降权名单共用 _parse_source_id_list 唯一口径。
+    专属线路能力化（2026-11-05）后，运行时判定一律走线路记录
+    （exclusive_lines）；旧四键只在新键缺失时被一次性迁移读取，
+    不再是运行时判定来源。
     """
     if db is None:
         return frozenset()
@@ -1581,8 +1581,8 @@ def exclusive_source_ids(db) -> frozenset:
     return _parse_source_id_list(raw)
 
 
-def feiniu_pilot_base_url(db) -> str:
-    """读飞牛试点基址（尾部斜杠剥净）；未配/读失败回空串。"""
+def _old_feiniu_pilot_base_url(db) -> str:
+    """旧键飞牛基址直读——只许迁移构造调用（见 _old_exclusive_source_ids）。"""
     if db is None:
         return ""
     try:
@@ -1593,19 +1593,39 @@ def feiniu_pilot_base_url(db) -> str:
     return str(raw or "").strip().rstrip("/")
 
 
+def exclusive_source_ids(db) -> frozenset:
+    """专属源名单（默认线路的存量旧地址名单派生视图）。
+
+    能力化后名单的真源是默认线路记录的 legacy_source_ids 字段
+    （迁移时从旧键带入）；无默认线路 → 空集＝专属线关（fail-closed，
+    与迁前「无配置行＝空集」一致）。
+    """
+    line = default_line(db)
+    if not line:
+        return frozenset()
+    return frozenset(line["legacy_source_ids"])
+
+
+def feiniu_pilot_base_url(db) -> str:
+    """飞牛试点基址（默认线路取流基址的派生视图，尾部斜杠剥净）。"""
+    line = default_line(db)
+    if not line:
+        return ""
+    return str(line["stream_base_url"] or "").strip().rstrip("/")
+
+
 def exclusive_line_ready(db) -> bool:
     """专属线路整体可用性：名单非空且试点基址已配，缺一即惰性。"""
     return bool(feiniu_pilot_base_url(db)) and bool(exclusive_source_ids(db))
 
 
-def pilot_entry_enabled(db) -> bool:
-    """pilot 独立入口总开关：默认关（无行＝关，入口形态未启用前
-    任何标记头都不生效）。读取失败回关（fail-closed）。"""
+def _old_pilot_entry_enabled(db) -> bool:
+    """旧键入口开关直读——只许迁移构造调用。"""
     return _system_config_bool(db, KEY_PILOT_ENTRY_ENABLED, False)
 
 
-def pilot_entry_secret(db) -> str:
-    """读 pilot 入口标记密钥；未配/读失败回空串（＝入口永不认定）。"""
+def _old_pilot_entry_secret(db) -> str:
+    """旧键入口密钥直读——只许迁移构造调用。"""
     if db is None:
         return ""
     try:
@@ -1614,6 +1634,23 @@ def pilot_entry_secret(db) -> str:
     except Exception:  # noqa: BLE001 — 读失败当未配，入口不认定
         return ""
     return str(raw or "").strip()
+
+
+def pilot_entry_enabled(db) -> bool:
+    """pilot 入口开关（默认线路 enabled 的派生视图）。
+
+    无默认线路＝关（与迁前「无行＝关」一致，fail-closed）。
+    """
+    line = default_line(db)
+    return bool(line and line["enabled"])
+
+
+def pilot_entry_secret(db) -> str:
+    """pilot 入口标记密钥（默认线路 entry_secret 的派生视图）。"""
+    line = default_line(db)
+    if not line:
+        return ""
+    return str(line["entry_secret"] or "")
 
 
 def pilot_entry_origin(db) -> str:
@@ -1659,25 +1696,243 @@ def _pilot_header_value(request):
 
 
 def is_pilot_entry(db, request) -> bool:
-    """本次请求是否经 pilot 独立入口进入（唯一认定口径）。
+    """本次请求是否经任一专属线路入口进入（唯一认定口径）。
 
-    三项全满足才算：开关开、密钥已配、标记头值与密钥逐字一致
-    （compare_digest 定长比较）。任一不满足按普通入口处理——
+    认定改按线路匹配（match_entry_line）：标记头值与任一启用中
+    线路的入口密钥逐字一致才算。任一不满足按普通入口处理——
     外部伪造同名头直连 emby 域名时，值不对就只是普通请求，
-    不报错、也不给 pilot 待遇。
+    不报错、也不给专属线路待遇。
+    """
+    return match_entry_line(db, request) is not None
+
+
+# ---------------------------------------------------------------------------
+# 专属线路通用能力（2026-11-05 用户亲点批准形状）：线路＝一条配置
+# 记录、可多条，不再是写死的单条 pilot 配置。
+#
+# 存储：SystemConfig 键 ``exclusive_lines``（upstream_aggregate
+# 家族，JSON 数组文本），沿用 store 热读＋config_service 保存通道，
+# 不新造表/框架。记录字段：
+#   id               线路稳定 id（迁移线路固定为 pilot）
+#   name             展示名（管理端与用户端同名）
+#   entry_url        入口地址（对用户展示的公网地址）
+#   stream_base_url  取流基址（内部用、含口令段，永不回显原文）
+#   entry_secret     入口密钥（每线独立，永不回显原文）
+#   audience         准入人群，本期只实现 whitelist（字段留扩展位）
+#   scope_mode       适用范围：all＝全部无界资源 / sources＝指定源
+#   scope_source_ids scope_mode=sources 时的源 id 列表
+#   legacy_source_ids 存量旧地址（:wl 形态）的放行名单；只由迁移
+#                    带入与管理端维护，新建线路默认空集
+#   enabled          启用开关（禁用线路入口不认、用户端不展示）
+#
+# 迁移：新键不存在时，旧四键（pilot_entry_enabled /
+# pilot_entry_secret / feiniu_pilot_base_url /
+# upstream_aggregate_exclusive_source_ids）一次性迁为第一条线路
+# （_migrated_line，只读构造、不落库）；新键一旦落库（管理端任一
+# 次保存），旧键不再是运行时判定来源。旧读取口
+# （pilot_entry_enabled / pilot_entry_secret /
+# feiniu_pilot_base_url / exclusive_source_ids）已改为默认线路的
+# 派生视图，语义与迁前逐项一致（见各函数 docstring）。
+# ---------------------------------------------------------------------------
+
+#: 专属线路记录集 SystemConfig 键（upstream_aggregate 家族，JSON 数组）。
+KEY_EXCLUSIVE_LINES = "exclusive_lines"
+
+#: 迁移线路的固定 id（旧四键迁成的第一条线路）。
+MIGRATED_LINE_ID = "pilot"
+
+#: 迁移线路的展示名。
+MIGRATED_LINE_NAME = "白名单专属线路"
+
+#: 准入人群取值（本期只实现白名单；新取值须先在 pilot_entry
+#: .user_matches_line 落地判定再开放配置）。
+AUDIENCE_WHITELIST = "whitelist"
+
+_LINES_ABSENT = "\x00exclusive_lines_absent\x00"
+
+
+def _origin_of(url: str) -> str:
+    """URL 的 origin（scheme://netloc）；形态不对回空串。"""
+    try:
+        parts = urllib.parse.urlsplit(str(url or "").strip())
+    except ValueError:
+        return ""
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _coerce_id_list(raw) -> list:
+    """源 id 列表归一：只收 >= 1 的整数、去重保序（与名单解析同口径）。"""
+    out = []
+    for value in raw or []:
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            continue
+        if n >= 1 and n not in out:
+            out.append(n)
+    return out
+
+
+def _normalize_line(raw):
+    """线路记录归一：字段缺失/类型不对按惰性缺省补齐；无 id 回 None。"""
+    if not isinstance(raw, dict):
+        return None
+    line_id = str(raw.get("id") or "").strip()
+    if not line_id:
+        return None
+    scope_mode = str(raw.get("scope_mode") or "all").strip()
+    if scope_mode not in ("all", "sources"):
+        scope_mode = "all"
+    return {
+        "id": line_id,
+        "name": str(raw.get("name") or "").strip() or line_id,
+        "entry_url": str(raw.get("entry_url") or "").strip().rstrip("/"),
+        "stream_base_url": str(
+            raw.get("stream_base_url") or "").strip().rstrip("/"),
+        "entry_secret": str(raw.get("entry_secret") or "").strip(),
+        "audience": str(raw.get("audience") or AUDIENCE_WHITELIST).strip()
+        or AUDIENCE_WHITELIST,
+        "scope_mode": scope_mode,
+        "scope_source_ids": _coerce_id_list(raw.get("scope_source_ids")),
+        "legacy_source_ids": _coerce_id_list(raw.get("legacy_source_ids")),
+        "enabled": bool(raw.get("enabled")),
+    }
+
+
+def _migrated_line(db):
+    """旧四键 → 第一条线路（只读构造，不落库）。
+
+    四键全空（新装/从未配置）→ None（＝无线路、功能惰性，与迁前
+    一致）。范围恒为 all：pilot 入口现行口径即入口内全部 CMS 线
+    路走飞牛腿；旧名单进 legacy_source_ids，只管存量 :wl 旧地址
+    在取流口的放行查（与现行名单用途逐字对应）。
+    """
+    enabled = _old_pilot_entry_enabled(db)
+    secret = _old_pilot_entry_secret(db)
+    base = _old_feiniu_pilot_base_url(db)
+    ids = _old_exclusive_source_ids(db)
+    if not (enabled or secret or base or ids):
+        return None
+    return _normalize_line({
+        "id": MIGRATED_LINE_ID,
+        "name": MIGRATED_LINE_NAME,
+        "entry_url": _origin_of(base),
+        "stream_base_url": base,
+        "entry_secret": secret,
+        "audience": AUDIENCE_WHITELIST,
+        "scope_mode": "all",
+        "scope_source_ids": [],
+        "legacy_source_ids": sorted(ids),
+        "enabled": enabled,
+    })
+
+
+def exclusive_lines(db) -> list:
+    """全部线路记录（归一后 dict 列表，配置序即优先级序）。
+
+    读取口径：新键存在 → 解析 JSON（坏值/读失败 → 空列表，
+    fail-closed 不发线）；新键不存在 → 一次性迁移视图
+    （_migrated_line，旧四键只在此处被读）。db=None → 空列表。
+    """
+    if db is None:
+        return []
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, KEY_EXCLUSIVE_LINES, _LINES_ABSENT)
+    except Exception:  # noqa: BLE001 — 读失败回空列表，不发线
+        return []
+    if raw == _LINES_ABSENT:
+        line = _migrated_line(db)
+        return [line] if line else []
+    try:
+        import json as _json
+        parsed = _json.loads(raw or "[]")
+    except Exception:  # noqa: BLE001 — JSON 坏值当无线路
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out = []
+    for item in parsed:
+        line = _normalize_line(item)
+        if line:
+            out.append(line)
+    return out
+
+
+def save_exclusive_lines(db, lines) -> list:
+    """保存全部线路记录（走 config_service 统一通道，含缓存失效）。
+
+    空列表存 "[]"（行存在＝已完成能力化落库，迁移视图不再生效，
+    管理员删光线路后旧键不会把 pilot 线复活）。返回归一后列表。
+    调用方负责 commit（与既有配置保存口径一致）。
+    """
+    normalized = []
+    for item in lines or []:
+        line = _normalize_line(item)
+        if line:
+            normalized.append(line)
+    import json as _json
+    text = _json.dumps(normalized, ensure_ascii=False)
+    from backend import config_service
+    config_service.save_config(
+        db, {KEY_EXCLUSIVE_LINES: text}, schema="upstream_aggregate")
+    return normalized
+
+
+def default_line(db):
+    """默认线路：迁移线路（id=pilot）优先，否则第一条；无线路回 None。
+
+    旧读取口与存量 :wl 取流形态都挂在默认线路上（它们本就只有
+    单条 pilot 的概念）；多线路的新语义一律走 match_entry_line。
+    """
+    lines = exclusive_lines(db)
+    for line in lines:
+        if line["id"] == MIGRATED_LINE_ID:
+            return line
+    return lines[0] if lines else None
+
+
+def match_entry_line(db, request):
+    """按线路匹配入口认定：命中返回该线路记录，未命中回 None。
+
+    标记头值与任一「启用中且已配密钥」线路的入口密钥逐字一致
+    （compare_digest 定长比较）才算；禁用线路、错密钥、无头
+    一律不认（按普通入口处理）。
     """
     if db is None or request is None:
-        return False
-    if not pilot_entry_enabled(db):
-        return False
-    secret = pilot_entry_secret(db)
-    if not secret:
-        return False
+        return None
     value = _pilot_header_value(request)
     if not value:
-        return False
+        return None
     import secrets as _secrets
-    return _secrets.compare_digest(value, secret)
+    for line in exclusive_lines(db):
+        secret = line["entry_secret"]
+        if line["enabled"] and secret and \
+                _secrets.compare_digest(value, secret):
+            return line
+    return None
+
+
+def line_origin(line) -> str:
+    """线路的公网 origin：优先入口地址，其次取流基址派生。"""
+    if not line:
+        return ""
+    return _origin_of(line.get("entry_url") or "") or _origin_of(
+        line.get("stream_base_url") or "")
+
+
+def line_allows_source(line, source_id) -> bool:
+    """线路适用范围判定：all 恒真；sources 只认名单内源。"""
+    if not line:
+        return False
+    if line["scope_mode"] == "all":
+        return True
+    try:
+        return int(source_id) in line["scope_source_ids"]
+    except (TypeError, ValueError):
+        return False
 
 
 def feiniu_pilot_rewrite(base_url: str, upstream_url: str):
