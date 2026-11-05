@@ -2930,7 +2930,16 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             nfo_lib.apply_nfo(item, nfo_data, kind,
                                           skip_overview=_ep_skip_overview,
                                           db=db)
-    elif nfo_data and not item.overview:
+    elif nfo_data:
+        # N3-2（Nova 口径：锁定 > NFO > 在线来源 > 文件名）：无 TMDB 命中时
+        # 只要有 NFO 就应用（锁定条目已在本函数开头早退、且 apply_nfo 内部
+        # 另有锁定守卫，双保险）。旧条件 `and not item.overview` 让「已有
+        # 自动来源简介」的条目永远吃不到 NFO，NFO 反而低于自动来源，与
+        # 优先级正好相反，故去掉该短路、文字以 NFO 为准。
+        # 与「只填空」总开关 enrich_tmdb_text_fill_only 不冲突：该开关只
+        # 管 TMDB 客户端的文本写入（tmdb.py 的 apply/apply_details），
+        # NFO 是用户本地整理、优先级高于在线来源，覆盖自动来源的文本
+        # 正是本意；TMDB 命中分支「先 TMDB 后 NFO 覆盖」的既有顺序不动。
         nfo_lib.apply_nfo(item, nfo_data, kind,
                                           skip_overview=_ep_skip_overview,
                                           db=db)
