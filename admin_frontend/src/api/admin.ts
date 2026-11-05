@@ -1059,6 +1059,8 @@ export const createLibrary = (data: {
   /** 多版本展示合并开关（N4-3）；不传 = 同库开、跨库关 */
   merge_same?: boolean
   enable_merge?: boolean
+  /** 直出模式（N9-1）；不传 = 关 */
+  direct_play?: boolean
   /** 库类型：applecms 时内容来自 CMS 同步，paths 可空、来源必填 */
   kind?: 'local' | 'applecms'
   /** kind=applecms 时收哪些苹果 CMS 型上游源 */
@@ -1099,6 +1101,8 @@ export const updateLibrary = (
     /** 多版本展示合并开关（N4-3）；省略则不修改 */
     merge_same?: boolean
     enable_merge?: boolean
+    /** 直出模式（N9-1）；省略则不修改 */
+    direct_play?: boolean
     /** 库类型：建库后不可更改，传了与现值不同后端会 400 */
     kind?: 'local' | 'applecms'
     /** kind=applecms 的库可改来源清单；省略则不修改 */

@@ -76,6 +76,13 @@ class Library(Base):
     # enable_merge：跨库同片是否并组展示（缺省关 = Nova 缺省；跨库组
     # 涉及的库必须全部开启才并组，fail-closed，见 dedup.version_group_allowed）。
     enable_merge = Column(Boolean, default=False)
+    # 直出模式（N9，照 Nova 播放方案做成每库开关）：缺省关 = 现行行为
+    # 逐字不变。只管**取流形态**——本库 STRM 条目里的普通外链在取流口
+    # 直接 302 跳原文（接线在 N9-2，解析单点 playback_strategy.
+    # library_direct_play_enabled）；带凭据的外链与远程挂载维持现行
+    # 中继、Drive 与 CMS（无界）条目不读本开关（用户 2026-11-05 拍板）。
+    # 不动门禁/签名，也不改 merged_into 等任何数据。
+    direct_play = Column(Boolean, default=False)
     # 库展示顺序（媒体库学习 L4）：Views / 发现页按 sort_order 排库。
     # 0 = 未设序：只有任一库 sort_order 非零时才参与排序，全部为 0 时
     # 查询逐字不变（见 api.user_views）；已设序的在前，未设序的排在
