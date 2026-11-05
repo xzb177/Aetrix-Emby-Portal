@@ -90,6 +90,16 @@ def _cleanup(db: Session) -> None:
         u = db.query(models.WebUser).filter(
             models.WebUser.username == uname).first()
         if u is not None:
+            # 站内信先清：to_user_id 非空，而 ORM 删用户会试图把它
+            # 置空——全量套件里更早模块留下的孤儿站内信（收件人已被
+            # bulk 删除、其 id 被本文件用户复用）会把 teardown 顶爆
+            # 并回滚整个清理（2026-11-05 #1854 CI 实证），回滚漏出的
+            # 上游映射随后污染 test_upstream_detail_line。收发两侧
+            # 都按本用户 id 清，与 detail_line 先清关联行同口径。
+            db.query(models.StationMessage).filter(
+                (models.StationMessage.to_user_id == u.id)
+                | (models.StationMessage.from_user_id == u.id)
+            ).delete(synchronize_session=False)
             db.query(models.CodeRedemption).filter(
                 models.CodeRedemption.user_id == u.id
             ).delete(synchronize_session=False)

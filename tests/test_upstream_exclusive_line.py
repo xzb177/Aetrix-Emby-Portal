@@ -94,6 +94,14 @@ def _cleanup(db: Session) -> None:
         u = db.query(models.WebUser).filter(
             models.WebUser.username == uname).first()
         if u is not None:
+            # 站内信先清（与 test_pilot_entry._cleanup 同口径）：
+            # to_user_id 非空而 ORM 删用户会试图置空它，孤儿站内信
+            # 顶爆 teardown 时整个清理回滚、种子行泄漏污染后续文件
+            # （2026-11-05 #1854 CI 实证）。
+            db.query(models.StationMessage).filter(
+                (models.StationMessage.to_user_id == u.id)
+                | (models.StationMessage.from_user_id == u.id)
+            ).delete(synchronize_session=False)
             db.query(models.CodeRedemption).filter(
                 models.CodeRedemption.user_id == u.id
             ).delete(synchronize_session=False)
