@@ -7010,10 +7010,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         # “干净地搜过”，下一轮仍会重新搜索（A-097）。
                         series.last_scraped_at = datetime.now()
                     series_nfo = _pending.series_nfo_data
-                    if series_nfo and (not series.tmdb_id or not series.overview
-                                       or series_tmdb_applied):
-                        # 剧集级 NFO（tvshow.nfo）：这类 series 平时不走 TMDB，
-                        # 远端有刮削就直接用；B 方案下 TMDB 只补图
+                    if series_nfo:
+                        # 剧集级 NFO（tvshow.nfo）：有则应用（N3-2 补遗，
+                        # Nova 优先级：锁定 > NFO > 在线来源）。旧复合门
+                        # 在「有 tmdb_id＋有简介＋本轮 TMDB 没写过」时把
+                        # 整个 series NFO 跳过，新放/改过的 tvshow.nfo
+                        # 永远不生效，同属整段跳过型短路，一并去掉；
+                        # 本轮 TMDB 刚写过时更要由 NFO 覆盖回正。B 方案
+                        # 下 TMDB 只补图；锁定由 apply_nfo 守卫挡。
                         if series_nfo.get("tmdb_id") and not (
                             series.poster_path or series.primary_image_url
                         ):
@@ -7026,8 +7030,11 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     season_guid = _pending.season_guid
                     season_item = _ensure_season_row(
                         db, ctx, library, series, season_no, season_guid)
-                    if _pending.season_nfo_data and not season_item.overview:
-                        # 季 NFO（season.nfo）：只补简介与评分
+                    if _pending.season_nfo_data:
+                        # 季 NFO（season.nfo）：简介与评分以 NFO 为准
+                        # （N3-2 补遗：旧门只看简介，有简介时连评分都被
+                        # 整段跳过；season 的 apply 本就只写这两项，
+                        # 有 NFO 即应用，锁定由 apply_nfo 守卫挡）
                         nfo_lib.apply_nfo(season_item, _pending.season_nfo_data, "season")
                     item.parent_id = season_item.id
                     item.season_number = season_no
@@ -7100,8 +7107,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                 # 有 NFO 但无 tmdb_id：TMDB 打底，NFO 文本优先
                                 nfo_lib.apply_nfo(item, nfo_data, kind, db=db)
                                 stats["nfo"] = stats.get("nfo", 0) + 1
-                        elif nfo_data and not item.overview:
-                            # 策略不要求重刮、但条目缺简介且远端有 NFO：补上（幂等，不调 TMDB）
+                        elif nfo_data:
+                            # 策略不要求重刮 TMDB，但本地 NFO 仍按优先级
+                            # 应用（N3-2 补遗，Nova 口径：锁定 > NFO > 在线
+                            # 来源）：scrape_policy 管的是 TMDB 重刮节奏，
+                            # 不管本地 NFO——有简介也不许把整个 NFO 跳过
+                            # （与 enrich 的 nfo-only 分支同口径）。不调
+                            # TMDB、无配额成本；锁定条目由 apply_nfo
+                            # 入口守卫挡住，零写入。
                             nfo_lib.apply_nfo(item, nfo_data, kind, db=db)
                             stats["nfo"] = stats.get("nfo", 0) + 1
                         # 已有 TMDB 命中但缺 IMDb Id / 多别名 → 用详情接口补齐
