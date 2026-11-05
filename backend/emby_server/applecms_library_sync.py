@@ -1317,6 +1317,20 @@ def run_library_sync_round(*, session_factory=None, http_get=None,
             rec_db.close()
     except Exception:
         logger.exception("applecms 同步收尾无线路对账失败（下一轮继续）")
+    # 全死线轮转复检解藏（清理二期，2026-11-05）：一期藏的条目靠
+    # 配置变化（源启停/补映射）自动回来；二期藏的（源一直开着、
+    # 线死了）只能靠复检发现活线。本批在册条目每轮至多复检一小
+    # 片（硬顶 500 条）且带最小间隔节流（默认 1h），绝不每轮全量
+    # 复检。独立会话、失败只记日志，口径见 no_line_hidden 模块。
+    try:
+        rec_db = session_factory()
+        try:
+            from backend.emby_server import no_line_hidden
+            no_line_hidden.maybe_recheck_restore_dead_line_items(rec_db)
+        finally:
+            rec_db.close()
+    except Exception:
+        logger.exception("applecms 同步收尾全死线轮转复检失败（下一轮继续）")
     return results
 
 
