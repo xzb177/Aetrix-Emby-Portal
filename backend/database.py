@@ -1147,6 +1147,12 @@ def _auto_migrate():
             ("merge_same", "BOOLEAN", "1"),
             ("enable_merge", "BOOLEAN", "0"),
         ]),
+        # 直出模式每库开关（N9-1）：老库补列后 direct_play=0（关），
+        # 与升级前行为逐字一致；只管取流形态，解析单点在
+        # emby_server.playback_strategy.library_direct_play_enabled。
+        ("emby_libraries", [
+            ("direct_play", "BOOLEAN", "0"),
+        ]),
         # 自帧修复线（2026-11-04）：修复方法列。老库补列后为
         # 'graft'（存量行全是借帧修复），与升级前行为一致（见
         # emby_server.cms_self_frame）。

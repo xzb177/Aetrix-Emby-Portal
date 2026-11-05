@@ -412,6 +412,9 @@ const fsWatch = ref(true)
 const mergeSame = ref(true)
 /** 跨库合并展示：跨库同片并组，涉及的库全开才生效（默认关） */
 const enableMerge = ref(false)
+// ---- 直出模式开关（N9-1）----
+/** 直出模式：本库 STRM 里的普通外链点播时直接跳转、服务器不中转（默认关） */
+const directPlay = ref(false)
 /** 实时监听健康状况（降级原因要让人看见：默默不工作比报错更糟） */
 const fsWatchStatus = ref<Awaited<ReturnType<typeof fetchFsWatchStatus>> | null>(null)
 const fsWatchForThisLib = computed(() => {
@@ -484,6 +487,7 @@ function formFingerprint(): string {
     // 展示合并开关同理要进指纹：只改它时也得让「保存」亮起来
     merge_same: mergeSame.value,
     enable_merge: enableMerge.value,
+    direct_play: directPlay.value,
     chase: libForm.chase,
     kind: libForm.kind,
     upstream_source_ids: [...libForm.upstream_source_ids].sort((a, b) => a - b),
@@ -534,6 +538,7 @@ coverAutoRegen.value = l.cover_auto_regen === true
   fsWatch.value = l.fs_watch !== false
   mergeSame.value = l.merge_same !== false
   enableMerge.value = l.enable_merge === true
+  directPlay.value = l.direct_play === true
   if (!fsWatchStatus.value) void fetchFsWatchStatus().then((s) => { fsWatchStatus.value = s }).catch(() => undefined)
   if (coverTemplate.value) void loadCoverPreview()
   else { coverPreviewUrl.value = ''; coverPreviewError.value = '' }
@@ -649,6 +654,7 @@ async function saveForm(thenScan = false) {
         fs_watch: fsWatch.value,
         merge_same: mergeSame.value,
         enable_merge: enableMerge.value,
+        direct_play: directPlay.value,
         kind: isCms ? 'applecms' : 'local',
         ...(isCms
           ? { upstream_source_ids: [...libForm.upstream_source_ids], cms_type_map: cmsTypeMap, cms_area_bucket: libForm.cms_area_bucket || null }
@@ -684,6 +690,7 @@ async function saveForm(thenScan = false) {
         fs_watch: fsWatch.value,
         merge_same: mergeSame.value,
         enable_merge: enableMerge.value,
+        direct_play: directPlay.value,
       })
       savedId = editingId
       ElMessage.success(res?.rescan_required
@@ -2673,6 +2680,29 @@ function typeLabel(t: string): string {
               <p class="field-help">
                 同一部片同时存在于多个库时，要不要跨库并成一条。涉及的库
                 都打开这个开关才会真并，任一库关着就不并。默认关。
+              </p>
+            </el-form-item>
+          </el-form>
+        </div>
+
+        <!-- 分组：直出模式 -->
+        <div class="settings-section">
+          <div class="settings-section-title">直出模式</div>
+          <p class="form-hint">
+            让这个库的片子走最短的播放路：能直接把播放器送到片子地址的，就不绕服务器中转。
+          </p>
+          <el-form label-position="top">
+            <el-form-item label="直出模式">
+              <el-switch
+                v-model="directPlay"
+                active-text="开"
+                inactive-text="关"
+              />
+              <p class="field-help">
+                开启后，本库 STRM 文件里写的普通外链，点播时播放器直接跳过去取，
+                服务器不中转、不占带宽。地址里带凭据（签名、令牌）的外链和远程挂载
+                的片子不受影响，照旧走现在的路；谷歌盘与无界（CMS）库也不看这个
+                开关。默认关，关着就是现在的行为。
               </p>
             </el-form-item>
           </el-form>

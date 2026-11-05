@@ -1042,6 +1042,8 @@ export interface EmbyLibrary {
   merge_same?: boolean
   /** 跨库多版本合并展示（N4-3，默认关）：涉及的库全部开启才跨库并组 */
   enable_merge?: boolean
+  /** 直出模式（N9-1，默认关）：本库 STRM 普通外链点播时直接跳转、服务器不中转 */
+  direct_play?: boolean
   is_enabled: boolean
   is_scanning: boolean
   /**

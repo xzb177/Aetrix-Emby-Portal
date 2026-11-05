@@ -1924,6 +1924,8 @@ class LibraryCreate(BaseModel):
     # 跨库合并缺省关；只管展示分组，不动物理合并数据
     merge_same: bool = True
     enable_merge: bool = False
+    # 直出模式（N9-1）：缺省关；只管取流形态，Drive/CMS 条目不读
+    direct_play: bool = False
     # 库类型（苹果 CMS 媒体库类型，2026-11-02）：local（默认）/ applecms。
     # applecms 时内容来源是上游 CMS 源而非本地路径/挂载：paths 与
     # mount_ids 不再必填，改由 upstream_source_ids 必填（见 create_library）。
@@ -1962,6 +1964,8 @@ class LibraryUpdate(BaseModel):
     # 多版本展示合并开关（N4-3）：不传 = 不修改
     merge_same: bool | None = None
     enable_merge: bool | None = None
+    # 直出模式（N9-1）：不传 = 不修改
+    direct_play: bool | None = None
     # 库类型：建库后不可更改——传了且与现值不同直接 400（见 update_library）
     kind: str | None = None
     # kind=applecms 的库可改来源清单；local 库传了直接 400
@@ -2225,6 +2229,8 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             # enable_merge 按关处理（Nova 缺省，与升级前行为一致）
             "merge_same": getattr(lib, "merge_same", True) is not False,
             "enable_merge": bool(getattr(lib, "enable_merge", False)),
+            # 直出模式（N9-1）：老库没值时按关处理（缺省方向与 merge_same 相反）
+            "direct_play": bool(getattr(lib, "direct_play", False)),
             "account_115_id": getattr(lib, "account_115_id", None),
             "last_scan_at": lib.last_scan_at.isoformat() if lib.last_scan_at else None,
             # 最近一次扫描的结果：新增/更新/删除多少、哪些来源读不到、有没有异常
@@ -2345,6 +2351,7 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         fs_watch=bool(req.fs_watch),
         merge_same=bool(req.merge_same),
         enable_merge=bool(req.enable_merge),
+        direct_play=bool(req.direct_play),
         kind=kind,
         upstream_source_ids=cms_source_field,
         cms_type_map=cms_map_field,
@@ -2544,6 +2551,10 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
         if bool(req.enable_merge) != bool(lib.enable_merge):
             _switch_changed = True
         lib.enable_merge = bool(req.enable_merge)
+    if req.direct_play is not None:
+        # 直出只影响取流口的实时判定，不改任何列表/详情缓存形态，
+        # 翻转不参与 _switch_changed 的缓存 bump（N9 盘点 §3.3 口径）
+        lib.direct_play = bool(req.direct_play)
     if "account_115_id" in req.model_fields_set:
         # 允许显式解绑（传 null）
         lib.account_115_id = req.account_115_id

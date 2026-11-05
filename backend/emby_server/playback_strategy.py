@@ -175,6 +175,33 @@ def drive_relay_enabled(db: Session) -> bool:
     return raw not in ("0", "false", "no", "off", "")
 
 
+def library_direct_play_enabled(db: Session, library_id) -> bool:
+    """每库直出模式开关解析单点（N9-1 地基，Nova 学习立项 N9）。
+
+    开关存媒体库记录 ``Library.direct_play``（缺省关）。只有存值明确
+    为真才回 True；库行不存在 / 值为 NULL / library_id 缺失 / 查询
+    异常一律 False——fail-closed 回现行主线：开关读不到时不许悄悄
+    改道直出。本单（N9-1）只立解析，播放路径尚不调用它；取流口接线
+    是 N9-2，口径已拍板（2026-11-05）：直出只对 STRM 里的普通外链
+    生效，带凭据的外链与远程挂载维持现行中继，Drive 与 CMS 条目
+    不读本开关。
+    """
+    try:
+        if db is None or library_id is None:
+            return False
+        # 延迟导入防循环（同 dedup 的函数级 import 先例）
+        from backend.emby_server import models as em
+        lib = (db.query(em.Library)
+               .filter(em.Library.id == int(library_id)).first())
+    except Exception:  # noqa: BLE001 - fail-closed：读不到就当关
+        logger.warning("library_direct_play_enabled 读取失败，回默认关",
+                       exc_info=True)
+        return False
+    if lib is None:
+        return False
+    return bool(getattr(lib, "direct_play", False))
+
+
 def drive_relay_sa_failover_max_attempts(db: Session) -> int:
     """Drive SA 中继取流 failover 总尝试次数（默认 3，钳制 [1, 10]）。
 
