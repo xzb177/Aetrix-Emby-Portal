@@ -436,8 +436,27 @@ def enable_source(db, source):
     source.updated_at = datetime.now()
     db.flush()
     _reset_breaker_health_count(source)
+    _restore_no_line_items_for_source(db, source)
     logger.info("上游源启用 id=%s name=%r", source.id, source.name)
     return source
+
+
+def _restore_no_line_items_for_source(db, source) -> None:
+    """启用联动：无线路对账台账里挂着本源的条目立即解藏（fail-open）。
+
+    源停用期间被对账藏掉的独占条目，源一回来就该回来，不必等
+    同步轮收尾对账（最长一个同步间隔）。与熔断清零同纪律：联动
+    异常只记 warning，绝不挡启用本身；兜底还有同步轮对账。
+    """
+    try:
+        from backend.emby_server import no_line_hidden
+        restored = no_line_hidden.restore_items_with_source(db, source.id)
+        if restored:
+            logger.info("上游源启用联动解藏无线路条目 source_id=%s "
+                        "restored=%s", source.id, restored)
+    except Exception:  # noqa: BLE001 — 联动失败不许打断启用，见上
+        logger.warning("上游源启用联动解藏异常，已忽略 source_id=%s",
+                       getattr(source, "id", None), exc_info=True)
 
 
 def _reset_breaker_health_count(source) -> None:
