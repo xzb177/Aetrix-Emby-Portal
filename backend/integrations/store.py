@@ -97,6 +97,7 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("series_merge_enabled", "SERIES_MERGE_ENABLED"),
     ("series_merge_loose_enabled", "SERIES_MERGE_LOOSE_ENABLED"),
     ("series_merge_require_year", "SERIES_MERGE_REQUIRE_YEAR"),
+    ("series_merge_season_fold_enabled", "SERIES_MERGE_SEASON_FOLD_ENABLED"),
     ("teaser_enabled", "TEASER_ENABLED"),
     ("tg_bind_guide_enabled", "TG_BIND_GUIDE_ENABLED"),
     ("vitality_enabled", "VITALITY_ENABLED"),

@@ -231,7 +231,7 @@ def quality_gate_reject(type_name: str = "", name: str = "",
 # 标题小工具：去季号、季号解析、语言变体、地区桶
 # ---------------------------------------------------------------------------
 
-_SEASON_CN_RE = re.compile(r"第\s*([0-9一二三四五六七八九十百]+)\s*季")
+_SEASON_CN_RE = re.compile(r"第\s*([0-9一二三四五六七八九十百]+)\s*[季部]")
 _SEASON_EN_RE = re.compile(r"[Ss]eason\s*([0-9]+)")
 _SEASON_SXX_RE = re.compile(r"\bS([0-9]{1,2})\b")
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
@@ -282,6 +282,66 @@ def strip_season(name: str) -> str:
     text = _SEASON_EN_RE.sub("", text)
     text = _SEASON_SXX_RE.sub("", text)
     return text.strip(" ·-—_（(）)")
+
+
+_SEASON_CN_SUFFIX_RE = re.compile(r"第\s*([0-9一二三四五六七八九十百]+)\s*[季部]$")
+_SEASON_EN_SUFFIX_RE = re.compile(r"[Ss]eason\s*([0-9]+)$")
+_SEASON_SXX_SUFFIX_RE = re.compile(r"(?<![A-Za-z0-9])S([0-9]{1,2})$")
+_TRAILING_NUMBER_RE = re.compile(r"([0-9]{1,2})$")
+_ANIM_SUFFIXES = ("动画版", "动画")
+
+
+def season_suffix_parts(name: str):
+    """片名尾部季号后缀解析（按季折叠通道专用，与 season_number_of 同源）。
+
+    全仓标题季号解析只许这一套实现：本函数复用本模块的季号正则与
+    中文数字口径，专供「同剧按季拆行」治理使用。
+
+    返回 (底名, 季号|None, 标记类)：
+    - 标记类 "explicit"：第X季/第X部、Season N、Sxx 明确标记；
+    - "digit"：纯尾数（如「不良人7」）——只报数、不许自动折，且底名
+      保留尾数（自成一组，不混进无尾数的底名组）；
+    - None：无季号后缀。
+    底名 = 去全部空白后反复剥尾部季号后缀与「动画版/动画」后缀的
+    剩余原文（不做归一化，归一在调用方）。只认尾部，季号字样在
+    名中部的不动；整名就是后缀时返回原名、无季号。
+    """
+    text = re.sub(r"\s+", "", name or "")
+    if not text:
+        return "", None, None
+    season = None
+    marker = None
+    while True:
+        m = _SEASON_CN_SUFFIX_RE.search(text)
+        if m:
+            num = _cn_number(m.group(1))
+            if num is None:
+                break
+            if season is None:
+                season, marker = num, "explicit"
+            text = text[:m.start()]
+            continue
+        m = (_SEASON_EN_SUFFIX_RE.search(text)
+             or _SEASON_SXX_SUFFIX_RE.search(text))
+        if m:
+            if season is None:
+                season, marker = int(m.group(1)), "explicit"
+            text = text[:m.start()]
+            continue
+        for suf in _ANIM_SUFFIXES:
+            if text.endswith(suf) and len(text) > len(suf):
+                text = text[:-len(suf)]
+                break
+        else:
+            break
+    if not text:
+        return re.sub(r"\s+", "", name or ""), None, None
+    if season is None:
+        m = _TRAILING_NUMBER_RE.search(text)
+        if m and len(text) > len(m.group(1)):
+            return text, int(m.group(1)), "digit"
+        return text, None, None
+    return text, season, marker
 
 
 def lang_variant_of(name: str) -> Optional[str]:
