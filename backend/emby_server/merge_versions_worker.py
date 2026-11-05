@@ -7,7 +7,8 @@ StrmAssistant 做法（ScheduledTask/MergeMultiVersionTask.cs）：
 - 调用 _libraryManager.MergeItems(movies) 物理合并为多版本
 
 本模块一比一复刻：
-- 定时任务：扫描 movie/series，按 tmdb_id（优先）/imdb_id 分组
+- 定时任务：扫描 movie/series，按 tmdb_id 分组（N4-1 起 TMDB 硬条件，
+  Nova 口径：无 tmdb 不合、imdb 单独不成键）
 - union-find 处理传递闭包
 - 物理合并：被合并条目的 merged_into_id 指向主记录
 - 主记录选择：复用 dedup.pick_primary（有本地文件 > 有海报 > 有 tmdb > 有简介 > id 小）
@@ -119,27 +120,23 @@ def nudge() -> None:
 # ---------------------------------------------------------------------------
 
 def _provider_key(item) -> Optional[Tuple]:
-    """去重键：与 dedup.dedup_key() 口径看齐。
+    """去重键：N4-1 起为 TMDB 硬条件（Nova 口径）。
 
-    键格式：(library_id, item_type, provider, provider_id)。
+    键格式：(library_id, item_type, "tmdb", tmdb_id)。
     必须带 library_id（防跨库合并：同 tmdb_id 的电影分属两个库不能合并）
     和 item_type（防跨类型合并：TMDB movie/tv 编号序列独立，数字可能重合）。
+    没有 tmdb_id 的条目不参与自动合并：imdb 单独不再成键（旧口径「tmdb
+    优先 / imdb 兜底」作废）——同 TMDB 编号是唯一的合并硬条件，绝不拿
+    imdb 这类靠不住的编号猜着合。
     """
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
-    imdb_id = (getattr(item, "imdb_id", None) or "").strip()
-    provider = None
-    provider_id = ""
-    if tmdb_id:
-        provider, provider_id = "tmdb", tmdb_id
-    elif imdb_id:
-        provider, provider_id = "imdb", imdb_id
-    else:
+    if not tmdb_id:
         return None
     return (
         getattr(item, "library_id", None),
         getattr(item, "item_type", None),
-        provider,
-        provider_id,
+        "tmdb",
+        tmdb_id,
     )
 
 
@@ -151,8 +148,8 @@ def find_duplicate_groups(db) -> List[List]:
     """
     from backend.emby_server import models as em
 
-    # 只查 movie/series，有 tmdb_id 或 imdb_id，未被合并，未软删除
-    # 注意：只查有 tmdb_id/imdb_id 的（无 provider ID 的不参与合并，对标 HasAnyProviderId）
+    # 只查 movie/series，有 tmdb_id（N4-1 硬条件），未被合并，未软删除
+    # 注意：只查有 tmdb_id 的（无 tmdb 的不参与合并；imdb 单独不再算数）
     # 两阶段：先只取分组所需的轻量列（id/library_id/item_type/tmdb_id/imdb_id），
     # 找出重复组后，再按 id 加载全行做合并——避免每天拉 1 万个全量 ORM 进内存
     light_rows = (
@@ -167,7 +164,7 @@ def find_duplicate_groups(db) -> List[List]:
             em.MediaItem.item_type.in_(("movie", "series")),
             em.MediaItem.deleted_at.is_(None),
             em.MediaItem.merged_into_id.is_(None),
-            (em.MediaItem.tmdb_id.isnot(None) | em.MediaItem.imdb_id.isnot(None)),
+            em.MediaItem.tmdb_id.isnot(None),
         )
         .order_by(em.MediaItem.id.asc())
         .limit(MERGE_VERSIONS_BATCH_LIMIT * MERGE_CANDIDATE_MULTIPLIER)

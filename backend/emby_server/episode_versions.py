@@ -144,15 +144,20 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
 
     幂等：重复调用结果不变。只写 ``merged_into_id``，不动其他字段。
 
+    N4-1（Nova 口径）：所属 series 行存在且无 ``tmdb_id`` 时整组不自动
+    合并，只计数跳过——series 本身身份未定，同季同集只是位置相同，
+    不足以当合并硬条件（与电影/剧集级的 TMDB 硬条件同一口径）。
+
     返回 ``{"groups": 组数, "merged": 合并的版本数, "promoted": 晋升数,
-    "unmerged_orphans": 链断解散数, "repointed_orphans": 改指存活根数}``。
+    "unmerged_orphans": 链断解散数, "repointed_orphans": 改指存活根数,
+    "skipped_no_tmdb": series 无 TMDB 身份跳过的组数}``。
     """
     from sqlalchemy import case as _case
     from sqlalchemy import func as _func
     from backend.emby_server import models as em
 
     stats = {"groups": 0, "merged": 0, "promoted": 0, "unmerged_orphans": 0,
-             "repointed_orphans": 0}
+             "repointed_orphans": 0, "skipped_no_tmdb": 0}
     if not EPISODE_VERSIONS_ENABLED:
         return stats
 
@@ -183,6 +188,22 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
         .all()
     )
     for lib_id, series_id, season_number, episode_number, _cnt in groups:
+        # N4-1 门：series 行存在且 tmdb_id 为空 → 整组跳过（只计数/记日志，
+        # 不写 merged_into_id）。只拦这一形态：series 行缺失属异常/旧夹具
+        # 形态（身份未知），不在本门拦截范围，维持既有行为；孤儿回收段
+        # 处理的是存量已合并行、不产生新合并，同样不受本门影响。
+        series_tmdb = (
+            db.query(MI.tmdb_id).filter(MI.id == series_id).first()
+        )
+        if series_tmdb is not None and not (series_tmdb[0] or "").strip():
+            stats["skipped_no_tmdb"] += 1
+            if stats["skipped_no_tmdb"] <= 3:
+                logger.info(
+                    "单集多版本跳过：series=%s 无 TMDB 身份，不自动合并 "
+                    "S%02dE%02d（库 %s）",
+                    series_id, season_number, episode_number, lib_id,
+                )
+            continue
         rows = (
             db.query(MI)
             .filter(
@@ -263,7 +284,8 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
                 stats["unmerged_orphans"] += 1
                 logger.info("单集多版本孤儿恢复独立：条目 %s（%s）", r.id, r.file_path)
 
-    if stats["groups"] or stats["unmerged_orphans"] or stats["repointed_orphans"]:
+    if (stats["groups"] or stats["unmerged_orphans"]
+            or stats["repointed_orphans"] or stats["skipped_no_tmdb"]):
         logger.info("单集多版本合并完成：%s", stats)
     return stats
 
