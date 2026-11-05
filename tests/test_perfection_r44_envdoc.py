@@ -83,6 +83,7 @@ INDIRECT_READS = {
     "SERIES_MERGE_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "SERIES_MERGE_LOOSE_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "SERIES_MERGE_REQUIRE_YEAR": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
+    "SERIES_MERGE_SEASON_FOLD_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "TEASER_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "TG_BIND_GUIDE_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "VITALITY_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",

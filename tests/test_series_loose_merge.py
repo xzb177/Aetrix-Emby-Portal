@@ -279,7 +279,8 @@ def test_search_loose_ok_never_fuzzy(monkeypatch):
 def test_series_merge_config_defaults(db):
     cfg = mvw.series_merge_config(db)
     assert cfg == {"enabled": True, "loose_enabled": True,
-                   "require_year": True, "interval_sec": 86400.0,
+                   "require_year": True, "season_fold_enabled": True,
+                   "interval_sec": 86400.0,
                    "batch_limit": 1000}
 
 

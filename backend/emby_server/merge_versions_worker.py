@@ -51,6 +51,7 @@ _SERIES_MERGE_DEFAULTS = {
     "series_merge_enabled": "1",
     "series_merge_loose_enabled": "1",
     "series_merge_require_year": "1",
+    "series_merge_season_fold_enabled": "1",
     "series_merge_interval_sec": "86400",
     "series_merge_batch_limit": "1000",
 }
@@ -61,7 +62,7 @@ def series_merge_config(db) -> dict:
 
     供扫描器 D2（宽松复用）与 worker D3（宽松合并通道）共用，保证两处读到
     同一份开关。返回 {"enabled", "loose_enabled", "require_year",
-    "interval_sec", "batch_limit"}。
+    "season_fold_enabled", "interval_sec", "batch_limit"}。
     """
     from backend.integrations import store as _store
 
@@ -93,6 +94,7 @@ def series_merge_config(db) -> dict:
         "enabled": _b(_pick("series_merge_enabled", "SERIES_MERGE_ENABLED")),
         "loose_enabled": _b(_pick("series_merge_loose_enabled", "SERIES_MERGE_LOOSE_ENABLED")),
         "require_year": _b(_pick("series_merge_require_year", "SERIES_MERGE_REQUIRE_YEAR")),
+        "season_fold_enabled": _b(_pick("series_merge_season_fold_enabled", "SERIES_MERGE_SEASON_FOLD_ENABLED")),
         "interval_sec": interval_f,
         "batch_limit": batch_i,
     }
@@ -621,6 +623,24 @@ def _merge_once() -> Tuple[int, int]:
         except Exception as e:
             db.rollback()
             logger.warning("同剧宽松通道失败: %s", e)
+        # 按季折叠通道：同剧按季拆行（源站每季一条目）折回正主对应季。
+        # 独立 try：本程异常只回滚记日志，不许拖垮工人其余通道；判定与
+        # 力学在 season_fold 模块（从严口径，见其模块文档）。
+        try:
+            _sf_cfg = series_merge_config(db)
+            if _sf_cfg["enabled"] and _sf_cfg["season_fold_enabled"]:
+                from backend.emby_server import season_fold as _sf
+
+                sf_stats = _sf.fold_season_groups(db, _sf_cfg)
+                if sf_stats.get("folded"):
+                    total_merged += int(sf_stats["folded"])
+                    for _lid in sf_stats.get("libraries") or []:
+                        if _lid:
+                            touched_libs.add(int(_lid))
+                    logger.info("按季折叠：%s", sf_stats)
+        except Exception as e:
+            db.rollback()
+            logger.warning("按季折叠通道失败: %s", e)
         # 单集多版本（与电影/剧集同一套 merged_into_id 机制）
         try:
             from backend.emby_server import episode_versions as _ev

@@ -965,6 +965,14 @@ def execute_task(task_id: str) -> None:
             task_id, source_id, result.get("kind"), result.get("fetched"),
             result.get("paired"), result.get("written"),
             len(result.get("failed_libraries") or []))
+        # 同步批次完成：唤醒多版本合并工人提前跑一轮（按季折叠等事后
+        # 治理跟随同步增量）。nudge 只是置 Event、不查库不抛异常，
+        # 同进程即时生效、跨进程由工人 24h 周期兜底，不拖慢同步主链路。
+        try:
+            from backend.emby_server import merge_versions_worker as _mvw
+            _mvw.nudge()
+        except Exception:  # noqa: BLE001
+            pass
     except uar.UpstreamAggregateRunError as exc:
         _rollback(db)
         _finish(task_id, status="failed", error={
