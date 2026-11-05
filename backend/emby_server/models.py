@@ -1602,8 +1602,12 @@ class ItemHiddenLedger(Base):
     本机制隐藏中。对账解藏只许动本表在册（reason 相同且 restored_at
     为空）的条目，台账外的 is_hidden 永远不碰——可逆性靠这条纪律。
 
-    - reason 本批固定 ``no_enabled_line``：整个子树没有任何一条
+    - reason 一期固定 ``no_enabled_line``：整个子树没有任何一条
       指向启用源的上游线路（判定口径见 no_line_hidden 模块）；
+    - reason 二期 ``all_lines_dead``（2026-11-05 续）：源都开着，
+      但探活＋落藏前新鲜复检确认整棵子树每条线都已死（dead/
+      gone）；解藏靠有界轮转复检发现活线。两批靠 reason 严格
+      分开、互不 claimed / 互不解藏；
     - 不加外键（照 EnrichFlipEvent / UpstreamItemMapping 先例）：条目
       被软删/合并后台账行留着供追溯，对账时按活行口径跳过；
     - 由 create_all 自动建表，老库无需 ALTER。
