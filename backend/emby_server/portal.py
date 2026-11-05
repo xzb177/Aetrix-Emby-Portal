@@ -2535,9 +2535,14 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
         lib.incremental_scan = bool(req.incremental_scan)
     if req.fs_watch is not None:
         lib.fs_watch = bool(req.fs_watch)
+    _switch_changed = False
     if req.merge_same is not None:
+        if bool(req.merge_same) != (lib.merge_same is not False):
+            _switch_changed = True
         lib.merge_same = bool(req.merge_same)
     if req.enable_merge is not None:
+        if bool(req.enable_merge) != bool(lib.enable_merge):
+            _switch_changed = True
         lib.enable_merge = bool(req.enable_merge)
     if "account_115_id" in req.model_fields_set:
         # 允许显式解绑（传 null）
@@ -2569,6 +2574,13 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
             if node.realm_id and lib.realm_id and node.realm_id != lib.realm_id:
                 raise HTTPException(status_code=400, detail="这台节点属于另一个服，不能分配本服的媒体库")
             lib.node_id = node.id
+    if _switch_changed:
+        # 多版本展示合并开关（N4-3）翻转会改变主浏览的去重结果，而
+        # 去重缓存与列表清单缓存都以库数据版本号为键：与合并/解合并
+        # 等写路径同款，提交前 bump 本库版本号（与本次提交原子落库），
+        # 让翻转即刻生效而不是等缓存 TTL 过期。
+        from backend.emby_server import items_dedup_cache as _idc
+        _idc.bump_library_item_versions(db, [lib.id], force=True)
     db.commit()
     # 配置变更后需重新触发扫描才生效：扫描任务使用固定配置快照，
     # 所以旧路径不会被正在跑的任务继续扫描，新路径也不会被旧快照漏掉

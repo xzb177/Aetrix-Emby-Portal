@@ -2977,6 +2977,48 @@ def _dedup_keep_ids(rows, series_key_map: dict) -> set:
     return keep
 
 
+def _dedup_off_libraries(db) -> set:
+    """merge_same 关掉的媒体库 id 集合（主浏览展示去重门控，N4-3 尾巴）。
+
+    开关解析走 :func:`dedup_lib.resolve_library_switches` 单点（全仓唯一
+    口径，与 Latest/Resume、AlternateVersions、Versions 三处门控共用）。
+    媒体库表很小，一次取齐全部库 id；解析失败按「没有库关」fail-open
+    回现行去重并打日志——主浏览是最高频入口，不能因开关读取失败
+    挂掉或误伤展示。没有任何库关时返回空集，两个调用方都不再做
+    额外查询/过滤，缺省路径与改前逐字一致。
+    """
+    try:
+        lib_ids = [r[0] for r in db.query(em.Library.id).all()]
+        switches = dedup_lib.resolve_library_switches(db, lib_ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("每库展示开关解析失败，主浏览去重按缺省口径: %s", exc)
+        return set()
+    return {lid for lid, sw in switches.items() if not sw[0]}
+
+
+def _browse_gate_partition(db, ids, off_libs) -> tuple:
+    """把 ``ids`` 里属于关库的行按物理合并状态分成（未合并, 已合并）。
+
+    主浏览门控（N4-3 尾巴）的口径与 #1860 在 deduplicate_items 上的一致：
+    关库里未物理合并的行逐条展示、已物理合并行照样不露面（那边是先剔
+    已合并行、再对未合并行按开关决定分不分组）。已合并行不露面是物理
+    层既有呈现（归 N4-4），本单只在关库范围内维持它，开库结果零影响。
+
+    也正因如此不能把整个关库从去重计算里剔除——主行不在分组里时，
+    副本会自己成组当选主漏出来；计算照旧、只按合并状态修正结果。
+    """
+    unmerged: set = set()
+    merged: set = set()
+    MI = em.MediaItem
+    for chunk in _chunks(ids):
+        for iid, mid in db.query(MI.id, MI.merged_into_id).filter(
+            MI.id.in_(chunk),
+            MI.library_id.in_(off_libs),
+        ).all():
+            (merged if mid is not None else unmerged).add(iid)
+    return unmerged, merged
+
+
 def _dedup_primary_ids(cand_rows, db) -> list[int]:
     """对候选 (id, item_type, file_path, library_id) 去重，只保留主记录的 id（保持原顺序）。
 
@@ -3001,6 +3043,13 @@ def _dedup_primary_ids(cand_rows, db) -> list[int]:
     rows = db.query(*_DEDUP_FIELDS).filter(em.MediaItem.id.in_(ids)).all()
     series_ids_needed = {r[9] for r in rows if r[1] == "episode" and r[9]}
     keep = _dedup_keep_ids(rows, _series_key_map(db, series_ids_needed))
+    off_libs = _dedup_off_libraries(db)
+    if off_libs:
+        # N4-3 尾巴门控（与 _dedup_dropped_ids 同口径）：关库的未物理
+        # 合并行强制保留、已合并行照样剔除；开库结果逐字不变。
+        unmerged_off, merged_off = _browse_gate_partition(
+            db, [row[0] for row in cand_rows if row[3] in off_libs], off_libs)
+        keep = (keep - merged_off) | unmerged_off
     return [row[0] for row in cand_rows if row[0] in keep]
 
 
@@ -3050,6 +3099,13 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     证明，对结果无影响。
 
     返回被去掉的 id 集合；候选太多时返回 None，调用方回退全量实现。
+
+    每库展示开关（N4-3 尾巴）：各分支的分组键本就含 library_id、从不
+    跨库（跨库开关 enable_merge 在本函数无作用）；merge_same 关掉的
+    库，返回前按物理合并状态修正结果——未合并行摘出 dropped、已合并
+    行并入 dropped（计算照旧、只修正结果集，理由见
+    :func:`_browse_gate_partition`）。没有任何库关时整段门控跳过，
+    分区/排序 SQL 与结果逐字不变。
     """
     from sqlalchemy import column, Integer, table, text
 
@@ -3215,6 +3271,17 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
         dropped = set(unique_ids) - keep
     else:
         dropped = t_dropped | e_dropped | n_dropped
+    # N4-3 尾巴门控：关库的未物理合并行不进 dropped、已合并行照样
+    # 进 dropped（口径见 _browse_gate_partition）。候选集取本 query
+    # 在关库范围内的行。没有任何库关时整段跳过，缺省路径零额外
+    # 查询、结果逐字不变。
+    off_libs = _dedup_off_libraries(db)
+    if off_libs:
+        off_candidates = [r[0] for r in query.filter(
+            MI.library_id.in_(off_libs)).with_entities(MI.id).all()]
+        unmerged_off, merged_off = _browse_gate_partition(
+            db, off_candidates, off_libs)
+        dropped = (dropped - unmerged_off) | merged_off
     if len(dropped) > _DEDUP_MAX_DROPPED:
         return None
     return dropped
