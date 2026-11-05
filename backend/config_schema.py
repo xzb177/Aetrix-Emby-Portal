@@ -466,6 +466,16 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 进代码与仓库。空串/无行＝未配，专属线路整体惰性。读取唯一实现
     # upstream_playback.feiniu_pilot_base_url。纯 SystemConfig 键。
     "feiniu_pilot_base_url": ("str",),
+    # pilot 独立入口（2026-11-05 形态改定）：pilot 域名经飞牛反代
+    # 成为独立入口，飞牛注入标记头 X-Aetrix-Pilot-Entry，其值须与
+    # pilot_entry_secret 完全一致且 pilot_entry_enabled 为开，后端
+    # 才认定 pilot 入口（值不对/未配一律普通入口）。密钥只回已配
+    # 状态、原文不回浏览器（管理口在 upstream-exclusive-line-config
+    # 扩展）。读取唯一实现 upstream_playback.pilot_entry_enabled /
+    # pilot_entry_secret（store 热读）。纯 SystemConfig 键，不进
+    # env.example。
+    "pilot_entry_enabled": ("bool",),
+    "pilot_entry_secret": ("str",),
     # O-09 映射抽样巡检（第 1、2 层常驻 janitor）：默认开、默认
     # 每 7 天一轮、每 evidence 层默认抽 30 条；不一致率超默认
     # 5% 响亮报红。读取唯一实现在 upstream_mapping_patrol，范围

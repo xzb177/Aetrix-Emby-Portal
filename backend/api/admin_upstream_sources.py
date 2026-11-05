@@ -422,27 +422,34 @@ def put_upstream_detail_line_config(
 
 
 class UpstreamExclusiveLineConfigIn(BaseModel):
-    """白名单专属线路配置写入体（2026-11-04）。
+    """白名单专属线路配置写入体（2026-11-04；2026-11-05 加 pilot 字段）。
 
     source_ids＝专属名单全量替换（管理页列表增删后回写整表）；
     pilot_base_url 缺省（None）＝基址不动，非 None 时写入
     （空串＝清掉基址、专属线整体惰性）。
+    pilot_entry_enabled / pilot_entry_secret 同口径：缺省＝不动，
+    secret 非 None 时写入（空串＝清除密钥、pilot 入口永不认定）。
     """
 
     source_ids: list[int] = Field(default_factory=list)
     pilot_base_url: Optional[str] = None
+    pilot_entry_enabled: Optional[bool] = None
+    pilot_entry_secret: Optional[str] = None
 
 
 def _exclusive_line_config_view(db: Session) -> dict:
-    """专属线路配置读视图：名单回 id 列表；基址只回「已配/未配」，
+    """专属线路配置读视图：名单回 id 列表；基址与 pilot 密钥只回
 
-    基址含飞牛路径 token，原文不回浏览器（页面只需状态＋重设入口）。
+    「已配/未配」——两者都含口令/密钥，原文不回浏览器（页面只需
+    状态＋重设入口）；pilot 入口开关回当前生效值。
     """
     from backend.emby_server import upstream_playback as _up
 
     return {
         "source_ids": sorted(_up.exclusive_source_ids(db)),
         "pilot_configured": bool(_up.feiniu_pilot_base_url(db)),
+        "pilot_entry_enabled": bool(_up.pilot_entry_enabled(db)),
+        "pilot_entry_configured": bool(_up.pilot_entry_secret(db)),
     }
 
 
@@ -480,6 +487,10 @@ def put_upstream_exclusive_line_config(
     values = {_up.KEY_EXCLUSIVE_SOURCE_IDS: ids_value}
     if payload.pilot_base_url is not None:
         values[_up.KEY_FEINIU_PILOT_BASE_URL] = payload.pilot_base_url
+    if payload.pilot_entry_enabled is not None:
+        values[_up.KEY_PILOT_ENTRY_ENABLED] = payload.pilot_entry_enabled
+    if payload.pilot_entry_secret is not None:
+        values[_up.KEY_PILOT_ENTRY_SECRET] = payload.pilot_entry_secret
     config_service.save_config(db, values, schema="upstream_aggregate")
     db.commit()
     return _exclusive_line_config_view(db)

@@ -1625,12 +1625,20 @@ def _upstream_line_for_mapping(item, mapping, source, base_source,
 
 def _signed_wl_line_url(item, base: str, user_id, db,
                         api_key: str = "", with_sign: bool = True,
-                        mapping_id=None):
-    """白名单专属线路的本站取流地址（与 _signed_upstream_line_url 同口径）。
+                        mapping_id=None, pilot: bool = False):
+    """飞牛腿线路的本站取流地址（与 _signed_upstream_line_url 同口径）。
 
-    路径走专属取流口 /emby/Videos/{guid}/upstream/wl-stream，
-    MediaSourceId={guid}:upstream:{mapping_id}:wl——:wl 后缀让普通
-    取流口的严格解析对不上（404 明示、不偷偷换线），专属口自己认。
+    路径走专属取流口 /emby/Videos/{guid}/upstream/wl-stream。
+    两种 MediaSourceId 形态：
+
+    - 旧专属线形态（pilot=False）：``{guid}:upstream:{mapping_id}:wl``
+      ——:wl 后缀让普通取流口的严格解析对不上（404 明示、不偷偷
+      换线），专属口自己认；普通入口已不再下发此形态（2026-11-05
+      撤除），仅存量地址打专属口时按旧口径执法；
+    - pilot 入口形态（pilot=True）：``{guid}:upstream:{mapping_id}``
+      与普通线路同形——入口本身即专属线，线路不再带专属后缀；
+      专属口只在请求带合法 pilot 标记时认这形态，无标记照旧 404。
+
     签名轨同上游线路：向 _signed_local_stream_url 借同一 (uid, guid)
     的 exp/sign（签名只绑用户与条目、与取流路径无关）。
 
@@ -1643,108 +1651,104 @@ def _signed_wl_line_url(item, base: str, user_id, db,
             item, base, user_id, db, api_key, with_sign=True)
         signed_qs = f"&uid={user_id}&exp={play_exp}&sign={play_sig}"
     key_qs = f"&api_key={api_key}" if api_key else ""
-    msid = f"{item.guid}:upstream:{mapping_id}:wl"
+    msid = (f"{item.guid}:upstream:{mapping_id}" if pilot
+            else f"{item.guid}:upstream:{mapping_id}:wl")
     url = (f"{base}/emby/Videos/{item.guid}/upstream/wl-stream"
            f"?MediaSourceId={msid}{key_qs}{signed_qs}")
     return url, play_exp, play_sig
 
 
-def _exclusive_line_for_mapping(item, mapping, source, base_source,
-                                base: str, user_id, db, api_key: str,
-                                with_sign: bool) -> dict:
-    """一条映射的白名单专属线路 MediaSource（飞牛家宽回源）。
+def _pilot_line_for_mapping(item, mapping, source, base_source,
+                            pilot_origin: str, base: str, user_id, db,
+                            api_key: str, with_sign: bool) -> dict:
+    """pilot 入口下的一条飞牛腿线路 MediaSource（2026-11-05 改定）。
 
-    形态与同映射的普通上游线路同形（合成源/画质标口径全复用
-    _upstream_line_for_mapping），只换三处：Id 带 :wl 后缀、取流
-    地址走专属口、Name 追加「专属线路」品牌标（画质判不出回落
-    条目名时 Name 就只报「专属线路」，不拿片名冒充线路名）。
-    「专属线路」是线路品牌不是源名，不违反 2026-11-02「Name 不带
-    源名」的口径。专属线恒排在全部普通线路之后（用户 2026-11-04
-    定版形态：多出来的一条可选线，不抢默认首选——飞牛走站主家宽，
-    不许默认把白名单播放都压到家宽上）。
+    与同映射的普通上游线路同形（合成源/画质标/Id 全复用
+    _upstream_line_for_mapping：Id={guid}:upstream:{mapping_id}、
+    Name 保持普通画质标——入口本身即专属线，不再给每条线加
+    「专属线路」后缀），只换取流地址：指向 wl-stream 口且 host 用
+    pilot 域名 origin（从飞牛基址派生），播放器后续取流请求经
+    飞牛 nginx 反代时天然带 pilot 标记头。签名轨借的 (uid, guid)
+    签名与取流 host 无关，借签仍走普通 base 构造点、无副作用。
     """
     line = _upstream_line_for_mapping(
         item, mapping, source, base_source, base, user_id, db,
         api_key, with_sign)
     url, _exp, _sig = _signed_wl_line_url(
-        item, base, user_id, db, api_key, with_sign=with_sign,
-        mapping_id=mapping.id)
-    name = line.get("Name") or ""
+        item, pilot_origin, user_id, db, api_key, with_sign=with_sign,
+        mapping_id=mapping.id, pilot=True)
     line.update({
-        "Id": f"{item.guid}:upstream:{mapping.id}:wl",
-        "Name": (f"{name} · 专属线路" if name and name != item.name
-                 else "专属线路"),
         "DirectPlayUrl": url,
         "DirectStreamUrl": url,
     })
     return line
 
 
-def _exclusive_line_media_sources(item, pairs, base_source, base: str,
-                                  user_id, db, api_key: str,
-                                  with_sign: bool, user=None) -> list:
-    """白名单专属线路组装（详情/PlaybackInfo 的追加段）。
+def _pilot_line_media_sources(item, pairs, base_source, base: str,
+                              user_id, db, api_key: str,
+                              with_sign: bool, user=None) -> list | None:
+    """pilot 入口的飞牛腿线路组装（替换普通上游线路，不是追加）。
 
-    执法点与取流口同口径、缺一不出线（fail-closed，任何异常只让
-    专属线不出，绝不打挂普通线路组装）：
-    - 专属名单非空且飞牛基址已配（upstream_playback
-      .exclusive_line_ready）；名单是管理后台可增删的配置，热读；
-    - 请求用户经 codes.is_whitelist_account 现算仍生效（#1668
-      口径唯一实现，不另立名单）；
-    - 映射所属源在专属名单内、且是 applecms 型源（飞牛线是 CMS
-      播放主机专用：名单里误加 Emby 型源也不出线，其地址形态
-      不在形态 A 范围）。
+    返回 None＝飞牛腿不可用（pilot origin 派生不出：基址未配/形态
+    不对）——调用方据此 fail-closed 不下发上游线路，绝不静默回落
+    普通直连 URL（2026-11-05 用户亲定：不许偷偷换回普通线）。
+    正常时：全部 applecms 型映射各一条飞牛腿线路（不按专属名单
+    筛选——pilot 入口下所有源都走飞牛腿）；非 applecms 型映射仍走
+    普通线路形态（飞牛腿只服务 CMS 播放主机，wl-stream 的 pilot
+    放行口径同此）。资格（白名单）已由 PlaybackInfo 入口执法，
+    这里只管走线形态；组装异常同样回 None 而非回落普通线。
     """
     from backend.emby_server import upstream_playback as _up
     try:
-        if not user_id or not _up.exclusive_line_ready(db):
-            return []
-        exclusive_ids = _up.exclusive_source_ids(db)
-        user_obj = user
-        if user_obj is None:
-            user_obj = db.get(models.WebUser, user_id)
-        if user_obj is None:
-            return []
-        from backend import codes as _codes
-        if not _codes.is_whitelist_account(db, user_obj):
-            return []
-        return [
-            _exclusive_line_for_mapping(
-                item, mapping, source, base_source, base, user_id, db,
-                api_key, with_sign)
-            for mapping, source in pairs
-            if source.id in exclusive_ids
-            and getattr(source, "source_type", None) == "applecms"
-        ]
-    except Exception:  # noqa: BLE001 — 专属线是权益补强，故障只许不出线
-        logger.warning("白名单专属线路组装失败 item=%s",
+        pilot_origin = _up.pilot_entry_origin(db)
+        if not pilot_origin:
+            return None
+        lines = []
+        for mapping, source in pairs:
+            if getattr(source, "source_type", None) == "applecms":
+                lines.append(_pilot_line_for_mapping(
+                    item, mapping, source, base_source, pilot_origin,
+                    base, user_id, db, api_key, with_sign))
+            else:
+                lines.append(_upstream_line_for_mapping(
+                    item, mapping, source, base_source, base, user_id,
+                    db, api_key, with_sign))
+        return lines
+    except Exception:  # noqa: BLE001 — pilot 腿组装失败不许回落普通线
+        logger.warning("pilot 入口飞牛腿线路组装失败 item=%s",
                        getattr(item, "id", "?"), exc_info=True)
-        return []
+        return None
 
 
 def _upstream_line_media_sources(item, base_source, base: str, user_id,
                                  db, api_key: str = "",
-                                 with_sign: bool = True, user=None) -> list:
+                                 with_sign: bool = True, user=None,
+                                 pilot_entry: bool = False) -> list:
     """详情/PlaybackInfo 来源列表的上游线路（全部可展示映射各一条）。
 
     开关关/无可展示映射返回空列表。线路排在既有来源之后，偏好序
-    与 get_best_mapping 一致（最佳在前）。白名单用户另在全部普通
-    线路之后追加专属线路（见 _exclusive_line_media_sources）。
+    与 get_best_mapping 一致（最佳在前）。
+
+    形态改定（2026-11-05）：普通入口不再追加 :wl 专属线路（旧形态
+    撤除）；pilot_entry=True 时全部 applecms 线路改走飞牛腿
+    （见 _pilot_line_media_sources），飞牛腿不可用时上游线路整体
+    不下发（fail-closed，不回落普通直连）。
     """
     from backend.emby_server import upstream_playback as _up
     if db is None or not _up.detail_line_enabled(db):
         return []
     pairs = _up.get_displayable_mappings(db, item.id)
-    lines = [
+    if pilot_entry:
+        pilot_lines = _pilot_line_media_sources(
+            item, pairs, base_source, base, user_id, db, api_key,
+            with_sign, user=user)
+        return pilot_lines if pilot_lines is not None else []
+    return [
         _upstream_line_for_mapping(
             item, mapping, source, base_source, base, user_id, db,
             api_key, with_sign)
         for mapping, source in pairs
     ]
-    lines.extend(_exclusive_line_media_sources(
-        item, pairs, base_source, base, user_id, db, api_key,
-        with_sign, user=user))
-    return lines
 
 
 def _upstream_line_media_source(item, base_source: dict, base: str, user_id,
@@ -1794,11 +1798,14 @@ def _upstream_only_media_sources(db, item, request, user):
 
     签名轨与主流程同口径恒签（PlaybackInfo 入口已过付费墙与绑定
     门禁）；无可展示映射返回空列表，调用方回空源（原口径）。
+    pilot 入口（标记头合法）时线路全走飞牛腿（入口执法已在
+    playback_info 完成，这里只认标记算形态）。
     """
+    from backend.emby_server import pilot_entry as _pilot_mod
     base = _base_url(request)
     return _upstream_line_media_sources(
         item, None, base, user.id if user else None, db, "", True,
-        user=user)
+        user=user, pilot_entry=_pilot_mod.is_pilot_entry(db, request))
 
 
 def _quality_name_for_item(item: em.MediaItem) -> str:
@@ -2114,10 +2121,25 @@ def authenticate_by_name(
     # 设备数上限：超限时拒绝签发（管理员不受限），并落安全日志
     from backend.authlog import record_event
     from backend.devices import DeviceLimitExceeded
+    from backend.emby_server.pilot_entry import PilotEntryWhitelistOnly
     from backend.emby_server.player_blacklist import PlayerLoginBlacklisted
 
     try:
         token_value, token_row = issue_token(db, user, request)
+    except PilotEntryWhitelistOnly as exc:
+        # pilot 独立入口非白名单登录：403 + code/message，并落拒绝记录
+        record_event(
+            db, username=user.username, user_id=user.id, ip=ip,
+            agent=request.headers.get("user-agent"), success=False,
+            reason="pilot_entry_whitelist_only",
+            detail="pilot 入口仅白名单用户可用",
+        )
+        return Response(
+            content=json.dumps({"error": "PilotEntryWhitelistOnly",
+                                "code": exc.code, "message": exc.message},
+                               ensure_ascii=False),
+            status_code=403, media_type="application/json; charset=utf-8",
+        )
     except PlayerLoginBlacklisted as exc:
         # 播放器登录黑名单命中：403 + 明确提示，并落一条拒绝记录
         # （username/client/UA 齐全，供管理端登录日志按 reason 筛查）。
@@ -6010,6 +6032,20 @@ async def playback_info(
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     # 所有碰 DB 的同步 helper 都经 run_db 扔线程池。
     from backend.emby_server.async_db import run_db
+    # pilot 独立入口执法（2026-11-05）：带合法 pilot 标记的请求，
+    # 现算非白名单一律 403——覆盖「拿别处签发的令牌经 pilot 入口
+    # 混进来」（登录处已设一道，见 auth.issue_token）。认定口径
+    # 唯一实现 upstream_playback.is_pilot_entry：标记头值不对/未配
+    # 密钥时按普通入口处理，本段无操作。_is_pilot 复用于下方选线
+    # （pilot 入口全线走飞牛腿）。
+    from backend.emby_server import pilot_entry as _pilot_mod
+    _is_pilot = await run_db(_pilot_mod.is_pilot_entry, db, request)
+    if _is_pilot:
+        _pilot_reject = await run_db(
+            _pilot_mod.pilot_entry_rejection, db, request, user)
+        if _pilot_reject is not None:
+            _status, _body = _pilot_reject
+            return JSONResponse(status_code=_status, content=_body)
     # H1：PlaybackInfo 同样要过可见范围（此前只校验了付费墙）
     item = await run_db(_require_visible_item, db, user, item_id)
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
@@ -6525,7 +6561,7 @@ async def playback_info(
         try:
             _up_lines = await run_db(
                 _upstream_line_media_sources, item, sources[0], base,
-                user.id, db, api_key, True)
+                user.id, db, api_key, True, pilot_entry=_is_pilot)
             if _up_lines:
                 sources.extend(_up_lines)
         except Exception as exc:  # noqa: BLE001 — 线路组装失败不打挂主响应
@@ -7714,26 +7750,33 @@ async def upstream_wl_stream(
     user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
-    """白名单专属线路取流口（飞牛家宽回源，2026-11-04 用户亲令）。
+    """飞牛腿取流口（原白名单专属线路口，2026-11-04；2026-11-05 改定）。
 
-    详情/PlaybackInfo 给白名单用户追加的「专属线路」只带本地条目
-    guid + 带 :wl 后缀的 MediaSourceId 回本口；本口逐项执法
-    （与 upstream_item_stream 的付费墙/可见性/绑定门禁同款同序，
-    其后加专属三查）：
-    1. 飞牛基址与专属名单任一未配 → 404 exclusive_line_unavailable
-       （功能惰性，与「未开启」同形态，不暴露名单细节）；
-    2. 请求用户经 codes.is_whitelist_account 现算不是白名单
-       （#1668 唯一口径）→ 403 exclusive_line_whitelist_only
-       明示——普通用户伪造专属地址（含拿自己合法的播放签名轨
-       拼 :wl 地址）一律在此被拒，签名只绑 (uid, guid) 不绑线路
-       形态，线路资格必须在本口现算；
-    3. 定向映射不在条目身份组内 → 404 upstream_mapping_not_found
-       （与普通口同口径）；映射所属源不在专属名单内 → 404
+    两条进入形态，执法口径分开：
+
+    A. pilot 入口形态（2026-11-05 主形态）：PlaybackInfo 在 pilot
+       入口给白名单用户下发的线路带本地条目 guid + 普通形态
+       MediaSourceId（{guid}:upstream:{mapping_id}，无 :wl）回本
+       口，请求经飞牛反代带合法 pilot 标记头。本口执法：飞牛基址
+       未配 → 404 exclusive_line_unavailable；现算非白名单 → 403
+       exclusive_line_whitelist_only；映射不在身份组 → 404
+       upstream_mapping_not_found；applecms 映射**跳过专属名单
+       查**（pilot 入口所有 CMS 源都走飞牛腿，名单只管旧形态）。
+
+    B. 旧专属线形态（存量地址兼容）：带 :wl 后缀的 MediaSourceId、
+       无 pilot 标记——维持原专属三查逐字不变：基址/名单任一未配
+       → 404 exclusive_line_unavailable；非白名单 → 403
+       exclusive_line_whitelist_only（普通用户伪造专属地址、含拿
+       自己合法播放签名轨拼 :wl 地址，一律在此被拒——签名只绑
+       (uid, guid) 不绑线路形态，资格必须现算）；映射不在身份组
+       → 404 upstream_mapping_not_found；源不在专属名单 → 404
        exclusive_line_not_listed（后台删一条，该线立刻不可达）。
+       无标记的普通形态 msid（无 :wl）仍 404，不借本口冒充。
+
     全过后按普通口同函数定向解析上游地址，再改写成飞牛试点
     通用代理地址 302 下发；字节由飞牛在家宽侧回源＋缓存，本口
-    与本站都不碰分段字节。清单代理去广告（C 件）不叠加：那条链
-    要本站先抓清单，与家宽回源的前提相斥，专属线 v1 不走。
+    与本站都不碰分段字节。飞牛腿拉不动是飞牛侧的事，本口绝不
+    静默回落普通直连。清单代理去广告（C 件）不叠加（同 v1 口径）。
     """
     from backend.emby_server import upstream_playback as _up
     from backend.emby_server.async_db import run_db
@@ -7747,7 +7790,12 @@ async def upstream_wl_stream(
         exc = _up.UpstreamPlaybackError(status, code, message)
         return JSONResponse(status_code=exc.status, content=exc.to_body())
 
-    # MediaSourceId 形态 {guid}:upstream:{mapping_id}:wl，形态对不
+    # pilot 入口认定（唯一口径）：标记头合法才算；伪造头值不对的
+    # 请求按无标记处理，走旧形态三查，不报错也不给 pilot 待遇。
+    from backend.emby_server import pilot_entry as _pilot_mod
+    _is_pilot = await run_db(_pilot_mod.is_pilot_entry, db, request)
+    # MediaSourceId 形态：:wl 后缀＝旧专属线形态；无后缀的普通形态
+    # 只在 pilot 入口下认（pilot 线路与普通线路同 Id）。形态对不
     # 上一律按所选线路不可用 404（与普通口的选错硬报错同口径）。
     _msid = (request.query_params.get("MediaSourceId") or "").strip()
     _prefix = f"{item_id}:upstream:"
@@ -7756,11 +7804,17 @@ async def upstream_wl_stream(
         _mid_raw = _msid[len(_prefix):-len(":wl")]
         if _mid_raw.isdigit():
             _mapping_id = int(_mid_raw)
+    elif _is_pilot and _msid.startswith(_prefix):
+        _mid_raw = _msid[len(_prefix):]
+        if _mid_raw.isdigit():
+            _mapping_id = int(_mid_raw)
     if _mapping_id is None:
         return _err(404, "upstream_mapping_not_found", "所选线路已不可用")
     _pilot_base = await run_db(_up.feiniu_pilot_base_url, db)
     _exclusive_ids = await run_db(_up.exclusive_source_ids, db)
-    if not _pilot_base or not _exclusive_ids:
+    if not _pilot_base or (not _is_pilot and not _exclusive_ids):
+        # pilot 形态只查基址（名单与它无关）；旧形态基址/名单缺一
+        # 即未开启（原口径逐字不变）。
         return _err(404, "exclusive_line_unavailable", "专属线路未开启")
     from backend import codes as _codes
     if not await run_db(_codes.is_whitelist_account, db, user):
@@ -7774,7 +7828,13 @@ async def upstream_wl_stream(
             break
     if _mapping is None:
         return _err(404, "upstream_mapping_not_found", "所选线路已不可用")
-    if _mapping.source_id not in _exclusive_ids:
+    # 名单查：pilot 入口 + applecms 映射跳过（所有 CMS 源都走飞牛
+    # 腿）；其余情形（旧形态、或 pilot 下的非 CMS 映射）维持原查。
+    _mapping_source = await run_db(_up.get_source_row, db, _mapping.source_id)
+    _is_applecms = (getattr(_mapping_source, "source_type", None)
+                    == "applecms")
+    if not (_is_pilot and _is_applecms) \
+            and _mapping.source_id not in _exclusive_ids:
         return _err(404, "exclusive_line_not_listed", "该线路不在专属名单内")
     _t0 = time.perf_counter()
     try:

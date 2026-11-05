@@ -146,6 +146,14 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
 
     enforce_player_login_blacklist(db, request)
 
+    # pilot 独立入口（2026-11-05）：经 pilot 入口（飞牛反代标记头
+    # 合法）的登录只许白名单用户，非白名单抛 PilotEntryWhitelistOnly
+    # 由 AuthenticateByName 转成 403 可读响应。与黑名单同执法点、
+    # 同在设备登记之前：被拒登录不留设备记录。普通入口逐字不变。
+    from backend.emby_server.pilot_entry import enforce_login as _pilot_enforce
+
+    _pilot_enforce(db, request, user)
+
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
     # P3 修复（审查）：客户端 DeviceId 头未经截断直接写入 EmbyApiToken.device_id
     #（String(100)），超长 → DB 报错 → 登录 500。截断到 100。
