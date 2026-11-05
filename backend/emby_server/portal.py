@@ -1920,6 +1920,10 @@ class LibraryCreate(BaseModel):
     # 扫描策略开关（v2.44.0，默认开）
     incremental_scan: bool = True
     fs_watch: bool = True
+    # 多版本展示合并开关（N4-3，照 Nova 两档）：同库合并缺省开、
+    # 跨库合并缺省关；只管展示分组，不动物理合并数据
+    merge_same: bool = True
+    enable_merge: bool = False
     # 库类型（苹果 CMS 媒体库类型，2026-11-02）：local（默认）/ applecms。
     # applecms 时内容来源是上游 CMS 源而非本地路径/挂载：paths 与
     # mount_ids 不再必填，改由 upstream_source_ids 必填（见 create_library）。
@@ -1955,6 +1959,9 @@ class LibraryUpdate(BaseModel):
     # 扫描策略开关（v2.44.0）：不传 = 不修改
     incremental_scan: bool | None = None
     fs_watch: bool | None = None
+    # 多版本展示合并开关（N4-3）：不传 = 不修改
+    merge_same: bool | None = None
+    enable_merge: bool | None = None
     # 库类型：建库后不可更改——传了且与现值不同直接 400（见 update_library）
     kind: str | None = None
     # kind=applecms 的库可改来源清单；local 库传了直接 400
@@ -2214,6 +2221,10 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             # 扫描策略开关（v2.44.0）：老库没值时按默认「都开」处理，与升级前行为一致
             "incremental_scan": getattr(lib, "incremental_scan", True) is not False,
             "fs_watch": getattr(lib, "fs_watch", True) is not False,
+            # 多版本展示合并开关（N4-3）：老库没值时 merge_same 按开、
+            # enable_merge 按关处理（Nova 缺省，与升级前行为一致）
+            "merge_same": getattr(lib, "merge_same", True) is not False,
+            "enable_merge": bool(getattr(lib, "enable_merge", False)),
             "account_115_id": getattr(lib, "account_115_id", None),
             "last_scan_at": lib.last_scan_at.isoformat() if lib.last_scan_at else None,
             # 最近一次扫描的结果：新增/更新/删除多少、哪些来源读不到、有没有异常
@@ -2332,6 +2343,8 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         cover_auto_regen=bool(req.cover_auto_regen),
         incremental_scan=bool(req.incremental_scan),
         fs_watch=bool(req.fs_watch),
+        merge_same=bool(req.merge_same),
+        enable_merge=bool(req.enable_merge),
         kind=kind,
         upstream_source_ids=cms_source_field,
         cms_type_map=cms_map_field,
@@ -2522,6 +2535,10 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
         lib.incremental_scan = bool(req.incremental_scan)
     if req.fs_watch is not None:
         lib.fs_watch = bool(req.fs_watch)
+    if req.merge_same is not None:
+        lib.merge_same = bool(req.merge_same)
+    if req.enable_merge is not None:
+        lib.enable_merge = bool(req.enable_merge)
     if "account_115_id" in req.model_fields_set:
         # 允许显式解绑（传 null）
         lib.account_115_id = req.account_115_id

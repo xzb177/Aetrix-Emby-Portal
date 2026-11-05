@@ -466,6 +466,12 @@ def _version_siblings(item, db):
     """
     if item.item_type != "movie":
         return []
+    # 每库展示开关（N4-3）：本库 merge_same 关 → 不拼同库兄弟版本；
+    # 详情 Versions 的另一来源（物理合并行）门控在
+    # merge_versions_worker.get_alternate_versions 里。
+    _sw = dedup_lib.resolve_library_switches(db, [item.library_id])
+    if not _sw.get(item.library_id, dedup_lib.DEFAULT_LIBRARY_SWITCHES)[0]:
+        return []
     pdir = _parent_dir(item.file_path)
     base = _version_base_name(item.file_path)
     if not pdir or not base:
@@ -3865,7 +3871,12 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                 seen_series.add(i.id)
             folded.append((i, i))
     # 去重：同一部剧/电影（同 tmdb_id）在不同路径有多条记录时只保留一条
-    items = dedup_lib.deduplicate_items([shown for shown, _src in folded])
+    # （每库展示开关 N4-3：merge_same 关的库逐条展示，不并组）
+    _shown_items = [shown for shown, _src in folded]
+    items = dedup_lib.deduplicate_items(
+        _shown_items,
+        library_switches=dedup_lib.resolve_library_switches(
+            db, [i.library_id for i in _shown_items]))
     # 最多暖 1 条：用户会点的第一张卡。单集已折叠成剧，暖的是折叠前
     # 那条有进度的 episode（或 movie 自身），不是整页，也不是剧卡片。
     try:
@@ -3922,7 +3933,11 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
         .all()
     )
     # 去重：同一部剧/电影在不同路径有多条记录时只保留一条（首页海报行不重复）
-    items = dedup_lib.deduplicate_items(items)
+    # （每库展示开关 N4-3：merge_same 关的库逐条展示，不并组）
+    items = dedup_lib.deduplicate_items(
+        items,
+        library_switches=dedup_lib.resolve_library_switches(
+            db, [i.library_id for i in items]))
     # 最多暖 1 条：电影暖自身；剧走 detail（线程里选第一集未看）。
     try:
         if items:

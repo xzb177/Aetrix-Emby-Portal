@@ -65,6 +65,17 @@ class Library(Base):
     # 只对**本机路径**生效（远程挂载拿不到可靠的事件源，仍靠定时扫描）。
     # 监听起不来时自动降级为定时扫描，并在设置里说明，不会默默不工作。
     fs_watch = Column(Boolean, default=True)
+    # 多版本展示合并的每库开关（N4-3，照 NovaEmby 的 mergeSame/enableMerge
+    # 两档形态；后续 N3-3 的 metadataMode 等库级模式列照此先例加在本区）。
+    # 只管**展示层分组**（dedup 展示去重 / AlternateVersions / 详情
+    # Versions 的 siblings 拼装，门控实现在 dedup.resolve_library_switches），
+    # 翻转立即生效、DB 里 merged_into_id 等物理合并数据零改动——物理合并
+    # 工人（merge_versions_worker）不读这两个开关。
+    # merge_same：本库同片多行是否并成一条展示（缺省开 = 现行行为）。
+    merge_same = Column(Boolean, default=True)
+    # enable_merge：跨库同片是否并组展示（缺省关 = Nova 缺省；跨库组
+    # 涉及的库必须全部开启才并组，fail-closed，见 dedup.version_group_allowed）。
+    enable_merge = Column(Boolean, default=False)
     # 库展示顺序（媒体库学习 L4）：Views / 发现页按 sort_order 排库。
     # 0 = 未设序：只有任一库 sort_order 非零时才参与排序，全部为 0 时
     # 查询逐字不变（见 api.user_views）；已设序的在前，未设序的排在
