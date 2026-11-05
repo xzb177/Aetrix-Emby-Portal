@@ -315,6 +315,14 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str,
     ``emby_people``（仅 movie / series，见 ``_apply_nfo_cast`` 的边界）；
     不传 db 时行为与旧版逐字一致（纯字段落库）。
     """
+    # N3-2（Nova 口径：锁定 > NFO > 在线来源 > 文件名）：元数据被管理员
+    # 锁定的条目，NFO 一律不写——文字、身份、流信息、last_scraped_at 与
+    # 演员落库（db 分支，含给已有行补 role/头像）全挡。守卫放在本函数
+    # 入口一处，scanner 与 enrich 的全部调用点（及未来新调用点）自动
+    # 生效。此前只有 enrich 侧查锁定（抢单跳过＋_enrich_apply 开头早退），
+    # 扫描期重扫仍能用 NFO 改掉锁定条目的文字与演员，本守卫补齐这半边。
+    if getattr(item, "metadata_locked", False):
+        return
     if kind in ("movie", "series"):
         if data.get("title"):
             item.name = data["title"]
