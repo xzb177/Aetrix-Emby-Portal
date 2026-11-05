@@ -407,6 +407,11 @@ function optionLabel(list: LibOption[], value: string | null | undefined): strin
 const incrementalScan = ref(true)
 /** 本机目录实时监听：新片入库自动触发增量扫描，不用等定时扫描 */
 const fsWatch = ref(true)
+// ---- 多版本展示合并开关（N4-3，照 Nova 两档）----
+/** 同库合并展示：本库同片多行并成一条（默认开 = 一直以来的行为） */
+const mergeSame = ref(true)
+/** 跨库合并展示：跨库同片并组，涉及的库全开才生效（默认关） */
+const enableMerge = ref(false)
 /** 实时监听健康状况（降级原因要让人看见：默默不工作比报错更糟） */
 const fsWatchStatus = ref<Awaited<ReturnType<typeof fetchFsWatchStatus>> | null>(null)
 const fsWatchForThisLib = computed(() => {
@@ -476,6 +481,9 @@ function formFingerprint(): string {
     cover_auto_regen: coverAutoRegen.value,
     incremental_scan: incrementalScan.value,
     fs_watch: fsWatch.value,
+    // 展示合并开关同理要进指纹：只改它时也得让「保存」亮起来
+    merge_same: mergeSame.value,
+    enable_merge: enableMerge.value,
     chase: libForm.chase,
     kind: libForm.kind,
     upstream_source_ids: [...libForm.upstream_source_ids].sort((a, b) => a - b),
@@ -507,6 +515,9 @@ function openCreate() {
   coverAutoRegen.value = false
   coverPreviewUrl.value = ''
   coverPreviewError.value = ''
+  // 展示合并开关回缺省：新建库不继承上一个库改过的值
+  mergeSame.value = true
+  enableMerge.value = false
   libFormVisible.value = true
   libFormFingerprintAtOpen.value = formFingerprint()
 }
@@ -521,6 +532,8 @@ function openSettings(l: EmbyLibrary) {
 coverAutoRegen.value = l.cover_auto_regen === true
   incrementalScan.value = l.incremental_scan !== false
   fsWatch.value = l.fs_watch !== false
+  mergeSame.value = l.merge_same !== false
+  enableMerge.value = l.enable_merge === true
   if (!fsWatchStatus.value) void fetchFsWatchStatus().then((s) => { fsWatchStatus.value = s }).catch(() => undefined)
   if (coverTemplate.value) void loadCoverPreview()
   else { coverPreviewUrl.value = ''; coverPreviewError.value = '' }
@@ -634,6 +647,8 @@ async function saveForm(thenScan = false) {
         cover_auto_regen: coverAutoRegen.value,
         incremental_scan: incrementalScan.value,
         fs_watch: fsWatch.value,
+        merge_same: mergeSame.value,
+        enable_merge: enableMerge.value,
         kind: isCms ? 'applecms' : 'local',
         ...(isCms
           ? { upstream_source_ids: [...libForm.upstream_source_ids], cms_type_map: cmsTypeMap, cms_area_bucket: libForm.cms_area_bucket || null }
@@ -667,6 +682,8 @@ async function saveForm(thenScan = false) {
         cover_auto_regen: coverAutoRegen.value,
         incremental_scan: incrementalScan.value,
         fs_watch: fsWatch.value,
+        merge_same: mergeSame.value,
+        enable_merge: enableMerge.value,
       })
       savedId = editingId
       ElMessage.success(res?.rescan_required
@@ -2624,6 +2641,40 @@ function typeLabel(t: string): string {
               <p v-else>读取中…</p>
               <p>所有启用库共用一份计划，开关与时间在本页「定时与刮削」标签里改。</p>
             </div>
+          </el-form>
+        </div>
+
+        <!-- 分组：多版本展示合并 -->
+        <div class="settings-section">
+          <div class="settings-section-title">多版本展示合并</div>
+          <p class="form-hint">
+            同一片子有多个版本（不同清晰度、不同来源）时，列表里并成一条还是逐条摆出来。
+            这里只管「怎么展示」，改完立即生效，不动任何已合并的数据。
+          </p>
+          <el-form label-position="top">
+            <el-form-item label="同库合并展示">
+              <el-switch
+                v-model="mergeSame"
+                active-text="开"
+                inactive-text="关（逐条展示）"
+              />
+              <p class="field-help">
+                开着时，本库里同一部片的多个版本只出一条，版本在详情里切换；
+                关掉后，本库的同片多行逐条展示，详情页也不再带出同库的其他版本。
+              </p>
+            </el-form-item>
+
+            <el-form-item label="跨库合并展示">
+              <el-switch
+                v-model="enableMerge"
+                active-text="开"
+                inactive-text="关"
+              />
+              <p class="field-help">
+                同一部片同时存在于多个库时，要不要跨库并成一条。涉及的库
+                都打开这个开关才会真并，任一库关着就不并。默认关。
+              </p>
+            </el-form-item>
           </el-form>
         </div>
 

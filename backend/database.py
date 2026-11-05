@@ -1139,6 +1139,14 @@ def _auto_migrate():
         ("emby_libraries", [
             ("cms_area_bucket", "VARCHAR(20)", "NULL"),
         ]),
+        # 多版本展示合并每库开关（N4-3，照 Nova mergeSame/enableMerge）：
+        # 老库补列后 merge_same=1（同库并组，与升级前行为逐字一致）、
+        # enable_merge=0（跨库不并组，Nova 缺省）。只管展示层分组，
+        # 不动 merged_into_id（见 emby_server.dedup 展示门控）。
+        ("emby_libraries", [
+            ("merge_same", "BOOLEAN", "1"),
+            ("enable_merge", "BOOLEAN", "0"),
+        ]),
         # 自帧修复线（2026-11-04）：修复方法列。老库补列后为
         # 'graft'（存量行全是借帧修复），与升级前行为一致（见
         # emby_server.cms_self_frame）。

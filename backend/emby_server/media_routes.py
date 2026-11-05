@@ -593,7 +593,15 @@ def item_alternate_versions(item_id: str, request: Request,
     if _gate.phase3_enabled():
         primary_row = item if item.id == primary_id else db.query(em.MediaItem).filter(
             em.MediaItem.id == primary_id).first()
-        if primary_row is not None:
+        # 每库展示开关（N4-3）：三期并入的是同库未合并副本，属同库展示
+        # 合并——主记录所在库 merge_same 关时不并入（与
+        # get_alternate_versions 的同库门控同口径）。
+        from backend.emby_server import dedup as _dedup_lib
+        _sw = (_dedup_lib.resolve_library_switches(db, [primary_row.library_id])
+               if primary_row is not None else {})
+        if primary_row is not None and _sw.get(
+                primary_row.library_id,
+                _dedup_lib.DEFAULT_LIBRARY_SWITCHES)[0]:
             _tmdb = (primary_row.tmdb_id or "").strip()
             _imdb = (primary_row.imdb_id or "").strip()
             _extra_q = db.query(em.MediaItem).filter(

@@ -150,7 +150,66 @@ def pick_primary(group: list) -> Any:
     return min(group, key=_primary_score)
 
 
-def deduplicate_items(items: Iterable) -> list:
+# ---------------------------------------------------------------------------
+# 每库展示开关（N4-3，照 NovaEmby 的 mergeSame / enableMerge 两档）
+#
+# 开关存媒体库记录（Library.merge_same / Library.enable_merge），只管
+# **展示层分组**：本模块的 deduplicate_items 分组、AlternateVersions
+# 拼装（merge_versions_worker.get_alternate_versions）、详情 Versions
+# 的同目录兄弟拼装（api._version_siblings）。翻转立即生效，DB 里
+# merged_into_id 等物理合并数据零改动；物理合并工人不读这两个开关。
+# 缺省口径：merge_same 开（同库并组 = 现行行为）、enable_merge 关
+# （跨库并组须显式 opt-in，Nova 缺省）。
+# ---------------------------------------------------------------------------
+
+#: 库行缺失/老库没值时的缺省开关：(merge_same, enable_merge)
+DEFAULT_LIBRARY_SWITCHES = (True, False)
+
+
+def resolve_library_switches(db, library_ids) -> dict:
+    """批量解析库级展示开关：``{library_id: (merge_same, enable_merge)}``。
+
+    一次查询取齐涉及的库；查不到的库（已删/未建行）按
+    :data:`DEFAULT_LIBRARY_SWITCHES` 兜底，不让展示层因库行缺失而崩。
+    这是全仓唯一一份开关解析实现，三处展示分组共用。
+    """
+    ids = {int(i) for i in (library_ids or []) if i is not None}
+    out: dict = {}
+    if not ids:
+        return out
+    # 延迟导入，避免循环引用（与 find_duplicate_ids 同款）
+    from . import models as em
+
+    rows = (
+        db.query(em.Library.id, em.Library.merge_same, em.Library.enable_merge)
+        .filter(em.Library.id.in_(ids))
+        .all()
+    )
+    for lib_id, merge_same, enable_merge in rows:
+        out[lib_id] = (merge_same is not False, bool(enable_merge))
+    for lib_id in ids:
+        out.setdefault(lib_id, DEFAULT_LIBRARY_SWITCHES)
+    return out
+
+
+def version_group_allowed(switches: dict, primary_library_id,
+                          other_library_id) -> bool:
+    """两行能否并成一组展示（纯函数，口径单点）。
+
+    - 同库：只看该库的 merge_same；
+    - 跨库：fail-closed——两边库的 enable_merge 都开才并，任一库没开
+      （含查不到的库，按缺省关）就不并。
+    """
+    if primary_library_id == other_library_id:
+        return switches.get(primary_library_id,
+                            DEFAULT_LIBRARY_SWITCHES)[0]
+    return (switches.get(primary_library_id,
+                         DEFAULT_LIBRARY_SWITCHES)[1]
+            and switches.get(other_library_id,
+                             DEFAULT_LIBRARY_SWITCHES)[1])
+
+
+def deduplicate_items(items: Iterable, library_switches: Optional[dict] = None) -> list:
     """对条目列表去重：同去重键只保留一条主记录。
 
     被合并的记录 id/guid 会挂在主记录的 ``_merged_ids`` / ``_merged_guids``
@@ -160,6 +219,13 @@ def deduplicate_items(items: Iterable) -> list:
 
     多版本合并（StrmAssistant #4）：``merged_into_id`` 非空的条目是已被
     物理合并的 alternate version，直接过滤掉（主记录会展示多版本）。
+
+    每库展示开关（N4-3）：``library_switches`` 由
+    :func:`resolve_library_switches` 解析后传入；条目所在库
+    merge_same=关时该条目不参与同库分组、逐条原样展示。不传（老
+    调用方）= 全部按缺省（同库开），行为与升级前逐字一致。本函数的
+    分组键本就含 library_id、从不跨库分组，故 enable_merge 在此无
+    作用（跨库并组只发生在 AlternateVersions / Versions 拼装处）。
     """
     items = list(items)
     # 先过滤已被物理合并的（数据层合并优先于展示层去重）
@@ -168,6 +234,12 @@ def deduplicate_items(items: Iterable) -> list:
     order: list = []  # 保持原有顺序：记录每个 key 首次出现的位置
     for item in items:
         key = dedup_key(item)
+        if key is not None and library_switches is not None:
+            merge_same = library_switches.get(
+                getattr(item, "library_id", None),
+                DEFAULT_LIBRARY_SWITCHES)[0]
+            if not merge_same:
+                key = None
         if key is None:
             # 不参与去重：用 guid 占一个独立组，保证原样返回
             key = ("__raw__", getattr(item, "guid", id(item)))

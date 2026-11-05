@@ -1038,6 +1038,10 @@ export interface EmbyLibrary {
   incremental_scan?: boolean
   /** 本机目录实时监听（v2.44.0，默认开）：有变动自动触发增量扫描；远程挂载仍靠定时扫描 */
   fs_watch?: boolean
+  /** 同库多版本合并展示（N4-3，默认开）：关掉后本库同片多行逐条展示 */
+  merge_same?: boolean
+  /** 跨库多版本合并展示（N4-3，默认关）：涉及的库全部开启才跨库并组 */
+  enable_merge?: boolean
   is_enabled: boolean
   is_scanning: boolean
   /**

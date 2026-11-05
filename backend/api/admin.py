@@ -2474,7 +2474,10 @@ def admin_get_versions(
     if not item:
         raise HTTPException(status_code=404, detail="条目不存在")
     primary_id = item.merged_into_id or item.id
-    versions = _mvw.get_alternate_versions(db, primary_id)
+    # 管理面看物理合并真相：不受每库展示开关（N4-3）过滤，否则关了
+    # merge_same 的库在这里会看不到被合并行、没法做 unmerge 管理。
+    versions = _mvw.get_alternate_versions(db, primary_id,
+                                           apply_display_switches=False)
     return {
         "primary_id": primary_id,
         "versions": [

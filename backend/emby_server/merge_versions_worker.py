@@ -513,8 +513,17 @@ def _follow_series_episodes(db, group: List) -> None:
                 )
 
 
-def get_alternate_versions(db, primary_id: int) -> List:
-    """获取主记录的所有版本（含主记录自己）。"""
+def get_alternate_versions(db, primary_id: int,
+                           apply_display_switches: bool = True) -> List:
+    """获取主记录的所有版本（含主记录自己）。
+
+    每库展示开关（N4-3）：缺省按展示口径过滤——同库版本看主记录
+    所在库的 merge_same，跨库版本（存量跨库合并行）须涉及的库全部
+    开 enable_merge 才带出（fail-closed，见 dedup.version_group_allowed）。
+    本函数只过滤返回列表，merged_into_id 数据零改动，开关翻转
+    立即生效。管理面（admin /media/versions）要看物理合并真相，
+    传 ``apply_display_switches=False`` 全量返回。
+    """
     from backend.emby_server import models as em
 
     primary = db.query(em.MediaItem).filter(em.MediaItem.id == primary_id).first()
@@ -528,6 +537,16 @@ def get_alternate_versions(db, primary_id: int) -> List:
         )
         .all()
     )
+    if apply_display_switches and alternates:
+        from backend.emby_server import dedup as _dedup
+
+        switches = _dedup.resolve_library_switches(
+            db, [primary.library_id] + [a.library_id for a in alternates])
+        alternates = [
+            a for a in alternates
+            if _dedup.version_group_allowed(
+                switches, primary.library_id, a.library_id)
+        ]
     return [primary] + alternates
 
 
