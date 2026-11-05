@@ -41,12 +41,14 @@ class TestMergeVersions:
         assert self.mod._provider_key(Fake()) == (1, "movie", "tmdb", "123")
 
     def test_provider_key_imdb_fallback(self):
+        # N4-1 契约变更（Nova 口径）：TMDB 硬条件，imdb 单独不再成键，
+        # 仅 imdb 的条目不参与自动合并 → 返回 None（旧断言为 imdb 键）。
         class Fake:
             library_id = 1
             item_type = "movie"
             tmdb_id = ""
             imdb_id = "tt456"
-        assert self.mod._provider_key(Fake()) == (1, "movie", "imdb", "tt456")
+        assert self.mod._provider_key(Fake()) is None
 
     def test_provider_key_none(self):
         class Fake:
