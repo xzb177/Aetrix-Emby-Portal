@@ -1219,13 +1219,17 @@ def _delete_rows(db: Session, rows: List) -> int:
     """托管行下架：软删优先（与 scanner 清理同一口径）。
 
     软删走 soft_delete.mark_soft_deleted（带合并子行孤儿守卫）；
-    全局关软删时回落硬删（站点既定策略，不在本模块另立口径）。
+    全局关软删时回落硬删（站点既定策略，不在本模块另立口径）——
+    硬删分支没有 rehome 守卫，删前必须先走物理删除兜底
+    （soft_delete.detach_merged_children）解开入向合并引用，
+    否则被删托管行若是合并目标，分身的 merged_into_id 立刻悬空。
     """
     ids = [r.id for r in rows if r is not None and getattr(r, "id", None)]
     if not ids:
         return 0
     if soft_delete.soft_delete_enabled():
         return soft_delete.mark_soft_deleted(db, ids)
+    soft_delete.detach_merged_children(db, ids)
     count = 0
     for row in rows:
         db.delete(row)
