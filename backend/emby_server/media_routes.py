@@ -42,6 +42,7 @@ from backend.emby_server.api import (
     _play_target,
     _queue_image_repair,
     _require_visible_item,
+    _sort_versions_by_bitrate,
 )
 
 logger = logging.getLogger(__name__)
@@ -615,6 +616,10 @@ def item_alternate_versions(item_id: str, request: Request,
                                        if v.id not in _seen]
     # H1：只列用户可见媒体库里的版本（合并可能跨库）
     versions = sorted((v for v in versions if _item_visible(db, user, v)), key=lambda s: s.id)
+    # N4-2：展示顺序照 Nova versionSort=bitrate（高码率在前，第一条即
+    # 默认版本）；与详情 DTO Versions[] 共用 api 的同一份排序实现，
+    # id 序只作同码率时的稳定基线
+    versions = _sort_versions_by_bitrate(versions)
     items = [_version_dto(s) for s in versions]
     # 标记主记录
     for v, s in zip(items, versions):
