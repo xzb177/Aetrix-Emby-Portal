@@ -4875,6 +4875,10 @@ def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user
         # PA-035：全局软删钩子看不见 JOIN 语句的 FROM，联结后必须自己带
         # deleted_at 条件，否则已下架收藏会同时漏进列表与总数。
         .filter(em.MediaItem.deleted_at.is_(None))
+        # 清理一期（2026-11-05）：与 Resume 同口径补 is_hidden——
+        # 自动隐藏（含无线路藏）的条目不进收藏列表，is_favorite
+        # 标记本身不删，条目恢复可见后自动回来。
+        .filter(em.MediaItem.is_hidden == False)  # noqa: E712
         .order_by(em.UserMediaData.updated_at.desc())
     )
     if identity_gate.phase2_enabled():
@@ -4906,6 +4910,9 @@ def get_played_items(request: Request, user: models.WebUser = Depends(get_emby_u
         # PA-035：全局软删钩子看不见 JOIN 语句的 FROM，联结后必须自己带
         # deleted_at 条件，否则已下架已看会同时漏进列表与总数。
         .filter(em.MediaItem.deleted_at.is_(None))
+        # 清理一期（2026-11-05）：与收藏同口径补 is_hidden——自动
+        # 隐藏的条目不进已看列表，played 标记本身不删。
+        .filter(em.MediaItem.is_hidden == False)  # noqa: E712
         .order_by(em.UserMediaData.last_played_at.desc())
     )
     if identity_gate.phase2_enabled():

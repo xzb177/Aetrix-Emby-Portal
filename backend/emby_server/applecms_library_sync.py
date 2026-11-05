@@ -1303,6 +1303,20 @@ def run_library_sync_round(*, session_factory=None, http_get=None,
                 pass
         finally:
             lib_db.close()
+    # 无线路对账（清理一期，2026-11-05）：同步收尾顺带把「整树无
+    # 启用线」的条目藏掉、把已有线的台账在册条目解藏。独立会话、
+    # 失败只记日志——对账挂了不许拖垮同步轮本身（口径与实现见
+    # no_line_hidden 模块）。停用源的连带藏、补线后的自动回来都
+    # 靠这一处兜底，最长延迟一个同步间隔。
+    try:
+        rec_db = session_factory()
+        try:
+            from backend.emby_server import no_line_hidden
+            no_line_hidden.reconcile_no_line_hidden(rec_db)
+        finally:
+            rec_db.close()
+    except Exception:
+        logger.exception("applecms 同步收尾无线路对账失败（下一轮继续）")
     return results
 
 

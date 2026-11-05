@@ -1592,6 +1592,37 @@ class EnrichFlipEvent(Base):
     details = Column(Text)  # JSON：{reasons: {size_changed: N}, item_types: {...}, sample_ids: [...]}
 
 
+class ItemHiddenLedger(Base):
+    """条目自动隐藏台账（无可用线路清理一期，2026-11-05 用户亲定）。
+
+    ``emby_items.is_hidden`` 是全站共用的单值开关（墓碑 A′、源进库
+    开关联动、管理员手工隐藏都在写它），光看条目行分不清「谁藏的」。
+    本表只记**自动对账**（``no_line_hidden.reconcile_no_line_hidden``）
+    藏/解藏的条目：一行 = 一次隐藏事件，``restored_at`` 为空 = 仍在
+    本机制隐藏中。对账解藏只许动本表在册（reason 相同且 restored_at
+    为空）的条目，台账外的 is_hidden 永远不碰——可逆性靠这条纪律。
+
+    - reason 本批固定 ``no_enabled_line``：整个子树没有任何一条
+      指向启用源的上游线路（判定口径见 no_line_hidden 模块）；
+    - 不加外键（照 EnrichFlipEvent / UpstreamItemMapping 先例）：条目
+      被软删/合并后台账行留着供追溯，对账时按活行口径跳过；
+    - 由 create_all 自动建表，老库无需 ALTER。
+    """
+
+    __tablename__ = "emby_item_hidden_ledger"
+
+    __table_args__ = (
+        Index("ix_item_hidden_ledger_item", "item_id"),
+        Index("ix_item_hidden_ledger_open", "reason", "restored_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, nullable=False)  # emby_items.id，无外键（见上）
+    reason = Column(String(40), nullable=False, default="no_enabled_line")
+    hidden_at = Column(DateTime, default=datetime.now, nullable=False)
+    restored_at = Column(DateTime)  # 空 = 仍在本机制隐藏中
+
+
 class StorageMount(Base):
     """存储挂载：媒体库的内容来源
 
