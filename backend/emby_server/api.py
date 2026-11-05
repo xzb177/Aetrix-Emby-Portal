@@ -802,6 +802,9 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     seen_ids.add(s.id)
                     all_versions.append(s)
             all_versions.sort(key=lambda s: s.id)
+            # N4-2：展示顺序照 Nova versionSort=bitrate（高码率在前，
+            # 第一条即默认版本）；id 序只作同码率时的稳定基线
+            all_versions = _sort_versions_by_bitrate(all_versions)
             if len(all_versions) > 1:
                 dto["Versions"] = [
                     {
@@ -1390,6 +1393,25 @@ def _effective_bitrate(item) -> int | None:
     if size and ticks:
         return size * 8 * 10_000_000 // ticks
     return None
+
+
+def _sort_versions_by_bitrate(versions):
+    """多版本展示排序（N4-2，Nova versionSort=bitrate 口径，全站唯一实现）。
+
+    同组版本默认按码率从高到低排，排第一条即客户端的默认版本（版本
+    呈现没有独立的「默认版本」字段，列表顺序就是默认信号）。码率口径
+    与 MediaSource.Bitrate 同源（_effective_bitrate：探测值优先，缺失
+    时 size×8÷时长推导）；推导也无的视为无码率、垫底。同码率（含同
+    为无码率）保持输入次序（稳定排序）——两处调用点的输入均为 id 升
+    序，即此前的显式 id 次序。只排顺序，不改 IsPrimary 等任何字段，
+    不为排序新跑探测。详情 DTO 的 Versions[] 与 AlternateVersions
+    接口共用本函数，不许各排各的。
+    """
+    def _key(item):
+        br = _effective_bitrate(item)
+        return (0, -br) if br else (1, 0)
+
+    return sorted(versions, key=_key)
 
 
 def _signed_local_stream_url(item, base: str, user_id, db,
