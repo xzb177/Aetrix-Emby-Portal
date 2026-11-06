@@ -350,7 +350,7 @@ check("挂件接口不下发私钥", "secret-key-456" not in r.text, r.text[:200
 check("挂件接口下发脚本地址", info["script_url"].startswith("https://challenges.cloudflare.com"),
       info.get("script_url", ""))
 check("挂件接口带动作保护开关（含后台登录，默认不保护）",
-      info["actions"] == {"login": True, "register": True, "admin_login": False},
+      info["actions"] == {"login": True, "register": True, "checkin": True, "admin_login": False},
       str(info.get("actions")))
 
 r = client.post("/api/user/auth/login", json={"username": f"cap_usr{suf}", "password": "pass12345"})

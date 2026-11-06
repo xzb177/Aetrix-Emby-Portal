@@ -51,6 +51,7 @@ INDIRECT_READS = {
     "BOT_REDPACKET_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "CAPTCHA_PROTECT_LOGIN": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "CAPTCHA_PROTECT_REGISTER": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
+    "CAPTCHA_PROTECT_CHECKIN": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "COUPON_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "DRIVE_DIRECT_PLAY_ENABLED": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",
     "ENRICH_DOUBAN_BAN_DOWNGRADE": "backend/integrations/store.py PANEL_REMOVED_SWITCHES 元组 + switch_env_value 动态拼名读 os.environ（2026-10-21 A 类开关摘面板）",

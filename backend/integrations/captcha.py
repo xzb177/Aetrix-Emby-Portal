@@ -1,6 +1,6 @@
 """能力：人机验证（Turnstile / reCAPTCHA / hCaptcha）
 
-为登录、注册等动作加一道人机验证。站点密钥与私钥由管理员自己申请后填进来——项目不内置任何
+为登录、注册、网站签到等动作加一道人机验证。站点密钥与私钥由管理员自己申请后填进来——项目不内置任何
 密钥，也不锁定任何一家提供方。
 
 行为约定：
@@ -26,9 +26,9 @@ from backend.integrations import store
 
 SPEC = {
     "title": "人机验证",
-    "desc": "为登录、注册等动作配置 Turnstile、reCAPTCHA 或 hCaptcha。",
+    "desc": "为登录、注册、网站签到等动作配置 Turnstile、reCAPTCHA 或 hCaptcha。",
     "group": "网络与安全",
-    "docs_hint": "保护的是用户端登录 / 注册与管理后台登录；私钥只报「已配置」，前端挂件用站点密钥。",
+    "docs_hint": "保护的是用户端登录 / 注册 / 网站签到与管理后台登录；私钥只报「已配置」，前端挂件用站点密钥。",
     "fields": [
         {"key": "captcha_provider", "label": "提供方", "type": "select", "default": "none",
          "options": ["none", "turnstile", "recaptcha", "hcaptcha"]},
@@ -55,22 +55,25 @@ WIDGET_SCRIPTS = {
 }
 
 # 受保护的动作：与字段表里的 captcha_protect_<动作> 一一对应
-# （后台登录也走同一套，否则唯一没被保护的就剩后台那个最值钱的入口）
-ACTIONS: tuple[str, ...] = ("login", "register", "admin_login")
+# （后台登录也走同一套，否则唯一没被保护的就剩后台那个最值钱的入口；
+#   checkin 只指网站签到端点，TG 机器人签到不走这里、不受影响——2026-11-06 用户亲令）
+ACTIONS: tuple[str, ...] = ("login", "register", "checkin", "admin_login")
 
 _FIELD_DEFAULTS = {f["key"]: (f.get("default") or "") for f in SPEC["fields"]}
 _FIELD_KEYS = [f["key"] for f in SPEC["fields"]]
-# A 类开关摘面板（2026-10-21）：登录/注册两个保护开关（缺省开）不再出现在
-# 能力表单里，改走 env CAPTCHA_PROTECT_LOGIN / _REGISTER；缺省与原表单缺省
+# A 类开关摘面板（2026-10-21）：登录/注册/签到保护开关（缺省开）不再出现在
+# 能力表单里，改走 env CAPTCHA_PROTECT_LOGIN / _REGISTER / _CHECKIN；缺省与原表单缺省
 # （=生产现值）一致。管理后台登录保护缺省关，按服主口径保留在表单里。
 # 能力框架的原始值读取补读（卡片/挂件口径与运行时一致）
 EXTRA_READ_KEYS = {
     "captcha_protect_login": "true",
     "captcha_protect_register": "true",
+    "captcha_protect_checkin": "true",
 }
 _PROTECT_DEFAULTS = {
     "captcha_protect_login": "true",
     "captcha_protect_register": "true",
+    "captcha_protect_checkin": "true",
 }
 _FIELD_KEYS = _FIELD_KEYS + list(_PROTECT_DEFAULTS)
 _FIELD_DEFAULTS = {**_FIELD_DEFAULTS, **_PROTECT_DEFAULTS}
@@ -159,7 +162,7 @@ def guard(db: Session, request, action: str, token: Optional[str],
           username: Optional[str] = None) -> None:
     """端点里的守卫：校验失败一律 400（并把提供方原因带上）+ 落一条安全日志
 
-    用户在用户端登录、注册与管理员在后台登录都走这一个入口——三处各写一遍校验的话，
+    用户在用户端登录、注册、网站签到与管理员在后台登录都走这一个入口——各处各写一遍校验的话，
     迟早有一处漏掉「失败要留痕」这件事。
     """
     from fastapi import HTTPException

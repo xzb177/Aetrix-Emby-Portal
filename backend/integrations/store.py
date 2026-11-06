@@ -65,6 +65,7 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("bot_redpacket_enabled", "BOT_REDPACKET_ENABLED"),
     ("captcha_protect_login", "CAPTCHA_PROTECT_LOGIN"),
     ("captcha_protect_register", "CAPTCHA_PROTECT_REGISTER"),
+    ("captcha_protect_checkin", "CAPTCHA_PROTECT_CHECKIN"),
     ("coupon_enabled", "COUPON_ENABLED"),
     ("drive_direct_play_enabled", "DRIVE_DIRECT_PLAY_ENABLED"),
     ("enrich_douban_ban_downgrade", "ENRICH_DOUBAN_BAN_DOWNGRADE"),
