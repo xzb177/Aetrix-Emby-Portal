@@ -2548,6 +2548,25 @@ export type QuotaDashboard = {
 }
 export const fetchQuotaDashboard = () => get<QuotaDashboard>('/quota-dashboard')
 
+/** 起播统计（GET /api/admin/playback/play-start-stats）：起播事件按来源
+ * （provider × 挂载）与错误类型聚合，字段与后端聚合函数逐一对应，不另发明。 */
+export type PlayStartStats = {
+  window_hours: number
+  by_provider: Array<{
+    provider: string
+    mount_id: number | null
+    mount_name: string | null
+    mount_type: string | null
+    total: number
+    errors: number
+    avg_resolve_ms: number | null
+    max_resolve_ms: number | null
+  }>
+  by_error_kind: Array<{ error_kind: string; total: number }>
+}
+export const fetchPlayStartStats = (hours = 24) =>
+  get<PlayStartStats>('/playback/play-start-stats', { hours })
+
 /** 手动触发 SA 轮换（Fix 6） */
 export const rotateGDriveSa = () =>
   post<{ success: boolean; sa_file?: string; mode?: string; needs_remount?: boolean; remount_hint?: string }>('/gdrive/sa-rotate')

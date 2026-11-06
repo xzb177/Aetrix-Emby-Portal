@@ -11,6 +11,9 @@
  * 实色表面 + 右侧一颗琥珀指示灯。分区按重新布局为 7 组（概览 / 用户 / 安全与准入 /
  * 经营 / 内容 / 媒体 / 系统），所有路径与权限标记一个没少。
  *
+ * v2.55：桌面侧边栏可折叠成 68px 图标条（顶栏按钮切换、localStorage 记住状态、
+ * 折叠时文字靠 title 悬停提示；≤1024px 抽屉形态一字未动）。
+ *
  * v2.25.0：一级导航按**交付链**重组（仪表盘 / 用户与账号 / 媒体与交付 / 求片与内容 /
  * 运营中心 / 服务支持 / 系统与审计）——“多服”不再是要先理解的一级概念：
  * 服与线路的归属关系在「服务器与线路」页按范围看，顶栏那个切换器只管当前作用域。
@@ -29,6 +32,7 @@ import {
   Database, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Medal, MessageSquareText,
   Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks, Flag,
+  PanelLeftClose, PanelLeftOpen,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -91,6 +95,26 @@ const roleLabel = computed(() => auth.admin?.role_label || '超级管理员')
 const APP_VERSION = APP_VERSION_BASE
 
 const drawerOpen = ref(false)
+
+// ==================== 桌面侧边栏折叠（v2.55，用户 2026-11-06 点名） ====================
+
+/** 折叠状态存 localStorage：刷新 / 下次打开保持上次选择；读不到（隐私模式等）就默认展开 */
+const NAV_COLLAPSED_KEY = 'aetrix.admin.nav_collapsed'
+const navCollapsed = ref(false)
+try {
+  navCollapsed.value = localStorage.getItem(NAV_COLLAPSED_KEY) === '1'
+} catch {
+  /* 存取不可用时不拦使用，本次会话内仍可折叠 */
+}
+
+function toggleNavCollapsed() {
+  navCollapsed.value = !navCollapsed.value
+  try {
+    localStorage.setItem(NAV_COLLAPSED_KEY, navCollapsed.value ? '1' : '0')
+  } catch {
+    /* 写不进去不影响本次切换 */
+  }
+}
 
 /** 移动端抽屉模式下的 focus trap：窄屏侧边栏是覆盖层抽屉，Tab 不能跑到背后去 */
 const sidebarRef = ref<HTMLElement | null>(null)
@@ -457,7 +481,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="shell admin-layout">
+  <div class="shell admin-layout" :class="{ 'nav-collapsed': navCollapsed }">
     <!-- 抽屉遮罩（窄屏点它关闭） -->
     <transition name="mask">
       <div v-if="drawerOpen" class="shell-mask" @click="closeDrawer" />
@@ -499,6 +523,7 @@ onUnmounted(() => {
             class="nav-item"
             :class="{ active: isActive(item.path) }"
             :aria-current="isActive(item.path) ? 'page' : undefined"
+            :title="navCollapsed ? item.label : undefined"
             @click="closeDrawer"
           >
             <component :is="item.icon" :size="16" class="nav-icon" />
@@ -509,7 +534,7 @@ onUnmounted(() => {
       </nav>
 
       <div class="sidebar-foot">
-        <div class="who">
+        <div class="who" :title="navCollapsed ? `${auth.admin?.username || '管理员'} · ${roleLabel}` : undefined">
           <span class="avatar who-avatar">{{ initial }}</span>
           <div class="who-info">
             <div class="who-name">{{ auth.admin?.username || '管理员' }}</div>
@@ -517,13 +542,13 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="foot-links">
-          <button class="foot-link" @click="openPwdDialog">
+          <button class="foot-link" :title="navCollapsed ? '修改密码' : undefined" @click="openPwdDialog">
             <KeyRound :size="15" />修改密码
           </button>
-          <a class="foot-link" href="/">
+          <a class="foot-link" href="/" :title="navCollapsed ? '回到前台' : undefined">
             <ExternalLink :size="15" />回到前台
           </a>
-          <button class="foot-link danger" @click="logout">
+          <button class="foot-link danger" :title="navCollapsed ? '退出登录' : undefined" @click="logout">
             <LogOut :size="15" />退出登录
           </button>
         </div>
@@ -537,6 +562,18 @@ onUnmounted(() => {
       <header class="topbar">
         <button class="round-btn menu-btn" aria-label="打开菜单" @click="drawerOpen = true">
           <Menu :size="18" />
+        </button>
+
+        <!-- 桌面：折叠 / 展开侧边栏（折叠态只留图标，状态记在本地） -->
+        <button
+          class="round-btn collapse-btn"
+          :title="navCollapsed ? '展开导航' : '折叠导航'"
+          :aria-label="navCollapsed ? '展开导航' : '折叠导航'"
+          :aria-expanded="!navCollapsed"
+          @click="toggleNavCollapsed"
+        >
+          <PanelLeftOpen v-if="navCollapsed" :size="17" />
+          <PanelLeftClose v-else :size="17" />
         </button>
 
         <div class="topbar-title">
@@ -738,6 +775,8 @@ onUnmounted(() => {
   background: var(--au-bg);
   border-right: 1px solid var(--au-border);
   z-index: var(--z-sticky);
+  /* 桌面折叠 / 展开时宽度平滑过渡（≤1024 的抽屉过渡在响应式段里覆盖本条） */
+  transition: width var(--au-med) var(--au-ease);
 }
 
 .brand {
@@ -941,7 +980,12 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   margin-left: var(--sidebar-w);
+  /* 与侧边栏宽度同拍过渡：折叠时内容区平滑让位，不跳动 */
+  transition: margin-left var(--au-med) var(--au-ease);
 }
+
+/* 折叠切换按钮只在桌面出现（≤1024 是抽屉，用 menu-btn） */
+.collapse-btn { display: none; }
 
 /* 顶栏：不透明暖黑实底 + 发丝线（同用户端 .app-header：滚过去的内容不透字） */
 .topbar {
@@ -1097,7 +1141,34 @@ onUnmounted(() => {
 
 @media (min-width: 1025px) {
   .menu-btn { display: none; }
+  .collapse-btn { display: inline-flex; }
   .sidebar { visibility: visible; }
+
+  /* ===== 折叠态（仅桌面）：侧栏收成 68px 图标条，文字靠 title 悬停提示 ===== */
+  .shell.nav-collapsed .sidebar { width: 68px; }
+  .shell.nav-collapsed .main { margin-left: 68px; }
+
+  .shell.nav-collapsed .brand { padding: 0; justify-content: center; }
+  .shell.nav-collapsed .brand-link { gap: 0; }
+  .shell.nav-collapsed .brand-text { display: none; }
+
+  .shell.nav-collapsed .nav { padding: 6px 8px 12px; }
+  .shell.nav-collapsed .nav-section { padding-top: 10px; }
+  /* 分区眉题藏掉，改用一条发丝线分隔各组（图标条里再写小字只剩噪音） */
+  .shell.nav-collapsed .nav-eyebrow { display: none; }
+  .shell.nav-collapsed .nav-section + .nav-section { border-top: 1px solid var(--au-border); margin-top: 4px; }
+
+  .shell.nav-collapsed .nav-item { justify-content: center; padding: 9px 0; gap: 0; }
+  .shell.nav-collapsed .nav-label,
+  .shell.nav-collapsed .nav-super { display: none; }
+  /* 当前页指示灯在图标条里改挂图标右上角，不再占右缘位置 */
+  .shell.nav-collapsed .nav-item.active::after { right: 6px; top: 6px; margin-top: 0; }
+
+  .shell.nav-collapsed .sidebar-foot { padding: 12px 8px calc(12px + env(safe-area-inset-bottom)); }
+  .shell.nav-collapsed .who { justify-content: center; padding: 4px 0 12px; }
+  .shell.nav-collapsed .who-info { display: none; }
+  .shell.nav-collapsed .foot-link { justify-content: center; padding: 9px 0; gap: 0; font-size: 0; }
+  .shell.nav-collapsed .foot-version { display: none; }
 }
 
 /* 手机 */
