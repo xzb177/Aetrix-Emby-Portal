@@ -108,6 +108,7 @@
                 <span class="dev-name">{{ b.account_label }}</span>
                 <span class="dev-meta">
                   谷歌盘 · {{ driveStatusText(b.status) }}
+                  <template v-if="b.oauth_client === 'oauth2'"> · {{ driveOauth2?.label || '新入口' }}</template>
                   <template v-if="b.error_message"> · {{ b.error_message }}</template>
                   <template v-if="b.needs_rebind"> · 转存需要写权限，请重新授权</template>
                 </span>
@@ -155,6 +156,17 @@
             {{ driveStarting ? '正在打开授权…' : '绑定谷歌盘' }}
           </button>
           <p class="dev-tip">点绑定后会在新窗口打开 Google 授权页，点同意后关掉那个窗口、回到本页，列表会自动刷新，没出现再点“刷新列表”。授权页本身不是本站页面，账号密码只交给 Google。</p>
+          <template v-if="driveOauth2 && driveOauth2.available">
+            <div class="acct-field">
+              <span class="acct-label">{{ driveOauth2.label }}</span>
+              <p class="dev-tip">{{ driveOauth2.description }}</p>
+            </div>
+            <p v-if="!driveOauth2.eligible" class="acct-error" role="alert">{{ driveOauth2.reason }}</p>
+            <button type="button" class="acct-btn" :disabled="!driveOauth2.eligible || drive2Starting" @click="handleBindDrive2">
+              {{ drive2Starting ? '正在打开授权…' : '用这个入口绑定' }}
+            </button>
+            <p class="dev-tip">用上面填的名字绑定，流程与原入口相同：新窗口去 Google 点同意，回来后列表自动刷新。</p>
+          </template>
           </div>
         </div>
         <div v-if="removedBindings.length" class="prov-block">
@@ -475,7 +487,7 @@ import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
 import { authApi, subscriptionApi, embyApi, isExpiringSoon, type MySubscription, type AccountCard, type LoginHistoryItem } from '@/api'
-import { deviceApi, storageBindingApi, seriesFollowApi, welfareApi, memberApi, checkinApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type SeriesFollow } from '@/api/economy'
+import { deviceApi, storageBindingApi, seriesFollowApi, welfareApi, memberApi, checkinApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type DriveOAuth2EntryStatus, type SeriesFollow } from '@/api/economy'
 import { tgApi } from '@/api/tg'
 import { getMyExclusiveLines, type MyExclusiveLine } from '@/api/user'
 import { useUserStore } from '@/stores/user'
@@ -909,6 +921,9 @@ async function loadProviders() {
   try {
     const res = await storageBindingApi.providers()
     availableProviders.value = res.providers || []
+    // 第二绑定入口状态随名单同响应下发：没这份数据就当入口不存在，
+    // 整块不渲染（不猜、不 fallback），与 provider 名单同一口径。
+    driveOauth2.value = res.drive_oauth2 || null
     providersLoaded.value = true
   } catch (e) {
     // 名单拿不到就没法按规则渲染，留错误态给用户重试，不猜、不 fallback 到全显
@@ -916,6 +931,11 @@ async function loadProviders() {
   }
 }
 
+// 第二绑定入口状态（providers 响应随行下发，后端配置驱动）：
+// available=false 或整份缺失时整块不渲染；eligible=false 时置灰加
+// 原因（reason 后端原话）；label/description 都是后端下发文案。
+const driveOauth2 = ref<DriveOAuth2EntryStatus | null>(null)
+const drive2Starting = ref(false)
 const driveBindings = ref<StorageBinding[]>([])
 // 已下线两家的存量绑定行（115 / 夸克，2026-11-02 下线）：不再当可用盘
 // 展示，只在本区列成“已下线”行 + 下线文案，免得用户对着旧绑定以为还能播。
@@ -1015,18 +1035,59 @@ async function handleBindDrive() {
   }
 }
 
+async function handleBindDrive2() {
+  // 第二入口绑定：与原入口同流程（共用上面的名字输入框），只是走
+  // oauth2 start 口；无凭证时按钮已置灰，这里再兜一层后端 403
+  // 原样展示。开窗保手势的口径与 handleBindDrive 一字不差。
+  const label = driveLabel.value.trim()
+  if (!label) {
+    driveFormError.value = '先给这个盘起个名字'
+    return
+  }
+  driveFormError.value = ''
+  driveAuthUrl.value = ''
+  const win = window.open('about:blank', '_blank')
+  drive2Starting.value = true
+  try {
+    const res = await storageBindingApi.startDriveOAuth2(label)
+    if (!res.authorization_url) {
+      if (win && !win.closed) win.close()
+      driveFormError.value = '服务器没有返回授权地址，请稍后重试'
+      return
+    }
+    driveAuthUrl.value = res.authorization_url
+    if (!win || win.closed) {
+      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来，列表会自动刷新'
+      return
+    }
+    win.location.href = res.authorization_url
+    pendingOAuthReturn.value = true
+    toast.success('已打开 Google 授权页，同意后回到本页，列表会自动刷新')
+  } catch (e) {
+    if (win && !win.closed) win.close()
+    driveFormError.value = humanizeError(e)
+  } finally {
+    drive2Starting.value = false
+  }
+}
+
 async function handleRebindDrive(b: StorageBinding) {
   // 重绑：同名同行原地换凭据（后端 start 带 rebind_binding_id，回调
   // 成功不新增行）；流程与新绑一致——先在手势里同步开空窗保住
   // 手势，拿到授权地址后再指地址，绝不带 noopener（iOS 实测带了
   // 后续改地址不生效）。
+  // 入口必须与建绑时一致：oauth2 行走 oauth2 start 口——授权码是
+  // 签给具体应用的，走错入口换 token 必失败（后端按 state 记录分流）。
   if (rebindingId.value !== null) return
   rebindingId.value = b.id
   driveFormError.value = ''
   driveAuthUrl.value = ''
   const win = window.open('about:blank', '_blank')
   try {
-    const res = await storageBindingApi.startDriveOAuth(b.account_label, b.id)
+    const startFn = b.oauth_client === 'oauth2'
+      ? storageBindingApi.startDriveOAuth2
+      : storageBindingApi.startDriveOAuth
+    const res = await startFn(b.account_label, b.id)
     if (!res.authorization_url) {
       if (win && !win.closed) win.close()
       driveFormError.value = '服务器没有返回授权地址，请稍后重试'

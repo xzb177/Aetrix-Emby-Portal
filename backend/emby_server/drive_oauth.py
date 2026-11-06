@@ -33,6 +33,16 @@ Cloud 注册的应用凭据，走文件配置（env），不进库、不按用�
 回调地址 = EMBY_PUBLIC_URL + 固定路径，部署者须在 Google Cloud
 把该地址注册为授权重定向 URI；EMBY_PUBLIC_URL 未配时 start 口
 响亮拒绝，不猜 localhost（localhost 回调对真实用户不可用）。
+
+第二入口（新应用）：在老应用之外并列第二套服务器级凭据
+（DRIVE_OAUTH2_CLIENT_ID/SECRET，新应用在 Google Cloud 注册的
+回调 URI 与老应用完全同一条）。入口分流全靠落字：发起时把入口
+记进 state 行 oauth_client，回调仍是同一个端点、靠 state 行分流
+换 token 用哪套凭据；绑定行同样落 oauth_client，刷新时按行上
+记录选凭据——用错客户端刷新必失败，不许靠“试一遍”猜。仅限
+持有查看凭证的用户（判定复用 subscriptions.view_grant 全站唯一
+口径），发起端与回调端各查一次；老入口的凭据、行为与门禁一律
+不受第二入口影响，第二套凭据未配置时只有新入口不可用。
 """
 from __future__ import annotations
 
@@ -113,6 +123,29 @@ OAUTH_CALLBACK_PATH = "/api/user/emby/storage-bindings/drive/oauth/callback"
 #: 服务器级 OAuth 应用凭据（部署者文件配置，不进库）。
 CLIENT_ID_ENV = "DRIVE_OAUTH_CLIENT_ID"
 CLIENT_SECRET_ENV = "DRIVE_OAUTH_CLIENT_SECRET"
+#: 第二入口（新应用）的服务器级凭据：与老应用并列存在、互不
+#: 覆盖；老入口永远只读上面两个键，新入口只读下面两个键。
+CLIENT2_ID_ENV = "DRIVE_OAUTH2_CLIENT_ID"
+CLIENT2_SECRET_ENV = "DRIVE_OAUTH2_CLIENT_SECRET"
+
+#: 入口/客户端落字口径（state 行与绑定行 oauth_client 列）：
+#: primary = 老应用（DRIVE_OAUTH_CLIENT_*）；oauth2 = 第二入口
+#: （DRIVE_OAUTH2_*）。NULL（本功能上线前的老行）与未知值在读
+#: 侧一律归一为 primary，与上线前行为一致。
+CLIENT_PRIMARY = "primary"
+CLIENT_OAUTH2 = "oauth2"
+
+#: 第二入口的展示名与说明：走文件配置（部署者可改），入口状态
+#: 口随响应下发、用户端照原样渲染，前端不写死这份文案。
+CLIENT2_LABEL_ENV = "DRIVE_OAUTH2_ENTRY_LABEL"
+CLIENT2_DESCRIPTION_ENV = "DRIVE_OAUTH2_ENTRY_DESCRIPTION"
+CLIENT2_LABEL_DEFAULT = "谷歌盘（新入口）"
+CLIENT2_DESCRIPTION_DEFAULT = "通过新应用授权绑定谷歌盘，仅限持有查看凭证的用户使用。"
+
+#: 第二入口门禁拒绝文案（发起与回调复核同一句，用户端原样
+#: 展示；入口状态口的 reason 也用它）。
+OAUTH2_VIEW_CREDENTIAL_REQUIRED_MESSAGE = (
+    "这个绑定入口仅限持有查看凭证的用户使用。")
 #: 维护工人开关与周期（默认关；周期是我方起步值，非 FMBY 常量）。
 MAINT_ENABLED_ENV = "BYOS_DRIVE_CRED_MAINT_ENABLED"
 MAINT_INTERVAL_ENV = "BYOS_DRIVE_CRED_MAINT_INTERVAL_SEC"
@@ -127,12 +160,108 @@ class DriveOAuthError(ub.BindingError):
     定状态码与文案；kind 取值与 user_bindings 一致）。"""
 
 
-def _client_id() -> str:
+def _normalize_client(client: str | None) -> str:
+    """入口/客户端值归一：只有字面 oauth2 才是第二入口，其余
+    （primary / None / 未知值）一律按老应用，与上线前行为一致。"""
+    return CLIENT_OAUTH2 if client == CLIENT_OAUTH2 else CLIENT_PRIMARY
+
+
+def _client_id(client: str | None = None) -> str:
+    if _normalize_client(client) == CLIENT_OAUTH2:
+        return (os.getenv(CLIENT2_ID_ENV, "") or "").strip()
     return (os.getenv(CLIENT_ID_ENV, "") or "").strip()
 
 
-def _client_secret() -> str:
+def _client_secret(client: str | None = None) -> str:
+    if _normalize_client(client) == CLIENT_OAUTH2:
+        return (os.getenv(CLIENT2_SECRET_ENV, "") or "").strip()
     return (os.getenv(CLIENT_SECRET_ENV, "") or "").strip()
+
+
+def oauth2_configured() -> bool:
+    """第二套客户端凭据是否已配齐（未配齐时只有新入口不可用）。"""
+    return bool(_client_id(CLIENT_OAUTH2) and _client_secret(CLIENT_OAUTH2))
+
+
+def binding_oauth_client(binding) -> str:
+    """绑定行记录的来源客户端（NULL / 未知值归一 primary）。"""
+    return _normalize_client(getattr(binding, "oauth_client", None))
+
+
+def oauth2_entry_label() -> str:
+    return ((os.getenv(CLIENT2_LABEL_ENV, "") or "").strip()
+            or CLIENT2_LABEL_DEFAULT)
+
+
+def oauth2_entry_description() -> str:
+    return ((os.getenv(CLIENT2_DESCRIPTION_ENV, "") or "").strip()
+            or CLIENT2_DESCRIPTION_DEFAULT)
+
+
+def user_holds_view_credential(db: Session, user_id: int) -> bool:
+    """用户是否持有查看凭证（第二入口门禁的唯一判定口）。
+
+    复用全站唯一口径 subscriptions.view_grant（付费服 = 有效
+    订阅、公益服 = 未过期查看解锁行，一律按到期时间现算、不信
+    行上状态字段），不另造第二套判定。用户行不存在按未持有。
+    """
+    from backend import models as base_models
+    from backend import subscriptions
+
+    user = (
+        db.query(base_models.WebUser)
+        .filter(base_models.WebUser.id == user_id)
+        .first()
+    )
+    if user is None:
+        return False
+    granted, _unlock = subscriptions.view_grant(db, user, None)
+    return bool(granted)
+
+
+def oauth2_entry_status(db: Session, user_id: int) -> dict:
+    """第二入口渲染状态口（用户端 providers 响应随行下发）。
+
+    available = 第二套客户端已配置（未配置时前端整块不渲染、
+    后端发起口也响亮拒绝）；eligible = 当前用户持有查看凭证；
+    不 eligible 时 reason 给用户看的原因（与发起口 403 同一句）。
+    本口只读、不抛错：资格判定异常按不 eligible 处理，不许把
+    整个绑定页打成 500。
+    """
+    available = oauth2_configured()
+    eligible = False
+    if available:
+        try:
+            eligible = user_holds_view_credential(db, user_id)
+        except Exception:  # noqa: BLE001 — 状态口异常不许拖垮绑定页
+            logger.warning("第二入口资格判定失败 user=%s",
+                           user_id, exc_info=True)
+            eligible = False
+    return {
+        "available": available,
+        "eligible": eligible,
+        "reason": (None if eligible
+                   else OAUTH2_VIEW_CREDENTIAL_REQUIRED_MESSAGE),
+        "label": oauth2_entry_label(),
+        "description": oauth2_entry_description(),
+    }
+
+
+def _assert_oauth2_entry_allowed(db: Session, user_id: int) -> None:
+    """第二入口门禁（start 发起与 complete 回调复核共用同一把关）。
+
+    未配置 → validation（部署者先配 DRIVE_OAUTH2_*，与老入口
+    未配凭据时同一档）；无查看凭证 → forbidden（403）。老入口
+    永不调用本函数，其凭据检查与行为不受第二入口影响。
+    """
+    if not oauth2_configured():
+        raise DriveOAuthError(
+            "validation",
+            "服务器未配置第二套 Drive OAuth 应用凭据"
+            "（DRIVE_OAUTH2_CLIENT_ID/SECRET），部署者须先配好。")
+    if not user_holds_view_credential(db, user_id):
+        raise DriveOAuthError(
+            "forbidden", OAUTH2_VIEW_CREDENTIAL_REQUIRED_MESSAGE)
 
 
 def redirect_uri() -> str:
@@ -274,14 +403,16 @@ def _read_error_body(resp) -> object:
 # ---------------------------------------------------------------------------
 
 def build_authorization_url(redirect_uri_value: str, state: str,
-                            code_challenge: str) -> str:
+                            code_challenge: str,
+                            client: str | None = None) -> str:
     """Google 授权地址（access_type=offline + prompt=consent 是拿
     refresh_token 的必要条件，缺了 refresh_token 的绑定无法维护，
-    完成时直接判 auth_error，不存半截行）。"""
+    完成时直接判 auth_error，不存半截行）。client 选哪套应用
+    凭据拼 client_id（默认老应用，第二入口传 CLIENT_OAUTH2）。"""
     from urllib.parse import urlencode
 
     params = {
-        "client_id": _client_id(),
+        "client_id": _client_id(client),
         "redirect_uri": redirect_uri_value,
         "response_type": "code",
         "scope": requested_scope_string(),
@@ -296,14 +427,19 @@ def build_authorization_url(redirect_uri_value: str, state: str,
 
 def exchange_code_for_tokens(code: str, redirect_uri_value: str,
                              code_verifier: str,
-                             http_post=None) -> dict:
-    """授权码换 token（单次调用；失败按三档分类，网络/5xx 抛 transient）。"""
+                             http_post=None,
+                             client: str | None = None) -> dict:
+    """授权码换 token（单次调用；失败按三档分类，网络/5xx 抛 transient）。
+
+    client 必须与发起授权时用的那套一致（回调按 state 行记录
+    分流传入）：授权码是签给具体应用的，拿另一套凭据换必失败。
+    """
     post = http_post or _default_http_post
     try:
         resp = post(TOKEN_URL, data={
             "code": code,
-            "client_id": _client_id(),
-            "client_secret": _client_secret(),
+            "client_id": _client_id(client),
+            "client_secret": _client_secret(client),
             "redirect_uri": redirect_uri_value,
             "grant_type": "authorization_code",
             "code_verifier": code_verifier,
@@ -343,15 +479,20 @@ def exchange_code_for_tokens(code: str, redirect_uri_value: str,
 
 
 def refresh_access_token(refresh_token: str,
-                         http_post=None) -> dict:
+                         http_post=None,
+                         client: str | None = None) -> dict:
     """refresh_token 换新 access_token（Google 可能轮换 refresh_token，
-    回了新的就用新的，没回就沿用旧的；失败分类与换 token 同口径）。"""
+    回了新的就用新的，没回就沿用旧的；失败分类与换 token 同口径）。
+
+    client 必须按绑定行记录传入（见 binding_oauth_client）：
+    refresh_token 是签给具体应用的，用错客户端刷新必然失败。
+    """
     post = http_post or _default_http_post
     try:
         resp = post(TOKEN_URL, data={
             "grant_type": "refresh_token",
-            "client_id": _client_id(),
-            "client_secret": _client_secret(),
+            "client_id": _client_id(client),
+            "client_secret": _client_secret(client),
             "refresh_token": refresh_token,
         }, timeout=30)
     except Exception as exc:
@@ -584,7 +725,8 @@ def _validate_label_and_quota(db: Session, user_id: int,
 
 def start_drive_oauth(db: Session, user_id: int, account_label: str,
                       redirect_uri_value: str | None = None,
-                      rebind_binding_id: int | None = None) -> dict:
+                      rebind_binding_id: int | None = None,
+                      client: str | None = None) -> dict:
     """开始 Drive 授权：建 state 行、返回 Google 授权地址。
 
     此时不建绑定行与凭据行——绑完先验活，没换到 token 就不成行。
@@ -599,11 +741,20 @@ def start_drive_oauth(db: Session, user_id: int, account_label: str,
     绑定开关（drive_binding_enabled，默认关）关时在最前面拒绝
     （kind=disabled，403）：不建 state 行，重绑发起同样受管——
     开关只管「新建绑定」这个动作，既有绑定的播放/维护不走本口。
+
+    client=CLIENT_OAUTH2 时走第二入口：授权地址用第二套凭据拼、
+    state 行落 oauth_client 供回调分流；发起前先过门禁（第二套
+    凭据未配 → validation；无查看凭证 → forbidden），不生成
+    state。默认（老入口）的凭据检查、门禁与行为逐字不变，老
+    入口永不受查看凭证门禁与第二套配置影响。
     """
     if not ub.drive_binding_enabled(db):
         raise DriveOAuthError(
             "disabled", ub.DRIVE_BINDING_DISABLED_MESSAGE)
-    if not _client_id() or not _client_secret():
+    slot = _normalize_client(client)
+    if slot == CLIENT_OAUTH2:
+        _assert_oauth2_entry_allowed(db, user_id)
+    elif not _client_id() or not _client_secret():
         raise DriveOAuthError(
             "validation",
             "服务器未配置 Drive OAuth 应用凭据（DRIVE_OAUTH_CLIENT_ID/SECRET），"
@@ -637,11 +788,12 @@ def start_drive_oauth(db: Session, user_id: int, account_label: str,
         account_label=label, sealed_verifier=seal_secret(verifier),
         nonce_hash=_hash_state(nonce),
         created_at=now, expires_at=now + timedelta(seconds=state_ttl_sec()),
-        rebind_binding_id=rebind_binding_id)
+        rebind_binding_id=rebind_binding_id, oauth_client=slot)
     db.add(row)
     db.commit()
     return {
-        "authorization_url": build_authorization_url(uri, state, challenge),
+        "authorization_url": build_authorization_url(
+            uri, state, challenge, client=slot),
         "expires_in": state_ttl_sec(),
         # 浏览器会话 nonce 原文：只许 portal 用它下发 HttpOnly
         # cookie（portal 返回前端前会 pop 掉本键，绝不进 JSON）。
@@ -650,9 +802,12 @@ def start_drive_oauth(db: Session, user_id: int, account_label: str,
 
 
 def _create_failed_drive_rows(db: Session, user_id: int, label: str,
-                              kind: str) -> em.UserStorageBinding:
+                              kind: str,
+                              oauth_client: str = CLIENT_PRIMARY
+                              ) -> em.UserStorageBinding:
     """三档失败落行（P1 同款语义：行在、状态是失败态、客户端展示
-    重绑引导，不静默、不回落）。"""
+    重绑引导，不静默、不回落）。失败行也落来源客户端：之后重验
+    刷新要按它选凭据，记错一样刷不动。"""
     cred = em.MountCredential(
         mount_id=None, scope="user", owner_user_id=user_id,
         sealed_credential="", key_id="fernet-v1", status="invalid")
@@ -660,7 +815,8 @@ def _create_failed_drive_rows(db: Session, user_id: int, label: str,
     db.flush()
     binding = em.UserStorageBinding(
         user_id=user_id, provider=ub.PROVIDER_DRIVE, account_label=label,
-        credential_id=cred.id, status="invalid")
+        credential_id=cred.id, status="invalid",
+        oauth_client=_normalize_client(oauth_client))
     db.add(binding)
     db.flush()
     ub._mark_failed(db, binding, kind)
@@ -690,6 +846,12 @@ def complete_drive_oauth(db: Session, state: str, code: str,
     绑定开关（drive_binding_enabled，默认关）关时在消费 state
     之前拒绝（kind=disabled，403）：发起后开关被关掉的中途流程
     同样建不了新绑定，state 行不烧、开关重开后仍可用（未过期时）。
+
+    入口分流：state 行 oauth_client 决定换 token 用哪套凭据、
+    绑定行最终落哪个来源。第二入口的行在换 token 前再过一次
+    门禁复核（发起后查看凭证被收回也绑不成）：不过关烧 state
+    行并抛原 kind（forbidden / validation），不换 token、不落行；
+    老入口的行不复核、行为逐字不变。
     """
     if not ub.drive_binding_enabled(db):
         raise DriveOAuthError(
@@ -703,6 +865,14 @@ def complete_drive_oauth(db: Session, state: str, code: str,
     if row is None:
         raise DriveOAuthError("not_found", "授权会话不存在或已使用，请重新授权。")
     user_id, label = row.user_id, row.account_label
+    slot = _normalize_client(getattr(row, "oauth_client", None))
+    if slot == CLIENT_OAUTH2:
+        try:
+            _assert_oauth2_entry_allowed(db, user_id)
+        except DriveOAuthError:
+            db.delete(row)
+            db.commit()
+            raise
     rebind_binding_id = getattr(row, "rebind_binding_id", None)
     try:
         verifier = unseal_secret(row.sealed_verifier or "")
@@ -738,14 +908,15 @@ def complete_drive_oauth(db: Session, state: str, code: str,
                 "validation", "重绑目标已不存在，请重新绑定。")
     try:
         tokens = exchange_code_for_tokens(code, uri, verifier,
-                                          http_post=http_post)
+                                          http_post=http_post, client=slot)
     except DriveOAuthError as exc:
         if exc.kind in ("auth_error", "expired", "throttled"):
             if rebind_target is not None:
                 ub._mark_failed(db, rebind_target, exc.kind)
                 db.commit()
                 return rebind_target
-            return _create_failed_drive_rows(db, user_id, label, exc.kind)
+            return _create_failed_drive_rows(
+                db, user_id, label, exc.kind, oauth_client=slot)
         raise
     try:
         check_drive_liveness(tokens["access_token"], http_get=http_get)
@@ -755,7 +926,8 @@ def complete_drive_oauth(db: Session, state: str, code: str,
                 ub._mark_failed(db, rebind_target, exc.kind)
                 db.commit()
                 return rebind_target
-            return _create_failed_drive_rows(db, user_id, label, exc.kind)
+            return _create_failed_drive_rows(
+                db, user_id, label, exc.kind, oauth_client=slot)
         raise
     granted = tokens.get("scope")
     if rebind_target is not None:
@@ -778,6 +950,9 @@ def complete_drive_oauth(db: Session, state: str, code: str,
         cred.last_verified_at = now
         cred.last_error_kind = None
         rebind_target.granted_scopes = granted
+        # 来源客户端随本次重绑改写：换 token 用的是 state 行记的
+        # 那套，之后刷新就按这个新记录走，两边必须同一步改。
+        rebind_target.oauth_client = slot
         rebind_target.status = "active"
         rebind_target.last_verified_at = now
         rebind_target.last_error_kind = None
@@ -815,7 +990,8 @@ def complete_drive_oauth(db: Session, state: str, code: str,
     db.flush()
     binding = em.UserStorageBinding(
         user_id=user_id, provider=ub.PROVIDER_DRIVE, account_label=label,
-        credential_id=cred.id, status="active", granted_scopes=granted)
+        credential_id=cred.id, status="active", granted_scopes=granted,
+        oauth_client=slot)
     db.add(binding)
     db.flush()
     now = datetime.now()
@@ -934,7 +1110,9 @@ def get_binding_drive_access_token(db: Session, binding,
         db.commit()
         raise DriveOAuthError("expired", ub.error_message("expired"))
     try:
-        new_tokens = refresh_access_token(refresh_token, http_post=http_post)
+        new_tokens = refresh_access_token(
+            refresh_token, http_post=http_post,
+            client=binding_oauth_client(binding))
     except DriveOAuthError as exc:
         if exc.kind in ("expired", "auth_error"):
             _apply_refresh_failure(db, binding, exc.kind)
@@ -1005,7 +1183,9 @@ def refresh_drive_binding(db: Session, user_id: int, binding_id: int,
         db.commit()
         return binding
     try:
-        new_tokens = refresh_access_token(refresh_token, http_post=http_post)
+        new_tokens = refresh_access_token(
+            refresh_token, http_post=http_post,
+            client=binding_oauth_client(binding))
     except DriveOAuthError as exc:
         if exc.kind in ("expired", "auth_error"):
             _apply_refresh_failure(db, binding, exc.kind)
@@ -1095,8 +1275,9 @@ def sweep_drive_credentials(db: Session, http_post=None,
             summary["auth_expired"] += 1
             continue
         try:
-            new_tokens = refresh_access_token(refresh_token,
-                                              http_post=http_post)
+            new_tokens = refresh_access_token(
+                refresh_token, http_post=http_post,
+                client=binding_oauth_client(binding))
         except DriveOAuthError as exc:
             if exc.kind == "expired":
                 _apply_refresh_failure(db, binding, "expired")

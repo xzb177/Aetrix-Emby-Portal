@@ -380,14 +380,18 @@ export const deviceApi = {
 // 下线，后端对这两家一律拒绝）；
 // POST /storage-bindings/{id}/verify → 绑定行；DELETE /storage-bindings/{id} → { success: true }。
 // 绑定行字段照抄 backend/emby_server/user_bindings.py serialize_binding：
-// id / provider / account_label / status / last_verified_at / last_error_kind /
-// error_message / has_credential / needs_rebind / granted_scopes / created_at，绝不含凭据原文。
+// id / provider / account_label / oauth_client / status / last_verified_at /
+// last_error_kind / error_message / has_credential / needs_rebind /
+// granted_scopes / created_at，绝不含凭据原文。
 // needs_rebind：Drive 行已授范围缺 drive.file 即 True（老绑定无记录也 True），
 // 非 Drive 存量行恒 False；granted_scopes：实授范围列表，老绑定无记录为 null。
+// oauth_client：Drive 行的来源入口（primary=原入口 / oauth2=新入口，老行
+// 无记录后端归一为 primary），非 Drive 存量行恒 null；重绑必须走同一入口。
 export interface StorageBinding {
   id: number
   provider: string
   account_label: string
+  oauth_client: string | null
   status: string
   last_verified_at: string | null
   last_error_kind: string | null
@@ -407,12 +411,26 @@ export interface DriveOAuthStartResponse {
   expires_in: number
 }
 
+// Drive 第二绑定入口状态（后端 drive_oauth.oauth2_entry_status 原样下发）：
+// available=第二套应用凭据已配置（false 时新入口整块不渲染、后端也拒绝发起）；
+// eligible=当前用户持有查看凭证；reason=不 eligible 时给用户看的原因；
+// label / description=入口展示名与说明（后端配置下发，前端不写死）。
+export interface DriveOAuth2EntryStatus {
+  available: boolean
+  eligible: boolean
+  reason: string | null
+  label: string
+  description: string
+}
+
 // 后台实际启用的挂载类型映射后的 provider 名单（GET /storage-bindings/providers）：
 // 只含 provider 名串（现行只有 drive；夸克 / 115 已于 2026-11-02 下线），
 // 不含挂载路径、凭据、账号等敏感字段。
 // 前端“我的网盘”按这份名单渲染对应块，名单里没有的块整个不渲染。
+// drive_oauth2：第二绑定入口状态（见上），与名单同响应下发。
 export interface StorageBindingProvidersResponse {
   providers: string[]
+  drive_oauth2?: DriveOAuth2EntryStatus
 }
 
 export const storageBindingApi = {
@@ -423,6 +441,18 @@ export const storageBindingApi = {
   startDriveOAuth: (accountLabel: string, rebindBindingId?: number) =>
     api.post<never, DriveOAuthStartResponse>(
       '/api/user/emby/storage-bindings/drive/oauth/start',
+      {
+        account_label: accountLabel,
+        ...(rebindBindingId != null
+          ? { rebind_binding_id: rebindBindingId }
+          : {}),
+      },
+    ),
+  // 第二绑定入口（新应用）：与 startDriveOAuth 同形，仅端点不同；
+  // 仅限持有查看凭证的用户，无凭证后端 403（detail 原样展示）。
+  startDriveOAuth2: (accountLabel: string, rebindBindingId?: number) =>
+    api.post<never, DriveOAuthStartResponse>(
+      '/api/user/emby/storage-bindings/drive/oauth2/start',
       {
         account_label: accountLabel,
         ...(rebindBindingId != null

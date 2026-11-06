@@ -771,6 +771,9 @@ def _binding_error_status(exc) -> int:
         # Drive 绑定开关关闭（drive_binding_enabled）：明确拒绝新建
         # 绑定，detail 是给用户看的人话（「网盘绑定暂未开放。」）。
         return 403
+    if exc.kind == "forbidden":
+        # 第二入口查看凭证门禁未过：明确拒绝，detail 原样给用户看。
+        return 403
     return 400
 
 
@@ -797,10 +800,19 @@ def list_storage_binding_providers(
     口径的冲突点已写进 PR 描述，等父代理审）。
     drive 另受绑定开关（drive_binding_enabled，默认关）管辖：关时名单
     不返回 drive，前端整块不渲染，OAuth 发起口同时 403 拒绝。
-    """
-    from backend.emby_server import user_bindings
 
-    return {"providers": user_bindings.list_binding_providers(db)}
+    响应另附 drive_oauth2（第二绑定入口状态，drive_oauth
+    .oauth2_entry_status）：available/eligible/reason/label/
+    description，前端据此决定第二入口整块渲不渲染、无凭证时为何
+    置灰；providers 名单本身的口径不变。
+    """
+    from backend.emby_server import drive_oauth, user_bindings
+
+    return {
+        "providers": user_bindings.list_binding_providers(db),
+        "drive_oauth2": drive_oauth.oauth2_entry_status(
+            db, request_user.id),
+    }
 
 
 @user_emby_router.post("/storage-bindings", status_code=201)
@@ -863,6 +875,31 @@ class DriveOAuthStart(BaseModel):
     rebind_binding_id: int | None = None
 
 
+def _apply_oauth_nonce_cookie(request: Request, response: Response,
+                              result: dict) -> dict:
+    """start 结果 → 下发会话 nonce cookie 并摘掉 nonce 原文后返回。
+
+    安全收口（2026-10-30）：nonce cookie（HttpOnly、只在回调路径
+    发送）把回调完成动作绑回本浏览器 + 本用户，堵“诱使他人点
+    授权链接、令牌落攻击者名下”的链（见 drive_oauth
+    .assert_callback_browser_binding）。nonce 原文只进 cookie，
+    绝不进返回 JSON。两个 start 口共用本函数，口径不许漂。
+    """
+    from backend.emby_server import drive_oauth
+
+    nonce = result.pop("_oauth_nonce", None)
+    if nonce:
+        response.set_cookie(
+            drive_oauth.OAUTH_NONCE_COOKIE, nonce,
+            max_age=drive_oauth.state_ttl_sec(),
+            path=drive_oauth.OAUTH_CALLBACK_PATH,
+            domain=drive_oauth.oauth_nonce_cookie_domain(
+                request.url.hostname),
+            httponly=True, samesite="lax",
+            secure=request.url.scheme == "https")
+    return result
+
+
 @user_emby_router.post("/storage-bindings/drive/oauth/start")
 def start_drive_oauth_binding(
         body: DriveOAuthStart,
@@ -875,12 +912,7 @@ def start_drive_oauth_binding(
     此时不建绑定行与凭据行（绑完先验活）；前端引导用户去授权地址
     完成 Google 同意，Google 再把浏览器带回 callback 口。服务器
     应用凭据 / 对外地址未配时响亮 400（部署者先配好，不猜）。
-
-    安全收口（2026-10-30）：同时给浏览器下发会话 nonce cookie
-    （HttpOnly、只在回调路径发送），回调时凭它把完成动作绑回
-    本浏览器 + 本用户，堵“诱使他人点授权链接、令牌落攻击者
-    名下”的链（见 drive_oauth.assert_callback_browser_binding）。
-    nonce 原文只进 cookie，绝不进返回 JSON。
+    nonce cookie 的下发口径见 _apply_oauth_nonce_cookie。
     """
     from backend.emby_server import drive_oauth
 
@@ -891,17 +923,35 @@ def start_drive_oauth_binding(
     except drive_oauth.DriveOAuthError as exc:
         raise HTTPException(
             status_code=_binding_error_status(exc), detail=exc.message) from exc
-    nonce = result.pop("_oauth_nonce", None)
-    if nonce:
-        response.set_cookie(
-            drive_oauth.OAUTH_NONCE_COOKIE, nonce,
-            max_age=drive_oauth.state_ttl_sec(),
-            path=drive_oauth.OAUTH_CALLBACK_PATH,
-            domain=drive_oauth.oauth_nonce_cookie_domain(
-                request.url.hostname),
-            httponly=True, samesite="lax",
-            secure=request.url.scheme == "https")
-    return result
+    return _apply_oauth_nonce_cookie(request, response, result)
+
+
+@user_emby_router.post("/storage-bindings/drive/oauth2/start")
+def start_drive_oauth2_binding(
+        body: DriveOAuthStart,
+        request: Request,
+        response: Response,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """开始 Drive 授权（第二入口，走新应用 DRIVE_OAUTH2_*）。
+
+    与老 start 口同形：建 state 行（落 oauth_client=oauth2）、
+    返回 Google 授权地址、同样下发 nonce cookie；回调仍是同一
+    个 callback 口，靠 state 行分流换 token。差异只有两点：授权
+    地址用第二套客户端凭据拼；仅限持有查看凭证的用户——未配
+    第二套凭据 400、无凭证 403（detail 是给用户看的人话）。
+    """
+    from backend.emby_server import drive_oauth
+
+    try:
+        result = drive_oauth.start_drive_oauth(
+            db, request_user.id, body.account_label,
+            rebind_binding_id=body.rebind_binding_id,
+            client=drive_oauth.CLIENT_OAUTH2)
+    except drive_oauth.DriveOAuthError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return _apply_oauth_nonce_cookie(request, response, result)
 
 
 @user_emby_router.get("/storage-bindings/drive/oauth/callback")
