@@ -18,6 +18,11 @@
  *
  * v2.54（暗房影院）：整页改用 components/ui 的共享原语（PageHeader / SectionCard /
  * StatTile / EmptyState），是其它页面改造的参考实现——见 components/ui/README.md。
+ *
+ * v2.55（方便优先重排）：页首新增「全站状态」一眼区（站点健康 / 队列积压 /
+ * 起播近况 / 今日数据）与「快捷操作」直达条；新接起播统计口
+ * （GET /api/admin/playback/play-start-stats）成卡。原有信息区全部保留、
+ * 顺序不动，只在前面加「先看状态、先到地方」的两层。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -25,13 +30,15 @@ import {
   Film, MessageSquareDashed, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
   Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, Trophy, Flame, Activity,
-  AlertTriangle, Table2,
+  AlertTriangle, Table2, Gauge, HeartPulse, ClipboardList, Stethoscope, ListTodo,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchLibraries, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
   fetchServersSummary, fetchStatsTrend, fetchBackendServices, fetchDashboardAggregate, fetchQuotaDashboard,
-  type BackendServiceStatus, type DashboardAggregate, type DashboardDetailTables, type QuotaDashboard } from '@/api/admin'
+  fetchPanelHealth, fetchPlayStartStats,
+  type BackendServiceStatus, type DashboardAggregate, type DashboardDetailTables, type QuotaDashboard,
+  type PanelHealth, type PlayStartStats } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
   EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary, TrendStats,
@@ -171,7 +178,127 @@ function fmtBytes(v: number | null): string {
   return `${(v / 1024 ** 3).toFixed(1)} GB`
 }
 
-onMounted(() => { loadAll(); loadQuota() })
+/** 面板健康（/api/health）：全站状态一眼区的「站点健康」来源，独立软加载 */
+const panelHealth = ref<PanelHealth | null>(null)
+async function loadPanelHealth() {
+  try {
+    panelHealth.value = await fetchPanelHealth()
+  } catch {
+    panelHealth.value = null
+  }
+}
+
+/** 起播统计（play-start-stats）：独立软加载，窗口 24 小时 / 7 天可切 */
+const playStart = ref<PlayStartStats | null>(null)
+const playStartHours = ref(24)
+const playStartLoading = ref(false)
+async function loadPlayStart() {
+  playStartLoading.value = true
+  try {
+    playStart.value = await fetchPlayStartStats(playStartHours.value)
+  } catch {
+    playStart.value = null
+  } finally {
+    playStartLoading.value = false
+  }
+}
+watch(playStartHours, loadPlayStart)
+
+onMounted(() => { loadAll(); loadQuota(); loadPanelHealth(); loadPlayStart() })
+
+// ==================== 全站状态一眼区 ====================
+
+/** 站点健康：与系统健康页同口径（healthy 正常 / degraded 有警告 / unhealthy 异常） */
+const healthGlance = computed(() => {
+  const h = panelHealth.value
+  if (!h) return { label: '无法确认', tone: 'plain' as KpiTone, hint: '健康状态暂未拿到' }
+  const issues = (h.health_issues ?? []).map((i) => i.message).filter(Boolean).join('；')
+  if (h.status === 'healthy') return { label: '正常', tone: 'ok' as KpiTone, hint: 'API 正常响应' }
+  if (h.status === 'degraded') return { label: '有警告', tone: 'warn' as KpiTone, hint: issues || 'API 正常响应' }
+  if (h.status === 'unhealthy') return { label: '异常', tone: 'danger' as KpiTone, hint: issues || '点开看系统健康' }
+  return { label: h.status, tone: 'plain' as KpiTone, hint: '' }
+})
+
+/** 补资料积压：数据明细的刮削进度按库 pending 合计（detail 没拿到时为 null，不显示假数） */
+const enrichPending = computed(() =>
+  detail.value ? detail.value.enrich_progress.reduce((s, r) => s + r.pending, 0) : null,
+)
+
+/** 队列积压：补资料（明细合计）+ 转存（额度口）+ 扫描中（媒体库状态），都用页内已拉到的数据 */
+const queueGlance = computed(() => {
+  const parts: string[] = []
+  let pending = 0
+  let known = false
+  if (enrichPending.value != null) {
+    parts.push(`补资料待处理 ${enrichPending.value}`)
+    pending += enrichPending.value
+    known = true
+  }
+  const t = quota.value?.transfer_queue.counts
+  if (t) {
+    parts.push(`转存待跑 ${t.pending} · 进行中 ${t.running}`)
+    pending += t.pending
+    known = true
+    if (t.failed > 0) parts.push(`转存失败 ${t.failed}`)
+  }
+  if (scanSummary.value.scanning > 0) parts.push(`扫描中 ${scanSummary.value.scanning}`)
+  return { known, pending, hint: parts.join('\n') || '队列暂未拿到' }
+})
+
+// ==================== 起播统计汇总 ====================
+
+/** 起播来源显示名：挂载行优先挂载名，其余按 provider 既有取值给中文名 */
+const PLAY_PROVIDER_LABEL: Record<string, string> = {
+  drive: 'Google Drive',
+  local: '本机文件',
+  upstream: '上游线路',
+  mount: '挂载',
+  unknown: '未知来源',
+}
+function playSourceName(row: PlayStartStats['by_provider'][number]): string {
+  if (row.mount_name) return row.mount_name
+  if (row.provider === 'mount' && row.mount_id != null) return `挂载 #${row.mount_id}`
+  return PLAY_PROVIDER_LABEL[row.provider] || row.provider
+}
+
+function fmtMs(v: number | null): string {
+  return v == null ? '—' : `${Math.round(v)} ms`
+}
+
+/** 起播汇总：总数/失败为各来源行合计；平均解析按各行起播数加权；最慢取各行最大 */
+const playTotals = computed(() => {
+  const rows = playStart.value?.by_provider ?? []
+  const total = rows.reduce((s, r) => s + r.total, 0)
+  const errors = rows.reduce((s, r) => s + r.errors, 0)
+  const weighted = rows.filter((r) => r.avg_resolve_ms != null)
+  const wTotal = weighted.reduce((s, r) => s + r.total, 0)
+  const avg = wTotal > 0
+    ? weighted.reduce((s, r) => s + (r.avg_resolve_ms ?? 0) * r.total, 0) / wTotal
+    : null
+  const maxes = rows.map((r) => r.max_resolve_ms).filter((v): v is number => v != null)
+  return { total, errors, avg, max: maxes.length ? Math.max(...maxes) : null }
+})
+
+const playFailRateText = computed(() => {
+  const { total, errors } = playTotals.value
+  return total > 0 ? `${((errors / total) * 100).toFixed(1)}%` : '—'
+})
+
+// ==================== 快捷操作 ====================
+
+/** 常用管理动作直达：一点到地方（待办类带好筛选，与待办条同口径） */
+const quickActions = [
+  { label: '用户管理', to: '/users', icon: Users },
+  { label: '订单', to: '/orders', icon: Wallet },
+  { label: '工单', to: '/tickets?status=open', icon: Ticket },
+  { label: '求片审核', to: '/media-seek?status=pending', icon: MessageSquareDashed },
+  { label: '码管理', to: '/codes', icon: TicketCheck },
+  { label: '媒体库', to: '/emby', icon: Film },
+  { label: '任务总览', to: '/tasks', icon: ClipboardList },
+  { label: '服务器与线路', to: '/servers', icon: Server },
+  { label: '系统健康', to: '/health', icon: Activity },
+  { label: '一键体检', to: '/diagnosis', icon: Stethoscope },
+]
 
 // ==================== 服务器接入（信息展示）====================
 
@@ -443,6 +570,59 @@ function serviceRoleLabel(role: string): string {
           <el-button size="small" :icon="AlertTriangle" @click="loadAll">重新加载</el-button>
         </template>
       </el-alert>
+
+      <!--
+        全站状态一眼区（v2.55 方便优先）：打开仪表盘先回答四件事——
+        站点健不健康、队列堵不堵、起播快不快、今天怎么样。
+        每张卡点进去就是对应明细（起播卡锚到本页起播统计区）。
+      -->
+      <section class="glance-grid" aria-label="全站状态">
+        <RouterLink to="/health" class="glance-card">
+          <div class="glance-head">
+            <HeartPulse :size="15" />
+            <span>站点健康</span>
+            <span class="status-dot glance-dot" :class="{ warning: healthGlance.tone === 'warn', danger: healthGlance.tone === 'danger', muted: healthGlance.tone === 'plain' }" />
+          </div>
+          <div class="glance-value" :class="`tone-${healthGlance.tone}`">{{ healthGlance.label }}</div>
+          <div class="glance-hint">{{ healthGlance.hint }}</div>
+        </RouterLink>
+        <RouterLink to="/tasks" class="glance-card">
+          <div class="glance-head">
+            <ListTodo :size="15" />
+            <span>队列积压</span>
+          </div>
+          <div class="glance-value">{{ queueGlance.known ? `${queueGlance.pending} 项待处理` : '—' }}</div>
+          <div class="glance-hint pre-line">{{ queueGlance.hint }}</div>
+        </RouterLink>
+        <a href="#play-start-stats" class="glance-card">
+          <div class="glance-head">
+            <Gauge :size="15" />
+            <span>起播近况 · 近 24 小时</span>
+          </div>
+          <div class="glance-value">{{ playStart ? `${playTotals.total} 次起播` : '—' }}</div>
+          <div class="glance-hint">
+            {{ playStart ? `失败 ${playTotals.errors}（${playFailRateText}） · 平均解析 ${fmtMs(playTotals.avg)}` : '起播统计暂未拿到' }}
+          </div>
+        </a>
+        <div class="glance-card">
+          <div class="glance-head">
+            <TrendingUp :size="15" />
+            <span>今日数据</span>
+          </div>
+          <div class="glance-value">{{ playback ? `${playback.today.plays} 次播放` : '—' }}</div>
+          <div class="glance-hint">
+            播放用户 {{ playback?.today.users ?? '—' }} · 签到 {{ economy?.checkins_today ?? '—' }} · 当前会话 {{ overview?.emby.active_sessions ?? '—' }}
+          </div>
+        </div>
+      </section>
+
+      <!-- 快捷操作：常用管理动作一键直达，不用翻菜单 -->
+      <nav class="quick-actions" aria-label="快捷操作">
+        <RouterLink v-for="a in quickActions" :key="a.label" :to="a.to" class="quick-pill">
+          <component :is="a.icon" :size="14" />
+          <span>{{ a.label }}</span>
+        </RouterLink>
+      </nav>
 
       <!--
         交付链数据卡：先回答「现在能不能用、有没有要处理的」——
@@ -731,6 +911,63 @@ function serviceRoleLabel(role: string): string {
         </SectionCard>
       </section>
 
+      <!-- 起播统计（v2.55 接线）：起播事件按来源/错误类型聚合——起播慢是慢在哪家源、
+           失败是哪类错误，看这一张卡。窗口内没事件时是空态，不编造数据。 -->
+      <SectionCard
+        id="play-start-stats"
+        title="起播统计"
+        :icon="Gauge"
+        :meta="playStart ? `近 ${playStart.window_hours} 小时` : '起播事件聚合'"
+      >
+        <template #actions>
+          <el-radio-group v-model="playStartHours" size="small">
+            <el-radio-button :value="24">24 小时</el-radio-button>
+            <el-radio-button :value="168">7 天</el-radio-button>
+          </el-radio-group>
+        </template>
+        <div v-loading="playStartLoading">
+          <template v-if="playStart && playStart.by_provider.length">
+            <div class="realm-stats play-summary">
+              <span>总起播 <b>{{ playTotals.total }}</b></span>
+              <span>失败 <b>{{ playTotals.errors }}</b></span>
+              <span>失败率 <b>{{ playFailRateText }}</b></span>
+              <span>平均解析 <b>{{ fmtMs(playTotals.avg) }}</b></span>
+              <span>最慢解析 <b>{{ fmtMs(playTotals.max) }}</b></span>
+            </div>
+            <div class="play-table-wrap">
+              <table class="detail-table">
+                <thead><tr><th>来源</th><th>起播</th><th>失败</th><th>平均解析</th><th>最慢解析</th></tr></thead>
+                <tbody>
+                  <tr v-for="row in playStart.by_provider" :key="`${row.provider}:${row.mount_id ?? ''}`">
+                    <td>{{ playSourceName(row) }}<span v-if="row.mount_type" class="rank-type">{{ row.mount_type }}</span></td>
+                    <td>{{ row.total }}</td>
+                    <td>{{ row.errors }}</td>
+                    <td>{{ fmtMs(row.avg_resolve_ms) }}</td>
+                    <td>{{ fmtMs(row.max_resolve_ms) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="playStart.by_error_kind.length" class="error-kinds">
+              <span class="error-kinds-label">失败类型</span>
+              <span v-for="k in playStart.by_error_kind" :key="k.error_kind" class="au-badge au-badge-muted">{{ k.error_kind }} × {{ k.total }}</span>
+            </div>
+            <p v-else class="play-noerror">窗口内没有失败记录。</p>
+          </template>
+          <EmptyState
+            v-else-if="playStart"
+            compact
+            :icon="Gauge"
+            title="暂无起播记录"
+            description="这个时间窗内还没有起播事件；有人开始播放后这里会有数据。"
+          />
+          <div v-else-if="!playStartLoading" class="play-failed">
+            <span>起播统计没拿到。</span>
+            <el-button size="small" @click="loadPlayStart">重新加载</el-button>
+          </div>
+        </div>
+      </SectionCard>
+
       <!-- 数据明细：7 张表集中在这一个区里页签切换（2026-10-23 用户要求补表，
            并明确不要铺得到处都是） -->
       <SectionCard v-if="detail" title="数据明细" :icon="Table2" meta="点页签切换">
@@ -869,8 +1106,110 @@ function serviceRoleLabel(role: string): string {
 .kpi-grid :deep(.au-stat__hint) {
   white-space: pre-line;
 }
+
+/* ===== 全站状态一眼区（v2.55）===== */
+.glance-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.glance-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 13px 16px;
+  border-radius: var(--au-r-lg);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface);
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+}
+a.glance-card { transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease); }
+a.glance-card:hover { border-color: var(--au-border-strong); background: var(--au-surface-2); }
+.glance-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--au-text-3);
+}
+.glance-head svg { color: var(--au-text-3); flex-shrink: 0; }
+.glance-dot { margin-left: auto; }
+.status-dot.muted { background: var(--au-text-4); box-shadow: 0 0 0 4px var(--au-surface-2); }
+.glance-value {
+  font-family: var(--au-font-serif);
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--au-text);
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+.glance-value.tone-ok { color: var(--au-success); }
+.glance-value.tone-warn { color: var(--au-warning); }
+.glance-value.tone-danger { color: var(--au-danger); }
+.glance-hint {
+  font-size: 12px;
+  color: var(--au-text-3);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.glance-hint.pre-line { white-space: pre-line; display: block; -webkit-line-clamp: unset; }
+
+/* ===== 快捷操作（v2.55）===== */
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.quick-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface);
+  color: var(--au-text-2);
+  font-size: 13px;
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
+}
+.quick-pill:hover { border-color: var(--au-primary-border, var(--au-border-strong)); color: var(--au-text); background: var(--au-surface-2); }
+.quick-pill svg { color: var(--au-text-3); }
+.quick-pill:hover svg { color: var(--au-primary); }
+
+/* ===== 起播统计（v2.55）===== */
+.play-summary { margin-bottom: 8px; }
+/* 窄屏横向滚动容器：表头不折行（.detail-table 的 th 默认会换行），
+   表给最小宽度，手机上左右滑看全，不挤成竖排两字 */
+.play-table-wrap { overflow-x: auto; }
+.play-table-wrap .detail-table { min-width: 430px; }
+.play-table-wrap .detail-table th { white-space: nowrap; }
+.error-kinds {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.error-kinds-label { font-size: 12px; color: var(--au-text-3); margin-right: 2px; }
+.play-noerror { font-size: 12px; color: var(--au-text-3); margin: 10px 0 0; }
+.play-failed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--au-text-3);
+  padding: 6px 0;
+}
 @media (max-width: 1180px) {
   .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .glance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .tile-grid {
@@ -1106,5 +1445,9 @@ function serviceRoleLabel(role: string): string {
   .chart-axis span:nth-child(even) { display: none; }
   .trend-total-value { font-size: 1.25rem; }
   .two-col { grid-template-columns: 1fr; }
+  .glance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .glance-card { padding: 11px 12px; }
+  .glance-value { font-size: 1.1rem; }
+  .quick-pill { height: 32px; padding: 0 12px; font-size: 12.5px; }
 }
 </style>
