@@ -304,7 +304,7 @@ onMounted(reload)
   padding: 16px;
 }
 .agent-modal {
-  background: var(--v4-card-bg, #fff);
+  background: var(--paper-card);
   border-radius: 14px;
   padding: 20px;
   width: min(440px, 94vw);
