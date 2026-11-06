@@ -1713,6 +1713,7 @@ def create_user_job(db, item, user_id, provider, trigger="playback",
                          status="pending")
     db.add(job)
     db.flush()
+    _stamp_job_cooldown(job)
     if use_waiver:
         _record_throttle_waiver(db, user_id, item_id, waiver_from,
                                 _dest_scheme(dest), job.id)
@@ -1872,6 +1873,7 @@ def create_cross_provider_job(db, item, user_id, source_provider,
                          status="pending")
     db.add(job)
     db.flush()
+    _stamp_job_cooldown(job)
     if use_waiver:
         _record_throttle_waiver(db, user_id, item_id, waiver_from,
                                 _dest_scheme(dest), job.id)
@@ -3024,13 +3026,13 @@ def _gate_retrigger_budget_ok(db, item_id, user_id, dest=None):
     任务 + 一次重触发 = 2 行；第 3 次起不再建——防播放器每秒
     重试把“失败→重建”循环刷成任务洪水。桶口径与节流一致：
     同 provider 按 (item, user)，跨 provider 按 (item, user, dest)。
+    窗口口径与节流一致（PR-2：改读 cooldown_until 落字）。
     """
-    cutoff = datetime.now() - timedelta(seconds=THROTTLE_SEC)
     q = (db.query(em.TransferJob)
          .filter(em.TransferJob.item_id == item_id,
                  em.TransferJob.owner_scope == "user",
                  em.TransferJob.owner_ref == str(user_id),
-                 em.TransferJob.created_at >= cutoff))
+                 _throttle_window_filter(datetime.now())))
     if dest is not None:
         q = q.filter(em.TransferJob.dest_drive_id == dest)
     return q.count() < 2
@@ -4235,6 +4237,40 @@ def _dest_provider_of_dest(dest):
             "quark:": "quark"}.get(scheme)
 
 
+def _cooldown_until_for(created_at):
+    """一行任务的冷却到期时刻：created_at + 24h 节流窗（落字口径，
+    与旧现算口径同值）。created_at 未落库时以当前时刻近似（微秒级
+    偏差对 24h 窗无意义）。"""
+    base = created_at or datetime.now()
+    return base + timedelta(seconds=THROTTLE_SEC)
+
+
+def _stamp_job_cooldown(job):
+    """建单落字：cooldown_until = created_at + 节流窗。
+    须在 db.flush() 之后调用（created_at 已生成）。"""
+    job.cooldown_until = _cooldown_until_for(
+        getattr(job, "created_at", None))
+
+
+def _note_job_terminal_cooldown(job):
+    """终态落字：工人收尾时给终态行（done/failed）补/刷新
+    cooldown_until——存量行建单时没落字，靠这里补上；值仍按
+    created_at 口径，与现算结果一致。非终态行不碰。"""
+    if getattr(job, "status", "") not in ("done", "failed"):
+        return
+    _stamp_job_cooldown(job)
+
+
+def _throttle_window_filter(now):
+    """「节流窗内」谓词（字段优先，PanSave A 线 PR-2）：cooldown_until
+    未到，或存量行（字段为 NULL）按 created_at 现算仍在窗内。
+    与旧口径（created_at >= now - THROTTLE_SEC）逐行等价。"""
+    cutoff = now - timedelta(seconds=THROTTLE_SEC)
+    return ((em.TransferJob.cooldown_until > now)
+            | (em.TransferJob.cooldown_until.is_(None)
+               & (em.TransferJob.created_at >= cutoff)))
+
+
 def _recent_user_jobs(db, item_id, owner_ref, window_sec=THROTTLE_SEC):
     """该条目该用户桶内、节流窗内的全部任务行（不限落点、不限状态）。
 
@@ -4249,14 +4285,22 @@ def _recent_user_jobs(db, item_id, owner_ref, window_sec=THROTTLE_SEC):
     PA-039 的「死单不挡重建」由确认层分流＋_latest_job 的
     statuses 过滤兑现，不在本函数藏行（曾在此加 status 过滤，
     豁免记账与同方案节流随之误判，CI 实证后撤销）。
+
+    窗口口径（PR-2 字段化）：默认窗（= THROTTLE_SEC）改读
+    cooldown_until 落字（存量 NULL 行回退 created_at 现算）；
+    调用方传自定义窗时字段表达不了，仍走 created_at 现算。
     """
-    cutoff = datetime.now() - timedelta(seconds=window_sec)
-    return (db.query(em.TransferJob)
-            .filter(em.TransferJob.item_id == item_id,
-                    em.TransferJob.owner_scope == "user",
-                    em.TransferJob.owner_ref == owner_ref,
-                    em.TransferJob.created_at >= cutoff)
-            .all())
+    now = datetime.now()
+    q = (db.query(em.TransferJob)
+         .filter(em.TransferJob.item_id == item_id,
+                 em.TransferJob.owner_scope == "user",
+                 em.TransferJob.owner_ref == owner_ref))
+    if window_sec == THROTTLE_SEC:
+        q = q.filter(_throttle_window_filter(now))
+    else:
+        q = q.filter(em.TransferJob.created_at
+                     >= now - timedelta(seconds=window_sec))
+    return q.all()
 
 
 def _waiver_use_count(db, user_id):
@@ -4329,12 +4373,19 @@ def _recent_job_exists(db, item_id, owner_scope="source", owner_ref=None,
 
     分桶是关键：用户 A 的任务绝不能堵住用户 B 的任务（2026-10-26
     审计发现旧全局口径有此问题）。服主桶 owner_ref 为空。
+
+    窗口口径（PR-2 字段化）：默认窗改读 cooldown_until 落字
+    （存量 NULL 行回退 created_at 现算）；自定义窗仍走现算。
     """
-    cutoff = datetime.now() - timedelta(seconds=window_sec)
+    now = datetime.now()
     q = (db.query(em.TransferJob)
          .filter(em.TransferJob.item_id == item_id,
-                 em.TransferJob.owner_scope == owner_scope,
-                 em.TransferJob.created_at >= cutoff))
+                 em.TransferJob.owner_scope == owner_scope))
+    if window_sec == THROTTLE_SEC:
+        q = q.filter(_throttle_window_filter(now))
+    else:
+        q = q.filter(em.TransferJob.created_at
+                     >= now - timedelta(seconds=window_sec))
     if owner_ref is None:
         q = q.filter(em.TransferJob.owner_ref.is_(None))
     else:
@@ -4439,6 +4490,8 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
                              drive_id=drive_id, provider="drive",
                              owner_scope="source", status="pending")
         db.add(job)
+        db.flush()
+        _stamp_job_cooldown(job)
         db.commit()
         notify_transfer_wakeup(job.id)
         logger.warning("转存变体应急自动入队：item=%s job=%s", item_id, job.id)
@@ -4478,6 +4531,8 @@ def create_manual_job(db, item, drive_id, force=False):
                          drive_id=drive_id, provider="drive",
                          owner_scope="source", status="pending")
     db.add(job)
+    db.flush()
+    _stamp_job_cooldown(job)
     db.commit()
     notify_transfer_wakeup(job.id)
     return job
@@ -7757,6 +7812,9 @@ def _execute_claimed_job(job_id, session_factory, drive_api_factory):
             if fresh is not None:
                 fresh.lease_expires_at = None
                 fresh.claimed_by = None
+                # 终态落字（PR-2）：给终态行补/刷新 cooldown_until，
+                # 存量行靠这里补上落字（值按 created_at 口径）。
+                _note_job_terminal_cooldown(fresh)
                 db.commit()
         except Exception:
             logger.warning("转存工人：清租约失败 job=%s", job_id, exc_info=True)

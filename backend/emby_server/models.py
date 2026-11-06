@@ -1850,6 +1850,12 @@ class TransferVariant(Base):
     # 置时）同步清空。NULL = 无待收回义务。老库由 _auto_migrate
     # 补列（NULL）。
     share_revoke_pending_at = Column(DateTime)
+    # 转存保留期（PanSave A 线 PR-2）：retention_until 未到时清理器
+    # 不删本副本（删前多一道判断，见 transfer_cleanup）。两列默认
+    # NULL = 无保留，清理行为与升级前一致；本 PR 只落字段与删前
+    # 判断，不新增设置入口。老库由 _auto_migrate 补列（NULL）。
+    retention_reason = Column(String(120))
+    retention_until = Column(DateTime)
 
 
 class DirectIssueLog(Base):
@@ -1952,6 +1958,11 @@ class TransferJob(Base):
     # 另一工人认领；NULL = 未认领或已终态。老库由 auto-migrate 补列。
     lease_expires_at = Column(DateTime)
     claimed_by = Column(String(64))
+    # 转存冷却落字（PanSave A 线 PR-2）：本行节流窗的到期时刻，
+    # 建单与工人终态时按 created_at + 24h 节流窗落字；节流消费方
+    # 改读本列，存量行为 NULL 时回退 created_at 现算（口径等价）。
+    # 老库由 _auto_migrate 补列（NULL）。
+    cooldown_until = Column(DateTime)
     # 等待分段度量（2026-11-01 探针道方案期一/期二）：claimed_at
     # 为最近一次认领（普通/探针/当场）落笔时刻，NULL = 从未被
     # 认领；W1=created_at→claimed_at、W2/W3=claimed_at→终态可

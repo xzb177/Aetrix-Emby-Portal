@@ -88,4 +88,4 @@ def test_evict_early_returns_carry_new_keys(db):
     result = tc.evict_lru_variants(db, _factory(_FailingClient()), 1)
     assert result == {"evicted": [], "bytes_freed": 0, "reason": "no_need",
                       "skipped_unsupported": 0, "skipped_rows": [],
-                      "skipped_unsafe": 0, "failed": 0}
+                      "skipped_unsafe": 0, "failed": 0, "retained": 0}
