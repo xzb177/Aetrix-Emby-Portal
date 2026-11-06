@@ -104,6 +104,7 @@ from urllib.parse import urlparse
 
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.metasources import breaker as provider_breaker
+from backend.emby_server import external_failure_counts as efc
 from backend.emby_server import upstream_http
 from backend.emby_server import upstream_sources as us
 
@@ -729,6 +730,13 @@ def probe_source(
     state_before = record.availability_state
     if record.next_probe_at and record.next_probe_at > now:
         return _skipped("not_due", record)
+    # 持久熔断暂停（external_failure_counts，PanSave 借鉴 B 线）：
+    # 该源连续失败达阈值且暂停未到期时不再发请求、不喂任何计数，
+    # 到期后下一次到期探活即半开试探。与进程内 breaker 分工：
+    # 进程内管请求级开合，本层管跨进程/跨路径的持久停探。
+    failure_key = efc.normalize_target_key(source.base_url)
+    if efc.is_paused(efc.SCOPE_UPSTREAM_PROBE, failure_key, now=now):
+        return _skipped("failure_paused", record)
     breaker_key = f"upstream:{source.key}"
     try:
         if not provider_breaker.allow(breaker_key):
@@ -780,10 +788,15 @@ def probe_source(
     try:
         if outcome.kind == OUTCOME_SUCCESS:
             provider_breaker.record_success(breaker_key)
+            efc.record_success(efc.SCOPE_UPSTREAM_PROBE, failure_key,
+                               now=now)
         elif outcome.kind == OUTCOME_FAILURE:
             provider_breaker.record_failure(breaker_key, status=outcome.http_status,
                                             error=outcome.failure_kind or "")
+            efc.record_failure(efc.SCOPE_UPSTREAM_PROBE, failure_key,
+                               now=now)
         # unknown 不喂熔断：没定性的结论不该污染熔断计数。
+        # efc 计数层自身异常在其内部吞掉，此处不会被它带崩。
     except Exception:
         logger.warning("上游熔断喂数异常，已忽略", exc_info=True)
 

@@ -62,6 +62,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from backend.emby_server import external_failure_counts as efc
 from backend.emby_server import models as em
 
 logger = logging.getLogger(__name__)
@@ -658,6 +659,11 @@ def source_payload(source) -> dict:
         "import_enabled": bool(getattr(source, "import_enabled", True)),
         "credential_scope": source.credential_scope,
         "health_status": source.health_status,
+        # 连续失败熔断暂停态（external_failure_counts，PanSave 借鉴
+        # B 线）：并入既有健康面展示；计数层读失败时回未暂停空态，
+        # 不影响源列表本身。paused_until 为 epoch 秒。
+        "failure_pause": efc.pause_states_for_key(
+            efc.normalize_target_key(source.base_url)),
         "last_checked_at": (source.last_checked_at.isoformat()
                             if source.last_checked_at else None),
         "note": source.note,

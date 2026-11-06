@@ -109,6 +109,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.emby_server import external_failure_counts as efc
 from backend.emby_server import models as em
 from backend.emby_server import upstream_aggregation as agg
 from backend.emby_server import upstream_http
@@ -441,6 +442,36 @@ def _quota_error() -> UpstreamAggregateRunError:
         429, "upstream_quota_exhausted", "上游额度已耗尽，请稍后再试或换个源")
 
 
+#: 计入熔断的聚合抓取失败短码：源级可用性失败。凭据失效（配置
+#: 死亡）、额度耗尽、目录超限不参与计数——与 PanSave「明确已
+#: 失效不参与计数」同口径（external_failure_counts，B 线）。
+_COUNTED_RUN_ERROR_CODES = frozenset(
+    {"upstream_unavailable", "upstream_frontend_blocked"})
+
+
+def _failure_key(source) -> str:
+    return efc.normalize_target_key(getattr(source, "base_url", "") or "")
+
+
+def _raise_if_failure_paused(source) -> None:
+    """暂停期内不发任何请求：按既有「上游不可用」口径中止本轮。"""
+    if efc.is_paused(efc.SCOPE_UPSTREAM_FETCH, _failure_key(source)):
+        raise _unavailable_error()
+
+
+def _feed_fetch_outcome(source, exc: Optional[BaseException]) -> None:
+    """按抓取结果喂熔断计数：成功清零，可用性失败 +1，其余不喂。
+
+    计数层自身异常已在其内部吞掉，此处调用不会带崩抓取主流程。
+    """
+    key = _failure_key(source)
+    if exc is None:
+        efc.record_success(efc.SCOPE_UPSTREAM_FETCH, key)
+    elif isinstance(exc, UpstreamAggregateRunError) and \
+            exc.code in _COUNTED_RUN_ERROR_CODES:
+        efc.record_failure(efc.SCOPE_UPSTREAM_FETCH, key)
+
+
 # ---------------------------------------------------------------------------
 # 传输层（urllib，与 upstream_playback 的 _default_http_post 同款形态）
 # ---------------------------------------------------------------------------
@@ -703,6 +734,26 @@ class _PrefetchingPageFetcher:
 
 def fetch_upstream_libraries(source, *, http_get=None,
                              http_post=None, api_key=None) -> List[dict]:
+    """取上游库清单（熔断门面）：暂停期跳过、按结果喂计数。
+
+    实际取数在 ``_fetch_upstream_libraries_once``；本层只管暂停
+    门与喂数（口径见 ``_COUNTED_RUN_ERROR_CODES``）。
+    """
+    _raise_if_failure_paused(source)
+    try:
+        result = _fetch_upstream_libraries_once(
+            source, http_get=http_get, http_post=http_post,
+            api_key=api_key)
+    except Exception as exc:
+        _feed_fetch_outcome(source, exc)
+        raise
+    _feed_fetch_outcome(source, None)
+    return result
+
+
+def _fetch_upstream_libraries_once(source, *, http_get=None,
+                                   http_post=None,
+                                   api_key=None) -> List[dict]:
     """取上游库清单（Emby /Library/MediaFolders）。
 
     返回 [{"id": ..., "name": ..., "collection_type": ...}]（按上游
@@ -762,6 +813,33 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
                            retries: int = PAGE_RETRIES_DEFAULT,
                            backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT
                            ) -> List[agg.UpstreamCatalogRecord]:
+    """拉回某源的全部目录记录（熔断门面）：暂停期跳过、按结果喂数。
+
+    实际取数在 ``_fetch_upstream_records_once``；本层只管参数
+    校验顺序、暂停门与喂数（口径见 ``_COUNTED_RUN_ERROR_CODES``）。
+    """
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    _raise_if_failure_paused(source)
+    try:
+        result = _fetch_upstream_records_once(
+            source, http_get=http_get, http_post=http_post,
+            page_size=page_size, retries=retries,
+            backoff_sec=backoff_sec)
+    except Exception as exc:
+        _feed_fetch_outcome(source, exc)
+        raise
+    _feed_fetch_outcome(source, None)
+    return result
+
+
+def _fetch_upstream_records_once(
+        source, *, http_get: Optional[Callable] = None,
+        http_post: Optional[Callable] = None,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        retries: int = PAGE_RETRIES_DEFAULT,
+        backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT
+        ) -> List[agg.UpstreamCatalogRecord]:
     """拉回某源的全部目录记录（Emby Items 分页，Recursive）。
 
     遗留整源路径：只拉 Movie / Series / Episode 三型；季不进聚合。
@@ -791,6 +869,40 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
 
 
 def iter_upstream_records_for_parent(
+        source, parent_id, *, http_get: Optional[Callable] = None,
+        http_post: Optional[Callable] = None,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        api_key: Optional[str] = None,
+        retries: int = PAGE_RETRIES_DEFAULT,
+        backoff_sec: float = PAGE_RETRY_BACKOFF_DEFAULT,
+        sort_by: Optional[str] = None,
+        on_page: Optional[Callable] = None,
+        fetch_concurrency: int = 1):
+    """按 ParentId 流式拉回某上游库的目录记录（熔断门面）。
+
+    实际取数在 ``_iter_upstream_records_for_parent_once``；本层
+    只管参数校验顺序、暂停门与喂数（口径见
+    ``_COUNTED_RUN_ERROR_CODES``）。生成器语义：暂停门在首次
+    迭代时才触发；消费方中途弃迭代（未耗尽）不喂任何结论。
+    """
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    if not parent_id:
+        raise ValueError("parent_id 不能为空")
+    _raise_if_failure_paused(source)
+    try:
+        yield from _iter_upstream_records_for_parent_once(
+            source, parent_id, http_get=http_get, http_post=http_post,
+            page_size=page_size, api_key=api_key, retries=retries,
+            backoff_sec=backoff_sec, sort_by=sort_by, on_page=on_page,
+            fetch_concurrency=fetch_concurrency)
+    except Exception as exc:
+        _feed_fetch_outcome(source, exc)
+        raise
+    _feed_fetch_outcome(source, None)
+
+
+def _iter_upstream_records_for_parent_once(
         source, parent_id, *, http_get: Optional[Callable] = None,
         http_post: Optional[Callable] = None,
         page_size: int = DEFAULT_PAGE_SIZE,
