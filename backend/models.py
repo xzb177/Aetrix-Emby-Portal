@@ -1019,6 +1019,12 @@ class RegistrationCode(Base):
     agent_id = Column(Integer, ForeignKey('agents.id'), nullable=True)
     agent_purchase_id = Column(Integer, ForeignKey('agent_purchases.id'), nullable=True)
 
+    # 按代理查码（代理中心「我的卡码」）；老库由 database._LEGACY_INDEXES
+    # 同名 spec 补建，两边同名保证幂等跳过、不重复建。
+    __table_args__ = (
+        Index('idx_reg_code_agent', 'agent_id'),
+    )
+
 
 class WhitelistSerial(Base):
     """白名单创世编号（独一无二体验包·身份组，2026-11-02）
