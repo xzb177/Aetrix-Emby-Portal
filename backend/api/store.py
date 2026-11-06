@@ -25,6 +25,7 @@ from backend.api.user import get_current_user
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server import transfer_variant as tv
+from backend.emby_server.api import season_poster_url
 from backend.emby_server.store_contract import (
     MISSING_SOURCE_MESSAGE,
     NO_BINDING_MESSAGE,
@@ -119,8 +120,21 @@ def _job_state(status: str) -> str:
     }.get(status or "", "wanted")
 
 
+def _card_fields(db: Session, row: em.MediaItem | None) -> dict:
+    """展示字段：从已加载的库内行填片名 / 年份 / 海报；无行留空，不编造。"""
+    if row is None:
+        return {}
+    return {
+        "title": row.name or None,
+        "year": row.production_year,
+        "poster_url": season_poster_url(row, db),
+    }
+
+
 def _record_for_job(job, tmdb_id: str, in_library: bool,
-                    library_item_id: int | None, message: str) -> WantRecord:
+                    library_item_id: int | None, message: str,
+                    db: Session | None = None,
+                    row: em.MediaItem | None = None) -> WantRecord:
     state = _job_state(job.status)
     return WantRecord(
         tmdb_id=tmdb_id,
@@ -129,6 +143,7 @@ def _record_for_job(job, tmdb_id: str, in_library: bool,
         library_item_id=library_item_id,
         job_id=job.id,
         message=message,
+        **(_card_fields(db, row) if db is not None else {}),
     )
 
 
@@ -148,13 +163,20 @@ def get_item(
     tmdb_id: str,
     db: Session = Depends(get_db),
 ) -> ItemResponse:
-    """访客可看详情骨架。只填 tmdb_id 与 in_library，不拉外部元数据。"""
+    """访客可看详情骨架。不拉外部元数据；命中库内行时把行上的
+    片名 / 年份 / 海报一并回出（StoreCard 本就有这三个字段）。"""
     key = tmdb_id.strip()
     row = find_library_item(db, key)
     return ItemResponse(
         tmdb_id=key,
         in_library=row is not None,
         library_item_id=row.id if row is not None else None,
+        media_type=(
+            None
+            if row is None
+            else ("tv" if row.item_type in ("series", "season", "episode") else "movie")
+        ),
+        **_card_fields(db, row),
     )
 
 
@@ -230,7 +252,8 @@ def post_want(
             existing = _latest_user_job(db, row.id, user.id)
             if existing is not None:
                 return _record_for_job(
-                    existing, key, True, row.id, WANT_ALREADY_QUEUED_MESSAGE)
+                    existing, key, True, row.id, WANT_ALREADY_QUEUED_MESSAGE,
+                    db=db, row=row)
             return WantRecord(
                 tmdb_id=key,
                 state="wanted",
@@ -250,7 +273,8 @@ def post_want(
             library_item_id=row.id,
             message=message,
         )
-    return _record_for_job(job, key, True, row.id, WANT_QUEUED_MESSAGE)
+    return _record_for_job(job, key, True, row.id, WANT_QUEUED_MESSAGE,
+                           db=db, row=row)
 
 
 @router.get("/wants", response_model=WantListResponse)
@@ -291,5 +315,6 @@ def get_wants(
             library_item_id=row.id,
             job_id=job.id,
             message=WANT_STATE_MESSAGES[state],
+            **_card_fields(db, row),
         ))
     return WantListResponse(items=items)

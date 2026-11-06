@@ -940,6 +940,10 @@ export interface StoreWantRecord {
   library_item_id?: number | null
   job_id?: number | null
   message: string
+  /** 展示字段：有库内行时后端从行上填，没有留空（前端回退 TMDB 编号） */
+  title?: string | null
+  year?: number | null
+  poster_url?: string | null
 }
 
 export interface StoreWantsResponse {

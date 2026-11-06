@@ -41,19 +41,17 @@
         <div v-if="vitalityHint" class="vitality-hint">{{ vitalityHint }}</div>
       </section>
 
-      <!-- 想看商店入口：独立页 /want，不占底栏、不碰发现页；会员想看、非会员先办会员 -->
+      <!-- 想看入口：想看 / 求片 / 找源已合并到 /want 一页（不占底栏、不碰发现页），
+           这里只留一行入口卡，原想看商店与求片找源两大块删除 -->
       <section class="shop-sec shop-sec-tight">
-        <div class="v4-sec-title">想看商店</div>
-        <div class="v4-sec-sub">库里已有的片子才能想看，转存到你自己的盘里播；库里没有的不能想看、也不能直接开播</div>
-        <RouterLink to="/want" class="want-entry"><span aria-hidden="true">🎬</span><span class="lbl">去想看商店</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
-      </section>
-
-      <!-- 求片登记与找源入口：独立页，不占底栏、不碰发现页；求片要会员，找源确认要绑定自己的盘 -->
-      <section class="shop-sec shop-sec-tight">
-        <div class="v4-sec-title">求片与找源</div>
-        <div class="v4-sec-sub">库里没有的片子先登记求片；有来源线索的用找源确认后转存到你自己的盘</div>
-        <RouterLink to="/store-requests" class="want-entry"><span aria-hidden="true">📝</span><span class="lbl">去求片登记</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
-        <RouterLink to="/source-discovery" class="want-entry"><span aria-hidden="true">🔍</span><span class="lbl">去找源</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
+        <RouterLink to="/want" class="want-card-entry">
+          <span class="wce-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5h18V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3.5 4.1 20.4 2.5l.5 3.7L4 8.3z"/><path d="m7.2 6.8 2.2-2.1M12.2 6.4l2.2-2.1M17.2 6l2.2-2.1"/></svg></span>
+          <span class="wce-main">
+            <span class="wce-name">想看的片子</span>
+            <span class="wce-sub">库里有就想看，库里没有就求片</span>
+          </span>
+          <span class="wce-arrow" aria-hidden="true">→</span>
+        </RouterLink>
       </section>
 
       <!-- ⚡ 能量补给：公益服下整块隐藏（付费区不在公益服出现） -->
@@ -1054,25 +1052,54 @@ async function copyInviteCode() {
 
 <style scoped>
 /* 补给站样式：严格抄自设计稿 shop.html（纸色 token 不许改） */
-/* 想看商店入口行：复用纸色 token，只做一行可点入口，不改补给站布局 */
-.want-entry {
+/* 想看入口卡：一行卡进 /want 想看页（纸卡口径：墨边＋偏移阴影），不改补给站其余布局 */
+.want-card-entry {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--paper-card);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--paper-r-lg, 12px);
+  box-shadow: 3px 3px 0 rgba(42, 38, 32, 0.12);
   color: var(--ink);
   text-decoration: none;
-  font-size: 14px;
+}
+.wce-ic {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--paper-r-md, 10px);
+  background: rgba(1, 106, 113, 0.08);
+  border: 1px solid rgba(1, 106, 113, 0.22);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #016a71;
+}
+.wce-ic svg {
+  width: 22px;
+  height: 22px;
+}
+.wce-main {
+  flex: 1;
+  min-width: 0;
+}
+.wce-name {
+  display: block;
+  font-size: 15px;
   font-weight: 600;
 }
-.want-entry .lbl {
-  flex: 1;
-}
-.want-entry .arrow {
+.wce-sub {
+  display: block;
+  font-size: 12px;
   color: var(--ink2);
+  margin-top: 2px;
+}
+.wce-arrow {
+  color: var(--ink2);
+  font-size: 18px;
+  flex: none;
 }
 .shop-head {
   padding: 26px 20px 14px;
@@ -1995,9 +2022,7 @@ async function copyInviteCode() {
 .shop-sec-tight .v4-sec-sub {
   margin-bottom: 8px;
 }
-.shop-sec-tight .want-entry {
-  margin-top: 8px;
-}
+
 /* 配置态占位压成紧凑单行：文字在左、刷新按钮在右，不再大居中空块＋大按钮 */
 .v4-empty.empty-compact {
   display: flex;

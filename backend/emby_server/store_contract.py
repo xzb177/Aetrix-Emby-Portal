@@ -131,6 +131,11 @@ class WantRecord(BaseModel):
     library_item_id: int | None = None
     job_id: int | None = None
     message: str = ""
+    #: 展示字段：有库内行时从行上填（片名 / 年份 / 海报），没有就留空，
+    #: 前端回退 TMDB 编号显示，不编造。
+    title: str | None = None
+    year: int | None = None
+    poster_url: str | None = None
 
 
 class WantListResponse(BaseModel):

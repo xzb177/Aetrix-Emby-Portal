@@ -189,23 +189,22 @@ const router = createRouter({
       component: () => import('@/views/TgBindGuideView.vue'),
       meta: { title: '绑定 Telegram', requiresAuth: true },
     },
-    // 想看商店：独立页 /want（/store 已 301 到补给站，不能复用）。
-    // 访客可浏览查片（后端目录与详情只读），想看写口与清单要登录 + 会员，
-    // 所以这里不挂 requiresAuth，页内按 401/403 给登录与会员提示。
+    // 想看：独立页 /want（/store 已 301 到补给站，不能复用）。
+    // 想看商店 / 求片登记 / 找源三入口已合并到这一页：输片名一条主路，
+    // 库里有就想看，没有就点候选求片；求片榜 / 我的求片 / 我的想看同页。
+    // 想看写口与清单、求片各口都要登录 + 会员，所以这里不挂 requiresAuth，
+    // 页内按 401/403 给登录与会员提示；本页不放任何播放入口。
     {
       path: '/want',
       name: 'want-store',
-      component: () => import('@/views/panel/StoreView.vue'),
-      meta: { title: '想看商店' },
+      component: () => import('@/views/panel/WantView.vue'),
+      meta: { title: '想看' },
     },
-    // 求片登记：独立页 /store-requests（R1 前端接线批）。
-    // 登记与榜单三个口都要登录 + 会员，路由守卫先拦未登录，页内再按 403 给会员提示。
-    // 不挂首页/发现页、不占底栏；本页不放任何播放入口。
+    // 求片登记旧地址：功能已并入 /want 想看页，旧链接/收藏跳过去（带上 query），
+    // 不留重复旧页。
     {
       path: '/store-requests',
-      name: 'store-requests',
-      component: () => import('@/views/panel/StoreRequestsView.vue'),
-      meta: { title: '求片登记', requiresAuth: true },
+      redirect: (to) => ({ path: '/want', query: to.query }),
     },
     // 活动提案：独立页 /activities（等级治理用户端补完批）。
     // 仅公益服开放，页内按等级给门槛提示（Lv.2+ 提案、Lv.5+ 直接发起），低等级不画饼。
