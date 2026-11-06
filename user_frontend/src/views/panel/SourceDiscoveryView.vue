@@ -1,67 +1,52 @@
 <template>
   <div class="v4-scope">
-    <div class="v4-page">
-      <div class="shop-head">
-        <span class="shop-stamp">找源</span>
+    <div class="v4-page sd-page">
+      <div class="v4-loghead">
         <h1>找源</h1>
-        <p>按标题、TMDB 或 IMDb 编号查来源候选；搜索只读不建任务，确认后才转存到你自己的盘，副本就绪后可播。</p>
+        <p>按片名查一查，确认后转存到你自己的盘，存好就能看。</p>
       </div>
 
       <!-- 找源未开启：总闸关时两个口都 404，这里只说这一句，不假装能用 -->
-      <section v-if="discoveryOff" class="shop-sec">
+      <section v-if="discoveryOff" class="v4-sec">
         <div class="v4-empty">找源未开启，稍后再来看看<br><button class="v4-retry" @click="discoveryOff = false">刷新看看</button></div>
       </section>
 
       <template v-else>
-        <div v-if="needLogin" class="v4-empty">
-          找源要先登录<RouterLink to="/login" class="v4-retry">去登录</RouterLink>
-        </div>
+        <section v-if="needLogin" class="v4-sec">
+          <div class="v4-empty">找源要先登录<RouterLink to="/login" class="v4-retry">去登录</RouterLink></div>
+        </section>
 
-        <!-- 搜索：三个条件至少给一个；搜出来只是候选，不建任务 -->
-        <section class="shop-sec">
-          <div class="v4-sec-title">查来源候选</div>
-          <div class="v4-sec-sub">标题、TMDB 编号、IMDb 编号至少填一个</div>
-          <div class="src-form">
+        <!-- 搜索：界面上只填片名；从想看页带进来的编号只在后台用，用户不用填 -->
+        <section class="v4-sec">
+          <div class="v4-sec-title">查一下能转存的</div>
+          <div class="v4-sec-sub">输入片名，看看有没有能转存到你盘里的。</div>
+          <div class="sd-searchbar">
             <input
               v-model="titleInput"
               type="text"
-              placeholder="标题"
-              class="src-input"
+              placeholder="输入片名"
+              class="sd-input"
+              @input="onTitleInput"
               @keydown.enter="search"
             />
-            <input
-              v-model="tmdbInput"
-              type="text"
-              inputmode="numeric"
-              placeholder="TMDB 编号"
-              class="src-input"
-              @keydown.enter="search"
-            />
-            <input
-              v-model="imdbInput"
-              type="text"
-              placeholder="IMDb 编号，例如 tt1234567"
-              class="src-input"
-              @keydown.enter="search"
-            />
-            <button class="v4-retry" :disabled="searching || !hasQuery" @click="search">
+            <button class="sd-btn-pri" :disabled="searching || !hasQuery" @click="search">
               {{ searching ? '查着呢…' : '查一下' }}
             </button>
           </div>
-          <div v-if="searchErr" class="v4-err">{{ searchErr }}</div>
-          <div v-if="searched && candidates.length === 0 && !searchErr" class="v4-empty">没查到来源候选，换个条件试试</div>
-          <div v-if="searched && candidates.length > 0" class="v4-sec-sub">
-            共 {{ total }} 条候选（来源：{{ adapters.join('、') || '—' }}）；候选现在不能直接播，确认后转存到你的盘，副本就绪后可播。
+          <div v-if="searchErr" class="v4-err" style="margin-top:12px">{{ searchErr }}</div>
+          <div v-if="searched && candidates.length === 0 && !searchErr" class="v4-empty">没找到，换个片名试试</div>
+          <div v-if="searched && candidates.length > 0" class="v4-sec-sub" style="margin-top:12px">
+            共找到 {{ total }} 条，点确认后转存到你的盘，存好就能看。
           </div>
         </section>
 
-        <!-- 候选：只展示 + 确认转存，绝不挂播放入口 -->
-        <section v-if="candidates.length > 0" class="shop-sec">
-          <div class="v4-sec-title">候选</div>
-          <div class="src-list">
-            <div v-for="c in candidates" :key="candKey(c)" class="src-card">
-              <div class="src-title">{{ c.local_title }}<span v-if="c.local_year">（{{ c.local_year }}）</span></div>
-              <div class="src-meta">
+        <!-- 结果：只展示 + 确认转存，绝不挂播放入口 -->
+        <section v-if="candidates.length > 0" class="v4-sec">
+          <div class="v4-sec-title">查到的</div>
+          <div class="sd-list">
+            <div v-for="c in candidates" :key="candKey(c)" class="sd-card">
+              <div class="sd-title">{{ c.local_title }}<span v-if="c.local_year">（{{ c.local_year }}）</span></div>
+              <div class="sd-meta">
                 <span v-if="c.local_type">类型：{{ c.local_type }}</span>
                 <span>来源：{{ c.source_name || c.adapter }}</span>
                 <span>置信度：{{ c.confidence }}</span>
@@ -70,15 +55,15 @@
                 <span v-if="c.size_bytes">大小：{{ formatSize(c.size_bytes) }}</span>
                 <span v-if="c.subtitle_languages">字幕：{{ c.subtitle_languages }}</span>
               </div>
-              <div v-if="c.evidence" class="src-evidence">{{ c.evidence }}</div>
-              <div v-if="confirmResult?.key === candKey(c)" class="src-result">{{ confirmResult.message || confirmStateLabel(confirmResult.state) }}</div>
+              <div v-if="c.evidence" class="sd-evidence">{{ c.evidence }}</div>
+              <div v-if="confirmResult?.key === candKey(c)" class="sd-result">{{ confirmResult.message || confirmStateLabel(confirmResult.state) }}</div>
               <button
                 v-if="hasTriple(c)"
                 class="v4-retry"
                 :disabled="confirming === candKey(c)"
                 @click="confirm(c)"
               >{{ confirming === candKey(c) ? '确认中…' : '确认，转存到我的盘' }}</button>
-              <div v-else class="v4-empty">这条候选信息不全，确认不了转存</div>
+              <div v-else class="v4-empty">这条信息不全，没法转存</div>
             </div>
           </div>
         </section>
@@ -101,33 +86,40 @@ const discoveryOff = ref(false)
 const needLogin = ref(false)
 
 const titleInput = ref('')
-const tmdbInput = ref('')
-const imdbInput = ref('')
+// 从想看页跳转带进来的编号：只在后台参与查询，界面上不显示、用户不用填
+const bgTmdbId = ref('')
+const bgImdbId = ref('')
 const searching = ref(false)
 const searchErr = ref('')
 const searched = ref(false)
 const candidates = ref<SourceCandidate[]>([])
 const total = ref(0)
-const adapters = ref<string[]>([])
 
 const confirming = ref('')
 const confirmResult = ref<(SourceConfirmResult & { key: string }) | null>(null)
 
 const route = useRoute()
 
-// 从想看页求片行点「找源」进来时带了 title / tmdb_id：预填并直接搜一次，少一次手输
+// 从想看页求片行点「找源」进来时带了 title / tmdb_id / imdb_id：
+// 片名预填进输入框，编号只留后台，带了任一项就直接搜一次，少一次手输
 onMounted(() => {
   const t = route.query.title
   const tm = route.query.tmdb_id
   const im = route.query.imdb_id
   if (typeof t === 'string' && t.trim()) titleInput.value = t.trim()
-  if (typeof tm === 'string' && tm.trim()) tmdbInput.value = tm.trim()
-  if (typeof im === 'string' && im.trim()) imdbInput.value = im.trim()
+  if (typeof tm === 'string' && tm.trim()) bgTmdbId.value = tm.trim()
+  if (typeof im === 'string' && im.trim()) bgImdbId.value = im.trim()
   if (hasQuery.value) void search()
 })
 
+// 用户动手改片名，就是要查别的片：带入的编号随之作废，免得串到上一部片
+function onTitleInput() {
+  bgTmdbId.value = ''
+  bgImdbId.value = ''
+}
+
 const hasQuery = computed(
-  () => titleInput.value.trim() !== '' || tmdbInput.value.trim() !== '' || imdbInput.value.trim() !== '',
+  () => titleInput.value.trim() !== '' || bgTmdbId.value !== '' || bgImdbId.value !== '',
 )
 
 function statusOf(err: unknown): number | null {
@@ -158,9 +150,9 @@ function hasTriple(c: SourceCandidate): boolean {
 
 function confirmStateLabel(state: SourceConfirmState): string {
   return {
-    queued: '已建用户盘转存任务，副本就绪后可播',
-    already_queued: '24h 内已有转存任务，不重复建',
-    failed: '转存任务没建成',
+    queued: '已开始转存，存到你的盘里就能看',
+    already_queued: '24 小时内已经在转存了，不用重复点',
+    failed: '没转存成，稍后再试',
   }[state]
 }
 
@@ -180,12 +172,11 @@ async function search() {
   try {
     const res = await sourceDiscoveryApi.search({
       ...(titleInput.value.trim() ? { title: titleInput.value.trim() } : {}),
-      ...(tmdbInput.value.trim() ? { tmdb_id: tmdbInput.value.trim() } : {}),
-      ...(imdbInput.value.trim() ? { imdb_id: imdbInput.value.trim() } : {}),
+      ...(bgTmdbId.value ? { tmdb_id: bgTmdbId.value } : {}),
+      ...(bgImdbId.value ? { imdb_id: bgImdbId.value } : {}),
     })
     candidates.value = res.candidates
     total.value = res.total
-    adapters.value = res.adapters
     searched.value = true
   } catch (err) {
     if (statusOf(err) === 404 && detailOf(err) === '找源未开启') {
@@ -233,38 +224,62 @@ async function confirm(c: SourceCandidate) {
 </script>
 
 <style scoped>
-.src-form {
+/* 找源页：与想看页同款纸面口径（输入框/主按钮数值对齐 WantView 的 ww-input/ww-btn-pri） */
+.sd-searchbar {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 12px;
+  gap: 8px;
 }
-.src-input {
-  flex: 1 1 160px;
+.sd-input {
+  flex: 1;
   min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: transparent;
+  border-radius: var(--paper-r-md, 10px);
+  background: var(--paper-card);
   color: var(--ink);
   font-size: 14px;
 }
-.src-list {
+.sd-input::placeholder {
+  color: var(--line-deep);
+}
+.sd-btn-pri {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+  background: #016a71;
+  color: #fff;
+  border-radius: var(--paper-r-lg, 12px);
+  font-size: 14px;
+  min-height: 44px;
+  padding: 0 20px;
+}
+.sd-btn-pri:active {
+  background: #015a60;
+}
+.sd-btn-pri:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.sd-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin-top: 12px;
 }
-.src-card {
+.sd-card {
   padding: 14px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
+  background: var(--paper-card);
 }
-.src-title {
+.sd-title {
   font-size: 15px;
   font-weight: 700;
 }
-.src-meta {
+.sd-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
@@ -272,15 +287,30 @@ async function confirm(c: SourceCandidate) {
   font-size: 13px;
   color: var(--ink2);
 }
-.src-evidence {
+.sd-evidence {
   margin-top: 8px;
   font-size: 13px;
 }
-.src-result {
+.sd-result {
   margin-top: 10px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
+  background: var(--paper2);
   font-size: 14px;
+}
+
+/* 桌面：与手机设施 1:1，只排版不同（页放宽、结果两列） */
+@media (min-width: 1024px) {
+  .v4-page.sd-page {
+    max-width: 960px;
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+  .sd-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
 }
 </style>
