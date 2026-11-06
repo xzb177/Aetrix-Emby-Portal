@@ -72,6 +72,8 @@ def test_parent_ready_clause_is_exists_on_sqlite_and_pg():
         assert "'ENRICHING'" in folded
         assert "EPISODE" in folded
         assert "DELETED_AT" in folded
+        # 已合并父级不挡：谓词里必须出现 merged_into_id 排除条件。
+        assert "MERGED_INTO_ID" in folded
 
 
 def test_pending_parent_episode_not_claimed_until_terminal(db):
@@ -286,3 +288,95 @@ def test_upstream_episode_inherit_switch_off_stays_off_pure_inherit(db, monkeypa
         snap, holder={}, inherit_parent=info)
     assert not result.get("pure_inherit")
     assert ctx is not None
+
+
+def test_merged_parent_does_not_block_episode_claim(db):
+    """已合并父级不再挡单集：series/season 已合并且仍 pending，单集可认领。
+
+    回归：2026-11-07 首晚 0 认领——生产 1,016 个已合并 series 与 544 个
+    已合并 season 仍挂 pending，挡住全部 34,186 条待补单集。已合并父级
+    永远不会被认领做完，等它等于永远等，不应挡。
+    """
+    lib = _lib(db)
+    survivor = _item(db, lib, item_type="series", name="存活剧",
+                     file_path=None, enrich_status="done", tmdb_id="42")
+    survivor_season = _item(
+        db, lib, item_type="season", name="存活季", file_path=None,
+        series_id=survivor.id, parent_id=survivor.id, season_number=1,
+        enrich_status="done")
+    merged_series = _item(
+        db, lib, item_type="series", name="已合并剧", file_path=None,
+        enrich_status="pending", merged_into_id=survivor.id)
+    merged_season = _item(
+        db, lib, item_type="season", name="已合并季", file_path=None,
+        series_id=merged_series.id, parent_id=merged_series.id,
+        season_number=1, enrich_status="pending",
+        merged_into_id=survivor_season.id)
+    ep = _item(db, lib, item_type="episode", name="被合并父级挡住的集",
+               series_id=merged_series.id, parent_id=merged_season.id,
+               season_number=1, episode_number=1, enrich_priority=-10)
+    db.commit()
+
+    claimed = _ids(enrich_worker._claim_batch(db, 10))
+    assert ep.id in claimed
+    assert merged_series.id not in claimed
+    assert merged_season.id not in claimed
+
+
+def test_merged_series_does_not_block_but_live_season_does(db):
+    """边界：series 已合并放行，但活的 season 仍 pending 时单集继续等。"""
+    lib = _lib(db)
+    survivor = _item(db, lib, item_type="series", name="存活剧",
+                     file_path=None, enrich_status="done", tmdb_id="42")
+    merged_series = _item(
+        db, lib, item_type="series", name="已合并剧", file_path=None,
+        enrich_status="pending", merged_into_id=survivor.id)
+    live_season = _item(
+        db, lib, item_type="season", name="活的季", file_path=None,
+        series_id=merged_series.id, parent_id=merged_series.id,
+        season_number=1, enrich_status="pending")
+    ep = _item(db, lib, item_type="episode", name="等活季的集",
+               series_id=merged_series.id, parent_id=live_season.id,
+               season_number=1, episode_number=1, enrich_priority=-10)
+    db.commit()
+
+    claimed = _ids(enrich_worker._claim_batch(db, 10))
+    assert ep.id not in claimed
+    assert live_season.id in claimed
+
+    db.refresh(live_season)
+    live_season.enrich_status = "done"
+    db.commit()
+    claimed = _ids(enrich_worker._claim_batch(db, 10))
+    assert ep.id in claimed
+
+
+def test_parent_should_wait_ignores_merged_parent(db):
+    """处理时打回同口径：父级已合并时 _parent_should_wait 不等。
+
+    只修认领谓词不够——认领后这里会把单集再打回 pending 空转。
+    """
+    enrich_worker._parent_wait_counts.clear()
+    lib = _lib(db)
+    survivor = _item(db, lib, item_type="series", name="存活剧",
+                     file_path=None, enrich_status="done", tmdb_id="42")
+    merged_series = _item(
+        db, lib, item_type="series", name="已合并剧", file_path=None,
+        enrich_status="pending", merged_into_id=survivor.id)
+    ep = _item(db, lib, item_type="episode", name="父级已合并的集",
+               series_id=merged_series.id, enrich_status="enriching",
+               enrich_priority=-10, enrich_claimed_at=datetime.now(),
+               enrich_claim_token="tok", metadata_source=None,
+               tmdb_id="1399", poster_path="/img/e.jpg")
+    db.commit()
+
+    assert enrich_worker._parent_should_wait(db, ep) is False
+
+    fetched = {
+        "ok": True, "pure_inherit": False, "poster": None, "fanart": None,
+        "external_subs": [], "nfo_data": None, "tmdb_hit": None,
+        "tmdb_details": None,
+    }
+    enrich_worker._enrich_apply(db, ep, fetched)
+    assert ep.enrich_status != "pending"
+    assert ep.metadata_source == "none"
