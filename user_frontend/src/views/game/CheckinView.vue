@@ -61,6 +61,9 @@
         </div>
       </section>
 
+      <!-- 人机验证挂件（能力：人机验证）：站点未开启签到保护时组件自己不渲染 -->
+      <CaptchaChallenge v-if="canCheckin" ref="captchaRef" action="checkin" @update:token="captchaToken = $event" />
+
       <!-- 报到按钮 -->
       <button
         ref="checkinBtn"
@@ -97,6 +100,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import StaminaBar from '@/components/game/StaminaBar.vue'
+import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
 import { staminaText } from '@/config/stamina'
 import { checkinApi, pointsApi, estimateCheckinReward, formatCheckinEstimate, type CheckinStatus } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
@@ -115,6 +119,9 @@ const checking = ref(false)
 const sealPop = ref<HTMLElement | null>(null)
 const checkinBtn = ref<HTMLButtonElement | null>(null)
 const staminaBar = ref<InstanceType<typeof StaminaBar> | null>(null)
+/** 人机验证令牌：由挂件回调写入；未开启保护时一直是空串（后端也不校验） */
+const captchaToken = ref('')
+const captchaRef = ref<InstanceType<typeof CaptchaChallenge> | null>(null)
 
 /** 本月报到过的日期（来自报到流水） */
 const signedDays = ref<Set<number>>(new Set())
@@ -248,7 +255,7 @@ async function doCheckin() {
   if (!canCheckin.value || checking.value) return
   checking.value = true
   try {
-    const r = await checkinApi.doCheckin()
+    const r = await checkinApi.doCheckin(captchaToken.value)
     if (status.value) {
       status.value.checked_today = true
       status.value.streak = r.streak
@@ -288,6 +295,8 @@ async function doCheckin() {
   } catch (e) {
     // 提交失败走 toast，不污染报到簿的 statusError
     useToast().error(humanizeError(e))
+    // 人机验证令牌一次性：失败后换一个新的，免得第二次点击莫名失败
+    captchaRef.value?.reset()
   } finally {
     checking.value = false
   }

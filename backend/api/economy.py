@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend import coupons, models, realms, vitality as _vitality
 from backend.usernames import find_users_by_username_ci
 from backend.integrations.store import switch_env_value as _switch_env_value
+from backend.integrations import captcha as integrations_captcha
 from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
@@ -511,6 +512,12 @@ class CheckinStatusResponse(BaseModel):
     today_points: Optional[int] = None
 
 
+class CheckinRequest(BaseModel):
+    # 人机验证令牌（能力：人机验证）：站点开启签到保护时必填，未开启时后端不校验。
+    # 只作用于本网站签到端点；TG 机器人签到不走这里（2026-11-06 用户亲令）。
+    captcha_token: Optional[str] = None
+
+
 @router.get("/checkin/status", response_model=CheckinStatusResponse)
 def checkin_status(
     current_user: models.WebUser = Depends(get_current_user),
@@ -708,10 +715,22 @@ async def do_checkin(
     request: Request,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
-    _tg: models.WebUser = Depends(require_tg_bound)
+    _tg: models.WebUser = Depends(require_tg_bound),
+    # 注意：可选 body 参数必须排在 Depends 参数之后。并发冒烟脚本按
+    # do_checkin(request, user, db) 位置直调端点；payload 插在第 2 位会
+    # 把 Session 错绑进 current_user、全体 500（PR #1874 冒烟实测）。
+    # FastAPI 按名解析 body，排最后不影响 HTTP 行为。
+    payload: Optional[CheckinRequest] = None,
 ):
     """每日签到：基础能量 + 连签加成（封顶）；能量仅限公益服用户"""
     user_id = current_user.id
+
+    # 人机验证（能力中心，与登录/注册同一个守卫）：未配置/未开保护时直接放行；
+    # 失败一律 400 + 安全日志，且不落签到记录。放限流之前：没过验证的请求不占限流额度。
+    integrations_captcha.guard(
+        db, request, "checkin",
+        payload.captcha_token if payload else None,
+        username=current_user.username)
 
     allowed, _ = check_rate_limit(f"checkin:{user_id}", 5, 60)
     if not allowed:

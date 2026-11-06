@@ -15,7 +15,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { AlertTriangle, ShieldCheck } from 'lucide-vue-next'
 import { authApi, type CaptchaInfo } from '@/api'
 
-const props = defineProps<{ action: 'login' | 'register' }>()
+const props = defineProps<{ action: 'login' | 'register' | 'checkin' }>()
 const emit = defineEmits<{ (e: 'update:token', token: string): void }>()
 
 const info = ref<CaptchaInfo | null>(null)

@@ -240,8 +240,8 @@ export interface CaptchaInfo {
   label: string
   site_key: string
   script_url: string
-  /** 哪些动作受保护（管理员可分别开关登录 / 注册） */
-  actions: { login: boolean; register: boolean }
+  /** 哪些动作受保护（管理员可分别开关登录 / 注册 / 网站签到） */
+  actions: { login: boolean; register: boolean; checkin: boolean }
 }
 
 /** 本人登录记录条目（后端字段白名单：时间/IP/地区/设备/成败/类别） */

@@ -200,7 +200,7 @@ export interface MyPromotions {
 
 export const checkinApi = {
   status: () => api.get<never, CheckinStatus>('/api/user/economy/checkin/status'),
-  doCheckin: () => api.post<never, { success: boolean; points_awarded: number; streak: number; balance: number; message: string }>('/api/user/economy/checkin'),
+  doCheckin: (captchaToken?: string) => api.post<never, { success: boolean; points_awarded: number; streak: number; balance: number; message: string }>('/api/user/economy/checkin', captchaToken ? { captcha_token: captchaToken } : {}),
 }
 
 // ==================== 活力值 ====================
