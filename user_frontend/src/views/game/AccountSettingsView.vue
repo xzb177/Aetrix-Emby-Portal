@@ -1,1200 +1,123 @@
 <template>
   <div class="v4-scope">
-    <div class="v4-page">
-      <!-- 日志头：紧凑账号头（戳记行带网盘快捷入口；头像+用户名+身份徽章一行） -->
-      <div class="v4-loghead">
-        <div class="acct-stamp-row">
-          <span class="v4-stamp">{{ facilityStamp('account') }}</span>
-          <a class="acct-drive-link" href="#my-drive" @click.prevent="goToMyDrive">去我的网盘绑定 →</a>
-        </div>
-        <div class="acct-head">
-          <span class="acct-avatar" aria-hidden="true">{{ avatarInitial }}</span>
-          <div class="acct-head-main">
-            <h1>{{ displayName }}</h1>
-            <p>改登录密码、看我的会员、管我的设备、绑自己的网盘 —— 账号自己的事都在这儿。</p>
-            <!-- 白名单专属身份：徽章+固定称号+创世编号；非白名单整个元素不渲染 -->
-            <div v-if="whitelistIdentity" class="acct-whitelist">
-              <span class="acct-whitelist-badge">白名单</span>
-              <span class="acct-whitelist-title">{{ whitelistIdentity.title }}</span>
-              <span class="acct-whitelist-serial">{{ whitelistIdentity.label }}</span>
+  <div class="v4-page settings-page">
+    <div class="set-wrap">
+      <header class="set-head">
+        <button type="button" class="set-back" aria-label="返回我的" @click="router.push('/game/account')">
+          <ChevronLeft :size="19" />
+        </button>
+        <span class="set-title">账号设置</span>
+      </header>
+
+      <div class="set-cols">
+        <div class="set-col">
+          <!-- 安全 -->
+          <section class="pc-group">
+            <div class="pc-gtitle">安全</div>
+            <p class="pc-gsub">发现不是自己登的，先改密码再清设备</p>
+            <div class="v4-card pc-rows-card">
+              <PcEntryRow :icon="Lock" name="修改登录密码" @click="pwdOpen = true" />
+              <DevicesEntry />
+              <LoginHistoryEntry />
             </div>
-          </div>
-          <span v-if="identityBadge" class="acct-badge">{{ identityBadge }}</span>
-        </div>
-      </div>
+          </section>
 
-      <!-- 我的权益：会员/公益资格/查看凭证合并为一组（组件 ProfileSubscriptions 原样复用） -->
-      <section class="v4-sec" aria-label="我的权益">
-        <!-- R41：补上标题行，与其他两节结构对齐（标题+副标题） -->
-        <div class="v4-sec-title">我的权益</div>
-        <!-- 公益服下付费口径文案会误导（付费卡／续订已隐藏），改写为公益服实际内容 -->
-        <div class="v4-sec-sub">{{ isFreeRealm ? '公益资格、查看凭证到期都在这里' : '会员到期、历史账单、取消续订都在这里' }}</div>
-        <div v-if="subsError" class="v4-err">订阅加载失败，请稍后重试<br><button class="v4-retry" @click="loadSubs">重试</button></div>
-        <!-- R41：在途显示骨架屏 —— 请求还没回来时别闪现"还没有会员"（ProfileSubscriptions 的空数据文案） -->
-        <div v-else-if="subsLoading" class="v4-skeleton" style="height:180px"></div>
-        <ProfileSubscriptions
-          v-else
-          :active-sub="activeSub"
-          :subscriptions="subscriptions"
-          :expiring-soon="expiringSoon"
-          :is-free-realm="isFreeRealm"
-          :realm-note="realmNote"
-          :cancelling-sub="cancellingSub"
-          :toggling-renew="togglingRenew"
-          :welfare-is-welfare="!!userStore.user?.is_welfare"
-          :welfare-expires-at="welfareExpiresAt"
-          :welfare-status-loaded="welfareStatusLoaded"
-          :points-balance="pointsBalance"
-          :tg-bound="tgBound"
-          :view-unlock="viewUnlock"
-          :renewing-welfare="renewingWelfare"
-          :renewing-view="renewingView"
-          @cancel="cancelSubscription"
-          @toggle-renew="toggleAutoRenew"
-          @renew-welfare="renewWelfare"
-          @renew-view="renewView"
-        />
-      </section>
-
-      <!-- 我的专属线路：只有够格用户后端才回数据，无资格整组不渲染 -->
-      <section v-if="myLines.length" class="v4-sec" aria-label="我的专属线路">
-        <div class="v4-sec-title">我的专属线路</div>
-        <div class="v4-sec-sub">在播放器里添加服务器时填下面的地址，就走你的专属线路进服。</div>
-        <div class="v4-card">
-          <div v-for="line in myLines" :key="line.entry_url" class="acct-row">
-            <span class="acct-row-main">
-              <span class="acct-row-text">{{ line.name }}</span>
-              <span class="acct-row-meta">{{ line.entry_url }}</span>
-            </span>
-            <button type="button" class="v4-mini-btn" @click="copyLineUrl(line.entry_url)">复制地址</button>
-          </div>
+          <!-- 绑定：providers 门控结论由面板回报，未确认前整组不显示（v-show 保挂载，面板要先加载才能回报） -->
+          <section v-show="driveGroupVisible" id="my-drive" class="pc-group">
+            <div class="pc-gtitle">绑定</div>
+            <p class="pc-gsub">绑了自己的盘，播放走你自己的额度，不走共享池</p>
+            <div class="v4-card pc-rows-card">
+              <DriveBindingsPanel ref="drivePanel" @loaded="onDriveLoaded" />
+            </div>
+          </section>
         </div>
-      </section>
 
-      <!-- 代理中心：只有被管理员指定为代理的用户才有数据，无资格整组不渲染 -->
-      <section v-if="agentProfile" class="v4-sec" aria-label="代理中心">
-        <div class="v4-sec-title">代理中心</div>
-        <div class="v4-sec-sub">你是{{ agentProfile.level_name }}，按 {{ agentRateText }} 进货；进货、卡码和销售都在代理中心里。</div>
-        <div class="v4-card">
-          <div class="acct-row">
-            <span class="acct-row-main">
-              <span class="acct-row-text">进货余额 ¥{{ agentProfile.balance.toFixed(2) }}</span>
-              <span class="acct-row-meta">余额不足时联系管理员补充</span>
-            </span>
-            <button type="button" class="v4-mini-btn" @click="router.push('/game/agent')">进入代理中心</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 我的网盘：行式列表，一行一家，展开即该家原绑定卡全部内容（providers 名单驱动） -->
-      <section v-if="providersError || (providersLoaded && hasProvider('drive'))" id="my-drive" class="v4-sec" aria-label="我的网盘">
-        <div class="acct-title-row">
-          <div class="v4-sec-title">我的网盘</div>
-          <button type="button" class="v4-mini-btn" title="刷新" :disabled="driveLoading" :aria-busy="driveLoading" @click="loadDriveBindings">
-            <RefreshCw :size="13" /> {{ driveLoading ? '刷新中' : '刷新列表' }}
-          </button>
-        </div>
-        <div v-if="providersError" class="v4-err">{{ providersError }}<br><button class="v4-retry" @click="loadProviders">重试</button></div>
-        <template v-else>
-        <div class="v4-sec-sub">绑了自己的盘，播放走你自己的额度，不走共享池；没绑定只能浏览、不能点播。一行一家，点开就是这家的绑定管理；名单里没启用的盘整行不出现。</div>
-        <div class="v4-card prov-list">
-        <div v-if="hasProvider('drive')" class="prov-block">
-          <button type="button" class="prov-row" :aria-expanded="isProviderOpen('drive')" @click="toggleProvider('drive')">
-            <span class="acct-row-ic" aria-hidden="true"><HardDrive :size="16" /></span>
-            <span class="prov-main">
-              <span class="prov-name">谷歌盘</span>
-              <span class="prov-meta">{{ providerMeta('drive') }}</span>
-            </span>
-            <span class="dev-badge" :class="providerBadgeClass('drive')">{{ providerBadgeText('drive') }}</span>
-            <ChevronDown :size="16" class="prov-chev" :class="{ open: isProviderOpen('drive') }" />
-          </button>
-          <div v-if="isProviderOpen('drive')" class="prov-expand">
-            <p class="prov-desc">绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑定只能浏览、不能点播</p>
-          <div v-if="driveLoading && !driveBindings.length" class="v4-skeleton" style="height:120px"></div>
-          <div v-else-if="driveError" class="v4-err">{{ driveError }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
-          <div v-else-if="!driveBindings.length" class="v4-empty">
-            <p>① 这是什么：绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑定只能浏览、不能点播。</p>
-            <p>② 怎么做：起个名字点“绑定谷歌盘”→新窗口去 Google 点同意→回来后列表会自动刷新，没出现再点“刷新列表”。</p>
-            <p>③ 绑完怎么验：去播一集，看是不是走你自己的盘。</p>
-          </div>
-          <template v-else>
-            <div v-for="b in driveBindings" :key="b.id" class="dev-row">
-              <div class="dev-main">
-                <span class="dev-name">{{ b.account_label }}</span>
-                <span class="dev-meta">
-                  谷歌盘 · {{ driveStatusText(b.status) }}
-                  <template v-if="b.oauth_client === 'oauth2'"> · {{ driveOauth2?.label || '新入口' }}</template>
-                  <template v-if="b.error_message"> · {{ b.error_message }}</template>
-                  <template v-if="b.needs_rebind"> · 转存需要写权限，请重新授权</template>
-                </span>
+        <div class="set-col">
+          <!-- 展示与隐私 -->
+          <section class="pc-group">
+            <div class="pc-gtitle">展示与隐私</div>
+            <p class="pc-gsub">发现页和榜单怎么展示，你说了算</p>
+            <div class="v4-card pc-rows-card">
+              <CardPrefsEntry />
+              <div class="pc-row-static">
+                <span class="pc-row-ic" aria-hidden="true"><Eye :size="17" /></span>
+                <span class="pc-row-name">观影碑时长榜上榜</span>
+                <button
+                  type="button"
+                  class="srv-switch"
+                  :class="{ 'is-on': showOnLeaderboard }"
+                  :disabled="privacyLoading"
+                  role="switch"
+                  :aria-checked="showOnLeaderboard"
+                  aria-label="观影碑时长榜上榜"
+                  @click="toggleLeaderboard"
+                ></button>
               </div>
-              <span v-if="b.status === 'active'" class="dev-badge ok">可用</span>
-              <span v-else class="dev-badge off">不可用</span>
-              <button
-                v-if="b.status !== 'active'"
-                type="button"
-                class="dev-remove"
-                :disabled="verifyingBinding === b.id"
-                @click="handleVerifyBinding(b)"
-              >
-                {{ verifyingBinding === b.id ? '验证中' : '重新验证' }}
-              </button>
-              <button
-                v-if="b.needs_rebind"
-                type="button"
-                class="dev-remove"
-                :disabled="rebindingId === b.id"
-                @click="handleRebindDrive(b)"
-              >
-                {{ rebindingId === b.id ? '正在打开授权…' : '重新授权' }}
-              </button>
-              <button
-                type="button"
-                class="dev-remove"
-                :class="{ confirming: pendingUnbind === b.id }"
-                :disabled="unbindingId === b.id"
-                @click="handleUnbindDrive(b)"
-              >
-                {{ unbindingId === b.id ? '解绑中' : (pendingUnbind === b.id ? '确认解绑' : '解绑') }}
-              </button>
+              <p class="pref-note">打开后，你的观影时长会出现在世界观影碑的时长榜上（只显示昵称）；关掉则不上榜，但你自己仍能看到自己的排名。</p>
+              <p v-if="privacyError" class="pref-err">{{ privacyError }}<button class="v4-retry" @click="loadPrivacy">重试</button></p>
             </div>
-            <p class="dev-tip">绑好了，下一步：去播一集试试，走的就是你自己的盘；播不动先点“重新验证”，还不行就解绑重绑。</p>
-            <p v-if="driveBindings.some((b) => b.needs_rebind)" class="dev-tip">有谷歌盘还是旧的只读授权，转存到你盘里会失败：点那一行旁边的“重新授权”，去 Google 同意新增的写权限（只覆盖本站创建的文件），同意后转存失败的任务会自动重跑。</p>
-          </template>
-          <div class="acct-field">
-            <label class="acct-label" for="drive-label">给这个盘起个名字</label>
-            <input id="drive-label" v-model="driveLabel" type="text" placeholder="比如：我的主力盘" autocomplete="off" />
-          </div>
-          <p v-if="driveFormError" class="acct-error" role="alert">{{ driveFormError }}</p>
-          <p v-if="driveAuthUrl" class="dev-tip">点这里打开 Google 授权页：<a :href="driveAuthUrl" target="_blank" rel="noopener">打开 Google 授权页</a>，同意后关掉那个窗口、回到本页，列表会自动刷新。</p>
-          <button type="button" class="acct-btn primary" :disabled="driveStarting" @click="handleBindDrive">
-            {{ driveStarting ? '正在打开授权…' : '绑定谷歌盘' }}
-          </button>
-          <p class="dev-tip">点绑定后会在新窗口打开 Google 授权页，点同意后关掉那个窗口、回到本页，列表会自动刷新，没出现再点“刷新列表”。授权页本身不是本站页面，账号密码只交给 Google。</p>
-          <template v-if="driveOauth2 && driveOauth2.available">
-            <div class="acct-field">
-              <span class="acct-label">{{ driveOauth2.label }}</span>
-              <p class="dev-tip">{{ driveOauth2.description }}</p>
-            </div>
-            <p v-if="!driveOauth2.eligible" class="acct-error" role="alert">{{ driveOauth2.reason }}</p>
-            <button type="button" class="acct-btn" :disabled="!driveOauth2.eligible || drive2Starting" @click="handleBindDrive2">
-              {{ drive2Starting ? '正在打开授权…' : '用这个入口绑定' }}
-            </button>
-            <p class="dev-tip">用上面填的名字绑定，流程与原入口相同：新窗口去 Google 点同意，回来后列表自动刷新。</p>
-          </template>
-          </div>
-        </div>
-        <div v-if="removedBindings.length" class="prov-block">
-          <div v-for="b in removedBindings" :key="b.id" class="dev-row">
-            <div class="dev-main">
-              <span class="dev-name">{{ b.account_label }}</span>
-              <span class="dev-meta">
-                {{ b.provider === 'pan115' ? '115' : '夸克' }} · 已下线
-                <template v-if="b.error_message"> · {{ b.error_message }}</template>
-              </span>
-            </div>
-            <span class="dev-badge off">已下线</span>
-            <button
-              type="button"
-              class="dev-remove"
-              :class="{ confirming: pendingUnbind === b.id }"
-              :disabled="unbindingId === b.id"
-              @click="handleUnbindDrive(b)"
-            >
-              {{ unbindingId === b.id ? '解绑中' : (pendingUnbind === b.id ? '确认解绑' : '解绑') }}
-            </button>
-          </div>
-          <p class="dev-tip">115 / 夸克绑定线已下线，旧绑定不能再用来点播；想播本地库的片，请在上面改绑谷歌盘。</p>
-        </div>
-        </div>
-        </template>
-      </section>
+          </section>
 
-      <!-- 成长与记录：入口行（等级/成就/馆灵/连签/信鸽） + 追剧订阅 + 登录记录 -->
-      <section class="v4-sec" aria-label="成长与记录">
-        <div class="v4-sec-title">成长与记录</div>
-        <!-- 入口行：只串入口，功能本体留在各自页；现状摘要拿不到就不显示，不编造 -->
-        <div class="v4-card acct-card">
-            <RouterLink class="acct-row as-link" to="/shop">
-              <span class="acct-row-ic" aria-hidden="true"><Mountain :size="16" /></span>
-              <span class="acct-row-main"><span class="acct-row-text">等级</span><span v-if="entryLevelText" class="acct-row-meta">{{ entryLevelText }}</span></span>
-              <ChevronRight :size="15" class="acct-row-arrow" />
-            </RouterLink>
-            <RouterLink class="acct-row as-link" to="/collector">
-              <span class="acct-row-ic" aria-hidden="true"><Trophy :size="16" /></span>
-              <span class="acct-row-main"><span class="acct-row-text">成就</span><span v-if="entryAchvText" class="acct-row-meta">{{ entryAchvText }}</span></span>
-              <ChevronRight :size="15" class="acct-row-arrow" />
-            </RouterLink>
-            <RouterLink class="acct-row as-link" to="/collector">
-              <span class="acct-row-ic" aria-hidden="true"><Sparkles :size="16" /></span>
-              <span class="acct-row-main"><span class="acct-row-text">馆灵</span><span v-if="entryPetText" class="acct-row-meta">{{ entryPetText }}</span></span>
-              <ChevronRight :size="15" class="acct-row-arrow" />
-            </RouterLink>
-            <RouterLink class="acct-row as-link" to="/game/checkin">
-              <span class="acct-row-ic" aria-hidden="true"><CalendarCheck :size="16" /></span>
-              <span class="acct-row-main"><span class="acct-row-text">连签</span><span v-if="entryStreakText" class="acct-row-meta">{{ entryStreakText }}</span></span>
-              <ChevronRight :size="15" class="acct-row-arrow" />
-            </RouterLink>
-            <RouterLink class="acct-row as-link" to="/game/pigeon">
-              <span class="acct-row-ic" aria-hidden="true"><Bird :size="16" /></span>
-              <span class="acct-row-main"><span class="acct-row-text">信鸽</span><span class="acct-row-meta">站内消息都在这里</span></span>
-              <ChevronRight :size="15" class="acct-row-arrow" />
-            </RouterLink>
-        </div>
-        <div v-if="followLoaded || followError" class="acct-subblock">
-          <div class="acct-sub-title">追剧订阅</div>
-        <div class="v4-sec-sub">订阅后新集到货会自动转存到你自己绑定的盘里，转完状态在这里看；无绑定、盘满或转存失败都会明示原因，绝不静默走共享线路。</div>
-        <div v-if="followError" class="v4-err">追剧订阅加载失败，请稍后重试<br><button class="v4-retry" @click="loadFollows">重试</button></div>
-        <div v-else-if="!follows.length" class="srv-empty">还没有订阅的剧</div>
-        <div v-else>
-          <div v-for="f in follows" :key="f.follow_id" class="v4-card">
-            <div class="srv-row">
-              <div class="srv-info">
-                <div class="srv-name">{{ f.series_name || `剧集 #${f.series_item_id}` }}</div>
-                <div class="srv-tag">{{ f.status === 'active' ? '订阅中' : '已取消' }}</div>
-              </div>
-              <button v-if="f.status === 'active'" type="button" class="acct-btn" @click="cancelFollow(f.series_item_id)">取消订阅</button>
+          <!-- 账号 -->
+          <section class="pc-group">
+            <div class="pc-gtitle">账号</div>
+            <div class="v4-card pc-rows-card">
+              <PcEntryRow :icon="LogOut" name="退出登录" danger @click="handleLogout" />
             </div>
-            <div v-for="ep in f.episodes" :key="ep.episode_id" class="srv-row">
-              <div class="srv-info">
-                <div class="srv-name">第 {{ ep.season_number ?? '?' }} 季第 {{ ep.episode_number ?? '?' }} 集 · {{ ep.name }}</div>
-                <div class="srv-tag">{{ followStateText(ep.state, ep.queue_reason) }}<span v-if="ep.error_detail"> · {{ ep.error_detail }}</span></div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="v4-card">
-          <div class="acct-field" style="margin-top: 0;">
-            <label class="acct-label" for="follow-series-id">订阅剧集（填剧集条目 id）</label>
-            <input id="follow-series-id" v-model="followSeriesId" type="number" placeholder="例如 12345" />
-          </div>
-          <p v-if="followFormError" class="acct-error" role="alert">{{ followFormError }}</p>
-          <button type="button" class="acct-btn primary" :disabled="followSubmitting" @click="handleSubscribeFollow">
-            {{ followSubmitting ? '正在订阅…' : '订阅这部剧' }}
-          </button>
-        </div>
-        </div>
-        <div class="acct-subblock">
-          <div class="acct-sub-title">登录记录 <span class="acct-sub-note">发现不是自己登的，先改密码再清设备</span></div>
-          <div class="v4-card acct-list-card">
-            <div class="lh-block acct-lh">
-          <div v-if="lhError" class="v4-err">登录记录加载失败，请稍后重试<br><button class="v4-retry" @click="loadLoginHistory(true)">重试</button></div>
-          <div v-else-if="lhLoading && lhItems.length === 0" class="v4-skeleton" style="height:96px"></div>
-          <div v-else-if="lhItems.length === 0" class="lh-empty">还没有登录记录</div>
-          <ul v-else class="lh-list">
-            <li v-for="(it, i) in lhItems" :key="i" class="lh-row">
-              <span class="lh-badge" :class="it.success ? 'ok' : 'bad'">{{ it.success ? '成功' : '失败' }}</span>
-              <span class="lh-main">
-                <span class="lh-line1">{{ it.reason_label }} · {{ fmtTime(it.created_at) }}</span>
-                <span class="lh-line2">{{ it.ip || '未知 IP' }}<span v-if="it.region"> · {{ it.region }}</span></span>
-                <span class="lh-ua" :title="it.user_agent || ''">{{ it.user_agent || '未知设备' }}</span>
-              </span>
-            </li>
-          </ul>
-          <div v-if="!lhError && lhItems.length < lhTotal" class="lh-more">
-            <button type="button" class="v4-retry" :disabled="lhLoading" @click="loadLoginHistory(false)">{{ lhLoading ? '正在加载…' : '加载更多' }}</button>
-          </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 设置与账号：改密/收藏列表行 + 设备 + 发现页卡片 + 隐私 -->
-      <section class="v4-sec" aria-label="设置与账号">
-        <div class="v4-sec-title">设置与账号</div>
-        <div class="v4-card acct-card">
-            <button type="button" class="acct-row" @click="openChangePwd">
-              <span class="acct-row-ic" aria-hidden="true"><Lock :size="16" /></span>
-              <span class="acct-row-main"><span class="acct-row-text">修改登录密码</span><span class="acct-row-meta">登录密码是进营地的钥匙，定期换一把更安心</span></span>
-              <ChevronRight :size="15" class="acct-row-arrow" />
-            </button>
-            <RouterLink class=acct-row as-link to=/favorites>
-              <span class=acct-row-ic aria-hidden=true><Star :size=16 /></span>
-              <span class="acct-row-main"><span class="acct-row-text">我的收藏</span><span class="acct-row-meta">收藏过的片子在这里看清单，也可以在这里取消收藏</span></span>
-              <ChevronRight :size=15 class=acct-row-arrow />
-            </RouterLink>
-            <button type="button" class="acct-row acct-row-danger" @click="handleEntryLogout">
-              <span class="acct-row-ic" aria-hidden="true"><LogOut :size="16" /></span>
-              <span class="acct-row-main"><span class="acct-row-text">退出登录</span><span class="acct-row-meta">退出后需要重新登录</span></span>
-              <ChevronRight :size="15" class="acct-row-arrow" />
-            </button>
-        </div>
-        <div class="acct-subblock">
-          <div class="acct-sub-title">我的设备</div>
-        <div class="v4-sec-sub">用第三方播放器登录过的设备都在这里，顶到上限自己动手清</div>
-        <div class="v4-card">
-          <div class="dev-head">
-            <span v-if="deviceInfo && deviceInfo.limit" class="dev-count">
-              {{ deviceInfo.active_count ?? 0 }} / {{ deviceInfo.limit }} 台
-            </span>
-            <!-- R38 P3-2：忙碌时文案「刷新中」替代旋转图标（旋转+reduce 伪守卫已删） -->
-            <button type="button" class="v4-mini-btn" title="刷新" :disabled="deviceLoading" :aria-busy="deviceLoading" @click="loadDevices">
-              <RefreshCw :size="13" /> {{ deviceLoading ? '刷新中' : '刷新' }}
-            </button>
-          </div>
-          <div v-if="deviceLoading && !devices.length" class="v4-skeleton" style="height:120px"></div>
-          <div v-else-if="deviceError" class="v4-err">设备列表加载失败，请稍后重试<br><button class="v4-retry" @click="loadDevices">重试</button></div>
-          <div v-else-if="!devices.length" class="v4-empty">
-            还没有设备记录 —— 用 Emby 客户端（Infuse / Forward 等）登录后会出现在这里
-          </div>
-          <template v-else>
-            <div v-for="d in devices" :key="d.device_id" class="dev-row">
-              <div class="dev-main">
-                <span class="dev-name">{{ d.name || '未命名设备' }}</span>
-                <span class="dev-meta">
-                  {{ d.client || '未知客户端' }}
-                  <template v-if="d.app_version"> v{{ d.app_version }}</template>
-                  · {{ deviceAgo(d.last_seen_at, d.is_blocked) }}
-                  <template v-if="d.ip"> · {{ d.ip }}</template>
-                </span>
-              </div>
-              <span v-if="d.is_blocked" class="dev-badge off">已禁用</span>
-              <span v-else-if="!d.is_online_recent" class="dev-badge idle">已闲置</span>
-              <span v-else class="dev-badge ok">活跃</span>
-              <button
-                type="button"
-                class="dev-remove"
-                :class="{ confirming: pendingRemove === d.device_id }"
-                :disabled="removingDevice === d.device_id"
-                @click="handleRemoveDevice(d)"
-              >
-                <!-- R37 P3-8：移除忙碌态给人话文案「移除中」，不再只有变暗 -->
-                {{ removingDevice === d.device_id ? '移除中' : (pendingRemove === d.device_id ? '确认移除' : '移除') }}
-              </button>
-            </div>
-          </template>
-          <p class="dev-tip">
-            <template v-if="deviceInfo && deviceInfo.limit">
-              账号最多同时使用 {{ deviceInfo.limit }} 台设备（近 {{ deviceInfo.active_days }} 天内登录过）。
-              {{ deviceInfo.auto_evict ? '超限时会自动停用最久未用的设备。' : '超限时请先移除不再使用的设备。' }}
-            </template>
-            <template v-else>移除后该设备登录状态立即失效，需重新输入账号密码。</template>
-          </p>
-        </div>
-        </div>
-        <div class="acct-subblock">
-          <div class="acct-sub-title">发现页卡片展示</div>
-        <div class="v4-sec-sub">发现页服务器卡片怎么摆，你说了算</div>
-        <div class="v4-card">
-          <div class="mode-seg" role="group" aria-label="发现页卡片展示模式">
-            <button
-              v-for="opt in modeOptions"
-              :key="opt.v"
-              type="button"
-              :class="{ 'is-on': mode === opt.v }"
-              :aria-pressed="mode === opt.v"
-              @click="setMode(opt.v)"
-            >
-              {{ opt.label }}
-            </button>
-          </div>
-          <p class="mode-hint">自动 = 一个服大卡、多个服总览</p>
-
-          <div v-if="serversLoading && !servers.length" class="srv-empty">正在加载…</div>
-          <div v-else-if="serversLoadError" class="srv-empty">服务器清单加载失败<button class="v4-retry" @click="() => loadServers()">重试</button></div>
-          <div v-else-if="!servers.length" class="srv-empty">还没有可展示的服务器</div>
-          <div v-else>
-            <div v-for="s in servers" :key="s.id" class="srv-row">
-              <div class="srv-info">
-                <div class="srv-name">{{ s.name }}</div>
-                <div class="srv-tag">{{ serverTagText(s) }}</div>
-              </div>
-              <button
-                type="button"
-                class="srv-switch"
-                :class="{ 'is-on': cardPrefs.isVisible(s.id) }"
-                role="switch"
-                :aria-checked="cardPrefs.isVisible(s.id)"
-                :aria-label="`${s.name}：在发现页显示`"
-                @click="toggleServer(s.id)"
-              ></button>
-            </div>
-          </div>
-        </div>
-        </div>
-        <div class="acct-subblock">
-          <div class="acct-sub-title">隐私</div>
-        <div class="v4-sec-sub">谁能在榜单上看到你，你说了算</div>
-        <div class="v4-card">
-          <div class="srv-row">
-            <div class="srv-info">
-              <div class="srv-name">观影碑时长榜上榜</div>
-              <div class="srv-tag">打开后，你的观影时长会出现在世界观影碑的时长榜上（只显示昵称）；关掉则不上榜，但你自己仍能看到自己的排名</div>
-            </div>
-            <button
-              type="button"
-              class="srv-switch"
-              :class="{ 'is-on': showOnLeaderboard }"
-              :disabled="privacyLoading"
-              role="switch"
-              :aria-checked="showOnLeaderboard"
-              aria-label="观影碑时长榜上榜"
-              @click="toggleLeaderboard"
-            ></button>
-          </div>
-          <p v-if="privacyError" class="srv-empty">{{ privacyError }}<button class="v4-retry" @click="loadPrivacy">重试</button></p>
-        </div>
-        </div>
-      </section>
-    </div>
-
-    <!-- 修改登录密码弹窗（由 ProfileView 移植） -->
-    <div v-if="showChangePwd" class="acct-mask" @click.self="closeChangePwd" @keydown="onPwdModalKeydown">
-      <div class="acct-modal" role="dialog" aria-modal="true" aria-label="修改登录密码">
-        <h3 class="acct-modal-title">修改登录密码</h3>
-        <div class="acct-field">
-          <label class="acct-label" for="pwd-old">当前密码</label>
-          <input id="pwd-old" ref="oldPwdInput" v-model="pwdForm.oldPassword" type="password" autocomplete="current-password" />
-        </div>
-        <div class="acct-field">
-          <label class="acct-label" for="pwd-new">新密码</label>
-          <input id="pwd-new" v-model="pwdForm.newPassword" type="password" autocomplete="new-password" />
-        </div>
-        <div class="acct-field">
-          <label class="acct-label" for="pwd-confirm">确认新密码</label>
-          <input id="pwd-confirm" v-model="pwdForm.confirmPassword" type="password" autocomplete="new-password" />
-        </div>
-        <p v-if="pwdError" class="acct-error" role="alert">{{ pwdError }}</p>
-        <div class="acct-modal-actions">
-          <button type="button" class="acct-btn ghost" :disabled="pwdLoading" @click="closeChangePwd">取消</button>
-          <button type="button" class="acct-btn primary" :disabled="pwdLoading" @click="handleChangePassword">
-            {{ pwdLoading ? '提交中' : '确认修改' }}
-          </button>
+          </section>
         </div>
       </div>
     </div>
 
-    <!-- R36：终止订阅二次确认（纸色风格，替代原生 confirm；照抄 SignalView R27） -->
-    <Modal v-model="cancelConfirmOpen" size="sm" content-class="paper-confirm">
-      <template #header>
-        <h3 class="modal-title">终止订阅</h3>
-      </template>
-      <p class="acct-confirm-text">{{ pendingCancel ? confirmCopy.cancelSubscription(pendingCancel.plan_name) : '' }}</p>
-      <template #footer>
-        <div class="acct-modal-actions">
-          <button type="button" class="acct-btn ghost" @click="cancelConfirmOpen = false">再想想</button>
-          <button type="button" class="acct-btn primary" :disabled="cancellingSub !== null" @click="doCancelSubscription">
-            {{ cancellingSub !== null ? '终止中' : '确定终止' }}
-          </button>
-        </div>
-      </template>
-    </Modal>
+    <ChangePasswordModal v-model:open="pwdOpen" />
+  </div>
   </div>
 </template>
 
 <script setup lang="ts">
 /**
- * 账号设置设施（/game/account）—— 旧「个人中心」ProfileView 的 P0 功能承接页。
- *
- * 只放三件套（移植 ProfileView 逻辑，不重写）：
- * 1. 修改登录密码（authApi.changePassword，全仓唯一入口）
- * 2. 我的会员（复用 components/profile/ProfileSubscriptions.vue：到期 / 历史 / 取消）
- * 3. 我的设备（deviceApi：设备列表 / 移除，顶上限自救通道）
- * 4. 我的网盘（storageBindingApi：绑定自己的谷歌盘，BYOS；不新增导航入口）
- *
- * 后续已承接（R45）：Emby 多服列表、正在播放远程终止已由接线员页
- * （/game/operator）承接 —— realmCards 多服列表 + 正在播放一键远程结束。
+ * 账号设置页（/game/account/settings）：个人中心重做后设置类功能的家。
+ * 四组——安全（改密码 / 我的设备 / 登录记录）、绑定（谷歌盘管理 + 已
+ * 下线绑定解绑）、展示与隐私（发现页卡片展示 / 观影碑上榜开关）、账
+ * 号（退出登录）。各块逻辑都在 components/profile/ 的对应组件里（自旧
+ * 账号页原样抽出，行为口径不变）；本页只留上榜开关与退出登录。
+ * 带 #my-drive 锚点进来（旧深链 / 播放器方案弹窗）时，等绑定组显示后
+ * 自动展开谷歌盘并滚到位。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
-import { Lock, ChevronRight, ChevronDown, HardDrive, RefreshCw, Star, Mountain, Trophy, Sparkles, CalendarCheck, Bird, LogOut } from 'lucide-vue-next'
-import Modal from '@/components/ui/Modal.vue'
-import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
-import { facilityStamp } from '@/config/game'
-import { authApi, subscriptionApi, embyApi, isExpiringSoon, type MySubscription, type AccountCard, type LoginHistoryItem } from '@/api'
-import { deviceApi, storageBindingApi, seriesFollowApi, welfareApi, memberApi, checkinApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type DriveOAuth2EntryStatus, type SeriesFollow } from '@/api/economy'
-import { tgApi } from '@/api/tg'
-import { getMyExclusiveLines, type MyExclusiveLine } from '@/api/user'
-import { getAgentMe, type AgentProfile } from '@/api/agent'
+import { nextTick, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ChevronLeft, Eye, Lock, LogOut } from 'lucide-vue-next'
+import PcEntryRow from '@/components/profile/PcEntryRow.vue'
+import ChangePasswordModal from '@/components/profile/ChangePasswordModal.vue'
+import DevicesEntry from '@/components/profile/DevicesEntry.vue'
+import LoginHistoryEntry from '@/components/profile/LoginHistoryEntry.vue'
+import DriveBindingsPanel from '@/components/profile/DriveBindingsPanel.vue'
+import CardPrefsEntry from '@/components/profile/CardPrefsEntry.vue'
+import { panelApi, humanizeError } from '@/composables/usePanelApi'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
-import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
-import { useServerCardPrefs, type ServerCardMode } from '@/composables/useServerCardPrefs'
-import { humanizeError } from '@/composables/usePanelApi'
-import { panelApi } from '@/composables/usePanelApi'
-import { toastCopy, confirmCopy } from '@/constants/toastMessages'
-import { toUserMessage } from '@/utils/toUserMessage'
-import { parseServerTime } from '@/utils/serverTime'
 
-const userStore = useUserStore()
+const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 const toast = useToast()
 
-// ===== 我的专属线路（无资格时后端回空列表，整组不渲染） =====
-const myLines = ref<MyExclusiveLine[]>([])
-async function loadMyLines() {
-  myLines.value = await getMyExclusiveLines()
-}
+const pwdOpen = ref(false)
 
-// ===== 代理中心入口（非代理时后端回 is_agent=false，整组不渲染） =====
-const agentProfile = ref<AgentProfile | null>(null)
-const agentRateText = computed(() => {
-  const r = agentProfile.value?.discount_rate ?? 0
-  return `${(r * 10).toFixed(1).replace(/\.0$/, '')}折`
-})
-async function loadAgentProfile() {
-  const me = await getAgentMe()
-  agentProfile.value = me.is_agent ? me.agent : null
-}
-async function copyLineUrl(url: string) {
-  try {
-    await navigator.clipboard.writeText(url)
-    toast.success('线路地址已复制，去播放器里添加服务器时粘贴它')
-  } catch {
-    toast.error('复制失败，请长按地址手动复制')
-  }
-}
-
-// ===== 修改登录密码（ProfileView 移植） =====
-const showChangePwd = ref(false)
-const pwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
-const pwdLoading = ref(false)
-const pwdError = ref('')
-const oldPwdInput = ref<HTMLInputElement | null>(null)
-
-/** R36：改密码弹窗键盘闭环（照抄 WishlistView R27 标杆：focus trap + 自动聚焦 + Esc） */
-function onPwdModalKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Tab' || !showChangePwd.value) return
-  const card = (e.currentTarget as HTMLElement).querySelector('.acct-modal')
-  if (!card) return
-  const els = Array.from(
-    card.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'),
-  ).filter((el) => el.offsetParent !== null)
-  if (els.length === 0) return
-  const first = els[0]
-  const last = els[els.length - 1]
-  if (e.shiftKey && document.activeElement === first) {
-    e.preventDefault()
-    last.focus()
-  } else if (!e.shiftKey && document.activeElement === last) {
-    e.preventDefault()
-    first.focus()
-  }
-}
-/** R38 P2-2：弹窗关闭后焦点回到触发按钮（改密码 / 终止订阅共用） */
-const lastTrigger = ref<HTMLElement | null>(null)
-function onPwdEsc(e: KeyboardEvent) {
-  if (e.key === 'Escape' && showChangePwd.value) closeChangePwd()
-}
-function openChangePwd() {
-  // R37 P3-9：重开弹窗清掉旧错误文案
-  pwdError.value = ''
-  // R38 P2-2：记住触发按钮，关闭后焦点回到它
-  lastTrigger.value = document.activeElement as HTMLElement | null
-  showChangePwd.value = true
-  // R41：弹窗打开时锁住背后页面滚动（照抄 WishlistView R38 P3-11 模式）
-  document.body.style.overflow = 'hidden'
-  window.addEventListener('keydown', onPwdEsc)
-  nextTick(() => oldPwdInput.value?.focus())
-}
-function closeChangePwd() {
-  // R54-10：提交在途时不允许关闭，否则在途请求的失败原因会被清空后静默丢失
-  if (pwdLoading.value) return
-  showChangePwd.value = false
-  // R41：弹窗关闭时释放 body 滚动锁（照抄 WishlistView R38 P3-11 模式）
-  document.body.style.overflow = ''
-  // R41：关闭时同步清空表单 —— 取消后重开，旧密码不再残留（pwdError 的清理保留在 openChangePwd）
-  pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
-  window.removeEventListener('keydown', onPwdEsc)
-  lastTrigger.value?.focus?.()
-}
-onUnmounted(() => {
-  window.removeEventListener('keydown', onPwdEsc)
-  window.removeEventListener('focus', onOAuthReturn)
-  document.removeEventListener('visibilitychange', onVisibilityReturn)
-  // R41：组件卸载时兜底释放 body 滚动锁，避免锁死
-  document.body.style.overflow = ''
-})
-
-async function handleChangePassword() {
-  const { oldPassword, newPassword, confirmPassword } = pwdForm.value
-  if (!oldPassword || !newPassword || !confirmPassword) {
-    pwdError.value = '请填写完整'
-    return
-  }
-  if (newPassword.length < 6) {
-    pwdError.value = '新密码至少 6 位'
-    return
-  }
-  if (newPassword !== confirmPassword) {
-    pwdError.value = '两次输入的新密码不一致'
-    return
-  }
-  pwdError.value = ''
-  pwdLoading.value = true
-  try {
-    await authApi.changePassword({ old_password: oldPassword, new_password: newPassword })
-    toast.success(toastCopy.passwordChanged())
-    closeChangePwd()
-    pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
-  } catch (err: any) {
-    pwdError.value = toUserMessage(err, 'settingFailed')
-  } finally {
-    pwdLoading.value = false
-  }
-}
-
-// ===== 我的会员（ProfileView 移植；展示层全在 ProfileSubscriptions.vue） =====
-const subscriptions = ref<MySubscription[]>([])
-const subsError = ref('')
-// R41：在途标记 —— loadSubs 全程置位，在途显示 .v4-skeleton，不闪现"还没有会员"
-const subsLoading = ref(false)
-const cancellingSub = ref<number | null>(null)
-
-const activeSub = computed(
-  () => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null,
-)
-const expiringSoon = computed(() => isExpiringSoon(activeSub.value))
-const isFreeRealm = computed(() => userStore.isFreeRealm)
-const realmNote = computed(() => userStore.realmNote)
-
-async function loadSubs() {
-  subsLoading.value = true
-  subsError.value = ''
-  try {
-    subscriptions.value = await subscriptionApi.getMine()
-  } catch (e) {
-    // 加载失败别装成"没订阅"，留错误态给用户重试
-    subsError.value = humanizeError(e)
-  } finally {
-    subsLoading.value = false
-  }
-}
-
-/** R36：终止订阅二次确认 —— 原生 confirm() 改用纸色 Modal（照抄 SignalView R27 先例）。
- *  文案继续走 confirmCopy.cancelSubscription，不改文案。 */
-/** r48-⑬：自动续订开关 —— 在途标记，防重复点击 */
-const togglingRenew = ref<number | null>(null)
-async function toggleAutoRenew(s: MySubscription) {
-  if (togglingRenew.value !== null) return
-  togglingRenew.value = s.id
-  try {
-    const res = await subscriptionApi.setAutoRenew(s.id, !s.auto_renew)
-    toast.success(res.message || (res.auto_renew ? '已开启自动续订' : '已关闭自动续订'))
-    await loadSubs()
-  } catch (err: any) {
-    toast.error(toUserMessage(err, 'toggleAutoRenewFailed'))
-  } finally {
-    togglingRenew.value = null
-  }
-}
-
-// ===== 自助续期（公益服）：后端口子现成（公益天数 /redeem、查看 /unlock-view），此前个人中心无入口 =====
-// 公益资格到期日取福利状态口（GET /api/points/welfare-status）：失败时不显示日期，不阻断页面。
-const accountCard = ref<AccountCard | null>(null)
-const tgBound = ref<boolean | null>(null)
-const welfareExpiresAt = ref<string | null>(null)
-const welfareStatusLoaded = ref(false)
-const renewingWelfare = ref<number | null>(null)
-const renewingView = ref(false)
-
-const viewUnlock = computed(() => {
-  const vp = accountCard.value?.view_permission
-  if (!vp) return null
-  return {
-    granted: vp.granted,
-    expiresAt: vp.expires_at,
-    unlockPoints: vp.unlock_points,
-    unlockDays: vp.unlock_days,
-  }
-})
-const pointsBalance = computed(() => accountCard.value?.view_permission?.points_balance ?? null)
-
-async function loadRenewal() {
-  // 两路各自容错：账号卡失败不挡 TG 状态，反之亦然；失败时对应区块降级（查看块隐藏、TG 未知时不拦按钮，以服务端为准）
-  try {
-    accountCard.value = await embyApi.getAccountCard()
-  } catch {
-    accountCard.value = null
-  }
-  try {
-    const st = await tgApi.status()
-    tgBound.value = st.telegram_id !== null && st.telegram_id !== undefined
-  } catch {
-    tgBound.value = null
-  }
-  try {
-    const st = await welfareApi.status()
-    welfareExpiresAt.value = st.welfare_expires_at
-    if (userStore.user) userStore.user.is_welfare = st.is_welfare
-    welfareStatusLoaded.value = true
-  } catch {
-    // 状态口失败时不显示日期，不阻断页面
-  }
-}
-
-async function renewWelfare(days: 7 | 30) {
-  if (renewingWelfare.value !== null) return
-  renewingWelfare.value = days
-  try {
-    const res = await welfareApi.redeem(days)
-    welfareExpiresAt.value = res.expires_at
-    welfareStatusLoaded.value = true
-    if (userStore.user) userStore.user.is_welfare = true
-    toast.success(`续期成功，已延至 ${res.expires_at ? res.expires_at.slice(0, 10) : `${days} 天后`}（花费 ${res.cost} 能量，余额 ${res.balance}）`)
-    await loadRenewal()
-  } catch (err: any) {
-    toast.error(toUserMessage(err, 'renewFailed'))
-  } finally {
-    renewingWelfare.value = null
-  }
-}
-
-async function renewView() {
-  if (renewingView.value) return
-  renewingView.value = true
-  try {
-    const realmId = accountCard.value?.realm_id ?? undefined
-    const res = await embyApi.unlockView(realmId)
-    toast.success(res.already ? '查看已是解锁状态' : `续费成功${res.expires_at ? `，已延至 ${res.expires_at.slice(0, 10)}` : ''}`)
-    await loadRenewal()
-  } catch (err: any) {
-    toast.error(toUserMessage(err, 'renewFailed'))
-  } finally {
-    renewingView.value = false
-  }
-}
-
-const pendingCancel = ref<MySubscription | null>(null)
-const cancelConfirmOpen = computed({
-  get: () => pendingCancel.value !== null,
-  // R38 P2-2：任何关闭路径（"再想想"、Modal 内部关闭按钮/Esc）都把焦点还给触发按钮
-  set: (v: boolean) => { if (!v) { pendingCancel.value = null; lastTrigger.value?.focus?.() } },
-})
-function cancelSubscription(s: MySubscription) {
-  lastTrigger.value = document.activeElement as HTMLElement | null
-  pendingCancel.value = s
-}
-async function doCancelSubscription() {
-  const s = pendingCancel.value
-  if (!s || cancellingSub.value !== null) return
-  cancellingSub.value = s.id
-  try {
-    const res = await subscriptionApi.cancel(s.id)
-    toast.success(res.message || toastCopy.subscriptionCancelled())
-    cancelConfirmOpen.value = false
-    await loadSubs()
-  } catch (err: any) {
-    toast.error(toUserMessage(err, 'cancelFailed'))
-    // 失败时保持确认弹窗打开，用户可直接重试，不丢失上下文（照抄 SignalView R27）
-  } finally {
-    cancellingSub.value = null
-  }
-}
-
-// ===== 我的设备（ProfileView 移植：列表 / 两步确认移除） =====
-const devices = ref<MyDevice[]>([])
-const deviceInfo = ref<MyDevicesResponse | null>(null)
-const deviceLoading = ref(false)
-const deviceError = ref('')
-const removingDevice = ref('')
-const pendingRemove = ref('')
-
-// ---- 登录记录（只读，只查本人；与改密同处安全设置区） ----
-const lhItems = ref<LoginHistoryItem[]>([])
-const lhTotal = ref(0)
-const lhLoading = ref(false)
-const lhError = ref(false)
-const LH_PAGE = 20
-
-function fmtTime(iso: string | null): string {
-  if (!iso) return '时间未知'
-  // PA-047：登录记录是 UTC naive 串，须按 UTC 解析再转本地
-  const d = parseServerTime(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString('zh-CN', { hour12: false })
-}
-
-async function loadLoginHistory(reset: boolean) {
-  if (lhLoading.value) return
-  lhLoading.value = true
-  lhError.value = false
-  try {
-    const data = await authApi.getLoginHistory({
-      limit: LH_PAGE,
-      offset: reset ? 0 : lhItems.value.length,
+// ── 绑定组门控（providers 结论由 DriveBindingsPanel 回报） ──
+const drivePanel = ref<InstanceType<typeof DriveBindingsPanel> | null>(null)
+const driveGroupVisible = ref(false)
+function onDriveLoaded(payload: { visible: boolean }) {
+  driveGroupVisible.value = payload.visible
+  if (payload.visible && route.hash === '#my-drive') {
+    void nextTick(() => {
+      drivePanel.value?.expandDrive()
+      document.getElementById('my-drive')?.scrollIntoView({ block: 'start' })
     })
-    lhTotal.value = data.total
-    lhItems.value = reset ? data.items : [...lhItems.value, ...data.items]
-  } catch {
-    lhError.value = true
-  } finally {
-    lhLoading.value = false
   }
 }
 
-async function loadDevices() {
-  deviceLoading.value = true
-  deviceError.value = ''
-  try {
-    const res = await deviceApi.mine()
-    devices.value = res.devices
-    deviceInfo.value = res
-  } catch (e) {
-    // 加载失败别装成"没设备"，留错误态给用户重试
-    deviceError.value = humanizeError(e)
-  } finally {
-    deviceLoading.value = false
-  }
-}
-
-async function handleRemoveDevice(device: MyDevice) {
-  // R54-12：移除请求在途时直接短路，避免并发删除同一设备
-  if (removingDevice.value) return
-  if (pendingRemove.value !== device.device_id) {
-    pendingRemove.value = device.device_id
-    window.setTimeout(() => {
-      if (pendingRemove.value === device.device_id) pendingRemove.value = ''
-    }, 4000)
-    return
-  }
-  pendingRemove.value = ''
-  removingDevice.value = device.device_id
-  try {
-    const res = await deviceApi.remove(device.device_id)
-    toast.success(res.message || toastCopy.deviceRemoved())
-    await loadDevices()
-  } catch (err: any) {
-    toast.error(toUserMessage(err, 'removeFailed'))
-  } finally {
-    removingDevice.value = ''
-  }
-}
-
-function deviceAgo(iso?: string | null, isBlocked = false) {
-  if (isBlocked) return '已禁用'
-  if (!iso) return '—'
-  // PA-047：last_seen_at 是 UTC naive 串，须按 UTC 解析，否则时长多算 8 小时
-  const diff = Date.now() - parseServerTime(iso).getTime()
-  if (Number.isNaN(diff)) return '—'
-  if (diff < 0) return '刚刚'
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return '刚刚'
-  if (mins < 60) return `${mins} 分钟前`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
-}
-
-// ===== 我的网盘（用户自带谷歌盘绑定，BYOS） =====
-// 夸克 / 115 绑定线已于 2026-11-02 下线，本页只剩 drive 一家：
-// drive 走 Google 授权（POST /storage-bindings 只剩后端拒绝口）。
-// 绑定流程（谷歌盘）：start 口返回 authorization_url（字段名照抄 drive_oauth.start_drive_oauth），
-// 新窗口打开 Google 授权；Google 回调直接调后端 callback 口，不经过本站页面，
-// 所以本页不监听回调，改为窗口重新获得焦点/页面重新可见时自动重拉一次
-// （只在刚走完 OAuth 的会话里做，避免无意义轮询；手动“刷新列表”仍保留作兜底）。
-// 后台挂载驱动的 provider 名单（GET /storage-bindings/providers）：两块共用同一套
-// 门控，不写死分支——名单里没有的块整个不渲染，连已绑行也不展示。
-const availableProviders = ref<string[]>([])
-const providersLoaded = ref(false)
-const providersError = ref('')
-
-function hasProvider(provider: string) {
-  return availableProviders.value.includes(provider)
-}
-
-// —— 重排版新增（纯展示派生，不新增请求）：紧凑账号头 ——
-const displayName = computed(() => userStore.user?.username || '账号设置')
-const avatarInitial = computed(() => (userStore.user?.username || '账').slice(0, 1).toUpperCase())
-const identityBadge = computed(() => {
-  if (isFreeRealm.value) return '公益服'
-  if (userStore.isVIP) return '会员'
-  return ''
-})
-// 白名单专属身份（后端 auth/me 出参，非白名单为 null → 模板不渲染）
-const whitelistIdentity = computed(() => userStore.user?.whitelist_identity ?? null)
-
-// —— 重排版新增（纯 UI 展开态 + 行摘要，由既有绑定数据派生）：网盘行式列表 ——
-const openProviders = ref<Set<string>>(new Set())
-function toggleProvider(provider: string) {
-  const next = new Set(openProviders.value)
-  if (next.has(provider)) next.delete(provider)
-  else next.add(provider)
-  openProviders.value = next
-}
-function isProviderOpen(provider: string) {
-  return openProviders.value.has(provider)
-}
-function bindingsOf(provider: string): StorageBinding[] {
-  // 夸克 / 115 绑定线已下线（2026-11-02）：只剩 drive 一家。
-  if (provider === 'drive') return driveBindings.value
-  return []
-}
-function providerNeedsAction(provider: string) {
-  return bindingsOf(provider).some((b) => b.status !== 'active' || b.needs_rebind)
-}
-function providerBadgeText(provider: string) {
-  if (!bindingsOf(provider).length) return '未绑定'
-  return providerNeedsAction(provider) ? '不可用' : '可用'
-}
-function providerBadgeClass(provider: string) {
-  if (!bindingsOf(provider).length) return ''
-  return providerNeedsAction(provider) ? 'off' : 'ok'
-}
-const PROVIDER_EMPTY_META: Record<string, string> = {
-  drive: '还没绑 · 绑了走你自己的额度',
-}
-function providerMeta(provider: string) {
-  const list = bindingsOf(provider)
-  if (!list.length) return PROVIDER_EMPTY_META[provider] || '还没绑'
-  let meta = `已绑 ${list.length} 个 · ${list[0].account_label}`
-  if (list.some((b) => b.needs_rebind)) meta += ' · 有盘需重新授权'
-  else if (providerNeedsAction(provider)) meta += ' · 有不可用'
-  return meta
-}
-
-async function loadProviders() {
-  providersError.value = ''
-  try {
-    const res = await storageBindingApi.providers()
-    availableProviders.value = res.providers || []
-    // 第二绑定入口状态随名单同响应下发：没这份数据就当入口不存在，
-    // 整块不渲染（不猜、不 fallback），与 provider 名单同一口径。
-    driveOauth2.value = res.drive_oauth2 || null
-    providersLoaded.value = true
-  } catch (e) {
-    // 名单拿不到就没法按规则渲染，留错误态给用户重试，不猜、不 fallback 到全显
-    providersError.value = humanizeError(e)
-  }
-}
-
-// 第二绑定入口状态（providers 响应随行下发，后端配置驱动）：
-// available=false 或整份缺失时整块不渲染；eligible=false 时置灰加
-// 原因（reason 后端原话）；label/description 都是后端下发文案。
-const driveOauth2 = ref<DriveOAuth2EntryStatus | null>(null)
-const drive2Starting = ref(false)
-const driveBindings = ref<StorageBinding[]>([])
-// 已下线两家的存量绑定行（115 / 夸克，2026-11-02 下线）：不再当可用盘
-// 展示，只在本区列成“已下线”行 + 下线文案，免得用户对着旧绑定以为还能播。
-const removedBindings = ref<StorageBinding[]>([])
-const driveLoading = ref(false)
-const driveError = ref('')
-const driveLabel = ref('')
-const driveFormError = ref('')
-const driveStarting = ref(false)
-// 正在走重绑的绑定行 id（重绑不新增行，原地换凭据，按钮防重复点）。
-const rebindingId = ref<number | null>(null)
-// iOS 弹窗被拦时的手动 fallback：弹窗被拦下时把授权地址存这里，
-// 页面上渲染一条可点链接，用户手动点开也能走完授权流程。
-const driveAuthUrl = ref('')
-const verifyingBinding = ref<number | null>(null)
-const unbindingId = ref<number | null>(null)
-const pendingUnbind = ref<number | null>(null)
-// 刚走完 Google OAuth 的会话标记：窗口重新获得焦点/页面重新可见时自动重拉一次。
-const pendingOAuthReturn = ref(false)
-
-function goToMyDrive() {
-  try { window.history.replaceState(null, '', '#my-drive') } catch { /* 忽略 */ }
-  const el = document.getElementById('my-drive')
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
-function onOAuthReturn() {
-  if (!pendingOAuthReturn.value || driveLoading.value) return
-  pendingOAuthReturn.value = false
-  void loadDriveBindings()
-}
-
-function onVisibilityReturn() {
-  if (document.visibilityState === 'visible') onOAuthReturn()
-}
-
-function driveStatusText(status: string) {
-  if (status === 'active') return '可用'
-  if (status === 'expired') return '已过期'
-  if (status === 'invalid') return '不可用'
-  return status
-}
-
-async function loadDriveBindings() {
-  driveLoading.value = true
-  driveError.value = ''
-  try {
-    const res = await storageBindingApi.list()
-    driveBindings.value = (res.bindings || []).filter((b) => b.provider === 'drive')
-    removedBindings.value = (res.bindings || []).filter(
-      (b) => b.provider === 'pan115' || b.provider === 'quark',
-    )
-  } catch (e) {
-    // 加载失败别装成“没绑盘”，留错误态给用户重试
-    driveError.value = humanizeError(e)
-  } finally {
-    driveLoading.value = false
-  }
-}
-
-async function handleBindDrive() {
-  const label = driveLabel.value.trim()
-  if (!label) {
-    driveFormError.value = '先给这个盘起个名字'
-    return
-  }
-  driveFormError.value = ''
-  driveAuthUrl.value = ''
-  // iOS Safari 只认点按当下同步开的窗：await 之后再 window.open 会被当弹窗拦。
-  // 所以先在手势里同步开一个空窗保住手势，拿到授权地址后再给它指地址。
-  // 注意：不能带 noopener——实测 iPhone 上带 noopener 时后续 win.location.href 改地址不生效，
-  // 空窗一直停在 about:blank（后端 start 已 200、授权地址已返回，窗就是不动）。
-  const win = window.open('about:blank', '_blank')
-  driveStarting.value = true
-  try {
-    const res = await storageBindingApi.startDriveOAuth(label)
-    if (!res.authorization_url) {
-      if (win && !win.closed) win.close()
-      driveFormError.value = '服务器没有返回授权地址，请稍后重试'
-      return
-    }
-    driveAuthUrl.value = res.authorization_url
-    if (!win || win.closed) {
-      // 弹窗被浏览器拦了：不许谎报成功，留错误态 + 页面上的手动链接
-      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来，列表会自动刷新'
-      return
-    }
-    win.location.href = res.authorization_url
-    pendingOAuthReturn.value = true
-    toast.success('已打开 Google 授权页，同意后回到本页，列表会自动刷新')
-  } catch (e) {
-    // 服务器未配 OAuth 凭据等明文 400，原样展示后端错误，不编造成功
-    if (win && !win.closed) win.close()
-    driveFormError.value = humanizeError(e)
-  } finally {
-    driveStarting.value = false
-  }
-}
-
-async function handleBindDrive2() {
-  // 第二入口绑定：与原入口同流程（共用上面的名字输入框），只是走
-  // oauth2 start 口；无凭证时按钮已置灰，这里再兜一层后端 403
-  // 原样展示。开窗保手势的口径与 handleBindDrive 一字不差。
-  const label = driveLabel.value.trim()
-  if (!label) {
-    driveFormError.value = '先给这个盘起个名字'
-    return
-  }
-  driveFormError.value = ''
-  driveAuthUrl.value = ''
-  const win = window.open('about:blank', '_blank')
-  drive2Starting.value = true
-  try {
-    const res = await storageBindingApi.startDriveOAuth2(label)
-    if (!res.authorization_url) {
-      if (win && !win.closed) win.close()
-      driveFormError.value = '服务器没有返回授权地址，请稍后重试'
-      return
-    }
-    driveAuthUrl.value = res.authorization_url
-    if (!win || win.closed) {
-      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来，列表会自动刷新'
-      return
-    }
-    win.location.href = res.authorization_url
-    pendingOAuthReturn.value = true
-    toast.success('已打开 Google 授权页，同意后回到本页，列表会自动刷新')
-  } catch (e) {
-    if (win && !win.closed) win.close()
-    driveFormError.value = humanizeError(e)
-  } finally {
-    drive2Starting.value = false
-  }
-}
-
-async function handleRebindDrive(b: StorageBinding) {
-  // 重绑：同名同行原地换凭据（后端 start 带 rebind_binding_id，回调
-  // 成功不新增行）；流程与新绑一致——先在手势里同步开空窗保住
-  // 手势，拿到授权地址后再指地址，绝不带 noopener（iOS 实测带了
-  // 后续改地址不生效）。
-  // 入口必须与建绑时一致：oauth2 行走 oauth2 start 口——授权码是
-  // 签给具体应用的，走错入口换 token 必失败（后端按 state 记录分流）。
-  if (rebindingId.value !== null) return
-  rebindingId.value = b.id
-  driveFormError.value = ''
-  driveAuthUrl.value = ''
-  const win = window.open('about:blank', '_blank')
-  try {
-    const startFn = b.oauth_client === 'oauth2'
-      ? storageBindingApi.startDriveOAuth2
-      : storageBindingApi.startDriveOAuth
-    const res = await startFn(b.account_label, b.id)
-    if (!res.authorization_url) {
-      if (win && !win.closed) win.close()
-      driveFormError.value = '服务器没有返回授权地址，请稍后重试'
-      return
-    }
-    driveAuthUrl.value = res.authorization_url
-    if (!win || win.closed) {
-      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来，列表会自动刷新'
-      return
-    }
-    win.location.href = res.authorization_url
-    pendingOAuthReturn.value = true
-    toast.success('已打开 Google 授权页，同意新增的写权限后回到本页，列表会自动刷新，转存失败的任务会自动重跑')
-  } catch (e) {
-    if (win && !win.closed) win.close()
-    driveFormError.value = humanizeError(e)
-  } finally {
-    rebindingId.value = null
-  }
-}
-
-async function handleVerifyBinding(b: StorageBinding) {
-  if (verifyingBinding.value !== null) return
-  verifyingBinding.value = b.id
-  try {
-    const updated = await storageBindingApi.verify(b.id)
-    driveBindings.value = driveBindings.value.map((x) => (x.id === b.id ? updated : x))
-    toast.success(updated.status === 'active' ? '验证通过，这个盘可以用了' : '验证后仍不可用，请重新绑定')
-  } catch (err: any) {
-    toast.error(toUserMessage(err, 'removeFailed'))
-  } finally {
-    verifyingBinding.value = null
-  }
-}
-
-async function handleUnbindDrive(b: StorageBinding) {
-  // 两步确认，照抄设备移除的口径（4 秒内未确认自动收回）
-  if (unbindingId.value !== null) return
-  if (pendingUnbind.value !== b.id) {
-    pendingUnbind.value = b.id
-    window.setTimeout(() => {
-      if (pendingUnbind.value === b.id) pendingUnbind.value = null
-    }, 4000)
-    return
-  }
-  pendingUnbind.value = null
-  unbindingId.value = b.id
-  try {
-    await storageBindingApi.remove(b.id)
-    toast.success('已解绑')
-    await loadDriveBindings()
-  } catch (err: any) {
-    toast.error(toUserMessage(err, 'removeFailed'))
-  } finally {
-    unbindingId.value = null
-  }
-}
-
-
-// ===== 发现页卡片展示（模式 + 每服显隐，偏好存 localStorage） =====
-const cardPrefs = useServerCardPrefs()
-const { mode, setMode, toggleServer } = cardPrefs
-const { servers, load: loadServers, loading: serversLoading, loadError: serversLoadError } = useServerCards()
-
-const modeOptions: { v: ServerCardMode; label: string }[] = [
-  { v: 'auto', label: '自动' },
-  { v: 'cards', label: '大卡' },
-  { v: 'overview', label: '总览' },
-]
-
-const ACCESS_LABEL: Record<ServerCardItem['accessMode'], string> = {
-  paid: '付费服',
-  free: '公益服',
-}
-
-function serverTagText(s: ServerCardItem): string {
-  return ACCESS_LABEL[s.accessMode]
-}
-
-/* ---------- 隐私：观影碑时长榜上榜（存账号） ---------- */
+// ── 观影碑上榜开关（自旧页原样迁入） ──
 const showOnLeaderboard = ref(true)
 const privacyLoading = ref(false)
 const privacyError = ref('')
@@ -1211,7 +134,6 @@ async function loadPrivacy() {
     privacyLoading.value = false
   }
 }
-
 async function toggleLeaderboard() {
   if (privacyLoading.value) return
   const next = !showOnLeaderboard.value
@@ -1227,612 +149,96 @@ async function toggleLeaderboard() {
   }
 }
 
-// ===== 追剧订阅（账号页内，订阅与状态；不放首页/发现页） =====
-const follows = ref<SeriesFollow[]>([])
-const followLoaded = ref(false)
-const followError = ref('')
-const followSeriesId = ref('')
-const followFormError = ref('')
-const followSubmitting = ref(false)
-
-function followStateText(state: string, queueReason: string | null): string {
-  if (state === 'ready') return '已转存到你的盘'
-  if (state === 'pending') return '转存排队中'
-  if (state === 'running') return '转存进行中'
-  if (state === 'done') return '转存完成'
-  if (state === 'failed') return '转存失败'
-  if (queueReason === 'no_binding') return '未绑定网盘，绑定后下一轮自动转存'
-  if (queueReason === 'unsupported_provider_115') return '115 已下线，不支持追剧转存'
-  if (queueReason === 'unknown_provider') return '来源不明，暂不转存'
-  return '等待下一轮扫集'
-}
-
-async function loadFollows() {
-  followError.value = ''
-  try {
-    const res = await seriesFollowApi.list()
-    follows.value = res.follows || []
-    followLoaded.value = true
-  } catch (e) {
-    // 开关关时后端 404：整块隐藏，不当成加载失败反复提示
-    const status = (e as { response?: { status?: number } }).response?.status
-    if (status === 404) {
-      followLoaded.value = false
-      followError.value = ''
-    } else {
-      followError.value = humanizeError(e)
-    }
-  }
-}
-
-async function handleSubscribeFollow() {
-  followFormError.value = ''
-  const id = Number(followSeriesId.value)
-  if (!id) {
-    followFormError.value = '请先填剧集条目 id'
-    return
-  }
-  followSubmitting.value = true
-  try {
-    await seriesFollowApi.subscribe(id)
-    followSeriesId.value = ''
-    await loadFollows()
-  } catch (e) {
-    followFormError.value = humanizeError(e)
-  } finally {
-    followSubmitting.value = false
-  }
-}
-
-async function cancelFollow(seriesItemId: number) {
-  try {
-    await seriesFollowApi.unsubscribe(seriesItemId)
-    await loadFollows()
-  } catch (e) {
-    followFormError.value = humanizeError(e)
-  }
-}
-
-// ===== 入口行（成长与记录组顶部）：等级/成就/馆灵/连签只串入口 + 现状摘要 =====
-// 摘要全部取自既有接口（memberApi / checkinApi / panelApi.collector，与各自页同源），
-// 任一拿不到就留空、行只剩名称与箭头，绝不编造；失败不影响本页其余区块。
-const entryLevelText = ref('')
-const entryAchvText = ref('')
-const entryPetText = ref('')
-const entryStreakText = ref('')
-
-async function loadEntrySummaries() {
-  try {
-    const m = await memberApi.info()
-    if (m && typeof m.level === 'number') {
-      entryLevelText.value = `Lv.${m.level}${m.level_name ? ` · ${m.level_name}` : ''}`
-    }
-  } catch { /* 摘要拿不到就不显示 */ }
-  try {
-    const st = await checkinApi.status()
-    if (st && st.streak > 0) entryStreakText.value = `已连报 ${st.streak} 天`
-  } catch { /* 摘要拿不到就不显示 */ }
-  try {
-    const c = await panelApi.collector()
-    if (typeof c?.achievement_count === 'number') {
-      entryAchvText.value = `已点亮 ${c.achievement_count} 枚`
-    }
-    const p = c?.pet
-    if (p && Array.isArray(p.stages) && p.stages.length) {
-      const stageName = p.stages[p.stage]?.name
-      entryPetText.value = stageName ? `${p.name} · ${stageName}` : p.name
-    }
-  } catch { /* 摘要拿不到就不显示 */ }
-}
-
-/** 退出登录：与顶栏头像菜单同款动作（AppHeader.handleLogout）——清登录态后回登录页，不另写一套 */
-async function handleEntryLogout() {
+/** 退出登录：与顶栏头像菜单同款动作——清登录态后回登录页，不另写一套 */
+async function handleLogout() {
   await userStore.logout()
   router.push('/login')
 }
 
 onMounted(() => {
-  void loadLoginHistory(true)
-  void loadMyLines()
-  void loadAgentProfile()
-  loadFollows()
-  loadSubs()
-  if (userStore.isFreeRealm) void loadRenewal()
-  loadDevices()
-  loadProviders()
-  loadDriveBindings()
-  loadPrivacy()
-  if (!serversLoading.value && !servers.value.length) void loadServers()
-  void loadEntrySummaries()
-  // 从播放器选择页带 #my-drive 跳过来时，等网盘区段渲染后再落点；
-  // 区段由 providersLoaded 门控，watch 里同样处理（见下）。
-  window.addEventListener('focus', onOAuthReturn)
-  document.addEventListener('visibilitychange', onVisibilityReturn)
-})
-
-watch(providersLoaded, (loaded) => {
-  if (loaded && window.location.hash === '#my-drive') {
-    void nextTick(() => {
-      document.getElementById('my-drive')?.scrollIntoView({ block: 'start' })
-    })
-  }
+  void loadPrivacy()
 })
 </script>
 
 <style scoped>
-/* 账号设置设施：v4 纸色（只用 v4-paper.css 定义的 token，不硬编码色值） */
-
-/* 2026-10-31 整页重排版：追剧订阅已并入 .v4-page 内的「成长与记录」组，
-   .v4-page 的底栏留白直接生效，原 .v4-scope 直属子级补丁规则随之删除。 */
-
-/* —— 重排版新增样式（沿用本页既有 token 与组件类，不新造视觉语言） —— */
-.acct-stamp-row {
+.settings-page { padding-bottom: 34px; }
+.set-wrap { padding: 16px 16px 0; }
+.set-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  margin-bottom: 10px;
+  padding: 0 0 6px;
 }
-.acct-stamp-row .v4-stamp { margin-bottom: 0; }
-.acct-drive-link {
-  font-size: 12px;
-  color: var(--au-primary, #016a71);
-  text-decoration: none;
-  padding: 6px 0;
-  white-space: nowrap;
-}
-.acct-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-.acct-avatar { margin-top: 1px; }
-.acct-avatar {
+.set-back {
   width: 38px;
   height: 38px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--ink);
-  color: var(--paper, #f6f1e7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  font-weight: 600;
-}
-.acct-head-main { flex: 1; min-width: 0; }
-.acct-badge {
-  flex: none;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--au-primary, #016a71);
-  color: var(--au-primary, #016a71);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.acct-whitelist {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-.acct-whitelist-badge {
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--au-primary, #016a71);
-  color: var(--paper, #f6f1e7);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.acct-whitelist-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-}
-.acct-whitelist-serial {
-  font-size: 12px;
-  color: var(--au-primary, #016a71);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-.acct-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.acct-title-row .v4-sec-title { flex: 1; }
-.acct-subblock { margin-top: 18px; }
-.acct-sub-title {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-  margin-bottom: 4px;
-}
-.acct-sub-note {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--ink2);
-}
-.acct-list-card { padding: 6px 16px; }
-.acct-card .acct-row + .acct-row { border-top: 1px solid var(--line); }
-.acct-row-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.acct-row-meta {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--ink2);
-}
-.prov-list { padding: 6px 16px; }
-.prov-block + .prov-block { border-top: 1px solid var(--line); }
-.prov-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 52px;
-  padding: 10px 0;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  color: var(--ink);
-  font: inherit;
-}
-.prov-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.prov-name { font-size: 14px; font-weight: 500; }
-.prov-meta {
-  font-size: 12px;
-  color: var(--ink2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-variant-numeric: tabular-nums;
-}
-.prov-chev {
-  flex: none;
-  color: var(--ink2);
-  transition: transform 0.15s ease;
-}
-.prov-chev.open { transform: rotate(180deg); }
-.prov-expand {
-  border-top: 1px dashed var(--line);
-  padding: 12px 0 14px;
-}
-.prov-desc {
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--ink2);
-  margin-bottom: 10px;
-}
-.lh-block.acct-lh {
-  margin-top: 0;
-}
-
-.acct-card { padding: 6px; }
-
-.acct-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 52px;
-  padding: 10px 12px;
-  background: transparent;
-  border: none;
-  border-radius: var(--paper-r-sm, 8px);
-  cursor: pointer;
-  color: var(--ink);
-  font-size: 15px;
-  text-align: left;
-}
-.acct-row:active { background: var(--paper2); }
-.acct-row.as-link { text-decoration: none; box-sizing: border-box; }
-
-.acct-row-ic {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border-radius: var(--paper-r-sm, 8px);
-  background: var(--paper2);
-  color: var(--ink2);
-}
-.acct-row-text { flex: 1; font-weight: 500; }
-.acct-row-arrow { color: var(--ink2); flex-shrink: 0; }
-
-/* 退出登录行：与顶栏头像菜单的退出登录同款红色处理 */
-.acct-row-danger .acct-row-text { color: var(--paper-danger); }
-.acct-row-danger .acct-row-ic { color: var(--paper-danger); }
-
-/* ---- 登录记录 ---- */
-.lh-block { margin-top: 14px; }
-.lh-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
-.lh-title { font-size: 14px; font-weight: 600; color: var(--ink); }
-.lh-note { font-size: 12px; color: var(--ink2); }
-.lh-empty { font-size: 13px; color: var(--ink2); padding: 10px 2px; }
-.lh-list { list-style: none; margin: 0; padding: 0; }
-.lh-row {
-  display: flex; gap: 10px; align-items: flex-start;
-  padding: 9px 2px; border-top: 1px solid var(--paper2);
-}
-.lh-badge {
-  flex-shrink: 0; font-size: 11px; line-height: 1;
-  padding: 4px 7px; border-radius: 999px; margin-top: 1px;
-  border: 1px solid var(--au-border, #e3e3e2); color: var(--ink2);
-}
-.lh-badge.ok { color: var(--au-primary, #016a71); border-color: var(--au-primary, #016a71); }
-.lh-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.lh-line1 { font-size: 13px; color: var(--ink); }
-.lh-line2 { font-size: 12px; color: var(--ink2); }
-.lh-ua {
-  font-size: 11px; color: var(--ink2);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
-}
-.lh-more { margin-top: 10px; text-align: center; }
-
-/* ---- 我的设备 ---- */
-.dev-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-.dev-count {
-  font-size: 12px;
-  color: var(--ink2);
-  font-variant-numeric: tabular-nums;
-}
-.v4-mini-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  /* R41：纵向 padding 13px→15px —— 原注释声称 44px，实算约 40px，提到 15px 才诚实达标（视觉不变） */
-  padding: 15px 10px;
-  margin: -8px 0;
-  background: var(--paper2);
-  border: 1px solid var(--line);
-  border-radius: var(--paper-r-full, 999px);
-  color: var(--ink2);
-  font-size: 12px;
-  cursor: pointer;
-}
-/* R38 P3-2：.spinning 旋转动画已删（忙碌改走文案「刷新中」）；reduce 伪守卫一并删 */
-
-.dev-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 0;
-}
-.dev-row + .dev-row { border-top: 1px solid var(--line); }
-.dev-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-}
-.dev-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dev-meta {
-  font-size: 12px;
-  color: var(--ink2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.dev-badge {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: var(--paper-r-full, 999px);
-  font-size: 12px;
-  white-space: nowrap;
-  background: var(--paper2);
-  color: var(--ink2);
-}
-.dev-badge.ok { background: var(--au-success-soft); color: var(--green); }
-.dev-badge.off { background: var(--au-danger-soft); color: var(--red); }
-.dev-remove {
-  flex-shrink: 0;
-  /* R41：纵向 padding 13px→15px —— 原注释声称 44px，实算约 40px，提到 15px 才诚实达标（视觉不变） */
-  padding: 15px 10px;
-  margin: -7px 0;
-  background: transparent;
-  border: none;
-  border-radius: var(--paper-r-sm, 8px);
-  color: var(--ink2);
-  font-size: 13px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.dev-remove:active:not(:disabled) { background: var(--paper2); }
-.dev-remove:disabled { opacity: 0.5; cursor: not-allowed; }
-.dev-remove.confirming { color: var(--red); font-weight: 600; }
-.dev-tip {
-  margin: 10px 0 0;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--ink2);
-}
-
-/* ---- 改密码弹窗（纸色） ---- */
-.acct-mask {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 24px;
-  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
-  overflow-y: auto;
-  background: var(--scrim);
-  z-index: 100;
-}
-.acct-modal {
-  width: 100%;
-  max-width: 340px;
-  margin: auto;
-  max-height: calc(100% - 48px);
-  max-height: calc(100dvh - 48px);
-  overflow-y: auto;
-  padding: 20px;
-  background: var(--paper-card);
   border: 1.5px solid var(--ink);
-  border-radius: 14px;
-  box-shadow: 4px 4px 0 rgba(42, 38, 32, 0.15);
-}
-.acct-modal-title {
-  margin: 0 0 14px;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--ink);
-}
-.acct-field { margin-bottom: 12px; }
-.acct-label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: var(--ink2);
-}
-.acct-field input {
-  width: 100%;
-  height: 44px;
-  padding: 0 12px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: var(--paper-r-sm, 8px);
-  color: var(--ink);
-  font-size: 16px;
-  outline: none;
-  box-sizing: border-box;
-}
-.acct-field input:focus { border-color: var(--ink); }
-.acct-field input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-.acct-error {
-  margin: 0 0 10px;
-  padding: 8px 12px;
-  background: var(--au-danger-soft);
-  border-radius: var(--paper-r-sm, 8px);
-  color: var(--red);
-  font-size: 13px;
-}
-.acct-modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 16px;
-}
-.acct-btn {
-  height: 44px;
-  padding: 0 16px;
-  border-radius: var(--paper-r-md, 10px);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.acct-btn.ghost {
-  background: var(--paper2);
-  border: 1px solid var(--line);
-  color: var(--ink2);
-}
-.acct-btn.primary {
-  background: var(--ink);
-  border: 1px solid var(--ink);
-  color: var(--on-dark);
-  font-weight: 600;
-}
-.acct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-/* R36：终止订阅确认弹窗的正文（走 .paper-confirm 纸色弹窗，文字排版本地样式） */
-.acct-confirm-text { font-size: 14px; line-height: 1.9; color: var(--ink); margin: 0; }
-
-/* 发现页卡片展示：模式三段选择 + 每服显隐开关（只用 --paper-* token） */
-.mode-seg {
-  display: flex;
-  border: 1.5px solid var(--paper-ink);
-  border-radius: 8px;
-  overflow: hidden;
-}
-.mode-seg button {
-  flex: 1;
+  border-radius: 10px;
+  background: var(--paper-card);
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
-  background: none;
-  border: 0;
-  font-size: 12px;
-  color: var(--paper-ink);
   cursor: pointer;
+  color: var(--ink);
+  flex: none;
 }
-.mode-seg button + button {
-  border-left: 1px solid var(--paper-line);
-}
-.mode-seg button.is-on {
-  background: var(--paper-primary);
-  color: #2A2620;
-  font-weight: 700;
-}
-.mode-hint {
-  margin: 8px 0 0;
-  font-size: 11px;
-  color: var(--paper-ink-2);
-}
-.srv-row {
+.set-title { font-size: 19px; font-weight: 800; }
+.pc-group { margin-top: 22px; }
+.pc-gtitle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 0;
-}
-.srv-row + .srv-row {
-  border-top: 1px dashed var(--paper-line);
-}
-.srv-name {
-  font-size: 14px;
+  gap: 10px;
+  margin: 0 2px 10px;
+  font-size: 14.5px;
   font-weight: 700;
-  color: var(--paper-ink);
+  color: var(--ink);
 }
-.srv-tag {
-  font-size: 11px;
-  color: var(--paper-ink-2);
+.pc-gtitle::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--line-deep);
 }
+.pc-gsub {
+  margin: -4px 2px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink2);
+}
+.pc-rows-card { padding: 0; overflow: hidden; }
+.pc-rows-card > * + * { border-top: 1px solid var(--line); }
+.pc-row-static {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12.5px 14px;
+}
+.pc-row-ic {
+  width: 31px;
+  height: 31px;
+  flex: none;
+  border: 1.5px solid var(--ink);
+  border-radius: 8px;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+}
+.pc-row-name { font-size: 14.5px; font-weight: 600; white-space: nowrap; }
+/* 观影碑开关（自旧页 .srv-switch 原样迁入） */
 .srv-switch {
   position: relative;
   flex: none;
   width: 48px;
   height: 44px;
   padding: 0;
+  margin-left: auto;
   border-radius: 999px;
   border: 0;
   background: none;
   cursor: pointer;
 }
+.srv-switch:disabled { opacity: 0.5; cursor: not-allowed; }
 .srv-switch::before {
   content: '';
   position: absolute;
@@ -1844,9 +250,7 @@ watch(providersLoaded, (loaded) => {
   border: 1.5px solid var(--paper-ink);
   background: var(--paper-card);
 }
-.srv-switch.is-on::before {
-  background: var(--paper-primary);
-}
+.srv-switch.is-on::before { background: var(--paper-primary); }
 .srv-switch::after {
   content: '';
   position: absolute;
@@ -1863,9 +267,30 @@ watch(providersLoaded, (loaded) => {
   right: 8px;
   background: var(--paper-ink);
 }
-.srv-empty {
-  padding: 10px 0;
+.pref-note {
+  margin: 0;
+  padding: 0 14px 12px;
   font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink2);
+}
+.pref-err {
+  margin: 0;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--paper-ink-2);
+}
+@media (min-width: 1024px) {
+  .v4-page.settings-page { max-width: min(1120px, 94vw); }
+  .set-wrap { padding: 26px 32px 48px; }
+  /* 桌面两栏（照效果图）：左安全+绑定，右展示与隐私+账号；手机单列同序 */
+  .set-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 26px;
+    align-items: start;
+  }
 }
 </style>

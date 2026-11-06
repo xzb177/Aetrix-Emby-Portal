@@ -24,7 +24,7 @@
         <div v-if="loading" class="psp-empty">正在读取播放器…</div>
         <p v-else-if="needsBinding" class="psp-empty">
           请先绑定自己的网盘账号才能点播，没绑定只能浏览、不能点播。
-          <RouterLink :to="{ path: '/game/account', hash: '#my-drive' }" @click="close">去“我的网盘”绑定</RouterLink>
+          <RouterLink :to="{ path: '/game/account/settings', hash: '#my-drive' }" @click="close">去“我的网盘”绑定</RouterLink>
         </p>
         <p v-else-if="schemes.length === 0" class="psp-empty">
           这里还没有可导入的播放器。
