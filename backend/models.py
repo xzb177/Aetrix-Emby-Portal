@@ -1012,6 +1012,18 @@ class RegistrationCode(Base):
     # welfare 型：核销时是否打包首张查看行（EmbyViewUnlock，同天数、points_spent=0）。
     # 老数据补列默认 1（打包），与生成表单默认开一致。
     welfare_include_view = Column(Boolean, default=True)
+    # ===== 代理分销（2026-11-06）：代理进货生成的码带出码代理标记 =====
+    # 非空 = 这张码是代理用进货余额买下的（source='agent')，核销成功时
+    # 按 agent_purchase_id 的进货快照落销售归属（见 backend/agents.py）。
+    # 管理员/邀请生成的码两列均为 NULL，行为与此前完全一致。
+    agent_id = Column(Integer, ForeignKey('agents.id'), nullable=True)
+    agent_purchase_id = Column(Integer, ForeignKey('agent_purchases.id'), nullable=True)
+
+    # 按代理查码（代理中心「我的卡码」）；老库由 database._LEGACY_INDEXES
+    # 同名 spec 补建，两边同名保证幂等跳过、不重复建。
+    __table_args__ = (
+        Index('idx_reg_code_agent', 'agent_id'),
+    )
 
 
 class WhitelistSerial(Base):
@@ -1034,6 +1046,128 @@ class WhitelistSerial(Base):
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
     serial = Column(Integer, nullable=False)
     assigned_at = Column(DateTime, default=datetime.now)
+
+
+# ==================== 代理分销（2026-11-06 用户亲点完整版） ====================
+# 语义口径见 backend/agents.py：等级/折扣是管理员可配数据、不写死；
+# 代理余额是独立账本（agents.balance + agent_balance_logs 只增不改），
+# 不与积分钱包（web_users.points / points_logs）混账。
+
+class AgentLevel(Base):
+    """代理等级（管理员可配：名称 / 进货折扣率 / 排序 / 启停）
+
+    discount_rate 是进货折扣率：进货单价 = 面值 × discount_rate
+    （0.8 = 按面值八折进货）。取值 (0, 1]，校验在管理 API 层。
+    """
+    __tablename__ = 'agent_levels'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(50), unique=True, nullable=False)
+    discount_rate = Column(Numeric(5, 4), nullable=False)
+    sort_order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class Agent(Base):
+    """代理（管理员把某个站内用户指定为代理并选等级；取消 = is_active 置假）
+
+    balance 是进货余额（独立账本的当前值），每次变动必须同步写一条
+    agent_balance_logs 流水（只增不改），扣减走条件 UPDATE 防扣成负数。
+    """
+    __tablename__ = 'agents'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', name='uq_agent_user'),
+        Index('idx_agent_level', 'level_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    level_id = Column(Integer, ForeignKey('agent_levels.id'), nullable=False)
+    balance = Column(Numeric(12, 2), nullable=False, default=0)
+    is_active = Column(Boolean, default=True)
+    note = Column(String(255))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship("WebUser")
+    level = relationship("AgentLevel")
+
+
+class AgentBalanceLog(Base):
+    """代理进货余额流水（只增不改：所有余额变动的唯一留痕）
+
+    kind：admin_adjust 管理员手工增减 / purchase 代理进货扣款。
+    amount 带符号（正入负出），balance_after 是变动后的余额快照。
+    """
+    __tablename__ = 'agent_balance_logs'
+
+    __table_args__ = (
+        Index('idx_agent_log_agent', 'agent_id'),
+        Index('idx_agent_log_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(Integer, ForeignKey('agents.id'), nullable=False)
+    kind = Column(String(20), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    balance_after = Column(Numeric(12, 2), nullable=False)
+    note = Column(String(255))
+    operator_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    ref_id = Column(Integer, nullable=True)  # purchase 时为 agent_purchases.id
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class AgentPurchase(Base):
+    """代理进货单（一次进货 = 一批同套餐的卡码）
+
+    面值 / 折扣率 / 单价在进货时点快照：之后管理员改套餐价或等级折扣，
+    历史进货与销售归属的金额口径不跟着变。
+    """
+    __tablename__ = 'agent_purchases'
+
+    __table_args__ = (
+        Index('idx_agent_purchase_agent', 'agent_id'),
+        Index('idx_agent_purchase_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(Integer, ForeignKey('agents.id'), nullable=False)
+    plan_id = Column(Integer, ForeignKey('subscription_plans.id'), nullable=False)
+    plan_name = Column(String(100))  # 套餐名快照
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
+    code_type = Column(Integer, default=1)  # 1 注册码 / 2 续期码
+    quantity = Column(Integer, nullable=False)
+    face_value = Column(Numeric(10, 2), nullable=False)  # 单张面值（套餐价快照）
+    discount_rate = Column(Numeric(5, 4), nullable=False)  # 等级折扣率快照
+    unit_cost = Column(Numeric(12, 2), nullable=False)  # 单张进货价
+    total_cost = Column(Numeric(12, 2), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class AgentSale(Base):
+    """代理销售记录（代理码被终端用户核销时落一行，归属到出码代理）
+
+    在 codes.redeem_code 的核销事务里写入：核销回滚时归属一并撤销。
+    face_value / unit_cost 取进货单快照，销售毛利 = face_value - unit_cost。
+    """
+    __tablename__ = 'agent_sales'
+
+    __table_args__ = (
+        Index('idx_agent_sale_agent', 'agent_id'),
+        Index('idx_agent_sale_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(Integer, ForeignKey('agents.id'), nullable=False)
+    code_id = Column(Integer, ForeignKey('registration_codes.id'), nullable=False)
+    purchase_id = Column(Integer, ForeignKey('agent_purchases.id'), nullable=True)
+    buyer_user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    face_value = Column(Numeric(10, 2), nullable=False)
+    unit_cost = Column(Numeric(12, 2), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class UserDevice(Base):

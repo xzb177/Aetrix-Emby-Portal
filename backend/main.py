@@ -68,6 +68,8 @@ from backend.emby_server import nodes as node_lib
 from backend.emby_server import maintenance
 from backend import reminders
 from backend.api.admin_ops import admin_ops_router
+from backend.api.agents_admin import agents_admin_router
+from backend.api.agent_center import agent_center_router
 from backend.api.admin_services import services_router
 from backend.api.admin_tasks import tasks_router
 from backend.api.reminders_admin import admin_reminders_router
@@ -825,6 +827,9 @@ app.include_router(panel_admin_router)
 # 管理后台 API 路由
 app.include_router(admin_router)
 app.include_router(admin_ops_router)
+# 代理分销（2026-11-06）：管理端（等级/指定/余额/统计）+ 用户端代理中心
+app.include_router(agents_admin_router)
+app.include_router(agent_center_router)
 app.include_router(services_router)
 app.include_router(tasks_router)
 # 订阅到期提醒的面板口径与手动执行（见 backend/api/reminders_admin.py）

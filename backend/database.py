@@ -773,6 +773,12 @@ def _auto_migrate():
             ("discount_pct", "INTEGER", "0"),
             # G1 资格码：核销打包查看行开关（老行补 1=打包，与生成默认开一致）
             ("welfare_include_view", "BOOLEAN", "1"),
+            # 代理分销（2026-11-06）：出码代理标记。老行补 NULL = 非代理码，
+            # 核销归属只认非空（见 backend/agents.py），存量码行为不变。
+            # 新表 agents / agent_levels / agent_balance_logs / agent_purchases /
+            # agent_sales 由 create_all 建，不在此列。
+            ("agent_id", "INTEGER", "NULL"),
+            ("agent_purchase_id", "INTEGER", "NULL"),
         ]),
         # v2.6.4 媒体库刮削策略、虚拟媒体库与搜索增强；v2.6.5 增加 115 账号绑定
         # v2.6.6 增加存储挂载绑定（storage_mounts）：媒体库的内容来源
@@ -1618,6 +1624,11 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     ("emby_transfer_jobs", "ix_transfer_job_prefetch_daily",
      "owner_scope, owner_ref, trigger, created_at", None,
      "  🔧 A-115: emby_transfer_jobs 每日预取上限 COUNT 复合索引"),
+    # 代理分销（2026-11-06）：代理中心「我的卡码」与管理端按代理筛码走
+    # agent_id；列由上面的 _auto_migrate 先补上，列不存在时静默跳过（防御式）。
+    # 回滚：DROP INDEX idx_reg_code_agent。
+    ("registration_codes", "idx_reg_code_agent", "agent_id", "agent_id",
+     "  🔧 已迁移: registration_codes.idx_reg_code_agent（代理分销按代理查码）"),
 )
 
 

@@ -88,6 +88,9 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_item_enrich_open_parent",
         # A-115：转存每日预取上限 COUNT 复合索引（models.py 同名声明）
         "ix_transfer_job_prefetch_daily",
+        # 2026-11-06：代理分销按代理查码（registration_codes.agent_id，
+        # models.py 同名声明，spec 表末尾追加）
+        "idx_reg_code_agent",
     ]
 
 

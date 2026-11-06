@@ -696,6 +696,14 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         return {"success": False, "message": CODE_USED_UP_MESSAGE,
                 "error_code": CODE_ERROR_USED_UP}
 
+    # 代理分销：代理出码（agent_id 非空）核销成功 → 销售归属落账。
+    # 与占位同一事务：后续发奖失败回滚时归属一并撤销，
+    # 不会出现「卖出去了没记账」或「没卖出去记了账」。
+    if getattr(code, "agent_id", None):
+        from backend import agents as agent_service
+
+        agent_service.record_sale(db, code, user.id)
+
     # 占位与发奖在同一个事务里（本函数不提交，由调用方提交）；
     # 中间崩溃会一起回滚，不会出现「码烧了、会员没到账」
     if code.code_type == CODE_TYPE_WHITELIST:
