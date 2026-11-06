@@ -437,6 +437,15 @@ def _delete_one_drive_file(db, row, client, drive_marker, now):
     用户自己的绑定令牌），本函数不碰凭据、不换绑定。
     """
     fid = (getattr(row, "variant_file_id", "") or "").strip()
+    # 保留期门（PanSave A 线 PR-2）：retention_until 未到不删——
+    # 文件不碰、行不动，调用方按 retained 计数。NULL = 无保留。
+    retention_until = getattr(row, "retention_until", None)
+    if retention_until is not None and retention_until > now:
+        logger.info(
+            "[transfer-cleanup] 保留期内跳过 user=%s item=%s "
+            "variant=%s until=%s reason=%s", row.owner_ref, row.item_id,
+            row.id, retention_until, getattr(row, "retention_reason", None))
+        return "retained", 0
     if not is_safe_variant_file_id(fid):
         logger.warning(
             "[transfer-cleanup] 跳过不合规 fid user=%s item=%s "
@@ -508,6 +517,7 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None,
     stats = {"checked": 0, "deleted": 0, "already_gone": 0,
              "skipped_unsupported": 0, "skipped_unsafe": 0,
              "skipped_no_client": 0, "failed": 0, "bytes_freed": 0,
+             "retained": 0,
              "skipped_rows": []}
     q = (db.query(em.TransferVariant)
          .filter(em.TransferVariant.status == "stale")
@@ -566,6 +576,9 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None,
         elif outcome == "skipped_unsafe":
             stats["skipped_unsafe"] += 1
             stats["skipped_rows"].append(_skipped_row(row, "unsafe_fid"))
+        elif outcome == "retained":
+            stats["retained"] += 1
+            stats["skipped_rows"].append(_skipped_row(row, "retained"))
         else:
             stats["failed"] += 1
     logger.info("[transfer-cleanup] stale 清理完成 stats=%s", stats)
@@ -601,16 +614,17 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     already_gone）。exclude_variant_ids 命中的行（正在播、
     正在转的本条）一律不删。
     返回 {evicted: [variant_id...], bytes_freed, reason,
-    skipped_unsupported, skipped_rows, skipped_unsafe, failed}，
-    其中 skipped_unsafe / failed 与 stale 清理同口径（不合规 fid
-    的行计 skipped_unsafe 并进 skipped_rows，删前核查/删除失败
-    的行计 failed、行不动），调用方按 stats 审计时不再把“有候选
-    但删不掉”误读成“无候选”。
+    skipped_unsupported, skipped_rows, skipped_unsafe, failed,
+    retained}，其中 skipped_unsafe / failed 与 stale 清理同口径
+    （不合规 fid 的行计 skipped_unsafe 并进 skipped_rows，删前
+    核查/删除失败的行计 failed、行不动），保留期内不删的行计
+    retained 并进 skipped_rows，调用方按 stats 审计时不再把
+    “有候选但删不掉”误读成“无候选”。
     """
     if not need_bytes and not max_count:
         return {"evicted": [], "bytes_freed": 0, "reason": "no_need",
                 "skipped_unsupported": 0, "skipped_rows": [],
-                "skipped_unsafe": 0, "failed": 0}
+                "skipped_unsafe": 0, "failed": 0, "retained": 0}
     need = int(need_bytes or 0)
     cap = int(max_count or 0)
     client, marker = _user_drive_client(db, user_id,
@@ -619,7 +633,7 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
         return {"evicted": [], "bytes_freed": 0,
                 "reason": "no_client",
                 "skipped_unsupported": 0, "skipped_rows": [],
-                "skipped_unsafe": 0, "failed": 0}
+                "skipped_unsafe": 0, "failed": 0, "retained": 0}
     candidates = select_lru_candidates(
         db, user_id, session_progress=session_progress,
         exclude_ids=exclude_variant_ids)
@@ -629,6 +643,7 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     skipped_rows = []
     skipped_unsafe = 0
     failed = 0
+    retained = 0
     now = datetime.now()
     for row in candidates:
         if need and freed >= need:
@@ -658,6 +673,11 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
             # 行不动；继续往后腾，不跳过整批。
             skipped_unsafe += 1
             skipped_rows.append(_skipped_row(row, "unsafe_fid"))
+        elif outcome == "retained":
+            # 保留期内不删（PR-2）：计 retained 并进 skipped_rows，
+            # 行不动；继续往后腾。
+            retained += 1
+            skipped_rows.append(_skipped_row(row, "retained"))
         else:
             # 删失败不跳过整批：继续往后腾（失败行留 ready，下次
             # 再排），失败计数与 _delete_one 里的日志双通道可查。
@@ -669,7 +689,8 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
             "skipped_unsupported": skipped_unsupported,
             "skipped_rows": skipped_rows,
             "skipped_unsafe": skipped_unsafe,
-            "failed": failed}
+            "failed": failed,
+            "retained": retained}
 
 
 def ensure_space_for_transfer(db, drive_client_factory, user_id, *,

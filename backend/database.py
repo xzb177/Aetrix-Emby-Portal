@@ -1112,6 +1112,18 @@ def _auto_migrate():
         ("emby_transfer_variants", [
             ("share_revoke_pending_at", "DATETIME", "NULL"),
         ]),
+        # PanSave A 线 PR-2（转存冷却/保留期字段化）：任务行冷却
+        # 到期落字列。老库补列后为 NULL（= 按 created_at 现算，
+        # 与升级前节流口径一致）。
+        ("emby_transfer_jobs", [
+            ("cooldown_until", "DATETIME", "NULL"),
+        ]),
+        # PanSave A 线 PR-2：转存副本保留期两列。老库补列后为
+        # NULL（= 无保留，清理器照旧删）。
+        ("emby_transfer_variants", [
+            ("retention_reason", "VARCHAR(120)", "NULL"),
+            ("retention_until", "DATETIME", "NULL"),
+        ]),
         # 安全收口（2026-10-30）：Drive OAuth 回调浏览器会话
         # nonce 哈希列。老库补列后为 NULL（在途行回调拒绝）。
         ("drive_oauth_states", [
