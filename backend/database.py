@@ -2456,6 +2456,7 @@ def init_db():
     """
     from backend import models  # 导入所有模型
     from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
+    from backend.emby_server import external_failure_counts as _efc_models  # noqa: F401 外部失败熔断计数表，import 即注册给 create_all
     with _acquire_migrate_lock():
         # trigram GIN 索引（r7）依赖 pg_trgm 扩展：create_all 会直接建模型里声明的
         # 四个 gin_trgm_ops 索引，扩展没装就报 UndefinedObject（CI 干净库实锤）。

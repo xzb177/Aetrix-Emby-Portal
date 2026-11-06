@@ -36,7 +36,9 @@ AppleCMS provide 返回形态（调用方约定）：
 - ``"not_found"``：HTTP 404；
 - ``"http_error"``：其它非 200 HTTP 状态；
 - ``"bad_response"``：体不是 JSON 对象；
-- ``"bad_code"``：顶层 ``code != 1``（``cms_code`` 带原值）。
+- ``"bad_code"``：顶层 ``code != 1``（``cms_code`` 带原值）；
+- ``"failure_paused"``：该源连续失败达熔断阈值、暂停期内未发请求
+  （``external_failure_counts``，PanSave 借鉴 B 线）。
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Optional
 
+from backend.emby_server import external_failure_counts as efc
 from backend.emby_server import upstream_http
 
 #: provide 协议路径（协议本身，不是资源站地址；站地址只来自 base_url）。
@@ -122,10 +125,52 @@ def _build_provide_url(base_url: str, params: dict) -> str:
     return f"{base}{PROVIDE_PATH}?{query}"
 
 
+#: 计入熔断的抓取失败种类：传输层可用性失败。``unauthorized``
+#: （凭据/配置死亡）与 ``not_found``（单资源不存在）不参与计数；
+#: ``bad_code``（HTTP 200 但业务 code != 1）是应用层结论，同样
+#: 不参与——应用层失败由健康状态机自己的连续失败计数负责，
+#: 本层只管传输层。与 PanSave「明确已失效不参与计数」同口径，
+#: 防配置/应用层问题把计数喂满误伤；暂停期内抛
+#: ``failure_paused`` 本身也不再喂数。
+_COUNTED_FAILURE_KINDS = frozenset(
+    {"network", "rate_limited", "http_error", "bad_response"})
+
+
 def fetch_page(base_url: str, ac: str = "list", pg: int = 1,
                t=None, h=None, wd=None, ids=None,
                http_get: Optional[Callable] = None,
                headers: Optional[dict] = None) -> dict:
+    """取 provide 一页（熔断门面）：暂停期跳过、按种类喂计数。
+
+    实际取数在 ``_fetch_page_once``；本层只管三件事：暂停期直接
+    抛 ``AppleCMSError("failure_paused")`` 不发请求；成功喂
+    ``record_success`` 清零；失败按 ``_COUNTED_FAILURE_KINDS``
+    口径喂 ``record_failure``。计数层自身异常已在其内部吞掉，
+    不影响本函数既有行为。
+    """
+    if ac not in VALID_ACS:
+        raise ValueError(f"不支持的 ac={ac!r}，只许 list/detail/search")
+    key = efc.normalize_target_key(base_url)
+    if efc.is_paused(efc.SCOPE_CMS_FETCH, key):
+        raise AppleCMSError(
+            "failure_paused", "苹果 CMS 接口连续失败过多，已暂停重试，"
+            "请稍后再试")
+    try:
+        payload = _fetch_page_once(
+            base_url, ac=ac, pg=pg, t=t, h=h, wd=wd, ids=ids,
+            http_get=http_get, headers=headers)
+    except AppleCMSError as exc:
+        if exc.kind in _COUNTED_FAILURE_KINDS:
+            efc.record_failure(efc.SCOPE_CMS_FETCH, key)
+        raise
+    efc.record_success(efc.SCOPE_CMS_FETCH, key)
+    return payload
+
+
+def _fetch_page_once(base_url: str, ac: str = "list", pg: int = 1,
+                     t=None, h=None, wd=None, ids=None,
+                     http_get: Optional[Callable] = None,
+                     headers: Optional[dict] = None) -> dict:
     """取 provide 一页，返回顶层 payload dict。
 
     ``ac`` 只许 ``list`` / ``detail`` / ``search``，其它值直接
