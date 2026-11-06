@@ -907,20 +907,36 @@ def _handle_reconcile_callback(db, callback_query: dict) -> None:
                       has_photo=bool(msg.get("photo")))
 
 def _send_slots_group_result(db, chat_id, player_name: str, spin, dice_message_id) -> None:
-    """群老虎机：骰子动画按自毁时间删掉。普通输赢只弹给本人。
+    """群老虎机结算反馈：每局一行群结果，骰子与结果都按自毁口径删除。
 
-    公共面板是大家一起用的入口，收成一行会把别人的按钮拆掉，所以不改面板。
-    只有抱走头奖池时，群里再发一条一行播报，同样自毁。
+    公共面板是大家一起用的入口，不改面板。每局结算后另发一行公开
+    结果（点注人/注额/开出结果/输赢），不能只靠 answerCallbackQuery
+    的 toast：toast 紧跟 sendDice 触发，骰子动画还没停就消失了，
+    动画结束什么反馈都不留（2026-11-06 用户真机报障「玩老虎机没
+    反馈」：两局均已结算扣注，群里却看不到任何结果）。结果消息同
+    样自毁（默认 30 秒），看得见又不长期刷屏。
     """
     try:
         delay = ephemeral.bot_msg_delay_seconds(db)
         if dice_message_id and delay > 0:
             ephemeral.schedule_delete(chat_id, dice_message_id, delay)
-        if int(getattr(spin, "pool_payout", 0) or 0) <= 0:
-            return
+        from backend import slots as slots_svc
+
         total = int(spin.base_payout or 0) + int(spin.pool_payout or 0)
         name = html.escape(str(player_name))
-        text = f"🎉 {name} 中了头奖，一共 +{total} 能量"
+        reels = ""
+        if getattr(spin, "dice_value", None):
+            reels = slots_svc.reels_text(
+                slots_svc.decode_dice(int(spin.dice_value)))
+        elif getattr(spin, "reels", None):
+            reels = slots_svc.reels_text(tuple(spin.reels.split(",")))
+        opened = f"，开出 {reels}" if reels else ""
+        if int(getattr(spin, "pool_payout", 0) or 0) > 0:
+            text = f"🎉 {name} 中了头奖，一共 +{total} 能量"
+        elif total > 0:
+            text = f"🎰 {name} 押 {int(spin.bet)} 能量{opened}，中奖 +{total} 能量"
+        else:
+            text = f"🎰 {name} 押 {int(spin.bet)} 能量{opened}，未中奖"
         ok, err, result_id = sender.send_message_ex(db, chat_id, text)
         if not ok:
             logger.warning(
