@@ -2512,6 +2512,9 @@ def _parent_should_wait(db, item: Any) -> bool:
     调用方把条目打回 pending 等待（此时标 'none' 是误杀——父级 done 后本集本可继承；
     生产实证：41,811 个标 'none' 的单集父级有 tmdb_id，本可继承却被标死）。
     父级终态（done 但无 tmdb_id/图、failed 等）时返回 False：调用方继续走 'none'。
+    父级已合并时同样返回 False：已合并父级永远不会被认领做完（认领排除
+    merged 行），等它等于永远等；与认领谓词 ``_episode_parent_ready_clause``
+    同口径——只修谓词不够，认领后这里会把单集再打回 pending 空转。
 
     P2 修复（完美审查 C-P2-4）：等待计次 + 指数退避（300s→600s…上限 2h），
     防 300s ping-pong 无限循环（父级长期 pending 时每 300s 被抢单打回一次、
@@ -2521,15 +2524,18 @@ def _parent_should_wait(db, item: Any) -> bool:
     （积压优先级是 -10，抬到 0 会被最先重抢）。
     """
     parent_status = ""
+    parent_merged = False
     if item.series_id:
         try:
             _p = db.query(em.MediaItem).filter(
                 em.MediaItem.id == item.series_id).first()
             parent_status = (_p.enrich_status or "") if _p is not None else ""
+            parent_merged = bool(
+                _p is not None and getattr(_p, "merged_into_id", None))
         except Exception:  # noqa: BLE001 — 父级查询失败不影响主流程
             parent_status = ""
-    if parent_status not in ("pending", "enriching"):
-        # 父级已终态（或查不到）：清等待计数，走正常流程
+    if parent_merged or parent_status not in ("pending", "enriching"):
+        # 父级已终态（或查不到、或已合并）：清等待计数，走正常流程
         _parent_wait_counts.pop(item.id, None)
         return False
     waits = _parent_wait_counts.get(item.id, 0) + 1
@@ -3583,8 +3589,12 @@ def enrich_episode_quota_status(db) -> dict:
 def _episode_parent_ready_clause():
     """单集认领谓词：父级（series，以及 season 若有）已离开 pending/enriching。
 
-    父级行不存在，或已软删：不挡。与 ``_parent_should_wait`` 查不到父级即放行
-    同口径，避免父级被删后单集永远排不进认领。
+    父级行不存在、已软删，或已合并：不挡。与 ``_parent_should_wait``
+    查不到父级即放行同口径，避免父级被删后单集永远排不进认领。
+    已合并父级同样永不终态——认领排除 merged 行（``not_merged``），
+    它永远不会被认领做完，等它等于永远等（2026-11-07 首晚 0 认领：
+    1,016 个已合并 series 与 544 个已合并 season 仍挂 pending，
+    挡住全部 34,186 条待补单集）。
 
     用相关 EXISTS 反连接，父级按主键查找。未终态的 series/season 另有部分索引
     ``idx_item_enrich_open_parent``（只含未终态父级的 id），供 PG 把反连接
@@ -3601,10 +3611,12 @@ def _episode_parent_ready_clause():
     season = _aliased(em.MediaItem)
     # 父级仍待处理才挡。deleted_at 必须写在子查询里：全局软删钩子下推不到
     # EXISTS（identity_gate 同款），漏写会让已删父级把单集永久挡住。
+    # merged_into_id 同理：已合并父级永不终态，不挡。
     series_open = _exists(
         _select(series.id).where(
             series.id == em.MediaItem.series_id,
             series.deleted_at.is_(None),
+            series.merged_into_id.is_(None),
             series.enrich_status.in_(("pending", "enriching")),
         ).correlate(em.MediaItem)
     )
@@ -3613,6 +3625,7 @@ def _episode_parent_ready_clause():
             season.id == em.MediaItem.parent_id,
             season.item_type == "season",
             season.deleted_at.is_(None),
+            season.merged_into_id.is_(None),
             season.enrich_status.in_(("pending", "enriching")),
         ).correlate(em.MediaItem)
     )
