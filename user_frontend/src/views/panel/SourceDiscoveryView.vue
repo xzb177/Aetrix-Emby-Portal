@@ -88,8 +88,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import {
   sourceDiscoveryApi,
   type SourceCandidate,
@@ -112,6 +112,19 @@ const adapters = ref<string[]>([])
 
 const confirming = ref('')
 const confirmResult = ref<(SourceConfirmResult & { key: string }) | null>(null)
+
+const route = useRoute()
+
+// 从想看页求片行点「找源」进来时带了 title / tmdb_id：预填并直接搜一次，少一次手输
+onMounted(() => {
+  const t = route.query.title
+  const tm = route.query.tmdb_id
+  const im = route.query.imdb_id
+  if (typeof t === 'string' && t.trim()) titleInput.value = t.trim()
+  if (typeof tm === 'string' && tm.trim()) tmdbInput.value = tm.trim()
+  if (typeof im === 'string' && im.trim()) imdbInput.value = im.trim()
+  if (hasQuery.value) void search()
+})
 
 const hasQuery = computed(
   () => titleInput.value.trim() !== '' || tmdbInput.value.trim() !== '' || imdbInput.value.trim() !== '',
