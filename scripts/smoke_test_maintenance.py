@@ -195,6 +195,9 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned",
                     "tmdb_cache_pruned",
                     "item_facets_backfilled", "item_facets_orphans",
                     "scan_dir_states_pruned", "scan_runs_pruned",
+                    # PanSave A 线 PR-1：转存决策留痕保留期清理计数
+                    # （干净时 0，参与全零断言）
+                    "decision_rounds_pruned",
                     "emby_tokens_purged",
                     "images_pruned", "images_freed_bytes",
                     "thumbs_backfilled",

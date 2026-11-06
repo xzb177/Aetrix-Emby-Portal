@@ -9,6 +9,9 @@
  * 例外（2026-10-30 补半截功能）：页尾「转存任务队列」可取消排队中的转存
  * 任务（POST /tasks/transfer-jobs/{id}/cancel，后端带审计）；扫描排队的
  * 取消入口在媒体库页（现成），不在本页重复造。
+ *
+ * 决策留痕（PanSave A 线 PR-1）：「转存决策留痕」区只读展示最近
+ * 自动裁决轮次（GET /tasks/transfer-decision-rounds），本页不写。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -23,11 +26,13 @@ import SampleHashProgress from './SampleHashProgress.vue'
 import {
   cancelTransferJob,
   fetchTasksOverview,
+  fetchTransferDecisionRounds,
   fetchTransferJobs,
   pauseProbe,
   resumeProbe,
   type TaskCard,
   type TaskCardStatus,
+  type TransferDecisionRoundRow,
   type TransferJobRow,
 } from '@/api/admin'
 
@@ -180,14 +185,41 @@ async function onCancelJob(job: TransferJobRow) {
   }
 }
 
+// ---------- 转存决策留痕（只读，PanSave A 线 PR-1） ----------
+const rounds = ref<TransferDecisionRoundRow[]>([])
+const roundsLoading = ref(false)
+
+function scopeText(scope: string): string {
+  switch (scope) {
+    case 'transfer_gate': return '转存门禁'
+    case 'upstream_aggregate': return '上游聚合'
+    default: return scope
+  }
+}
+
+async function loadRounds() {
+  roundsLoading.value = true
+  try {
+    const res = await fetchTransferDecisionRounds()
+    rounds.value = Array.isArray(res.rounds) ? res.rounds : []
+  } catch {
+    // 留痕读不到只清空本区，不拖垮其余任务区
+    rounds.value = []
+  } finally {
+    roundsLoading.value = false
+  }
+}
+
 function refreshAll() {
   load()
   loadJobs()
+  loadRounds()
 }
 
 onMounted(() => {
   load()
   loadJobs()
+  loadRounds()
 })
 </script>
 
@@ -331,6 +363,42 @@ onMounted(() => {
         :icon="ArrowLeftRight"
         title="暂无转存任务"
         description="用户首播触发或手动发起的转存任务会显示在这里。"
+      />
+    </section>
+
+    <!-- 转存决策留痕：每轮自动裁决一行，复盘「为什么建这单/为什么被节流」（只读） -->
+    <section class="task-card jobs-card">
+      <header class="task-head">
+        <ArrowLeftRight :size="16" class="task-icon" />
+        <h3 class="task-title">转存决策留痕</h3>
+        <span class="task-status">最近 {{ rounds.length }} 条</span>
+      </header>
+      <p class="task-summary">
+        转存门禁每次裁决、上游聚合每开一轮都会落一行：当时参与决策的配置指纹、裁决与理由、回链的任务。
+        出问题先在这里看当时凭什么这么判。只保留最近 30 天（后台可配）。
+      </p>
+      <el-table v-if="rounds.length" :data="rounds" size="small" class="jobs-table">
+        <el-table-column label="时间" width="168">
+          <template #default="{ row }"><span class="mono">{{ fmtTime(row.created_at) }}</span></template>
+        </el-table-column>
+        <el-table-column label="范围" width="96">
+          <template #default="{ row }">{{ scopeText(row.scope) }}</template>
+        </el-table-column>
+        <el-table-column label="资源" min-width="120" prop="resource_key" />
+        <el-table-column label="裁决" width="110" prop="decision" />
+        <el-table-column label="理由" min-width="120">
+          <template #default="{ row }">{{ row.reason || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="执行回链" width="130">
+          <template #default="{ row }"><span class="mono">{{ row.execution_ref || '—' }}</span></template>
+        </el-table-column>
+      </el-table>
+      <EmptyState
+        v-else-if="!roundsLoading"
+        compact
+        :icon="ArrowLeftRight"
+        title="暂无决策留痕"
+        description="转存门禁裁决与上游聚合开轮后会显示在这里。"
       />
     </section>
 
