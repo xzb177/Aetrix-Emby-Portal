@@ -182,6 +182,8 @@ def _env_int(name, default):
 TRANSFER_WORKER_CONCURRENCY = _env_int("TRANSFER_WORKER_CONCURRENCY", 4)
 TRANSFER_WORKER_PER_USER_MAX = _env_int("TRANSFER_WORKER_PER_USER_MAX", 2)
 TRANSFER_WORKER_LEASE_SEC = _env_int("TRANSFER_WORKER_LEASE_SEC", 300)
+TRANSFER_WORKER_LEASE_MAX_TOTAL_SEC = _env_int(
+    "TRANSFER_WORKER_LEASE_MAX_TOTAL_SEC", 28800)
 TRANSFER_WORKER_SWEEP_SEC = _env_int("TRANSFER_WORKER_SWEEP_SEC", 60)
 # 滞留回队（2026-11-03）：failed/retriable 终态行超过 AFTER_SEC 无人
 # 再拾时，看门狗按 BATCH 批量扫回 pending；单行累计回队达 MAX 次
@@ -771,6 +773,20 @@ def write_transfer_config(db, *, cross_provider_transfer_enabled=None,
 def worker_lease_sec():
     """认领租约时长（秒），默认 300；执行中由心跳续租。"""
     return max(60, int(TRANSFER_WORKER_LEASE_SEC or 300))
+
+
+def worker_lease_max_total_sec():
+    """单次认领的续租总时长硬上限（秒），默认 28800（8h）。
+
+    堵 2026-11-02 租约复核的小口子：执行线程真死锁但心跳线程
+    还活时，旧心跳无条件续租、租约永不过期、行永不回收。续租
+    自本轮认领（claimed_at）起算达此上限即停，租约自然过期后
+    由 reclaim_expired_leases 正常回收。取值依据：单条租约
+    300s，本上限合 96 个租约周期；跨 provider 搬字节的最慢
+    合法单（100GB 级文件、约 3.5MB/s）也在 8h 内。下限钳到
+    一条租约时长，不许配得比租约本身还短。"""
+    return max(worker_lease_sec(),
+               int(TRANSFER_WORKER_LEASE_MAX_TOTAL_SEC or 28800))
 
 
 def worker_sweep_sec():
@@ -7720,23 +7736,49 @@ def queue_alerts(stats):
     return alerts
 
 
+def _renew_lease_once(session_factory, job_id, worker_id):
+    """给一单 running 任务续租一次。返回 True = 已续租、心跳
+    继续；False = 心跳应退出（任务不存在/已非 running/续租总
+    时长已达硬上限）。
+
+    总上限（PR-3）：自本轮认领 claimed_at 起算（存量行 claimed_at
+    为 NULL 时以 created_at 为锚），达 worker_lease_max_total_sec
+    即停续——租约不再被推远，自然过期后由 reclaim_expired_leases
+    正常回收，执行线程真死锁的行不再永占槽位。异常向上抛，
+    由心跳循环按旧口径记 warning 后重试。
+    """
+    db = session_factory()
+    try:
+        job = db.query(em.TransferJob).filter(
+            em.TransferJob.id == job_id).first()
+        if job is None or job.status != "running":
+            return False
+        anchor = job.claimed_at or job.created_at
+        if anchor is not None:
+            elapsed = (datetime.now() - anchor).total_seconds()
+            if elapsed >= worker_lease_max_total_sec():
+                logger.warning(
+                    "转存工人：job=%s 续租总时长已达上限 %ss"
+                    "（认领于 %s），停止续租，待租约过期回收",
+                    job_id, worker_lease_max_total_sec(), anchor)
+                return False
+        job.lease_expires_at = (
+            datetime.now() + timedelta(seconds=worker_lease_sec()))
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
 def _heartbeat(job_id, session_factory, stop_event, worker_id):
     """租约心跳：执行中每 60 秒（或租约 1/3，取小）续租一次，
-    直到任务终态或 stop_event 置位；心跳失败只记 warning，不杀任务。"""
+    直到任务终态、续租达总上限（_renew_lease_once 返回 False）
+    或 stop_event 置位；心跳失败只记 warning，不杀任务。"""
     interval = max(30, min(60, worker_lease_sec() // 3 or 60))
     while not stop_event.wait(interval):
         try:
-            db = session_factory()
-            try:
-                job = db.query(em.TransferJob).filter(
-                    em.TransferJob.id == job_id).first()
-                if job is None or job.status != "running":
-                    return
-                job.lease_expires_at = (
-                    datetime.now() + timedelta(seconds=worker_lease_sec()))
-                db.commit()
-            finally:
-                db.close()
+            if not _renew_lease_once(session_factory, job_id, worker_id):
+                return
         except Exception:
             logger.warning("转存工人：租约心跳失败 job=%s", job_id,
                            exc_info=True)
