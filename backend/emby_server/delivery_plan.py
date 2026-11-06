@@ -36,7 +36,10 @@ legs=...``，热路径命中打 ``outcome=hit``、复核不过打
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
+
+from sqlalchemy.exc import IntegrityError
 
 from backend.emby_server import models as em
 
@@ -202,6 +205,54 @@ _PROBES = (
 # 计划的建与读
 # ---------------------------------------------------------------------------
 
+def _persist_plan(db, user_id, item_id, plan, now, expires):
+    """把一份计划真 upsert 落库（同键永远一行）。
+
+    并发纪律（2026-11-06 生产实证）：PlaybackInfo 后台建计划与
+    转存完成刷新会对同键并发建计划，两边都是「先查后插」——
+    先查时对方的插入还没提交（查不到）、轮到自己插入时撞
+    ``uq_playback_plan_user_item`` 唯一约束，旧实现把整份新计划
+    直接丢弃（当日实证：带 user_copy_ready 的新计划撞约束丢失，
+    存活行反而是另一路更早算出的 user_copy_preparing 快照，且
+    该行过期后迟迟没人替换）。故落库按「查→改/插→提交，撞
+    约束回滚后重查走更新」重试，并带 computed_at 单调守卫：
+    已存行的 computed_at 比本次更新时，旧快照不许覆盖新快照
+    （并发两份计划以算出时刻论新鲜，提交先后不作数）。
+
+    回 True = 已落库（或库里已有一份更新的计划）；回 False =
+    重试耗尽仍失败，调用方按 fail-open 只记日志、回 None。
+    """
+    payload = json.dumps(plan, ensure_ascii=False)
+    for attempt in range(3):
+        try:
+            row = (db.query(em.PlaybackDeliveryPlan)
+                   .filter_by(user_id=int(user_id),
+                              item_id=int(item_id))
+                   .one_or_none())
+            if row is not None and row.computed_at is not None \
+                    and row.computed_at > now:
+                # 已有更新的计划在库里：旧快照让路，不算失败。
+                return True
+            if row is None:
+                row = em.PlaybackDeliveryPlan(
+                    user_id=int(user_id), item_id=int(item_id))
+                db.add(row)
+            row.plan_json = payload
+            row.computed_at = now
+            row.expires_at = expires
+            db.commit()
+            return True
+        except IntegrityError:
+            # 并发插入抢先落行：回滚后重查即走更新路径。
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            if attempt < 2:
+                time.sleep(0.05)
+    return False
+
+
 def build_plan(db, user_id, item):
     """为 (用户, 条目) 算一份新计划并落库（同键原地更新一行）。
 
@@ -238,17 +289,8 @@ def build_plan(db, user_id, item):
             "computed_at": now.isoformat(timespec="seconds"),
             "expires_at": expires.isoformat(timespec="seconds")}
     try:
-        row = (db.query(em.PlaybackDeliveryPlan)
-               .filter_by(user_id=int(user_id), item_id=int(item.id))
-               .one_or_none())
-        if row is None:
-            row = em.PlaybackDeliveryPlan(user_id=int(user_id),
-                                          item_id=int(item.id))
-            db.add(row)
-        row.plan_json = json.dumps(plan, ensure_ascii=False)
-        row.computed_at = now
-        row.expires_at = expires
-        db.commit()
+        persisted = _persist_plan(db, user_id, item.id, plan,
+                                  now, expires)
     except Exception:  # noqa: BLE001 — 落库失败不打挂调用方
         try:
             db.rollback()
@@ -256,6 +298,10 @@ def build_plan(db, user_id, item):
             pass
         logger.warning("delivery_plan persist failed user=%s item=%s",
                        user_id, getattr(item, "id", None), exc_info=True)
+        return None
+    if not persisted:
+        logger.warning("delivery_plan persist failed user=%s item=%s",
+                       user_id, getattr(item, "id", None))
         return None
     logger.info("delivery_plan outcome=built user=%s item=%s legs=%s",
                 user_id, item.id,
