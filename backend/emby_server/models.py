@@ -2000,6 +2000,55 @@ class TransferThrottleWaiver(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class TransferDecisionRound(Base):
+    """转存/聚合自动决策留痕（PanSave 借鉴落地 A 线 PR-1，学
+    PanSave 的 monitor_rounds 轮次快照）。
+
+    一行 = 一次自动裁决：转存门禁在 verdict 计算处落一行
+    （scope=transfer_gate），上游聚合每开一轮落一行
+    （scope=upstream_aggregate）。记录当时参与决策的配置指纹
+    （policy_hash）、候选/上下文快照（candidates_json）、裁决与
+    理由、执行回链（execution_ref：转存任务行 id 或聚合 task_id），
+    回答「这一轮自动决策凭什么这么判」——此前只有任务行状态，
+    决策依据算完即弃、事后只能翻日志考古。
+
+    写入纪律（照 PlayStartEvent 先例）：独立会话、写失败静默
+    丢弃并计数，绝不阻断转存/聚合主流程（见 transfer_decisions
+    模块）。行随轮次增长，由 janitor 按保留期清理（默认 30 天，
+    SystemConfig transfer_decision_rounds_retention_days 可配）。
+
+    不加外键（照 PlayStartEvent 先例）：条目/源删掉后决策行留着
+    供复盘，resource_key 是文本键不是外键。
+    """
+
+    __tablename__ = "transfer_decision_rounds"
+
+    __table_args__ = (
+        Index("ix_transfer_decision_rounds_scope_resource",
+              "scope", "resource_key", "created_at"),
+        Index("ix_transfer_decision_rounds_created", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # transfer_gate（转存门禁 verdict）| upstream_aggregate（聚合开轮）
+    scope = Column(String(40), nullable=False)
+    # item:<emby_items.id> | source:<upstream_sources.id>
+    resource_key = Column(String(191), nullable=False)
+    # 参与决策的配置键值规范化 JSON 的 sha256（见
+    # transfer_decisions.policy_hash_for）：策略变了指纹就变，
+    # 用来判断「这行决策是在哪一版配置下做的」。
+    policy_hash = Column(String(64), nullable=False, default="")
+    # 候选与决策上下文快照（JSON 文本，结构随 scope 而定）
+    candidates_json = Column(Text)
+    # 裁决：门禁 verdict（proceed/preparing/failed/error/...）
+    # 或聚合的 round_opened
+    decision = Column(String(60), nullable=False)
+    reason = Column(String(120))
+    # 执行回链：转存任务行 id（字符串）或聚合任务 task_id
+    execution_ref = Column(String(64))
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
 class TransferContentManifest(Base):
     """内容块哈希清单（换代线「分块清单同步」地基，2026-11-01）。
 

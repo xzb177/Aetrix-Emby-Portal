@@ -31,6 +31,7 @@ from backend.db_retry import commit_with_retry
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import models as em
+from backend.emby_server import transfer_decisions
 from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
@@ -528,6 +529,7 @@ def janitor_tick(heavy: bool = True) -> dict:
               "tmdb_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
               "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
+              "decision_rounds_pruned": 0,
               "emby_tokens_purged": 0,
               "images_pruned": 0,
               "images_freed_bytes": 0, "ai_usage_pruned": 0,
@@ -587,6 +589,19 @@ def janitor_tick(heavy: bool = True) -> dict:
             result["scan_runs_pruned"] = prune_scan_runs(db)
         except Exception as exc:  # noqa: BLE001
             logger.warning("清理扫描流水失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
+
+        # 转存/聚合决策留痕（PanSave A 线 PR-1）：行随轮次增长，
+        # 超保留期（默认 30 天，SystemConfig 可配）的删掉，只留
+        # 近期可复盘的轮次。
+        db = SessionLocal()
+        try:
+            result["decision_rounds_pruned"] = (
+                transfer_decisions.purge_expired_rounds(db))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("清理决策留痕失败: %s", exc)
             db.rollback()
         finally:
             db.close()

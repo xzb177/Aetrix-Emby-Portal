@@ -2117,6 +2117,29 @@ export interface TransferJobsResponse {
 export const fetchTransferJobs = (limit = 30) =>
   get<TransferJobsResponse>(`/tasks/transfer-jobs?limit=${limit}`)
 
+/** 转存/聚合决策留痕行（PanSave A 线 PR-1）：一次自动裁决一行 */
+export interface TransferDecisionRoundRow {
+  id: number
+  /** transfer_gate 转存门禁 / upstream_aggregate 上游聚合 */
+  scope: string
+  resource_key: string
+  policy_hash: string
+  candidates: unknown
+  decision: string
+  reason: string | null
+  execution_ref: string | null
+  created_at: string | null
+}
+
+export interface TransferDecisionRoundsResponse {
+  success: boolean
+  rounds: TransferDecisionRoundRow[]
+}
+
+export const fetchTransferDecisionRounds = (limit = 30) =>
+  get<TransferDecisionRoundsResponse>(
+    `/tasks/transfer-decision-rounds?limit=${limit}`)
+
 /** 取消排队中的转存任务；已被认领/已终态时后端回 409 并在 detail 里明示当前状态 */
 export const cancelTransferJob = (id: number) =>
   post<{ success: boolean; cancelled: boolean; job_id: number; message: string }>(

@@ -14,6 +14,10 @@ change_watcher.get_config，以及 ScanRun 流水）。
     GET  /api/admin/tasks/transfer-jobs
     POST /api/admin/tasks/transfer-jobs/{id}/cancel
 
+另有转存/聚合决策留痕只读面（PanSave A 线 PR-1）：
+
+    GET  /api/admin/tasks/transfer-decision-rounds
+
 取消只对排队中（pending）的转存任务开放，语义见文末专节注释。
 
 单个子系统采集失败不影响整体：每个任务独立 try/except，
@@ -608,6 +612,23 @@ def list_transfer_jobs(db: Session, limit: int = 30) -> dict:
 def transfer_jobs(limit: int = 30, db: Session = Depends(get_db),
                   admin=Depends(get_current_admin)):
     return list_transfer_jobs(db, limit=limit)
+
+
+@tasks_router.get("/tasks/transfer-decision-rounds")
+def transfer_decision_rounds(limit: int = 50, scope: str = "",
+                             db: Session = Depends(get_db),
+                             admin=Depends(get_current_admin)):
+    """转存/聚合决策留痕只读面（PanSave A 线 PR-1）：最近决策
+    轮次列表（scope 可选 transfer_gate / upstream_aggregate），
+    回答「这一轮自动决策凭什么这么判」。只读，不写库；聚合与
+    字段口径在 transfer_decisions.list_recent_rounds 单点维护，
+    本口不另发明字段。"""
+    from backend.emby_server import transfer_decisions
+    return {
+        "success": True,
+        "rounds": transfer_decisions.list_recent_rounds(
+            db, limit=limit, scope=scope or None),
+    }
 
 
 @tasks_router.post("/tasks/transfer-jobs/{job_id}/cancel")

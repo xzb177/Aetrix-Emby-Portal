@@ -62,6 +62,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from backend.emby_server import models as em
+from backend.emby_server import transfer_decisions
 from backend.emby_server import upstream_aggregate_run as uar
 from backend.emby_server import upstream_sources as ups
 
@@ -447,7 +448,22 @@ def _enqueue_locked(db, *, source_id: int, page_size: int, trigger: str,
                       trigger=trigger, resume_of=resume_of,
                       skip_library_ids=skip_library_ids)
     db.commit()
-    return _view_from_row(row), True
+    view = _view_from_row(row)
+    # 决策留痕（PanSave A 线 PR-1）：真开新轮才落一行，复用进行
+    # 中任务不是新轮次、不落。独立会话、失败静默（transfer_
+    # decisions 自带兜底），不影响入队返回值与事务。
+    transfer_decisions.note_decision(
+        scope=transfer_decisions.SCOPE_UPSTREAM_AGGREGATE,
+        resource_key=f"source:{source_id}",
+        policy={"trigger": trigger, "page_size": page_size,
+                "resume_of": resume_of,
+                "skip_library_ids": list(skip_library_ids or [])},
+        candidates={"source_id": source_id, "trigger": trigger,
+                    "task_id": row.task_id},
+        decision=transfer_decisions.DECISION_ROUND_OPENED,
+        reason=trigger,
+        execution_ref=row.task_id)
+    return view, True
 
 def enqueue(source_id: int, page_size: int, *, trigger: str = "manual") -> dict:
     """登记任务行，立刻返回当前视图（新任务恒为 queued）。

@@ -123,6 +123,7 @@ from datetime import datetime, timedelta
 import httpx
 
 from backend.emby_server import models as em
+from backend.emby_server import transfer_decisions
 from backend.emby_server.drive_changes import get_token_for_drive
 from backend.emby_server.mount_drive import FILES_URL
 
@@ -3197,11 +3198,47 @@ def mark_variant_stale_once(db, variant_id):
     return row.stale_count
 
 
+def _note_gate_decision(db, result, item, user) -> None:
+    """门禁决策留痕（PanSave A 线 PR-1）：verdict 算完落一行，
+    供事后复盘「这一单为什么被建/被节流/被放行」。
+
+    policy 指纹取参与决策的配置生效值（总闸 + 转存配置载荷）；
+    载荷组装失败就只记总闸，留痕本身由 transfer_decisions 全程
+    兜底（独立会话、失败静默），本函数再包一层防组装异常漏进
+    播放链——观测失败不能挡播放（同 _observe_gate 口径）。
+    """
+    try:
+        policy = {"master_enabled": master_enabled()}
+        try:
+            policy.update(transfer_config_payload(db))
+        except Exception:  # noqa: BLE001 — 配置载荷组装失败不丢整行
+            pass
+        job_id = (result or {}).get("job_id")
+        transfer_decisions.note_decision(
+            scope=transfer_decisions.SCOPE_TRANSFER_GATE,
+            resource_key=f"item:{getattr(item, 'id', None)}",
+            policy=policy,
+            candidates={
+                "item_id": getattr(item, "id", None),
+                "user_id": getattr(user, "id", None),
+                "verdict": (result or {}).get("verdict"),
+                "reason": (result or {}).get("reason"),
+                "job_id": job_id,
+            },
+            decision=(result or {}).get("verdict") or "unknown",
+            reason=(result or {}).get("reason"),
+            execution_ref=(str(job_id) if job_id is not None
+                           else None))
+    except Exception:  # noqa: BLE001 — 留痕组装失败不能挡播放
+        pass
+
+
 def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
     """首播转存门禁。语义见 ``_ensure_user_copy_gate_impl``。"""
     result = _ensure_user_copy_gate_impl(
         db, item, user, play_sign_consume=play_sign_consume)
     _observe_gate(result, item, user)
+    _note_gate_decision(db, result, item, user)
     return result
 
 
