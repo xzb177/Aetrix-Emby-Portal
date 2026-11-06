@@ -153,12 +153,25 @@ const router = createRouter({
             component: () => import('@/views/game/OperatorView.vue'),
             meta: { title: '接线员', requiresAuth: true },
           },
-          // v4 游戏化：账号设置设施（旧 ProfileView 的 P0 功能承接：改密码 / 我的订阅 / 我的设备）
+          // v4 游戏化：「我的」个人中心（身份卡 / 状态总览 / 分组入口行）；
+          // 设置类功能在子页 /game/account/settings，会员管理在 /game/account/member
           {
             path: '/game/account',
             name: 'game-account',
+            component: () => import('@/views/game/PersonalCenterView.vue'),
+            meta: { title: '我的', requiresAuth: true },
+          },
+          {
+            path: '/game/account/settings',
+            name: 'game-account-settings',
             component: () => import('@/views/game/AccountSettingsView.vue'),
             meta: { title: '账号设置', requiresAuth: true },
+          },
+          {
+            path: '/game/account/member',
+            name: 'game-account-member',
+            component: () => import('@/views/game/MemberView.vue'),
+            meta: { title: '我的会员', requiresAuth: true },
           },
         ]
       : []),
@@ -295,7 +308,7 @@ router.beforeEach(async (to) => {
 
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
-export const V4_PATHS = new Set(['/', '/collector', '/favorites', '/collections', '/server', '/shop', '/want', '/store-requests', '/activities', '/source-discovery', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/operator', '/game/account'])
+export const V4_PATHS = new Set(['/', '/collector', '/favorites', '/collections', '/server', '/shop', '/want', '/store-requests', '/activities', '/source-discovery', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/operator', '/game/account', '/game/account/settings', '/game/account/member'])
 // 参数路由前缀：合集详情是 /collections/:id，afterEach 拿到的是实例路径
 // （如 /collections/123），静态集合永远匹配不上，须按前缀另判；
 // /collections/ 下目前只有详情这一条路由，前缀不会误伤非 v4 页。
@@ -404,12 +417,12 @@ router.afterEach(() => {
   document.getElementById(CHUNK_RETRY_BAR_ID)?.remove()
 })
 
-// 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 账号设置（/game/account），空闲时预加载对应 chunk
-//（2026-10-13 旧页面清理：ProfileView 已删，改预取 AccountSettingsView）
+// 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 我的（/game/account），空闲时预加载对应 chunk
+//（2026-10-13 旧页面清理：ProfileView 已删；2026-11-06 个人中心重做：/game/account 改指 PersonalCenterView）
 if (typeof requestIdleCallback !== 'undefined') {
   requestIdleCallback(() => {
     import('@/views/panel/ShopView.vue')
-    import('@/views/game/AccountSettingsView.vue')
+    import('@/views/game/PersonalCenterView.vue')
   }, { timeout: 3000 })
 }
 
