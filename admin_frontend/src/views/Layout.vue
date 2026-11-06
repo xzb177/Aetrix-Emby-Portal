@@ -27,7 +27,7 @@ import {
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Image as ImageIcon, Layers,
   Database, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
-  UserCog, Activity, Medal, MessageSquareText,
+  UserCog, Activity, Medal, MessageSquareText, HandCoins,
   Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks, Flag,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
@@ -153,6 +153,7 @@ const navGroups: NavGroup[] = [
       { path: '/coupons', label: '优惠券', icon: TicketPercent },
       { path: '/invitations', label: '邀请与积分', icon: UserPlus },
       { path: '/member-levels', label: '会员等级', icon: Medal },
+      { path: '/agents', label: '代理分销', icon: HandCoins },
       { path: '/codes', label: '码管理', icon: KeySquare },
     ],
   },
