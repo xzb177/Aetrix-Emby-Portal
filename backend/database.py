@@ -1129,6 +1129,16 @@ def _auto_migrate():
         ("drive_oauth_states", [
             ("nonce_hash", "VARCHAR(64)", "NULL"),
         ]),
+        # Drive OAuth 第二入口（新应用）：绑定行与 state 行的来源
+        # 客户端标记。老库补列后为 NULL，读侧一律按 "primary"
+        # （老应用）解释，与升级前行为一致；刷新按行上记录选
+        # 客户端凭据（见 emby_server.drive_oauth）。
+        ("user_storage_bindings", [
+            ("oauth_client", "VARCHAR(20)", "NULL"),
+        ]),
+        ("drive_oauth_states", [
+            ("oauth_client", "VARCHAR(20)", "NULL"),
+        ]),
         # 发言奖励小数累计（2026-10-31）：余数（分）＋当日累计（分）＋
         # 当日日期（上海）。老库补列后 frac/day_cents=0、chat_day=NULL，
         # 读侧按「日期不符」从今日已结算流水折算当日计数，无缝衔接。

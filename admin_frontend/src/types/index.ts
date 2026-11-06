@@ -1478,6 +1478,8 @@ export interface StorageBindingRow {
   user_id: number
   provider: string
   account_label: string | null
+  /** 来源入口（serialize_binding 同名字段）：primary=原入口 / oauth2=新入口，非 Drive 行为 null */
+  oauth_client: string | null
   status: string
   last_verified_at: string | null
   last_error_kind: string | null

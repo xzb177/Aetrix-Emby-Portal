@@ -152,6 +152,7 @@ class BindingError(RuntimeError):
     409）、unsupported（P1 不支持的 provider，如 drive，400）、
     not_found（非本人或不存在，404）、
     disabled（Drive 绑定开关关闭，403，不落状态）、
+    forbidden（第二入口查看凭证门禁未过，403，不落状态）、
     transient（一过性失败，不落状态，调用方按 502 处理）。
     """
 
@@ -251,9 +252,13 @@ def serialize_binding(binding: em.UserStorageBinding) -> dict:
     """绑定行 → 用户端响应：绝不含凭据原文、密封值与内部凭据行号。
     Drive 行另出 needs_rebind（已授范围缺 drive.file 即 True，老绑定
     无记录也 True）与 granted_scopes（实授范围列表，无记录为 None），
-    供“我的网盘”挂重绑引导；115 行 needs_rebind 恒 False。"""
+    供“我的网盘”挂重绑引导；115 行 needs_rebind 恒 False。
+    oauth_client：Drive 行的来源入口（primary / oauth2，老行无记录
+    归一 primary），用户端据此给行打来源标记、重绑时选对入口；
+    非 Drive 行恒 None。"""
     needs_rebind = False
     granted_list = None
+    oauth_client = None
     if binding.provider == "drive":
         granted_list = (
             (binding.granted_scopes or "").split()
@@ -263,10 +268,12 @@ def serialize_binding(binding: em.UserStorageBinding) -> dict:
         from backend.emby_server import drive_oauth
         needs_rebind = drive_oauth.binding_needs_rebind(
             binding.granted_scopes)
+        oauth_client = drive_oauth.binding_oauth_client(binding)
     return {
         "id": binding.id,
         "provider": binding.provider,
         "account_label": binding.account_label,
+        "oauth_client": oauth_client,
         "status": binding.status,
         "last_verified_at": (
             binding.last_verified_at.isoformat()

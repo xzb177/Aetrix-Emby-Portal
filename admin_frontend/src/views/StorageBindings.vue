@@ -18,6 +18,7 @@ const columns: DataColumn[] = [
   { key: 'id', label: 'ID', width: 80, mobile: 'title' },
   { key: 'user_id', label: '用户 ID', width: 90 },
   { key: 'provider', label: '服务商', width: 110 },
+  { key: 'oauth_client', label: '绑定入口', width: 100 },
   { key: 'account_label', label: '账号', minWidth: 140 },
   { key: 'status', label: '状态', width: 110 },
   { key: 'has_credential', label: '有凭据', width: 80 },
@@ -163,6 +164,7 @@ onMounted(load)
         @clear-filters="clearFilters"
       >
         <template #cell-user_id="{ row }"><span class="mono">{{ row.user_id }}</span></template>
+        <template #cell-oauth_client="{ row }">{{ row.oauth_client === 'oauth2' ? '新入口' : (row.oauth_client === 'primary' ? '原入口' : '—') }}</template>
         <template #cell-account_label="{ row }">{{ row.account_label || '—' }}</template>
         <template #cell-status="{ row }">
           <span class="au-badge" :class="row.status === 'active' ? 'au-badge-green' : 'au-badge-muted'">{{ row.status }}</span>

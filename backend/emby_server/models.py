@@ -2319,6 +2319,12 @@ class UserStorageBinding(Base):
     #: NULL = 老绑定（2026-10-27 可写范围上线前只申请过只读），
     #: 判定上一律按需重绑处理。老库由 database._auto_migrate 补列。
     granted_scopes = Column(Text, nullable=True)
+    #: 这条绑定来自哪个 OAuth 入口/客户端（drive_oauth 的落字口径：
+    #: "primary" = 老应用、"oauth2" = 第二入口的新应用）。刷新令牌
+    #: 必须用当初换令牌的那套客户端凭据，记错客户端刷新必失败，
+    #: 故随绑定行持久化；NULL = 本列上线前的老行，按 "primary" 读。
+    #: 老库由 database._auto_migrate 补列。
+    oauth_client = Column(String(20), nullable=True)
 
 
 class Pan115Account(Base):
@@ -3088,6 +3094,12 @@ class DriveOAuthState(Base):
     #: 在途行本列为 NULL，回调一律拒绝（在途流程 10 分钟内自然
     #: 过期，重新发起一次即可），不给无 nonce 的行留 fail-open。
     nonce_hash = Column(String(64))
+    #: 本次授权走哪个 OAuth 入口/客户端（"primary" / "oauth2"，
+    #: 口径见 UserStorageBinding.oauth_client）：回调只有一个端点，
+    #: 靠本列分流换 token 用哪套客户端凭据。老库由
+    #: database._auto_migrate 补列；NULL = 本列上线前的在途行，
+    #: 按 "primary" 读（与上线前行为一致）。
+    oauth_client = Column(String(20), nullable=True)
 
 
 class EmbyMediaSet(Base):
