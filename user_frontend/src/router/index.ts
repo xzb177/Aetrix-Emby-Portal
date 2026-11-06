@@ -115,6 +115,13 @@ const router = createRouter({
             component: () => import('@/views/game/LedgerView.vue'),
             meta: { title: '能量账本', requiresAuth: true },
           },
+          // 代理中心（2026-11-06 代理分销）：入口只在账号设置里、且仅代理可见，不占导航
+          {
+            path: '/game/agent',
+            name: 'game-agent',
+            component: () => import('@/views/game/AgentCenterView.vue'),
+            meta: { title: '代理中心', requiresAuth: true },
+          },
           {
             path: '/game/supply',
             name: 'game-supply',

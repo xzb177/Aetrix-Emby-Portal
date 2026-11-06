@@ -71,6 +71,21 @@
         </div>
       </section>
 
+      <!-- 代理中心：只有被管理员指定为代理的用户才有数据，无资格整组不渲染 -->
+      <section v-if="agentProfile" class="v4-sec" aria-label="代理中心">
+        <div class="v4-sec-title">代理中心</div>
+        <div class="v4-sec-sub">你是{{ agentProfile.level_name }}，按 {{ agentRateText }} 进货；进货、卡码和销售都在代理中心里。</div>
+        <div class="v4-card">
+          <div class="acct-row">
+            <span class="acct-row-main">
+              <span class="acct-row-text">进货余额 ¥{{ agentProfile.balance.toFixed(2) }}</span>
+              <span class="acct-row-meta">余额不足时联系管理员补充</span>
+            </span>
+            <button type="button" class="v4-mini-btn" @click="router.push('/game/agent')">进入代理中心</button>
+          </div>
+        </div>
+      </section>
+
       <!-- 我的网盘：行式列表，一行一家，展开即该家原绑定卡全部内容（providers 名单驱动） -->
       <section v-if="providersError || (providersLoaded && hasProvider('drive'))" id="my-drive" class="v4-sec" aria-label="我的网盘">
         <div class="acct-title-row">
@@ -490,6 +505,7 @@ import { authApi, subscriptionApi, embyApi, isExpiringSoon, type MySubscription,
 import { deviceApi, storageBindingApi, seriesFollowApi, welfareApi, memberApi, checkinApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type DriveOAuth2EntryStatus, type SeriesFollow } from '@/api/economy'
 import { tgApi } from '@/api/tg'
 import { getMyExclusiveLines, type MyExclusiveLine } from '@/api/user'
+import { getAgentMe, type AgentProfile } from '@/api/agent'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
@@ -508,6 +524,17 @@ const toast = useToast()
 const myLines = ref<MyExclusiveLine[]>([])
 async function loadMyLines() {
   myLines.value = await getMyExclusiveLines()
+}
+
+// ===== 代理中心入口（非代理时后端回 is_agent=false，整组不渲染） =====
+const agentProfile = ref<AgentProfile | null>(null)
+const agentRateText = computed(() => {
+  const r = agentProfile.value?.discount_rate ?? 0
+  return `${(r * 10).toFixed(1).replace(/\.0$/, '')}折`
+})
+async function loadAgentProfile() {
+  const me = await getAgentMe()
+  agentProfile.value = me.is_agent ? me.agent : null
 }
 async function copyLineUrl(url: string) {
   try {
@@ -1307,6 +1334,7 @@ async function handleEntryLogout() {
 onMounted(() => {
   void loadLoginHistory(true)
   void loadMyLines()
+  void loadAgentProfile()
   loadFollows()
   loadSubs()
   if (userStore.isFreeRealm) void loadRenewal()
