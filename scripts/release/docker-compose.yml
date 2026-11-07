@@ -1,8 +1,16 @@
 # Aetrix 发行版 · 买家部署（由 scripts/build_release.sh 放入发行包根目录）
 #
-# 只需要：同目录下有一份 .env（从 env.example 复制后改 SECRET_KEY、
-# POSTGRES_PASSWORD、授权码与绑定域名四处，见《安装说明.md》）。
-# 启动：docker compose up -d --build
+# 拉取形态：程序本体不在发行包里，两个服务都从镜像仓库拉成品镜像
+# （ghcr.io/xzb177/aetrix-api、ghcr.io/xzb177/aetrix-web，由
+# .github/workflows/publish-images.yml 在主线 CI 全绿后自动发布，
+# tag 规则：版本号 / sha-<短码> / latest）。买家机器上不做任何构建。
+#
+# 启动前两件事（见《安装说明.md》）：
+#   1. 用随授权码发放的拉取凭据 docker login ghcr.io（不登录拉不到镜像）；
+#   2. 同目录下有一份 .env（从 env.example 复制后改 SECRET_KEY、
+#      POSTGRES_PASSWORD、授权码与绑定域名四处）。
+# 启动：docker compose pull && docker compose up -d
+# 升/降版：改 .env 里的 AETRIX_VERSION 为目标版本号，再 pull + up -d。
 name: aetrix
 
 services:
@@ -36,12 +44,12 @@ services:
     restart: unless-stopped
 
   aetrix-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-      target: runtime
+    image: ghcr.io/xzb177/aetrix-api:${AETRIX_VERSION:-2.54.0}
     container_name: aetrix-api
-    # run_all 单容器同时拉起门户 API + Emby 服务 + 后台任务（发行版形态）
+    # 镜像默认入口是 python serve.py，只起门户 API 一个进程；
+    # 发行版要的是单容器全家桶（门户 API + Emby 服务 + 后台任务），
+    # 所以这里覆盖成 run_all —— 它就在镜像里（/app/backend/run_all.py），
+    # 以 /app 为工作目录拉起三个子进程，与自建版的发行形态一致。
     command: ["python", "backend/run_all.py"]
     env_file:
       - .env
@@ -65,10 +73,10 @@ services:
     restart: unless-stopped
 
   aetrix-web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
+    image: ghcr.io/xzb177/aetrix-web:${AETRIX_VERSION:-2.54.0}
     container_name: aetrix-web
+    # 镜像内 nginx 的后端地址由 BACKEND_HOST 决定（未设置时默认
+    # aetrix-api:8000，这里显式写死，免得将来默认值变动影响发行版）
     environment:
       BACKEND_HOST: aetrix-api:8000
     ports:
