@@ -50,6 +50,10 @@ import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
   type CapabilityCard, type CapabilityField, type CapabilityTestResult,
 } from '@/api/capabilities'
+import {
+  fetchLicenseStatus, saveLicenseConfig, verifyLicenseNow,
+  type LicenseStatus,
+} from '@/api/license'
 import NoticePanel from '@/components/NoticePanel.vue'
 
 const route = useRoute()
@@ -599,7 +603,7 @@ async function load() {
 onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
-  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer(), loadMountServing(), loadDriveApi()])
+  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer(), loadMountServing(), loadDriveApi(), loadLicense()])
   // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -990,6 +994,84 @@ async function saveDriveApiCore(): Promise<boolean> {
     return false
   }
 }
+
+/** ==================== 软件授权卡片（独立 endpoint，非通用分组） ====================
+ * 发行版授权校验的运营面：看状态（档位/到期/绑定/宽限/到期提醒）、
+ * 填授权码与绑定域名、立即校验。总开关 AETRIX_LICENSE_ENFORCE 走
+ * env/发行包，不进后台（功能开关从简）；这里只展示它是否生效。
+ * 保存走后端「保存即校验」，返回的就是最新状态。 */
+const licenseForm = reactive({ code: '', domain: '' })
+const licenseStatus = ref<LicenseStatus | null>(null)
+const licenseLoading = ref(false)
+const licenseSaving = ref(false)
+const licenseVerifying = ref(false)
+
+function applyLicenseStatus(data: LicenseStatus) {
+  licenseStatus.value = data
+  licenseForm.code = data.code || ''
+  licenseForm.domain = data.domain || ''
+}
+
+async function loadLicense() {
+  licenseLoading.value = true
+  try {
+    applyLicenseStatus(await fetchLicenseStatus())
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+  } finally {
+    licenseLoading.value = false
+  }
+}
+
+async function saveLicense() {
+  licenseSaving.value = true
+  try {
+    applyLicenseStatus(await saveLicenseConfig({
+      code: licenseForm.code.trim(),
+      domain: licenseForm.domain.trim(),
+    }))
+    ElMessage.success('已保存，并完成一次校验')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    licenseSaving.value = false
+  }
+}
+
+async function verifyLicense() {
+  licenseVerifying.value = true
+  try {
+    applyLicenseStatus(await verifyLicenseNow())
+    ElMessage.success('已完成一次校验')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    licenseVerifying.value = false
+  }
+}
+
+const licenseStateText = computed(() => {
+  const s = licenseStatus.value
+  if (!s) return '读取中'
+  if (!s.enforced) return '未启用校验'
+  return { ok: '生效中', grace: '宽限中', blocked: '已拦截播放', disabled: '未启用校验' }[s.state] || s.state
+})
+const licenseStateBadge = computed(() => {
+  const s = licenseStatus.value
+  if (!s || !s.enforced) return 'au-badge-muted'
+  if (s.state === 'ok') return 'au-badge-green'
+  if (s.state === 'grace') return 'au-badge-amber'
+  return 'au-badge-rose'
+})
+const licenseReminderText = computed(() => {
+  const s = licenseStatus.value
+  if (!s || !s.enforced) return ''
+  if (s.state === 'grace') return '授权已到期，当前处于宽限期内：宽限期内播放照常，请尽快续费并重新校验。'
+  if (s.reminder === '30') return `授权将在 ${s.days_left ?? 30} 天内到期，请提前续费。`
+  if (s.reminder === '7') return `授权将在 ${s.days_left ?? 7} 天内到期，请尽快续费。`
+  if (s.reminder === '1') return '授权即将到期（1 天内），请立即续费，过期后有 7 天宽限。'
+  return ''
+})
 
 /** 运营参数页签顶部的分组跳转：分组多（注册 + 9 块 + 防盗链），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
@@ -1497,6 +1579,86 @@ watch(
               ? '支付网关已配置完成，用户端可直接下单充值。'
               : '支付网关尚未配置齐全（需要网关地址 + 商户 ID + 商户密钥），用户端充值下单会提示未启用。'"
           />
+
+          <!-- 软件授权：独立卡片（状态展示 + 填码 + 立即校验，走独立 endpoint） -->
+          <SectionCard
+            v-if="sec.id === 'commerce'"
+            id="group-license"
+            title="软件授权"
+            :icon="KeyRound"
+            description="本机软件授权的状态与激活。校验只传授权码、机器指纹哈希、绑定域名与版本号，不传任何用户与片库数据；授权服务连不上时有 7 天宽限，不会突然停播。"
+            class="group-card"
+          >
+            <template #actions>
+              <span class="au-badge" :class="licenseStateBadge">{{ licenseStateText }}</span>
+            </template>
+
+            <div v-loading="licenseLoading" class="field-stack">
+              <el-alert
+                v-if="licenseStatus && !licenseStatus.enforced"
+                type="info"
+                show-icon
+                :closable="false"
+                title="当前部署未启用授权校验（AETRIX_LICENSE_ENFORCE 未开）：以下信息仅供查看与预填，播放不受任何影响。发行版默认启用。"
+              />
+              <el-alert
+                v-if="licenseReminderText"
+                :type="licenseStatus?.state === 'grace' ? 'error' : 'warning'"
+                show-icon
+                :closable="false"
+                :title="licenseReminderText"
+              />
+
+              <div class="field-grid">
+                <div class="field-stack">
+                  <span class="field-hint">授权档位</span>
+                  <strong>{{ licenseStatus?.tier || '—' }}</strong>
+                </div>
+                <div class="field-stack">
+                  <span class="field-hint">到期时间（UTC）</span>
+                  <strong>{{ licenseStatus?.expires_at || '—' }}</strong>
+                </div>
+                <div class="field-stack">
+                  <span class="field-hint">上次校验</span>
+                  <strong>
+                    {{ licenseStatus?.last_checked_at || '尚未校验' }}
+                    <span v-if="licenseStatus?.last_result" class="field-hint">（{{ licenseStatus.last_result }}）</span>
+                  </strong>
+                </div>
+                <div class="field-stack">
+                  <span class="field-hint">授权服务</span>
+                  <strong>{{ licenseStatus?.server || '' }}</strong>
+                </div>
+              </div>
+
+              <el-form label-position="top" class="field-form field-grid">
+                <el-form-item label="授权码">
+                  <el-input
+                    v-model="licenseForm.code"
+                    placeholder="如 AX-XXXX-XXXX-XXXX"
+                    clearable
+                  />
+                </el-form-item>
+                <el-form-item label="绑定域名">
+                  <el-input
+                    v-model="licenseForm.domain"
+                    placeholder="如 media.example.com（只填域名，不要带 https://）"
+                    clearable
+                  />
+                </el-form-item>
+              </el-form>
+
+              <div class="field-control">
+                <el-button type="primary" :loading="licenseSaving" @click="saveLicense">
+                  <Save :size="14" />保存并校验
+                </el-button>
+                <el-button :loading="licenseVerifying" @click="verifyLicense">
+                  <RefreshCw :size="14" />立即校验
+                </el-button>
+                <span class="field-hint">换服务器后绑定对不上时，先联系授权提供方重置绑定，再在这里重新校验。</span>
+              </div>
+            </div>
+          </SectionCard>
 
           <!-- 经济配置分组 -->
           <SectionCard

@@ -192,6 +192,20 @@ def _request_uses_issued_play_sign(request: Request, db: Session) -> bool:
     return bool(play_sign.verify_play_sign(uid, item_id, exp, sign))
 
 
+def _ensure_license_playback_allowed(db: Session) -> None:
+    """软件授权闸门（发行版专用）：与绑定门禁同层，只拦开始播放。
+
+    总开关 env AETRIX_LICENSE_ENFORCE 默认关——关时
+    ``license_client.ensure_playback_allowed`` 第一行即返回，行为
+    与没有这道闸门完全一致（自家部署永不受影响）；发行包默认开，
+    无效（停用/过期过宽限等）时抛 403 + 大白话。判读只用本地缓存
+    令牌，不联网。口径见 backend/license_client.py 模块头。
+    """
+    from backend import license_client
+
+    license_client.ensure_playback_allowed(db)
+
+
 def ensure_binding_playback_allowed(
     db: Session, user: models.WebUser, request: Request | None = None
 ) -> None:
@@ -202,6 +216,7 @@ def ensure_binding_playback_allowed(
     （消费已下发的链接，不追溯）。用户对象取不到 id 时按无绑定处理
     （fail-closed：403 而不是 500）。
     """
+    _ensure_license_playback_allowed(db)
     if request is not None and _request_uses_issued_play_sign(request, db):
         return
     user_id = getattr(user, "id", None)
@@ -222,6 +237,9 @@ def ensure_binding_playback_allowed_for_item(
     """按条目口径的播放门禁：CMS 库条目免绑定，其余与
     ``ensure_binding_playback_allowed`` 逐字同口径（403 文案不变、
     已下发签名消费不追溯）。"""
+    # 软件授权是整机口径、不分条目：CMS 免绑定也免不了授权校验，
+    # 必须在免绑定早退之前先过（enforce 关时为空操作）。
+    _ensure_license_playback_allowed(db)
     if not binding_required_for_item(db, item):
         return
     ensure_binding_playback_allowed(db, user, request)
@@ -233,6 +251,8 @@ def ensure_binding_playback_allowed_for_upstream(
     """上游兜底口的播放门禁：映射全属 CMS 库条目时免绑定，其余与
     ``ensure_binding_playback_allowed`` 同口径（兜底口无已下发链接
     消费一说，不传 request）。"""
+    # 同 _for_item：软件授权整机口径，先于免绑定早退。
+    _ensure_license_playback_allowed(db)
     if not binding_required_for_upstream(db, source_id, upstream_item_id):
         return
     ensure_binding_playback_allowed(db, user)

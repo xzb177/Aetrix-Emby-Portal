@@ -1538,7 +1538,7 @@ def _parse_source_id_list(raw) -> frozenset:
 KEY_EXCLUSIVE_SOURCE_IDS = "upstream_aggregate_exclusive_source_ids"
 
 #: 飞牛试点基址 SystemConfig 键：形如
-#: ``https://pilot.135505.autos/p/<TOKEN>``——路径 token 只许经配置
+#: ``https://pilot.example.com/p/<TOKEN>``——路径 token 只许经配置
 #: 注入（从飞牛本地 token.txt 读出后写入），不许进代码/仓库/报告。
 KEY_FEINIU_PILOT_BASE_URL = "feiniu_pilot_base_url"
 
@@ -1656,8 +1656,8 @@ def pilot_entry_secret(db) -> str:
 def pilot_entry_origin(db) -> str:
     """飞牛 pilot 域名 origin（scheme://host[:port]）：从飞牛基址派生。
 
-    基址形如 https://pilot.135505.autos/p/<TOKEN>，origin 即
-    https://pilot.135505.autos——pilot 入口下发的取流地址只借这个
+    基址形如 https://pilot.example.com/p/<TOKEN>，origin 即
+    https://pilot.example.com——pilot 入口下发的取流地址只借这个
     域名，基址的 /p/<TOKEN> 路径段是飞牛口令门、绝不进播放地址。
     未配/形态不对回空串。
     """

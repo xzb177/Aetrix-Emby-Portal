@@ -268,8 +268,8 @@ def test_worker_preserves_real_run_errors(db, db_factory, monkeypatch):
     (502, "upstream_unavailable", "上游服务当前不可用，请稍后再试"),
     (429, "upstream_quota_exhausted", "上游额度已耗尽，请稍后再试或换个源"),
     (502, "upstream_frontend_blocked",
-     "上游前门（nginx）拦截，未到 Emby：请对方放行本方出口 IP "
-     "15.204.95.101，重录凭据无效"),
+     "上游前门（nginx）拦截，未到 Emby：请对方放行本方出口 IP，"
+     "重录凭据无效"),
 ])
 def test_upstream_errors_stay_on_the_task(
         db, db_factory, staff, monkeypatch, status, code, detail):

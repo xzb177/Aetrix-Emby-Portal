@@ -433,7 +433,7 @@ def search_upstream_source(source, term: str, *,
                         "上游凭据失效，请管理员重录该源凭据")
         return [], ("upstream_frontend_blocked: "
                     "上游前门（nginx）拦截，未到 Emby："
-                    "请对方放行本方出口 IP 15.204.95.101，重录凭据无效")
+                    "请对方放行本方出口 IP，重录凭据无效")
     if status == 429:
         return [], "upstream_quota_exhausted: 上游额度已耗尽，请稍后再试或换个源"
     return [], "upstream_unavailable: 上游服务当前不可用，请稍后再试"

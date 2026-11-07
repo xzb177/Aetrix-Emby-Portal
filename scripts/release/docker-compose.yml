@@ -1,0 +1,83 @@
+# Aetrix 发行版 · 买家部署（由 scripts/build_release.sh 放入发行包根目录）
+#
+# 只需要：同目录下有一份 .env（从 env.example 复制后改 SECRET_KEY、
+# POSTGRES_PASSWORD、授权码与绑定域名四处，见《安装说明.md》）。
+# 启动：docker compose up -d --build
+name: aetrix
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aetrix-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aetrix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-aetrix}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-aetrix} -d $${POSTGRES_DB:-aetrix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: aetrix-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  aetrix-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: runtime
+    container_name: aetrix-api
+    # run_all 单容器同时拉起门户 API + Emby 服务 + 后台任务（发行版形态）
+    command: ["python", "backend/run_all.py"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_TYPE: postgresql
+      DATABASE_URL: postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379/0
+      # 软件授权校验：发行版默认开（关掉填 0，但未授权状态下不能播放）
+      AETRIX_LICENSE_ENFORCE: ${AETRIX_LICENSE_ENFORCE:-1}
+      EMBY_IMAGE_DIR: /data/images
+      EMBY_TRANSCODE_DIR: /data/transcode
+    volumes:
+      - aetrix_data:/data
+      - ${MEDIA_ROOT:-./media}:/media:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  aetrix-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: aetrix-web
+    environment:
+      BACKEND_HOST: aetrix-api:8000
+    ports:
+      - "${AETRIX_PORT:-8000}:80"
+    depends_on:
+      - aetrix-api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  aetrix_data:

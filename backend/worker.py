@@ -493,6 +493,17 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动按需探测 worker 失败（可忽略）: {e}")
 
+        # 软件授权校验（发行版专用）：enforce 默认关，关时 start()
+        # 返回 False 不起线程；开时异步首验 + 每 24 小时复验。
+        # 与 main.py 共用同一幂等入口（见 backend/license_client.py）。
+        try:
+            from backend import license_client
+            if license_client.start():
+                started.append("license_client")
+                logger.info("✅ 软件授权校验已启动")
+        except Exception as e:
+            logger.warning(f"启动软件授权校验失败（可忽略）: {e}")
+
         try:
             from backend.emby_server import subtitle_scan_worker
             if subtitle_scan_worker.start():

@@ -620,8 +620,8 @@ def oauth_nonce_cookie_domain(request_host: str | None) -> str | None:
 
     发起端（前端同源 XHR）与回调端（Google 注册的对外地址）同
     host → 返回 None（host-only cookie 即可）；不同 host 但共享
-    父域（如 aetrix.135505.autos 与 cdn.135505.autos 共享
-    135505.autos）→ 返回父域，cookie 才能跟过子域跳转；无共享
+    父域（如 aetrix.example.com 与 cdn.example.com 共享
+    example.com）→ 返回父域，cookie 才能跟过子域跳转；无共享
     父域 → None（该部署下浏览器流程会 fail-closed，须让发起端
     与回调端同域，见 PR 说明的已知边界）。
     """
