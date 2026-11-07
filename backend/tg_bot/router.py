@@ -214,7 +214,7 @@ _IDENTITY_COMMANDS = {
     "/redeem", "/lottery", "/redpacket", "/duel", "/rain",
     "/bindings", "/transfers", "/whyplay", "/wants", "/reconcile",
     "/rankpush",
-    "/whois",
+    "/kk",
 }
 
 
@@ -514,7 +514,7 @@ def dispatch(db, update: dict) -> None:
             "/wants": handlers.handle_wants,
             "/reconcile": handlers.handle_reconcile,
             "/rankpush": handlers.handle_rankpush,
-            "/whois": handlers.handle_whois,
+            "/kk": handlers.handle_whois,
         }
         fn = commands.get(cmd)
         if fn is None:
@@ -539,7 +539,7 @@ def dispatch(db, update: dict) -> None:
         # 集合：群里放行（2026-10-28 用户亲定、2026-11-02 重申）——
         # 账号卡是固定 11 行汇总、不带登录链接等凭据，群里与私聊同
         # 形态渲染；登录与求片仍私聊限定，不许借此放宽任何一条。
-        # /whois 是刻意例外（2026-11-01）：不在本集合——群里走 handler
+        # /kk 是刻意例外（2026-11-01）：不在本集合——群里走 handler
         # 的管理员精简卡模式（is_staff 门禁 + 字段白名单，无审计痕迹），
         # 私聊仍出审计全卡；见 handlers.handle_whois 的 in_group 路径。
         private_only = {"/request", "/myrequests", "/login", "/renew", "/govlog",
@@ -611,8 +611,8 @@ def dispatch(db, update: dict) -> None:
             reply = handlers.handle_rain(
                 db, tg_user, chat_id, args,
                 update_id=update.get("update_id"), in_group=in_group)
-        elif cmd == "/whois":
-            # /whois 需要群聊上下文（私聊全卡 vs 群内管理员精简卡）
+        elif cmd == "/kk":
+            # /kk 需要群聊上下文（私聊全卡 vs 群内管理员精简卡）
             # 与被回复消息的发送者（群内回复定位），通用签名拿不到，
             # 与 /slots 同款单独分发；handler 默认参数保证私聊与
             # 直调行为逐字不变。

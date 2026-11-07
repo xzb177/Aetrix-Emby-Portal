@@ -33,15 +33,15 @@ logger = logging.getLogger(__name__)
 # 管理员级命令（不带斜杠）：绝不进 default 菜单，只随管理员 scope 全量下发。
 # - govlog：现行命令，治理审计日志查看（features.handle_govlog：仅私聊、
 #   仅公益服、仅 Lv.6），属特权查看，按更严一级归管理员级；
-# - whois / reconcile / rankpush：管理员命令（审计反查 / 群号对账 /
+# - kk / reconcile / rankpush：管理员命令（审计反查 / 群号对账 /
 #   观影榜手动推送），均已合入 BOT_COMMANDS 并归管理员级。
-#   whois 群内可执行（管理员精简卡，2026-11-01）但刻意不进下面的
+#   kk 群内可执行（管理员精简卡，2026-11-01）但刻意不进下面的
 #   GROUP_COMMANDS：群菜单是给全群看的，管理员命令不挂上去，群里
 #   靠管理员手输触发，权限门禁在 handler 的 is_staff 判定（菜单
 #   可见性从来不是安全边界，见本文件头注）。
 ADMIN_ONLY_COMMANDS: frozenset[str] = frozenset({
     "govlog",
-    "whois",
+    "kk",
     "reconcile",
     "rankpush",
     "rain",
@@ -95,7 +95,7 @@ WRITE_ONLY_ADMIN_COMMANDS: frozenset[str] = frozenset({
 
 
 def viewer_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """只读审计 scope 命令集：全量减去写命令（whois/reconcile/govlog
+    """只读审计 scope 命令集：全量减去写命令（kk/reconcile/govlog
     等只读命令保留），保持 BOT_COMMANDS 原顺序。"""
     return [c for c in commands if c[0] not in WRITE_ONLY_ADMIN_COMMANDS]
 

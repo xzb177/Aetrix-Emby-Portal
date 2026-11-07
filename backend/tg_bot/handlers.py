@@ -1325,7 +1325,7 @@ def handle_whois(db, tg_user: dict, chat_id: int, args: str,
         return layout.card(
             layout.title("账号反查"),
             [
-                layout.row("🔍", "用法", "私聊发送 /whois 关键词"),
+                layout.row("🔍", "用法", "私聊发送 /kk 关键词"),
                 layout.row("🧭", "可查", "IP 地址、TG 号、站内用户名 / Emby 名、设备或客户端名"),
             ],
         )
@@ -1375,8 +1375,8 @@ def _whois_group(db, tg_id, args: str, reply_from: dict | None) -> str:
         return layout.card(
             layout.title("账号速览"),
             [
-                layout.row("🔍", "用法", "回复某人的消息发送 /whois"),
-                layout.row("🧭", "也可", "/whois 站内用户名 或 /whois TG 号"),
+                layout.row("🔍", "用法", "回复某人的消息发送 /kk"),
+                layout.row("🧭", "也可", "/kk 站内用户名 或 /kk TG 号"),
             ],
         )
     target = whois.find_lite_user(db, keyword)

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""TG Bot /whois 群内管理员精简卡（用户 2026-11-01 拍板）。
+"""TG Bot /kk 群内管理员精简卡（用户 2026-11-01 拍板）。
 
 口径：
-- 仅管理员（is_staff，与私聊 /whois 同一判定）、仅群聊模式出精简卡；
-  私聊 /whois 仍出审计全卡，行为逐字不变。
-- 入口两种：回复某人的消息发 /whois（凭被回复者 TG 身份定位），
-  或 /whois 站内用户名 / TG 号带参定位。
+- 仅管理员（is_staff，与私聊 /kk 同一判定）、仅群聊模式出精简卡；
+  私聊 /kk 仍出审计全卡，行为逐字不变。
+- 入口两种：回复某人的消息发 /kk（凭被回复者 TG 身份定位），
+  或 /kk 站内用户名 / TG 号带参定位。
 - 精简卡字段白名单：站内用户名、TG 显示名、等级、公益资格、订阅
   到期、能量余额、网盘绑定（只 provider＋状态）、账号状态。
   IP / 设备 / 登录记录 / 播放记录 / 绑定 label / 凭据 id / 密码
@@ -160,7 +160,7 @@ def test_group_reply_lookup_renders_lite_card(db, sent):
     _staff(db)
     _rich_target(db)
     router.dispatch(db, _group_update(
-        "/whois",
+        "/kk",
         reply_from={"id": TARGET_TG, "first_name": "小明", "last_name": "王"}))
     assert len(sent) == 1
     card = sent[0]
@@ -179,11 +179,11 @@ def test_group_reply_lookup_renders_lite_card(db, sent):
 def test_group_args_lookup_by_username_and_tg_id(db, sent):
     _staff(db)
     _rich_target(db)
-    router.dispatch(db, _group_update("/whois lite_target"))
+    router.dispatch(db, _group_update("/kk lite_target"))
     assert len(sent) == 1
     assert "lite_target" in sent[0]
     router._user_cmd_limits.clear()
-    router.dispatch(db, _group_update(f"/whois {TARGET_TG}"))
+    router.dispatch(db, _group_update(f"/kk {TARGET_TG}"))
     assert len(sent) == 2
     assert "lite_target" in sent[1]
 
@@ -209,14 +209,14 @@ def test_group_non_staff_gets_no_target_info(db, sent):
     _user(db, "plainuser", tg_id=PLAIN_TG)
     _rich_target(db)
     router.dispatch(db, _group_update(
-        "/whois lite_target", tg_id=PLAIN_TG))
+        "/kk lite_target", tg_id=PLAIN_TG))
     assert len(sent) == 1
     assert "仅管理员可用" in sent[0]
     assert "lite_target" not in sent[0]
     assert "321" not in sent[0]
     router._user_cmd_limits.clear()
     router.dispatch(db, _group_update(
-        "/whois", tg_id=PLAIN_TG,
+        "/kk", tg_id=PLAIN_TG,
         reply_from={"id": TARGET_TG, "first_name": "小明"}))
     assert len(sent) == 2
     assert "仅管理员可用" in sent[1]
@@ -227,7 +227,7 @@ def test_group_non_staff_gets_no_target_info(db, sent):
 def test_group_unbound_caller_gets_bind_guide(db, sent):
     _staff(db)
     _rich_target(db)
-    router.dispatch(db, _group_update("/whois lite_target", tg_id=799999))
+    router.dispatch(db, _group_update("/kk lite_target", tg_id=799999))
     assert len(sent) == 1
     assert "如何绑定" in sent[0]
     assert "lite_target" not in sent[0]
@@ -238,7 +238,7 @@ def test_group_unbound_caller_gets_bind_guide(db, sent):
 def test_lite_card_has_no_sensitive_fields(db, sent):
     _staff(db)
     _rich_target(db)
-    router.dispatch(db, _group_update("/whois lite_target"))
+    router.dispatch(db, _group_update("/kk lite_target"))
     assert len(sent) == 1
     card = sent[0]
     assert "lite_target" in card
@@ -259,7 +259,7 @@ def test_lite_card_has_no_sensitive_fields(db, sent):
 def test_group_reply_unbound_target_message(db, sent):
     _staff(db)
     router.dispatch(db, _group_update(
-        "/whois",
+        "/kk",
         reply_from={"id": 755555, "first_name": "路人"}))
     assert len(sent) == 1
     assert "还没有绑定站内账号" in sent[0]
@@ -268,17 +268,17 @@ def test_group_reply_unbound_target_message(db, sent):
 def test_group_args_not_found_message(db, sent):
     _staff(db)
     _rich_target(db)
-    router.dispatch(db, _group_update("/whois zzz_no_one"))
+    router.dispatch(db, _group_update("/kk zzz_no_one"))
     assert len(sent) == 1
     assert "没查到" in sent[0]
 
 
 def test_group_no_args_no_reply_shows_usage(db, sent):
     _staff(db)
-    router.dispatch(db, _group_update("/whois"))
+    router.dispatch(db, _group_update("/kk"))
     assert len(sent) == 1
     assert "回复" in sent[0]
-    assert "/whois" in sent[0]
+    assert "/kk" in sent[0]
 
 
 # ---------- 只读 & 私聊全卡不变 ----------
@@ -297,9 +297,9 @@ def test_group_lookup_is_readonly(db, sent):
         )
 
     before = counts()
-    router.dispatch(db, _group_update("/whois lite_target"))
+    router.dispatch(db, _group_update("/kk lite_target"))
     router.dispatch(db, _group_update(
-        "/whois", reply_from={"id": TARGET_TG, "first_name": "小明"}))
+        "/kk", reply_from={"id": TARGET_TG, "first_name": "小明"}))
     assert counts() == before
 
 
@@ -309,7 +309,7 @@ def test_private_whois_user_keyword_opens_panel(db, sent):
     # 仍走全卡搜索（见 test_private_whois_ip_keyword_full_card）。
     _staff(db)
     _rich_target(db)
-    router.dispatch(db, _private_update("/whois lite_target"))
+    router.dispatch(db, _private_update("/kk lite_target"))
     assert len(sent) == 1
     card = sent[0]
     assert "lite_target" in card
@@ -321,7 +321,7 @@ def test_private_whois_user_keyword_opens_panel(db, sent):
 def test_private_whois_ip_keyword_full_card(db, sent):
     _staff(db)
     _rich_target(db)
-    router.dispatch(db, _private_update("/whois 9.9.9.9"))
+    router.dispatch(db, _private_update("/kk 9.9.9.9"))
     assert len(sent) == 1
     card = sent[0]
     assert "lite_target" in card
