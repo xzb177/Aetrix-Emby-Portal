@@ -36,9 +36,15 @@ def _names(commands):
     return [name for name, _desc in commands]
 
 
-def _make_user(db, username, tg_id=None, is_staff=False, is_active=True):
+def _make_user(db, username, tg_id=None, is_staff=False, is_active=True,
+               admin_role=None):
     u = models.WebUser(
-        username=username, telegram_id=tg_id, is_staff=is_staff, is_active=is_active
+        username=username, telegram_id=tg_id, is_staff=is_staff,
+        is_active=is_active,
+        # 生产 staff 必有角色；菜单下发按角色分级，测试管理员默认
+        # operator（全量菜单），viewer 子集用例显式传 admin_role。
+        admin_role=(admin_role if admin_role is not None
+                    else ("operator" if is_staff else None)),
     )
     if hasattr(u, "password_hash") and getattr(u, "password_hash") is None:
         try:

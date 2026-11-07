@@ -53,6 +53,10 @@ def db():
 def _user(db, tg, name, staff=False, **kw):
     fields = {"password_hash": "x", "telegram_id": tg, "points": 10,
               "vitality": 14, "is_active": True, "is_staff": staff}
+    # 生产 staff 必有角色；测试默认 operator（可写），显式传 role 的用例
+    # （PA-056 守卫等）不受影响。角色门用例见 test_tg_bot_admin_roles.py。
+    if staff and "admin_role" not in kw:
+        fields["admin_role"] = "operator"
     fields.update(kw)
     u = models.WebUser(username=name, **fields)
     db.add(u)

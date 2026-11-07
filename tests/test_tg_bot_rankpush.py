@@ -86,6 +86,8 @@ def _make_user(db, username, *, tg_id=None, staff=False, show=True, points=0):
         points=points,
         telegram_id=tg_id,
         is_staff=staff,
+        # 生产 staff 必有角色；推榜是写操作，测试管理员默认 operator。
+        admin_role="operator" if staff else None,
         is_active=True,
         show_on_leaderboard=show,
     )

@@ -9,7 +9,7 @@ from datetime import datetime
 
 from backend.integrations import store
 from backend.models import SubscriptionPlan, TgBindCode, UserSubscription, WebUser
-from backend.tg_bot import layout, login_token
+from backend.tg_bot import layout, login_token, role_gate
 from backend.tg_bot import redpacket_common
 from backend.tg_bot.identity import resolve
 
@@ -196,6 +196,20 @@ def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None
     record.telegram_id = tg_user_id
     record.used_at = now
     db.commit()
+    # 管理员绑定成功当场补发对应角色的管理员命令菜单（命令 scope 原本
+    # 只在 poller 启动时下发一次，不补发就得等重启才出现管理员菜单）。
+    # 失败只记日志，不影响绑定成功回复。
+    if (bool(getattr(user, "is_staff", False))
+            and bool(getattr(user, "is_active", True))):
+        try:
+            from backend.tg_bot import command_scopes, poller
+
+            command_scopes.deliver_staff_scope(
+                db, int(tg_user_id), user, poller.BOT_COMMANDS)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "tg 绑定后补发管理员菜单失败 tg_user_id=%s",
+                tg_user_id, exc_info=True)
     return _bind_success_text(db, user)
 
 
@@ -471,11 +485,14 @@ def handle_admin(db, tg_user: dict, chat_id: int, args: str) -> str:
             layout.title("管理面板"),
             [layout.row("🔒", "访问状态", "仅管理员可用")],
         )
+    from backend import admin_roles
+
     return layout.card(
         layout.title("管理面板！", user.username),
         [
             layout.row("👤", "管理员账号", html.escape(str(user.username or ""))),
-            layout.row("🛡️", "权限", "网站管理员"),
+            layout.row("🛡️", "权限",
+                       admin_roles.role_label(admin_roles.role_of(user))),
             layout.row("🌐", "服务器", "可从下方按钮查看机器人状态"),
             layout.row("📋", "治理审计", "私聊发送 /govlog（仅 Lv.6 且公益服）"),
         ],
@@ -495,6 +512,13 @@ def handle_rankpush(db, tg_user: dict, chat_id: int, args: str) -> str:
         return layout.card(
             layout.title("观影榜推送"),
             [layout.row("🔒", "访问状态", "仅管理员可用")],
+        )
+    # 角色门：推榜含榜单奖励发放，是写操作，只读审计角色拒绝。
+    refusal = role_gate.readonly_refusal(user)
+    if refusal:
+        return layout.card(
+            layout.title("观影榜推送", user.username),
+            [layout.row("🔒", "访问状态", refusal)],
         )
     from backend.tg_bot import rankpush
 
@@ -522,12 +546,36 @@ def handle_rankpush(db, tg_user: dict, chat_id: int, args: str) -> str:
     )
 
 
-def admin_markup() -> dict:
+def admin_markup(user=None) -> dict:
+    """管理面板按钮：两列网格＋末行回主界面，写入口只给可写角色。
+
+    读入口（服务器/治理审计/查人说明/群号对账/群权限自检）对全部
+    管理员开放，含只读审计；写入口（推观影榜/红包雨）只对
+    can_write 的角色出现——藏按钮只是方便，真正的门在执行层。
+    user=None（旧调用）按不可写处理（fail-closed）。
+    """
+    buttons = [
+        {"text": "🌐 服务器", "callback_data": "menu:server"},
+        {"text": "📋 治理审计", "callback_data": "menu:govlog"},
+        {"text": "👤 查人", "callback_data": "menu:admin_whois"},
+        {"text": "🔁 群号对账", "callback_data": "menu:admin_reconcile"},
+    ]
+    if role_gate.can_write(user):
+        buttons += [
+            {"text": "🏆 推观影榜", "callback_data": "menu:admin_rankpush"},
+            {"text": "🌧️ 红包雨", "callback_data": "menu:admin_rain_info"},
+        ]
+    buttons.append(
+        {"text": "🛡️ 群权限自检", "callback_data": "menu:admin_botperms"})
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append(layout.home_row())
+    return {"inline_keyboard": rows}
+
+
+def admin_back_markup() -> dict:
+    """管理子页返回键：回管理面板＋回主界面。"""
     return {"inline_keyboard": [
-        [
-            {"text": "🌐 服务器", "callback_data": "menu:server"},
-            {"text": "📋 治理审计", "callback_data": "menu:govlog"},
-        ],
+        [{"text": "⬅️ 返回管理面板", "callback_data": "menu:admin"}],
         layout.home_row(),
     ]}
 
@@ -924,6 +972,10 @@ def handle_rain(db, tg_user: dict, chat_id: int, args: str,
         return _bind_guide_text()
     if not bool(getattr(user, "is_staff", False)):
         return rain_svc.reason_message("not_staff")
+    # 角色门：发起红包雨是写操作（系统出钱发奖），只读审计角色拒绝。
+    refusal = role_gate.readonly_refusal(user)
+    if refusal:
+        return refusal
     idempotency_key = f"tg:{update_id}" if update_id is not None else None
     try:
         result = rain_svc.start_rain(

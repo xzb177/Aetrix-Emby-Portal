@@ -115,6 +115,10 @@ def _user(db, username, tg_id=None, staff=False, **kw):
     u = models.WebUser(username=username, telegram_id=tg_id)
     u.password_hash = ""
     u.is_staff = staff
+    # 生产 staff 必有角色；对账处置是写操作，测试管理员默认 operator，
+    # kw 显式传 admin_role 时以 kw 为准。
+    if staff:
+        u.admin_role = "operator"
     for k, v in kw.items():
         setattr(u, k, v)
     db.add(u)

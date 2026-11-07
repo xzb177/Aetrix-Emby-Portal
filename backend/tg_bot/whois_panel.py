@@ -36,7 +36,7 @@ import secrets
 from datetime import datetime
 
 from backend import models
-from backend.tg_bot import layout, whois
+from backend.tg_bot import layout, role_gate, whois
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +281,12 @@ def execute(db, admin, target, op: str, nonce: str | None = None) -> str:
     赠送类先消费一次性 nonce（PA-058）：已执行/失效一律不落账。
     """
     from backend.user_lifecycle import set_user_active
+
+    # 角色门（执行层）：只读审计角色一律拒绝写、只许读。落在最前面
+    # （消费赠送 nonce 之前），viewer 的尝试不烧掉一次性确认。
+    refusal = role_gate.readonly_refusal(admin)
+    if refusal:
+        return refusal
 
     name = _esc(target.username)
     if op in _GIFT_OPS:

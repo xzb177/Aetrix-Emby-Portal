@@ -18,8 +18,11 @@
 权限判定仍在 router/handler（私聊限定、P1 拦截、Lv.6 门禁等一字未动），
 菜单里看不见的命令手动输入照样会被现行门禁拦下。
 
-限制：下发只在 poller 启动时做一次；新管理员绑定 TG 后要等 poller 重启
-才拿到管理员菜单（其命令权限本身不受影响，门禁认的是账号 is_staff）。
+角色分级（2026-11-07 对齐网站三级）：管理员 scope 按 admin_role 再分
+两档下发——viewer（只读审计）只拿只读子集（不含 rankpush/rain 两个
+写命令），operator/super 拿全量。下发时机除 poller 启动外，管理员
+绑定成功时也当场补发（handlers.verify_bind_code 调
+deliver_staff_scope），不再等重启。
 """
 from __future__ import annotations
 
@@ -82,6 +85,30 @@ def admin_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return list(commands)
 
 
+#: 管理员级命令里的写命令（不带斜杠）：只读审计（viewer）菜单不下发。
+#: rankpush 推送含榜单奖励发放、rain 是发起红包雨，都是写操作；
+#: 其执行层另有角色门拦截（菜单可见性不是安全边界，见头注）。
+WRITE_ONLY_ADMIN_COMMANDS: frozenset[str] = frozenset({
+    "rankpush",
+    "rain",
+})
+
+
+def viewer_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """只读审计 scope 命令集：全量减去写命令（whois/reconcile/govlog
+    等只读命令保留），保持 BOT_COMMANDS 原顺序。"""
+    return [c for c in commands if c[0] not in WRITE_ONLY_ADMIN_COMMANDS]
+
+
+def commands_for_role(role: str, commands: list[tuple[str, str]]):
+    """按网站三级角色选管理员菜单集：viewer 只读子集，其余全量。"""
+    from backend import admin_roles
+
+    if role == admin_roles.ROLE_VIEWER:
+        return viewer_commands(commands)
+    return admin_commands(commands)
+
+
 def group_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """群 scope 命令集：只含群内可执行命令（保持 BOT_COMMANDS 原顺序）。"""
     return [c for c in commands if c[0] in GROUP_COMMANDS]
@@ -92,12 +119,16 @@ def admin_only_names(commands: list[tuple[str, str]]) -> list[str]:
     return [name for name, _desc in commands if name in ADMIN_ONLY_COMMANDS]
 
 
-def staff_chat_ids(db) -> list[int]:
-    """管理员 TG 号名单：is_staff + 在用 + 已绑 telegram_id（现行口径）。"""
-    from backend import models
+def staff_chat_users(db) -> list[tuple[int, str]]:
+    """管理员 (TG 号, 角色) 名单：is_staff + 在用 + 已绑 telegram_id。
+
+    角色走 admin_roles.role_of 同一口径（空角色 fail-closed 按 viewer），
+    供按角色分级下发菜单用。
+    """
+    from backend import admin_roles, models
 
     rows = (
-        db.query(models.WebUser.telegram_id)
+        db.query(models.WebUser)
         .filter(
             models.WebUser.is_staff.is_(True),
             models.WebUser.is_active.is_(True),
@@ -105,13 +136,19 @@ def staff_chat_ids(db) -> list[int]:
         )
         .all()
     )
-    result: list[int] = []
-    for (tg_id,) in rows:
+    result: list[tuple[int, str]] = []
+    for user in rows:
         try:
-            result.append(int(tg_id))
+            tg_id = int(user.telegram_id)
         except (TypeError, ValueError):
             continue
+        result.append((tg_id, admin_roles.role_of(user)))
     return result
+
+
+def staff_chat_ids(db) -> list[int]:
+    """管理员 TG 号名单：is_staff + 在用 + 已绑 telegram_id（现行口径）。"""
+    return [tg_id for tg_id, _role in staff_chat_users(db)]
 
 
 def _deliver(db, sender, commands, scope) -> bool:
@@ -138,10 +175,10 @@ def register_command_scopes(db, commands: list[tuple[str, str]]) -> dict:
 
     summary["default"] = _deliver(db, sender, default_commands(commands), None)
 
-    for tg_id in staff_chat_ids(db):
+    for tg_id, role in staff_chat_users(db):
         scope = {"type": "chat", "chat_id": tg_id}
         summary["staff"][tg_id] = _deliver(
-            db, sender, admin_commands(commands), scope)
+            db, sender, commands_for_role(role, commands), scope)
 
     try:
         cfg = policy.read_bot_config(db)
@@ -155,3 +192,17 @@ def register_command_scopes(db, commands: list[tuple[str, str]]) -> dict:
         summary["groups"][gid] = _deliver(db, sender, group_cmds, scope)
 
     return summary
+
+
+def deliver_staff_scope(db, tg_id: int, user, commands) -> bool:
+    """给单个管理员按其角色补发管理员菜单（绑定成功时当场调用）。
+
+    user 可传 WebUser（走 role_of 取角色）或角色字符串。失败只记日志
+    并返回 False，不抛给调用方（绑定成功回复不受影响）。
+    """
+    from backend import admin_roles
+    from backend.tg_bot import sender
+
+    role = user if isinstance(user, str) else admin_roles.role_of(user)
+    scope = {"type": "chat", "chat_id": int(tg_id)}
+    return _deliver(db, sender, commands_for_role(role, commands), scope)
