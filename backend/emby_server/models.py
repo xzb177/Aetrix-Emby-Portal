@@ -1801,8 +1801,10 @@ class TransferVariant(Base):
     本表——重扫改写 ``drive_file_id`` 也动不了播放源（扫描锚定保护
     的第一层：播放源与身份锚天然解耦）。
 
-    - ``owner_scope``：``source``（服主盘副本）| ``user``（用户盘副本）。
-      用户副本只许播给 ``owner_ref`` 本人，绝不跨用户复用。
+    - ``owner_scope``：``source``（服主盘副本）| ``user``（用户盘副本）|
+      ``pool``（公共贡献池副本，owner_ref 为成员 id 字符串）。
+      用户副本只许播给 ``owner_ref`` 本人，绝不跨用户复用；池副本
+      只许播给池观众（播出判定见 pool_gate）。
     - ``status``：``ready``（可播）| ``stale``（副本已死，巡检或播放
       实证标死，不再被选路）| ``orphan``（副本已建但不可播，如权限
       设置失败，文件在、登记在，等管理员处置，不自动删）|
@@ -1912,7 +1914,8 @@ class TransferJob(Base):
       transfer_variant._is_cross_job，2026-10-26 用户亲定“绑哪播哪”）。
     - ``owner_scope`` / ``owner_ref``：``source``（服主副本，
       owner_ref 为空）| ``user``（用户盘副本，owner_ref 为用户 id
-      字符串）。工人按归属写对应 scope 的副本行。
+      字符串）| ``pool``（公共贡献池副本，owner_ref 为成员 id 字符串）。
+      工人按归属写对应 scope 的副本行。
     - ``dest_drive_id``：用户任务的落盘标识（Drive 为
       ``userdrive:<user_id>``，115 为 ``pan115:user-<user_id>``）；
       服主任务为空（= drive_id，同盘拷贝）。

@@ -1621,9 +1621,13 @@ def _item_provider(db, item):
         return None
     if mount is None:
         return None
-    if mount.mount_type == getattr(mount_lib, "MOUNT_PAN115", "115"):
+    # 挂载行没 mount_type（只可能是非 ORM 桩对象：真实行该列
+    # nullable=False 且有默认值）即判定不清，按本函数“不认识的
+    # 形状返回 None（proceed）”口径回落，不抛错拦播放。
+    mount_type = getattr(mount, "mount_type", None)
+    if mount_type == getattr(mount_lib, "MOUNT_PAN115", "115"):
         return "pan115"
-    if mount.mount_type == getattr(mount_lib, "MOUNT_DRIVE", "drive"):
+    if mount_type == getattr(mount_lib, "MOUNT_DRIVE", "drive"):
         return "drive"
     return None
 
@@ -4571,15 +4575,17 @@ def release_binding(db, item_id) -> int:
 
 
 def _release_ready_rows(db, item_id, owner_scope, owner_ref=None) -> int:
-    """把该条目该 scope（用户 scope 时限定该用户）的 ready 行置
+    """把该条目该 scope（用户/池 scope 时限定该归属）的 ready 行置
     released（成功建新副本前调用，保证一物一生效源；调用方负责
-    commit）。用户 scope 不带 owner_ref 过滤会误释他人的行，绝不
-    允许：用户 scope 调用方必须传 owner_ref。"""
+    commit）。用户 scope 不带 owner_ref 过滤会误释他人的行，池
+    scope 不带会误释其他成员的副本行（同条目多成员各一份 ready
+    是设计常态，PR-2 起必须按成员过滤），绝不允许：用户/池 scope
+    调用方必须传 owner_ref。"""
     q = (db.query(em.TransferVariant)
          .filter(em.TransferVariant.item_id == item_id,
                  em.TransferVariant.owner_scope == owner_scope,
                  em.TransferVariant.status == "ready"))
-    if owner_scope == "user":
+    if owner_scope in ("user", "pool"):
         q = q.filter(em.TransferVariant.owner_ref == owner_ref)
     rows = q.all()
     for row in rows:
@@ -6008,8 +6014,8 @@ def _register_ready_variant(db, job, item, variant_fid, variant_drive_id,
                             pickcode=None, size=None):
     """成功登记：先释放同归属旧 ready 行，再建新 ready 行并置任务 done。
 
-    用户 scope 必须带 owner_ref（_release_ready_rows 内强制过滤，
-    绝不误释他人行）。
+    用户/池 scope 必须带 owner_ref（_release_ready_rows 内强制过滤，
+    绝不误释他人行 / 其他成员的副本行）。
     """
     owner_ref = getattr(job, "owner_ref", None)
     _release_ready_rows(db, job.item_id,
@@ -6266,6 +6272,126 @@ def _run_drive_user_job(db, job, item, drive_api):
     row = _register_ready_variant(db, job, item, variant_fid,
                                   f"userdrive:{user_id}",
                                   size=(copied or {}).get("size"))
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _run_drive_pool_job(db, job, item, drive_api):
+    """Drive 池盘任务（goal-33 PR-2）：成员令牌直拷 Path A。
+
+    与 ``_run_drive_user_job`` 同形、但归属是池：任务行
+    owner_scope=pool、owner_ref=成员 id；登记行
+    variant_drive_id=pooldrive:<成员id>。必须是真 copy
+    （files.copy），快捷方式不算。目录核对与 anyone-reader
+    口径与用户盘 Path A 逐字同（核不到记 copy_unresolved、
+    加权限失败记 orphan、不回落源文件播放）。
+
+    与用户盘不同的三点（设计使然）：
+    - 不走 Path B：成员令牌看不见源（_CopyForbidden）时直接终态
+      copy_forbidden，不静默转 SA 中转、不重试死循环；
+    - 不腾地方：copy 中途配额不足时直接终态 insufficient_space，
+      绝不调用 ensure_space_for_transfer——那会清掉贡献者自己的
+      用户副本给池让路；
+    - 用量记账：完成记 transfer_bytes、配额失败记 quota_hits
+      （pool_usage_daily，PR-5 熔断的数据面）。
+    drive_api 参数只为与 run_transfer_job_once 同签名，池执行不
+    用 SA 客户端。
+    """
+    from backend.emby_server.drive_oauth import DriveOAuthError
+    try:
+        member_id = int((getattr(job, "owner_ref", "") or "").strip())
+    except (TypeError, ValueError):
+        member_id = None
+    member = None
+    if member_id is not None:
+        member = (db.query(em.PoolMember)
+                  .filter(em.PoolMember.id == member_id).first())
+    if member is None:
+        return _fail_job(db, job, "no_member",
+                         "池成员不存在（任务创建后成员行被删，不重试）")
+    if member.status != "active":
+        return _fail_job(db, job, "member_inactive",
+                         f"池成员已{member.status}，不执行池转存")
+    binding = (db.query(em.UserStorageBinding)
+               .filter(em.UserStorageBinding.id == member.binding_id)
+               .first())
+    if binding is None or binding.status != "active":
+        return _fail_job(db, job, "no_binding",
+                         "成员 Drive 绑定已失效或不存在（不重试；"
+                         "重绑后下次播放节流窗外可重建）")
+    from backend.emby_server import pool_gate as _pg
+    user_client = UserDriveApiClient(db, binding)
+    member_drive = f"myDrive:{member.user_id}"
+    orig_fid = item.drive_file_id.strip()
+    name = _copy_name_for_item(item)
+    _file_size = _to_int(getattr(item, "size", None))
+    try:
+        if hasattr(user_client, "ensure_folder_cached"):
+            folder_id, _ = user_client.ensure_folder_cached(
+                member_drive, transfer_dir_name())
+        else:
+            folder_id = user_client.ensure_folder(member_drive,
+                                                  transfer_dir_name())
+        copied = user_client.copy_file(member_drive, orig_fid, folder_id,
+                                       name)
+    except _CopyForbidden:
+        return _fail_job(db, job, "copy_forbidden",
+                         "成员令牌无权读取源文件（anyone-reader 未传播"
+                         "或源已撤分享），不重试")
+    except _CopyQuotaExceeded:
+        _pg._bump_pool_usage(db, member.id, quota_hits=1)
+        free, shortfall = _fresh_quota_numbers(
+            user_client, member_drive, _file_size)
+        return _fail_job(db, job, "insufficient_space",
+                         f"成员盘空间不足：文件 {_file_size} 字节，"
+                         f"剩余 {free} 字节，还差 {shortfall} 字节，"
+                         "未静默回落共享")
+    except DriveOAuthError as exc:
+        return _fail_job(db, job, "no_binding",
+                         f"成员 Drive 令牌失效：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    variant_fid = (copied or {}).get("id") or ""
+    if not variant_fid:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(
+                    db, job, Exception("copy 未返回新 file_id"))}
+    # 转存后目录核对（与用户盘 Path A 同口径）：copy 回执只作期望值，
+    # 必须在成员转存目录里按名核到才登记；核不到记 copy_unresolved
+    #（不重试、不回落源文件播放），目录列举失败则按可重试处理。
+    try:
+        verified_fid = _verify_drive_copy_in_dir(
+            user_client, member_drive, folder_id, name, variant_fid)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not verified_fid:
+        return _fail_job(
+            db, job, "copy_unresolved",
+            f"Drive copy 回执 id={variant_fid} 在成员转存目录中核不到"
+            f"（目录 id={folder_id}，文件名={name}），不登记、不回落")
+    variant_fid = verified_fid
+    try:
+        user_client.add_anyone_reader(member_drive, variant_fid)
+    except Exception as exc:
+        # 副本已建但不可播：记 orphan，不删文件，等管理员处置。
+        row = em.TransferVariant(
+            item_id=job.item_id, source_file_id=orig_fid,
+            variant_file_id=variant_fid,
+            variant_drive_id=f"pooldrive:{member.id}",
+            owner_scope="pool", owner_ref=str(member.id), status="orphan",
+            size_bytes=_to_int((copied or {}).get("size"))
+            or _to_int(getattr(item, "size", None)))
+        db.add(row)
+        return _fail_job(db, job, "orphan", str(exc))
+    row = _register_ready_variant(db, job, item, variant_fid,
+                                  f"pooldrive:{member.id}",
+                                  size=(copied or {}).get("size"))
+    _pg._bump_pool_usage(
+        db, member.id,
+        bytes_=(_to_int((copied or {}).get("size"))
+                or _to_int(getattr(item, "size", None)) or 0))
+    db.commit()
     return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
 
 
@@ -6876,13 +7002,14 @@ def run_transfer_job_once(db, job, drive_api):
     #   不能按 provider 直接分发到同 provider 执行器）；
     # - pan115 + user → 115 执行器（drive_id 可为空，靠条目 fid）；
     # - drive + user → Drive 用户盘执行器（Path A/B）；
+    # - drive + pool → Drive 池盘执行器（goal-33 PR-2，成员令牌 Path A）；
     # - drive + source → 下方既有同盘路径（逐字不动）；
     # - 其它组合（pan115 + source、未知 provider）→ 不支持，不重试。
     provider = (getattr(job, "provider", "") or "drive").strip() or "drive"
     owner_scope = (getattr(job, "owner_scope", "") or "source").strip() or "source"
     if (provider not in ("drive", "pan115")
             or (provider == "pan115" and owner_scope != "user")
-            or owner_scope not in ("source", "user")):
+            or owner_scope not in ("source", "user", "pool")):
         job.status = "failed"
         job.error_kind = "unsupported"
         job.error_detail = (
@@ -6960,6 +7087,8 @@ def run_transfer_job_once(db, job, drive_api):
                          PROVIDER_REMOVED_DETAIL)
     if owner_scope == "user":
         return _run_drive_user_job(db, job, item, drive_api)
+    if owner_scope == "pool":
+        return _run_drive_pool_job(db, job, item, drive_api)
     orig_fid = item.drive_file_id.strip()
     try:
         folder_id = drive_api.ensure_folder(job.drive_id, transfer_dir_name())

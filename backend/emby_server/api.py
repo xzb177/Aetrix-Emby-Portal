@@ -6150,8 +6150,12 @@ async def playback_info(
     # 的用户不发放播放地址；浏览、搜索、详情页不受影响（本函数只管下发）。
     # 2026-11-03 改定：无界（CMS）库条目免绑定，判定走 playback_gate
     # 的 binding_required_for_item 单一入口（本地/挂载库原样）。
-    from backend.emby_server import playback_gate as _gate
-    await run_db(_gate.ensure_binding_playback_allowed_for_item, db, user, item)
+    # goal-33 PR-2：改调池判定入口——未绑用户且池 eligible 时同样
+    # 放行到下面的池门禁（播出是 PR-3 的活；本单 serve 态在下面
+    # 映射为 failed 明示）。裁决存 _pi_decision 供下面复用。
+    from backend.emby_server import pool_gate as _pool_gate_pi
+    _pi_decision = await run_db(
+        _pool_gate_pi.ensure_playback_allowed_for_item, db, user, item)
     _pt.mark("auth")
     # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
     try:
@@ -6411,11 +6415,33 @@ async def playback_info(
     _pi_verdict = None
     _pi_gate = None
     if sources:
+        from backend.emby_server import pool_gate as _pool_gate_pi
         from backend.emby_server import transfer_variant as _tv_pi
-        _pi_gate = await run_db(
-            _tv_pi.ensure_user_copy_gate, db, item, user)
+        # 播放门禁分流（goal-33 PR-2）：裁决在函数头已算过
+        # （_pi_decision，含池分流），这里复用、不重复算。已绑用户
+        # 恒走原链（ensure_user_copy_gate 逐字不动）；未绑用户且池
+        # eligible 时走池门禁；CMS 免门禁直接放行。
+        _pool_decision = _pi_decision
+        if _pool_decision.kind == "pool":
+            _pi_gate = await run_db(
+                _pool_gate_pi.ensure_pool_copy_gate, db, item, user)
+            if (_pi_gate or {}).get("verdict") == "serve_pool_copy":
+                # PR-2：播出未接通，serve 态回 failed 明示（池副本
+                # 已就绪、播出下一单接通后才可播放；清单不下发地址）。
+                _pi_gate = dict(_pi_gate, verdict="failed",
+                                reason="pool_serve_not_ready",
+                                detail="池副本已就绪，播出下一单接通后"
+                                       "才可播放")
+        elif _pool_decision.kind == "bound":
+            _pi_gate = await run_db(
+                _tv_pi.ensure_user_copy_gate, db, item, user)
+        else:  # not_applicable / issued_sign（后者本入口不传 request）
+            _pi_gate = {"verdict": "proceed",
+                        "reason": ("no_binding_required"
+                                   if _pool_decision.kind == "not_applicable"
+                                   else "issued_sign")}
         _pi_verdict = (_pi_gate or {}).get("verdict")
-        if _pi_verdict == "preparing":
+        if _pi_verdict == "preparing" and not (_pi_gate or {}).get("pool"):
             # 点播当场先办（2026-10-29 用户亲点）：合格的同
             # provider copy 单在本次请求内当场执行，办成即本
             # 响应按 proceed 放行（清单不再标准备中）；没办
