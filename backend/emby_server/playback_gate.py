@@ -265,12 +265,22 @@ def sign_allowed_for_item(db: Session, user_id, item) -> bool:
     用户只有条目免门禁（CMS 库）时可签——免门禁等价于已过门禁，
     不签则直放详情源的客户端拿不到可用地址。user_id 为空恒 False
     （与既有 ``bool(user_id)`` 前置同口径）。
+
+    goal-33 PR-3（design §4.1）新增池分支：未绑定用户池
+    eligible 且该条目有 ready 池副本时也可签（池播出已接通，
+    签名消费时由流端点现场走池门禁选路到池副本）；不 ready
+    不签。池判定实现在 pool_gate.pool_sign_allowed（本模块不
+    反向持有池逻辑，懒引防循环）。
     """
     if not user_id:
         return False
     if has_active_binding(db, user_id):
         return True
-    return not binding_required_for_item(db, item)
+    if not binding_required_for_item(db, item):
+        return True
+    from backend.emby_server import pool_gate as _pool_gate
+
+    return _pool_gate.pool_sign_allowed(db, user_id, item)
 
 
 def raise_for_transfer_gate(gate_result) -> None:

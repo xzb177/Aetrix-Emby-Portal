@@ -3,8 +3,9 @@
 
 用真实 app + TestClient（沿 tests/test_detail_mediasource_stream_url.py
 的既有形态）：未绑用户 + 池开 → preparing 清单（建池单）；已有
-ready 池副本 → 本单播出未接通，回 failed 明示（不下发任何地址）；
-已绑用户有本人 ready 副本 → 原链路逐字不变；池关 → 未绑用户 403。
+ready 池副本 → PR-3 起 serve 态接通（不再回 failed；真下发形态
+见 tests/test_pool_serve.py）；已绑用户有本人 ready 副本 →
+原链路逐字不变；池关 → 未绑用户 403。
 
 种子数据用独立用户名/库名，模块收尾删净，不污染共享测试库。
 """
@@ -282,13 +283,17 @@ def test_playbackinfo_pool_preparing_strips_urls(client, free_token, seed):
         db.close()
 
 
-def test_playbackinfo_pool_serve_returns_failed(client, free_token, seed):
+def test_playbackinfo_pool_serve_no_longer_failed(
+        client, free_token, seed, monkeypatch):
+    """PR-3 起 serve 态正式接通：不再映射 failed 明示。
+
+    本文件不假造 Drive 授权限/令牌，池播出段两路下发都失败时
+    保留本站 /stream 地址（由取流端点现场裁决）——断言点是
+    「不再 failed、不下发共享原件 fid」；真下发形态见
+    tests/test_pool_serve.py。
+    """
     db = SessionLocal()
     try:
-        # 就绪池副本：variant_drive_id 按成员 id 落（与成员行一致）。
-        # 注意 SessionLocal 为 autoflush=False，add 后必须先 commit 再
-        # 让端点读到（此前无 commit 的 .one() 复查在 preparing 先跑、
-        # 清掉残留行后会 NoResultFound）。
         db.add(em.TransferVariant(
             item_id=seed["movie_id"], source_file_id=ORIG_FID,
             variant_file_id="poolcopy",
@@ -301,11 +306,9 @@ def test_playbackinfo_pool_serve_returns_failed(client, free_token, seed):
     body = _playbackinfo(client, free_token, seed["movie"])
     assert ORIG_FID not in str(body)
     src = body["MediaSources"][0]
-    assert src["TransferStatus"] == "failed"
-    assert src["Readiness"] == "failed"
-    assert "DirectPlayUrl" not in src
-    assert "DirectStreamUrl" not in src
-    # 本单不播出：不建新池单
+    assert src.get("TransferStatus") in (None, "ready")
+    assert src.get("Readiness") != "failed"
+    # serve 不建新池单
     db = SessionLocal()
     try:
         assert (db.query(em.TransferJob)

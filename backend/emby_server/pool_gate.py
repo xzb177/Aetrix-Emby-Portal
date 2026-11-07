@@ -9,9 +9,14 @@ PR-2 进池（本单）：选盘（``pick_pool_member``）、建池单
 （``create_pool_job``）、池转存门禁（``ensure_pool_copy_gate``）。
 PlaybackInfo 已接线到新判定入口（见 api.playback_info）：已绑
 用户恒走原链（``ensure_user_copy_gate`` 逐字不动）；未绑用户且
-池 eligible 时走池门禁。播出（serve 态）是 PR-3 的活：本单门禁
-能判出 ``serve_pool_copy``，但调用方须把它映射为 failed 明示，
-池副本还播不出去是预期状态。
+池 eligible 时走池门禁。
+
+PR-3 播出（本单）：serve 态正式接通——PlaybackInfo / video_stream
+按池门禁确认的变体行下发池副本（见 api 的池播出段）；本模块补
+记账写口（``note_pool_play_served``：play_starts 累加 + 变体
+last_played_at + H1 原始事件 pool_play_events）、成员令牌口
+（``pool_member_access_token``）与 sign 轨池判定
+（``pool_sign_allowed``）。
 
 硬闸：池总开关关时一切按池不存在（未绑用户仍走既有门禁原 403，
 回归测试 test_pool_foundation
@@ -321,7 +326,7 @@ def _member_daily_usage(db: Session, member_id: int):
 
 
 def _bump_pool_usage(db: Session, member_id: int, *, jobs=0, bytes_=0,
-                     quota_hits=0):
+                     quota_hits=0, play_starts=0):
     """成员当日用量累加（get-or-create，不 commit，调用方提交）。"""
     today = datetime.now().date()
     row = (db.query(em.PoolUsageDaily)
@@ -335,6 +340,7 @@ def _bump_pool_usage(db: Session, member_id: int, *, jobs=0, bytes_=0,
     row.transfer_jobs = int(row.transfer_jobs or 0) + jobs
     row.transfer_bytes = int(row.transfer_bytes or 0) + bytes_
     row.quota_hits = int(row.quota_hits or 0) + quota_hits
+    row.play_starts = int(row.play_starts or 0) + play_starts
     return row
 
 
@@ -595,32 +601,14 @@ def create_pool_job(db: Session, item, *, trigger="playback",
 # ---------------------------------------------------------------- 池转存门禁（PR-2）
 
 
-def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
-                          quota_fn=None) -> dict:
-    """池转存门禁（PR-2）：未绑用户的池副本判定（design §4.2/§6.2）。
+def _pick_ready_pool_variant(db: Session, item_id, *, quota_fn=None):
+    """挑一份可播的 ready 池副本：返回 (变体行, 成员行) 或 None。
 
-    调用方保证：用户未绑定、池 eligible（见
-    ensure_playback_allowed_for_item）。本函数只做池内判定：
-    ① 软件授权前置（与 ensure_user_copy_gate 同款，不可绕过）；
-    ② 池关 → failed/pool_disabled（防御口径，正常不可达）；
-    ③ 有 ready 池副本（stale_count==0、成员 active、未熔断）→
-       serve_pool_copy（多副本按 §6.1 打分挑最健康一份；播出由
-       PR-3 接，本单调用方须把 serve 态映射为 failed 明示）；
-    ④ 在途池单 → preparing/job_in_flight；
-    ⑤ 最新池单失败 → retriable 预算内重触发 / 终态透传原因 /
-       未归类 preparing/throttled（沿门禁既有口径）；
-    ⑥ done 单无 ready 副本 → 预算内重建 job_rebuilt；
-    ⑦ 无在途/失败 → create_pool_job → preparing/job_created，
-       限额命中 → preparing/throttled。
-    返回 dict 恒带 "pool": True（调用方据此跳过用户盘当场先办）。
-    任何返回都不含共享原件 fid 与 SA 令牌。
+    判定与 ensure_pool_copy_gate 的 serve 分支同一份：变体行
+    status=ready 且 stale_count=0、成员 active 且未在 breaker
+    冷却内；多份时按 §6.1 播出打分（_serve_score）挑最健康一份。
+    纯读、无副作用。
     """
-    _gate._ensure_license_playback_allowed(db)
-    if not pool_enabled(db):
-        return {"verdict": "failed", "reason": "pool_disabled",
-                "detail": "公共贡献池未开启", "pool": True}
-    item_id = getattr(item, "id", None)
-    # ③ 就绪池副本（stale_count==0、成员 active、未熔断）。
     ready_rows = (db.query(em.TransferVariant)
                   .filter(em.TransferVariant.item_id == item_id,
                           em.TransferVariant.owner_scope == "pool",
@@ -645,8 +633,52 @@ def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
         if score > best_score:
             best = (row, member)
             best_score = score
-    if best is not None:
-        row, member = best
+    return best
+
+
+def pool_serve_candidate(db: Session, item):
+    """该条目当下可播的池副本候选：(变体行, 成员 id) 或 None。
+
+    供变体清单信号（api._pool_copy_available）与 sign 轨判定
+    （pool_sign_allowed）复核变体行——信号与行双对上才算数。
+    """
+    picked = _pick_ready_pool_variant(db, getattr(item, "id", None))
+    if picked is None:
+        return None
+    row, member = picked
+    return row, int(member.id)
+
+
+def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
+                          quota_fn=None) -> dict:
+    """池转存门禁（PR-2）：未绑用户的池副本判定（design §4.2/§6.2）。
+
+    调用方保证：用户未绑定、池 eligible（见
+    ensure_playback_allowed_for_item）。本函数只做池内判定：
+    ① 软件授权前置（与 ensure_user_copy_gate 同款，不可绕过）；
+    ② 池关 → failed/pool_disabled（防御口径，正常不可达）；
+    ③ 有 ready 池副本（stale_count==0、成员 active、未熔断）→
+       serve_pool_copy（多副本按 §6.1 打分挑最健康一份；播出由
+       PR-3 接通：PlaybackInfo / video_stream 按池副本下发，
+       serve 态不再映射 failed）；
+    ④ 在途池单 → preparing/job_in_flight；
+    ⑤ 最新池单失败 → retriable 预算内重触发 / 终态透传原因 /
+       未归类 preparing/throttled（沿门禁既有口径）；
+    ⑥ done 单无 ready 副本 → 预算内重建 job_rebuilt；
+    ⑦ 无在途/失败 → create_pool_job → preparing/job_created，
+       限额命中 → preparing/throttled。
+    返回 dict 恒带 "pool": True（调用方据此跳过用户盘当场先办）。
+    任何返回都不含共享原件 fid 与 SA 令牌。
+    """
+    _gate._ensure_license_playback_allowed(db)
+    if not pool_enabled(db):
+        return {"verdict": "failed", "reason": "pool_disabled",
+                "detail": "公共贡献池未开启", "pool": True}
+    item_id = getattr(item, "id", None)
+    # ③ 就绪池副本（stale_count==0、成员 active、未熔断）。
+    picked = _pick_ready_pool_variant(db, item_id, quota_fn=quota_fn)
+    if picked is not None:
+        row, member = picked
         return {"verdict": "serve_pool_copy",
                 "reason": "has_ready_variant", "variant": row,
                 "member_id": int(member.id), "pool": True}
@@ -718,3 +750,111 @@ def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
                 "detail": str(exc) or None, "pool": True}
     return {"verdict": "preparing", "reason": "job_created",
             "job_id": new_job.id, "pool": True}
+
+
+# ---------------------------------------------------------------- 播出记账与令牌口（PR-3）
+
+
+def note_pool_play_served(member_id, variant_id, item_id,
+                          viewer_user_id) -> None:
+    """池播出成功下发记账（design §5.3 + §11.5 H1）。
+
+    与 play_starts 累加同点调用（serve_pool_copy 每次成功下发/
+    302 时）：一把写三样——``pool_usage_daily.play_starts`` +1、
+    变体行 ``last_played_at`` 更新、``pool_play_events`` 落一条
+    原始事件。独立会话写、失败静默（沿 PlayStartEvent 纪律）：
+    记账失败绝不打挂已经下发成功的播放，本函数永不抛异常，
+    也不进起播热路径的同步事务（调用方经 run_db 或直接调都行，
+    内部另开会话）。事件只如实记录，不做防刷判定（PR-6 纯函数）。
+    """
+    try:
+        mid = int(member_id)
+        vid = int(variant_id)
+        iid = int(item_id)
+        uid = int(viewer_user_id)
+    except (TypeError, ValueError):
+        return
+    db = None
+    try:
+        from backend.database import SessionLocal
+
+        db = SessionLocal()
+        _bump_pool_usage(db, mid, play_starts=1)
+        row = (db.query(em.TransferVariant)
+               .filter(em.TransferVariant.id == vid).first())
+        if row is not None:
+            row.last_played_at = datetime.now()
+        db.add(em.PoolPlayEvent(
+            member_id=mid, variant_id=vid, item_id=iid,
+            viewer_user_id=uid, created_at=datetime.now()))
+        db.commit()
+    except Exception:  # noqa: BLE001 — 记账失败静默，不挡播放
+        logger.warning(
+            "池播出记账失败 member=%s variant=%s item=%s viewer=%s",
+            member_id, variant_id, item_id, viewer_user_id,
+            exc_info=True)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def pool_member_access_token(db: Session, member_id) -> str:
+    """成员绑定令牌（池播出回落/中继专用口）。
+
+    成员行 → 绑定行 → 绑定级令牌口（drive_oauth
+    .get_binding_drive_access_token，与 BYOS 中继同源）。只许取
+    成员自己绑定的令牌：成员不存在、绑定缺失/非 active、令牌取
+    不到一律回 ""，永不抛异常，绝不回落到 SA 令牌或观众令牌。
+    """
+    try:
+        member = (db.query(em.PoolMember)
+                  .filter(em.PoolMember.id == int(member_id)).first())
+        if member is None:
+            return ""
+        binding_id = getattr(member, "binding_id", None)
+        if binding_id is None:
+            return ""
+        binding = (db.query(em.UserStorageBinding)
+                   .filter(em.UserStorageBinding.id == binding_id)
+                   .first())
+        if binding is None or binding.status != "active":
+            return ""
+        from backend.emby_server import drive_oauth as _do
+
+        return _do.get_binding_drive_access_token(db, binding) or ""
+    except Exception:  # noqa: BLE001 — 令牌取不到按无令牌处理
+        logger.warning("池成员令牌读取失败 member=%s",
+                       member_id, exc_info=True)
+        return ""
+
+
+def pool_sign_allowed(db: Session, user_id, item) -> bool:
+    """sign 轨池判定（design §4.1）：未绑用户可签名的池条件。
+
+    池 eligible（人群判定要用户行，按 id 取）且该条目有 ready
+    池副本才可签；不 ready 不签——客户端直打流端点时由流端点
+    现场走池门禁回 409 准备中。异常一律 False（不签是安全侧）。
+    """
+    try:
+        if user_id is None:
+            return False
+        from backend import models as _web_models
+
+        user = (db.query(_web_models.WebUser)
+                .filter(_web_models.WebUser.id == int(user_id)).first())
+        if user is None:
+            return False
+        if pool_eligible(db, user, item) != "eligible":
+            return False
+        return pool_serve_candidate(db, item) is not None
+    except Exception:  # noqa: BLE001 — 判定异常不许签
+        logger.warning("池 sign 判定异常，按不可签处理", exc_info=True)
+        return False
