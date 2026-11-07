@@ -67,6 +67,9 @@ def _user(db, tg, name, points=1000, staff=False):
     row = models.WebUser(
         username=name, password_hash="x", telegram_id=tg,
         points=points, vitality=14, is_staff=staff, is_active=True,
+        # 生产 staff 必有角色；/rain 是写操作，测试管理员默认 operator
+        # （角色门用例见 tests/test_tg_bot_admin_roles.py）。
+        admin_role="operator" if staff else None,
     )
     db.add(row)
     db.commit()

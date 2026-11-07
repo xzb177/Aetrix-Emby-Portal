@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 
 from backend import models
-from backend.tg_bot import layout, policy, sender
+from backend.tg_bot import layout, policy, role_gate, sender
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +232,11 @@ def execute_cancel_welfare(db, admin, result: ReconcileResult, checker=None):
     返回 (done, skipped)：done 为实际取消的 WebUser 列表，
     skipped 为 (WebUser, 原因) 列表。整个批次一次提交。
     """
+    # 角色门（执行层）：只读审计角色只许出报告、不许处置——全部目标
+    # 记跳过原因、零落账，调用方回执如实呈现。
+    if role_gate.readonly_refusal(admin):
+        return [], [(t, "只读审计角色只能查看，不能修改")
+                    for t in result.welfare_targets]
     if checker is None:
         checker = sender.get_chat_member
     done, skipped = [], []

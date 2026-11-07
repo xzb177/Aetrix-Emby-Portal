@@ -266,10 +266,17 @@ def _intercept_channel_mask(db, cfg, msg) -> bool:
         return False
     if policy.is_channel_whitelisted(cfg, sender_chat.get("id")):
         return False
+    # 删除失败必须留痕（warning）：机器人不是群管理员/缺删消息权时
+    # 马甲消息删不掉，此前返回值被忽略、异常只记 debug，线上无从发现；
+    # 管理面板另有「群权限自检」可主动核对。
     try:
-        sender.delete_message(db, chat_id, msg.get("message_id"))
+        _del_ok, _del_err = sender.delete_message(
+            db, chat_id, msg.get("message_id"))
+        if not _del_ok:
+            logger.warning(
+                "删除频道马甲消息失败 chat_id=%s: %s", chat_id, _del_err)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("删除频道马甲消息失败（忽略）: %s", exc)
+        logger.warning("删除频道马甲消息失败 chat_id=%s: %s", chat_id, exc)
     logger.info("channel mask message intercepted: chat=%s sender_chat=%s",
                 chat_id, sender_chat.get("id"))
     if _group_allow(chat_id, policy.group_rate_limit(cfg)):

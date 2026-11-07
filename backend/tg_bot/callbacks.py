@@ -216,9 +216,76 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         text = handlers.handle_admin(db, tg_user, chat_id, "")
         admin_user = resolve(db, int(tg_id))
         if admin_user is not None and bool(getattr(admin_user, "is_staff", False)):
-            markup = handlers.admin_markup()
+            markup = handlers.admin_markup(admin_user)
         else:
             markup = handlers.back_markup()
+    elif action in ("admin_whois", "admin_reconcile", "admin_rankpush",
+                    "admin_rankpush_day", "admin_rankpush_week",
+                    "admin_rain_info", "admin_botperms"):
+        # 管理面板子页：每页重新验 is_staff（面板按钮裁剪不是安全边界）；
+        # 写动作的角色门在各 handler/执行层（viewer 旧按钮点到也会被拒）。
+        admin_user = resolve(db, int(tg_id))
+        if admin_user is None:
+            text = handlers._bind_guide_text()
+            markup = handlers.back_markup()
+        elif not bool(getattr(admin_user, "is_staff", False)):
+            text = layout.card(
+                layout.title("管理面板"),
+                [layout.row("🔒", "访问状态", "仅管理员可用")])
+            markup = handlers.back_markup()
+        elif action == "admin_whois":
+            text = layout.card(layout.title("查人"), [
+                layout.row("🔍", "私聊用法",
+                           "/whois 站内名 / TG 号 / IP / 设备，定位到人出管理面板"),
+                layout.row("👥", "群里用法",
+                           "回复某人的消息发送 /whois，出精简卡（自动删除）"),
+                layout.row("🎛️", "面板动作",
+                           "查到人后可封禁/解封、赠送能量/公益/查看凭证；"
+                           "只读审计角色仅查看"),
+            ])
+            markup = handlers.admin_back_markup()
+        elif action == "admin_reconcile":
+            # 等价于私聊 /reconcile：复用其报告卡与原有按钮 markup。
+            reply = handlers.handle_reconcile(db, tg_user, chat_id, "")
+            if isinstance(reply, tuple):
+                text, markup = reply
+                if markup is None:
+                    markup = handlers.admin_back_markup()
+            else:
+                text, markup = reply, handlers.admin_back_markup()
+        elif action == "admin_rankpush":
+            text = layout.card(layout.title("推观影榜"), [
+                layout.row("📣", "推送目标", "交流群（海报＋榜单奖励）"),
+                layout.row("👇", "选择", "点下方按钮立即推送对应榜单"),
+            ])
+            markup = {"inline_keyboard": [
+                [
+                    {"text": "📅 今日榜",
+                     "callback_data": "menu:admin_rankpush_day"},
+                    {"text": "🗓️ 本周榜",
+                     "callback_data": "menu:admin_rankpush_week"},
+                ],
+                [{"text": "⬅️ 返回管理面板", "callback_data": "menu:admin"}],
+                layout.home_row(),
+            ]}
+        elif action in ("admin_rankpush_day", "admin_rankpush_week"):
+            text = handlers.handle_rankpush(
+                db, tg_user, chat_id,
+                "week" if action == "admin_rankpush_week" else "")
+            markup = handlers.admin_back_markup()
+        elif action == "admin_rain_info":
+            text = layout.card(layout.title("红包雨"), [
+                layout.row("🌧️", "玩法", "系统出钱，群里人人可抢，金额份数读后台配置"),
+                layout.row("🚀", "发起方式",
+                           "去交流群发送 /rain，或在群里游戏菜单点红包雨（仅管理员）"),
+                layout.row("🔒", "私聊限制", "红包雨只能在群里发起，私聊面板不能直接发"),
+            ])
+            markup = handlers.admin_back_markup()
+        else:  # admin_botperms
+            from . import bot_perms
+
+            text = bot_perms.render_card(db)
+            markup = handlers.admin_back_markup()
     elif action == "renewcode":
         text = handlers.handle_redeem(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
