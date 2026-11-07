@@ -31,7 +31,8 @@
           <p>③ 绑完怎么验：去播一集，看是不是走你自己的盘。</p>
         </div>
         <template v-else>
-          <div v-for="b in driveBindings" :key="b.id" class="dev-row">
+          <template v-for="b in driveBindings" :key="b.id">
+          <div class="dev-row">
             <div class="dev-main">
               <span class="dev-name">{{ b.account_label }}</span>
               <span class="dev-meta">
@@ -71,6 +72,76 @@
               {{ unbindingId === b.id ? '解绑中' : (pendingUnbind === b.id ? '确认解绑' : '解绑') }}
             </button>
           </div>
+          <!-- 公共贡献池（goal-33 PR-4）：池总开关关且本人无成员/候选行时整块不渲染 -->
+          <div v-if="poolEntryFor(b.id)" class="pool-block">
+            <template v-if="!poolEntryFor(b.id)!.member">
+              <div class="pool-line">
+                <span class="pool-text">把这个盘贡献到公共池：别人能看你盘里的公共副本，站里只按上限用盘，你随时能退出。</span>
+                <button
+                  v-if="poolEntryFor(b.id)!.can_apply"
+                  type="button"
+                  class="v4-mini-btn"
+                  :disabled="poolActing === b.id"
+                  @click="handlePoolApply(b.id)"
+                >
+                  {{ poolActing === b.id ? '提交中' : (contribution?.join_mode === 'open' ? '开启贡献' : '申请加入公共池') }}
+                </button>
+                <span v-else class="pool-note">{{ poolEntryFor(b.id)!.apply_block_reason }}</span>
+              </div>
+              <button type="button" class="pool-faq-toggle" @click="poolFaqOpen = !poolFaqOpen">
+                {{ poolFaqOpen ? '收起入池须知' : '入池须知' }}
+              </button>
+              <div v-if="poolFaqOpen" class="pool-faq">
+                <p>盘里会出现一个公共副本文件夹，文件名就是片名，别的观众能看到片名、看不到你是谁；站里不碰你盘里别的文件；退出后放在你盘里的公共副本会被删除，正在靠这些副本看片的人会回到“准备中”等其它盘接上。你的绑定本身不会被解绑。</p>
+              </div>
+            </template>
+            <div v-else-if="poolEntryFor(b.id)!.member!.status === 'pending'" class="pool-line">
+              <span class="dev-badge warn">审核中</span>
+              <span class="pool-text">入池申请已提交，等管理员通过。</span>
+            </div>
+            <div v-else-if="poolEntryFor(b.id)!.member!.status === 'active'" class="pool-line">
+              <span class="dev-badge ok">已加入公共池</span>
+              <span class="pool-text">
+                池占用 {{ fmtPoolBytes(poolEntryFor(b.id)!.member!.copies_bytes) }} · 副本 {{ poolEntryFor(b.id)!.member!.copies_count }} 份 · 今日被起播 {{ poolEntryFor(b.id)!.member!.today_play_starts }} 次
+              </span>
+              <button
+                type="button"
+                class="dev-remove"
+                :class="{ confirming: pendingPoolWithdraw === poolEntryFor(b.id)!.member!.id }"
+                :disabled="poolActing === b.id"
+                @click="handlePoolWithdraw(b.id)"
+              >
+                {{ pendingPoolWithdraw === poolEntryFor(b.id)!.member!.id ? '确认退出（副本会被删除）' : '退出贡献' }}
+              </button>
+            </div>
+            <div v-else-if="poolEntryFor(b.id)!.member!.status === 'suspended'" class="pool-line">
+              <span class="dev-badge off">已暂停</span>
+              <span class="pool-text">{{ poolEntryFor(b.id)!.member!.suspended_reason === 'binding_invalid' ? '绑定失效连带暂停，恢复绑定后联系管理员恢复。' : '这个盘已被暂停，副本暂停下发。' }}</span>
+              <button
+                type="button"
+                class="dev-remove"
+                :class="{ confirming: pendingPoolWithdraw === poolEntryFor(b.id)!.member!.id }"
+                :disabled="poolActing === b.id"
+                @click="handlePoolWithdraw(b.id)"
+              >
+                {{ pendingPoolWithdraw === poolEntryFor(b.id)!.member!.id ? '确认退出（副本会被删除）' : '退出贡献' }}
+              </button>
+            </div>
+            <div v-else class="pool-line">
+              <span class="pool-text">{{ poolTerminalText(poolEntryFor(b.id)!.member!.status) }}</span>
+              <button
+                v-if="poolEntryFor(b.id)!.can_apply"
+                type="button"
+                class="v4-mini-btn"
+                :disabled="poolActing === b.id"
+                @click="handlePoolApply(b.id)"
+              >
+                {{ poolActing === b.id ? '提交中' : '重新申请加入' }}
+              </button>
+              <span v-else-if="poolEntryFor(b.id)!.apply_block_reason" class="pool-note">{{ poolEntryFor(b.id)!.apply_block_reason }}</span>
+            </div>
+          </div>
+          </template>
           <p class="dev-tip">绑好了，下一步：去播一集试试，走的就是你自己的盘；播不动先点“重新验证”，还不行就解绑重绑。</p>
           <p v-if="driveBindings.some((b) => b.needs_rebind)" class="dev-tip">有谷歌盘还是旧的只读授权，转存到你盘里会失败：点那一行旁边的“重新授权”，去 Google 同意新增的写权限（只覆盖本站创建的文件），同意后转存失败的任务会自动重跑。</p>
         </template>
@@ -150,8 +221,11 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { HardDrive, Layers, RefreshCw } from 'lucide-vue-next'
 import PcEntryRow from './PcEntryRow.vue'
 import {
+  poolContributionApi,
   storageBindingApi,
   type DriveOAuth2EntryStatus,
+  type PoolContributionBinding,
+  type PoolContributionResponse,
   type StorageBinding,
 } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
@@ -184,6 +258,93 @@ const pendingUnbind = ref<number | null>(null)
 const pendingOAuthReturn = ref(false)
 const driveExpanded = ref(false)
 const removedExpanded = ref(false)
+
+// 公共贡献池（PR-4）：状态随绑定列表一起拉；拿不到就整块不渲染，
+// 不装成“没加入”。
+const contribution = ref<PoolContributionResponse | null>(null)
+const poolActing = ref<number | null>(null)
+const pendingPoolWithdraw = ref<number | null>(null)
+const poolFaqOpen = ref(false)
+
+async function loadContribution() {
+  try {
+    contribution.value = await poolContributionApi.status()
+  } catch {
+    contribution.value = null
+  }
+}
+
+function poolEntryFor(bindingId: number): PoolContributionBinding | null {
+  const c = contribution.value
+  if (!c) return null
+  const entry = c.bindings.find((e) => e.binding_id === bindingId) || null
+  if (!entry) return null
+  // 存在感口径：池开着、或本人已有成员行/候选资格时才渲染
+  if (!c.pool_enabled && !entry.member && !c.candidate) return null
+  return entry
+}
+
+function fmtPoolBytes(n: number): string {
+  if (!n) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+function poolTerminalText(status: string): string {
+  if (status === 'exited') return '已退出公共池。'
+  if (status === 'rejected') return '上次申请被拒绝，可以重新申请。'
+  if (status === 'ejected') return '这个盘已被管理员清退。'
+  return ''
+}
+
+async function handlePoolApply(bindingId: number) {
+  if (poolActing.value !== null) return
+  poolActing.value = bindingId
+  try {
+    const res = await poolContributionApi.apply(bindingId)
+    toast.success(
+      res.member.status === 'active' ? '已加入公共池' : '申请已提交，等管理员通过')
+    await loadContribution()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'saveFailed'))
+  } finally {
+    poolActing.value = null
+  }
+}
+
+async function handlePoolWithdraw(bindingId: number) {
+  // 两步确认（照解绑口径：4 秒内未确认自动收回）；后果在按钮文案里
+  // 写清：退出后放在盘里的公共副本会被删除，绑定本身不解绑。
+  const entry = poolEntryFor(bindingId)
+  const member = entry?.member
+  if (!member || poolActing.value !== null) return
+  if (pendingPoolWithdraw.value !== member.id) {
+    pendingPoolWithdraw.value = member.id
+    window.setTimeout(() => {
+      if (pendingPoolWithdraw.value === member.id) {
+        pendingPoolWithdraw.value = null
+      }
+    }, 4000)
+    return
+  }
+  pendingPoolWithdraw.value = null
+  poolActing.value = bindingId
+  try {
+    await poolContributionApi.withdraw(member.id)
+    toast.success('已退出公共池')
+    await loadContribution()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'saveFailed'))
+  } finally {
+    poolActing.value = null
+  }
+}
 
 function hasProvider(provider: string) {
   return availableProviders.value.includes(provider)
@@ -415,6 +576,7 @@ const summaryMeta = computed(() => {
 onMounted(() => {
   void loadProviders()
   void loadDriveBindings()
+  void loadContribution()
   window.addEventListener('focus', onOAuthReturn)
   document.addEventListener('visibilitychange', onVisibilityReturn)
 })
@@ -578,4 +740,31 @@ defineExpose({
 .acct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .v4-empty p { margin: 0 0 8px; text-align: left; }
 .v4-empty p:last-child { margin-bottom: 0; }
+.dev-badge.warn { background: var(--au-warning-soft, #fdf3d7); color: var(--amber, #9a6b0f); }
+/* 公共贡献池块（PR-4）：挂在每个绑定行下方 */
+.pool-block {
+  margin: 2px 0 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+.pool-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pool-text { flex: 1; min-width: 200px; font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+.pool-note { font-size: 12.5px; color: var(--ink-3); }
+.pool-faq-toggle {
+  margin-top: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 12.5px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.pool-faq { margin-top: 6px; font-size: 12.5px; color: var(--ink-3); line-height: 1.6; }
+.pool-faq p { margin: 0; }
 </style>

@@ -400,6 +400,16 @@ def _mark_failed(db: Session, binding: em.UserStorageBinding,
     cred.last_error_kind = kind
     logger.warning("绑定 #%s（用户 %s，%s）标记失败：%s",
                    binding.id, binding.user_id, binding.provider, kind)
+    # 公共池连带（goal-33 PR-4，design §2.4）：该绑定若是池成员，
+    # 成员自动 suspended(binding_invalid) 并落 H2 流水。drive_oauth
+    # 的刷新失败落态也经本函数，全站落失效态只此一口、不另挂。
+    # 连带失败绝不阻塞绑定落态；不自提交，骑本事务。
+    try:
+        from backend.emby_server import pool_gate as _pg
+        _pg.on_binding_failed(db, binding)
+    except Exception:  # noqa: BLE001 — 池连带失败绝不阻塞落态
+        logger.warning("池成员绑定失效连带失败 binding=%s",
+                       binding.id, exc_info=True)
 
 
 def create_binding(db: Session, user_id: int, provider: str,
@@ -499,6 +509,19 @@ def delete_binding(db: Session, user_id: int, binding_id: int,
         .filter(em.MountCredential.id == binding.credential_id)
         .first()
     )
+    # 公共池连带（goal-33 PR-4，design §6.4）：该绑定若是池成员，
+    # 先走退出清理（成员 → exited + 池副本删除/标 released），
+    # 赶在下面收回分享与吊销令牌之前（令牌还活着才删得动池文件）。
+    # 只动池 scope 的成员/副本行，用户副本的「解绑不删副本」政策
+    # 与本钩子无关（钩子按 binding_id 查 pool_members，无成员即
+    # 无操作）。连带失败绝不阻塞解绑；不自提交，骑本事务末尾的
+    # commit 一并落库。
+    try:
+        from backend.emby_server import pool_gate as _pg
+        _pg.on_binding_deleted(db, binding)
+    except Exception:  # noqa: BLE001 — 池退出清理失败绝不阻塞解绑
+        logger.warning("池成员解绑连带清理失败 binding=%s",
+                       binding_id, exc_info=True)
     try:
         from backend.emby_server import transfer_variant as _tv
         _tv.revoke_user_copy_sharing(db, user_id, binding=binding)

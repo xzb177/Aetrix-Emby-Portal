@@ -468,6 +468,62 @@ export const storageBindingApi = {
       `/api/user/emby/storage-bindings/${bindingId}`),
 }
 
+// ==================== 公共贡献池（goal-33 PR-4） ====================
+// 后端口径（portal.py user_emby_router，/api/user/emby/pool/*）：
+// GET /pool/contribution → 我的每个绑定一行的贡献状态（成员状态、
+// 能否申请、不能申请的人话原因）+ 候选资格 + 池开关/准入方式；
+// POST /pool/contribution/apply { binding_id }、/withdraw { member_id }。
+// 序列化绝不含凭据材料；前端只按状态渲染，不猜后端没给的数。
+
+export interface PoolContributionMember {
+  id: number
+  binding_id: number | null
+  provider: string | null
+  status: string
+  suspended_reason: string | null
+  violation_flagged: boolean
+  capacity_cap_bytes: number | null
+  joined_at: string | null
+  status_changed_at: string | null
+  copies_count: number
+  copies_bytes: number
+  today_play_starts: number
+  today_transfer_bytes: number
+  today_transfer_jobs: number
+  today_quota_hits: number
+}
+
+export interface PoolContributionBinding {
+  binding_id: number
+  account_label: string
+  provider: string
+  binding_status: string
+  member: PoolContributionMember | null
+  can_apply: boolean
+  apply_block_reason: string | null
+}
+
+export interface PoolContributionResponse {
+  pool_enabled: boolean
+  join_mode: 'apply_review' | 'admin_assign' | 'open'
+  candidate: PoolContributionMember | null
+  bindings: PoolContributionBinding[]
+}
+
+export const poolContributionApi = {
+  status: () =>
+    api.get<never, PoolContributionResponse>(
+      '/api/user/emby/pool/contribution'),
+  apply: (bindingId: number) =>
+    api.post<never, { member: PoolContributionMember }>(
+      '/api/user/emby/pool/contribution/apply',
+      { binding_id: bindingId }),
+  withdraw: (memberId: number) =>
+    api.post<never, { member: PoolContributionMember }>(
+      '/api/user/emby/pool/contribution/withdraw',
+      { member_id: memberId }),
+}
+
 // ==================== 追剧订阅（全自动追剧，账号页） ====================
 // 后端口径（backend/api/series_follow_api.py，前缀 /api/user/series-follows）：
 // GET → { follows: [...] }；POST { series_item_id } → 订阅结果；
