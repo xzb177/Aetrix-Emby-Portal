@@ -261,6 +261,117 @@ def test_callback_claim_toasts_and_collapses_when_finished(db, monkeypatch):
     assert db.query(models.RedPacketRainLive).count() == 0
 
 
+def _wire_feedback_capture(monkeypatch):
+    """录下群消息发送与自毁调度，分开返回：反馈消息 (chat_id, text, msg_id) 与
+    自毁记录 (chat_id, msg_id, delay)。反馈经 send_message_ex 发、自毁经
+    ephemeral.schedule_delete 到期删；面板编辑走 edit_message_text 不是新消息。"""
+    sent = []
+    deleted = []
+
+    def fake_send(db_, chat_id, text, reply_markup=None):
+        mid = 700 + len(sent)
+        sent.append({"chat_id": chat_id, "text": text, "msg_id": mid})
+        return True, None, mid
+
+    monkeypatch.setattr(sender, "send_message_ex", fake_send)
+    monkeypatch.setattr(
+        ephemeral, "schedule_delete",
+        lambda chat_id, message_id, delay: deleted.append((chat_id, message_id, delay)) or True,
+    )
+    return sent, deleted
+
+
+def test_rain_grab_success_sends_group_feedback(db, monkeypatch):
+    """红包雨抢成功：群里补发 1 条反馈（谁抢到多少、剩余几份），反馈按默认
+    延时自毁，雨面板消息永不被调度自毁（用户口径：抢了有反馈）。"""
+    _enable(db, bot_rain_total="100", bot_rain_count="10", bot_rain_interval_sec="0")
+    admin = _user(db, TG_ADMIN, "admin", staff=True)
+    _user(db, TG_USER, "bob", points=0)
+    started = rain.start_rain(db, admin, GROUP, idempotency_key="tg:fb-rain")
+    rain.attach_panel(db, started["rain"].id, 8)
+    answers = []
+    monkeypatch.setattr(
+        sender, "answer_callback_query",
+        lambda *a, **kw: answers.append(a[3] if len(a) > 3 else kw.get("text") or "") or (True, None),
+    )
+    monkeypatch.setattr(sender, "edit_message_text", lambda *a, **kw: (True, None))
+    sent, deleted = _wire_feedback_capture(monkeypatch)
+    callbacks.handle_callback(db, {
+        "id": "cq-fb-rain",
+        "data": f"rain_grab:{started['rain'].id}",
+        "from": {"id": TG_USER, "first_name": "Bob"},
+        "message": {"message_id": 8, "chat": {"id": GROUP, "type": "supergroup"}},
+    })
+    assert answers and answers[-1].startswith("抢到 ")
+    amount = int(answers[-1].split(" ")[1])
+    assert len(sent) == 1
+    fb = sent[0]
+    assert fb["chat_id"] == GROUP
+    assert "<b>bob</b>" in fb["text"] and f"<b>{amount} 能量</b>" in fb["text"]
+    assert "还剩 <b>9 个</b>" in fb["text"]
+    assert deleted == [(GROUP, fb["msg_id"], 30)]
+    assert (GROUP, 8, 30) not in deleted
+
+
+def test_system_packet_claim_via_panel_button_sends_group_feedback(db, monkeypatch):
+    """走普通 claim 按钮领系统出资红包（红包雨的包）：同样补发 1 条群反馈。"""
+    _enable(db, bot_rain_total="100", bot_rain_count="10", bot_rain_interval_sec="0")
+    admin = _user(db, TG_ADMIN, "admin", staff=True)
+    _user(db, TG_USER, "bob", points=0)
+    started = rain.start_rain(db, admin, GROUP, idempotency_key="tg:fb-sys")
+    packet_id = started["rain"].packet_id
+    answers = []
+    monkeypatch.setattr(
+        sender, "answer_callback_query",
+        lambda db_, cq_id, text=None, show_alert=False: answers.append(text or "") or (True, None),
+    )
+    monkeypatch.setattr(sender, "edit_message_text", lambda *a, **kw: (True, None))
+    sent, deleted = _wire_feedback_capture(monkeypatch)
+    callbacks.handle_callback(db, {
+        "id": "cq-fb-sys",
+        "data": f"redpacket_claim:{packet_id}",
+        "from": {"id": TG_USER, "first_name": "Bob"},
+        "message": {"message_id": 9, "chat": {"id": GROUP, "type": "supergroup"}},
+    })
+    assert answers and answers[-1].startswith("🧧 恭喜抢到 ")
+    amount = int(re.search(r"(\d+)", answers[-1]).group(1))
+    assert len(sent) == 1
+    fb = sent[0]
+    assert fb["chat_id"] == GROUP
+    assert "<b>bob</b>" in fb["text"] and f"<b>{amount} 能量</b>" in fb["text"]
+    assert "还剩 <b>9 个</b>" in fb["text"]
+    assert deleted == [(GROUP, fb["msg_id"], 30)]
+
+
+def test_rain_grab_not_open_sends_no_group_feedback(db, monkeypatch):
+    """失败路径（下一份还没落下）：只有 alert 弹窗，0 条群反馈。"""
+    _enable(db, bot_rain_total="20", bot_rain_count="2", bot_rain_interval_sec="3600")
+    admin = _user(db, TG_ADMIN, "admin", staff=True, points=50)
+    _user(db, TG_USER, "bob", points=0)
+    started = rain.start_rain(db, admin, GROUP, idempotency_key="tg:fb-gate")
+    packet_id = started["rain"].packet_id
+    # 第一份先被管理员领走，第二份要等间隔走完才落下
+    welfare_redpacket.claim_packet(db, admin, packet_id)
+    answers = []
+    alerts = []
+    monkeypatch.setattr(
+        sender, "answer_callback_query",
+        lambda *a, **kw: (
+            answers.append(kw.get("text") or ""),
+            alerts.append(bool(kw.get("show_alert"))),
+        )[-1] or (True, None),
+    )
+    sent, deleted = _wire_feedback_capture(monkeypatch)
+    callbacks.handle_callback(db, {
+        "id": "cq-fb-gate",
+        "data": f"rain_grab:{started['rain'].id}",
+        "from": {"id": TG_USER, "first_name": "Bob"},
+        "message": {"message_id": 8, "chat": {"id": GROUP, "type": "supergroup"}},
+    })
+    assert answers and "还没落下" in answers[-1] and alerts[-1] is True
+    assert sent == [] and deleted == []
+
+
 def test_router_staff_only_and_replay(db, monkeypatch):
     _enable(db)
     _user(db, TG_ADMIN, "admin", staff=True, points=20)
