@@ -81,6 +81,7 @@ from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 from backend.api.admin_player_blacklist import admin_player_blacklist_router
 from backend.api.admin_license import admin_license_router
+from backend.api.admin_pool import admin_pool_router
 # v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
 # 只提供能力，密钥一律由管理员自己填。
 from backend.api.capabilities_admin import capabilities_router
@@ -861,6 +862,8 @@ app.include_router(admin_coupons_router)
 app.include_router(admin_player_blacklist_router)
 # 软件授权（2026-11-07）：状态/填码/立即校验，见 backend/api/admin_license.py
 app.include_router(admin_license_router)
+# 公共贡献池（goal-33 PR-1 地基）：配置读写，见 backend/api/admin_pool.py
+app.include_router(admin_pool_router)
 # 外部服务能力中心（v2.19.0）：能力总览 / 配置 / 测试，见 backend/api/capabilities_admin.py
 app.include_router(capabilities_router)
 # 用户端 AI 助手（v2.19.0）：能力「AI 模型设置」的消费点，见 backend/api/assistant.py

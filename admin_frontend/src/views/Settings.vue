@@ -54,6 +54,9 @@ import {
   fetchLicenseStatus, saveLicenseConfig, verifyLicenseNow,
   type LicenseStatus,
 } from '@/api/license'
+import {
+  fetchPoolConfig, savePoolConfig, type PoolConfig,
+} from '@/api/pool'
 import NoticePanel from '@/components/NoticePanel.vue'
 
 const route = useRoute()
@@ -603,7 +606,7 @@ async function load() {
 onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
-  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer(), loadMountServing(), loadDriveApi(), loadLicense()])
+  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache(), loadTransfer(), loadMountServing(), loadDriveApi(), loadLicense(), loadPool()])
   // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -1073,6 +1076,59 @@ const licenseReminderText = computed(() => {
   return ''
 })
 
+/** ==================== 公共贡献池卡片（独立 endpoint，非通用分组） ====================
+ * goal-33 PR-1 地基：池的全部能力参数（开关/人群/准入/容量/限额/
+ * 淘汰/熔断/选盘 + 池成员绑定上限）。总开关默认关——成员入池与
+ * 播出链接备齐前不要打开；保存走家族 pool 的整批校验，非法整批
+ * 拒绝。本卡自带保存按钮（同软件授权卡口径），不进全局保存条。 */
+const poolForm = reactive<PoolConfig>({
+  pool_enabled: false,
+  pool_audience: 'all',
+  pool_join_mode: 'apply_review',
+  pool_enabled_providers: 'drive',
+  pool_member_capacity_bytes: 4500000000000,
+  pool_member_reserve_free_bytes: 322122547200,
+  pool_member_daily_transfer_bytes: 644245094400,
+  pool_member_daily_transfer_jobs: 0,
+  pool_item_max_copies: 2,
+  pool_copy_idle_evict_days: 30,
+  pool_global_concurrency: 2,
+  pool_enqueue_jitter_sec: 120,
+  pool_breaker_quota_hits_per_day: 3,
+  pool_breaker_cooldown_sec: 3600,
+  pool_pick_top_k: 3,
+  pool_member_max_bindings_per_user: 10,
+})
+const poolLoading = ref(false)
+const poolSaving = ref(false)
+
+function applyPoolConfig(data: PoolConfig) {
+  Object.assign(poolForm, data)
+}
+
+async function loadPool() {
+  poolLoading.value = true
+  try {
+    applyPoolConfig(await fetchPoolConfig())
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+  } finally {
+    poolLoading.value = false
+  }
+}
+
+async function savePool() {
+  poolSaving.value = true
+  try {
+    applyPoolConfig(await savePoolConfig({ ...poolForm }))
+    ElMessage.success('公共贡献池配置已保存')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    poolSaving.value = false
+  }
+}
+
 /** 运营参数页签顶部的分组跳转：分组多（注册 + 9 块 + 防盗链），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
   document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -1492,6 +1548,14 @@ watch(
               >
                 <RefreshCw :size="13" />转存
                 <span v-if="transferDirty" class="chip-dot" aria-label="有未保存的改动" />
+              </button>
+              <button
+                v-if="sec.id === 'playback'"
+                type="button"
+                class="group-chip"
+                @click="scrollToGroup('pool')"
+              >
+                <Layers :size="13" />公共贡献池
               </button>
               <button
                 v-if="sec.id === 'playback'"
@@ -2222,6 +2286,124 @@ watch(
                 </div>
               </el-form-item>
             </el-form>
+          </SectionCard>
+
+          <!-- 公共贡献池：独立卡片，归「播放与风控」段（goal-33 PR-1 地基）。
+               总开关默认关：成员入池与播出链接备齐前不要打开。 -->
+          <SectionCard
+            v-if="sec.id === 'playback'"
+            id="group-pool"
+            title="公共贡献池"
+            :icon="Layers"
+            description="站内用户贡献的网盘组成的公共缓存池：没绑盘的用户也能播池中已就绪的片。总开关默认关，成员入池、播出链接备齐后再打开；参数改完点本卡的保存按钮生效。"
+            class="group-card"
+          >
+            <div v-loading="poolLoading" class="field-stack">
+              <el-form label-position="top" class="field-form field-grid">
+                <el-form-item label="池总开关">
+                  <div class="field-stack">
+                    <div class="field-control">
+                      <el-switch v-model="poolForm.pool_enabled" active-text="开" inactive-text="关" />
+                    </div>
+                    <span class="field-hint">关：池按不存在处理，未绑用户回原绑定门禁；默认关</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="可用人群">
+                  <el-select v-model="poolForm.pool_audience" class="w-full">
+                    <el-option label="全部登录用户" value="all" />
+                    <el-option label="仅白名单账号" value="whitelist" />
+                    <el-option label="仅订阅有效用户" value="subscribers" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="贡献准入">
+                  <el-select v-model="poolForm.pool_join_mode" class="w-full">
+                    <el-option label="申请 + 管理员批准" value="apply_review" />
+                    <el-option label="管理员指定" value="admin_assign" />
+                    <el-option label="绑定后自助开启" value="open" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="可入池的网盘类型">
+                  <el-input v-model="poolForm.pool_enabled_providers" placeholder="如 drive" />
+                </el-form-item>
+                <el-form-item label="单盘容量上限（字节）">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_member_capacity_bytes" :min="0" :max="1000000000000000" :step="1000000000" controls-position="right" class="num-input" />
+                    <span class="field-hint">单个贡献盘最多被池占用多少，默认 4500000000000（约 4.5TB）；0 = 不限</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="单盘保底空闲（字节）">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_member_reserve_free_bytes" :min="0" :max="1000000000000000" :step="1073741824" controls-position="right" class="num-input" />
+                    <span class="field-hint">盘实际剩余低于此值停收新片（已有副本照常播），默认 322122547200（300GiB）</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="单盘每日转存上限（字节）">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_member_daily_transfer_bytes" :min="0" :max="1000000000000000" :step="1073741824" controls-position="right" class="num-input" />
+                    <span class="field-hint">默认 644245094400（600GiB）；0 = 不限</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="单盘每日转存单数上限">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_member_daily_transfer_jobs" :min="0" :step="1" controls-position="right" class="num-input" />
+                    <span class="field-hint">默认 0 = 不限</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="每部片全池副本数">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_item_max_copies" :min="1" :max="8" :step="1" controls-position="right" class="num-input" />
+                    <span class="field-hint">同一部片在全池最多留几份副本，默认 2</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="副本闲置淘汰天数">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_copy_idle_evict_days" :min="0" :step="1" controls-position="right" class="num-input" />
+                    <span class="field-hint">超过天数没人看的副本可被清出池，默认 30；0 = 不按闲置淘汰</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="池转存并发上限">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_global_concurrency" :min="1" :max="16" :step="1" controls-position="right" class="num-input" />
+                    <span class="field-hint">池转存单在工人里的独立并发上限，默认 2</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="建单随机延迟上限（秒）">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_enqueue_jitter_sec" :min="0" :max="600" :step="10" controls-position="right" class="num-input" />
+                    <span class="field-hint">建池单后随机延迟的上限（分散请求节奏），默认 120</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="单盘日额度命中熔断阈值">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_breaker_quota_hits_per_day" :min="0" :step="1" controls-position="right" class="num-input" />
+                    <span class="field-hint">单盘当天命中下载额度达此数即暂停该盘，默认 3；0 = 不熔断</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="熔断冷却（秒）">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_breaker_cooldown_sec" :min="60" :max="604800" :step="60" controls-position="right" class="num-input" />
+                    <span class="field-hint">熔断后多久试恢复，默认 3600</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="选盘候选数">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_pick_top_k" :min="1" :max="8" :step="1" controls-position="right" class="num-input" />
+                    <span class="field-hint">选落盘时在打分前几名里随机挑一个，默认 3</span>
+                  </div>
+                </el-form-item>
+                <el-form-item label="池成员绑定上限">
+                  <div class="field-stack">
+                    <el-input-number v-model="poolForm.pool_member_max_bindings_per_user" :min="1" :max="100" :step="1" controls-position="right" class="num-input" />
+                    <span class="field-hint">有池候选/成员资格的用户最多能绑几个网盘账号，默认 10（普通用户仍是 3）</span>
+                  </div>
+                </el-form-item>
+              </el-form>
+              <div class="field-control">
+                <el-button type="primary" :loading="poolSaving" @click="savePool">
+                  <Save :size="14" />保存贡献池配置
+                </el-button>
+              </div>
+            </div>
           </SectionCard>
           <!-- 挂载直读出流：独立卡片，归「播放与风控」段 -->
           <SectionCard
