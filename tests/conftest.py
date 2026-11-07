@@ -7,7 +7,68 @@ enrich_worker 里有几个模块级 60s TTL 缓存（豆瓣/altmeta/夜间配置
 
 每个测试前把这些缓存清零，保证用例之间相互独立。只影响测试，生产代码无改动。
 """
+import os
+
 import pytest
+
+# ---------------------------------------------------------------------------
+# pytest-xdist per-worker 隔离（容量三期，2026-11-07）
+#
+# 2026-11-02 容量二期实测过一轮 xdist 并行（PR #1771 第一轮）：计算本身
+# 有效（pytest 步 1189 秒 → 615 秒），但同轮 34 failed + 17 errors 横跨
+# 16 个文件后回滚。定案机理：4 个 worker 进程共用 job 级 env 的同一个
+# DATABASE_URL 文件（./ci-smoke.db）与同一批固定路径（sidecar 的
+# PROVIDER_RUNTIME_SOCK_DIR、MOUNT_RCLONE_CONF），串行时靠执行顺序与
+# 各自清理维持的共享状态，并行下被别的 worker 的写入/删除踩掉。当时定
+# 的重试前置条件就是先做 per-worker 隔离——即本段。
+#
+# 做法：worker 进程在 conftest 导入期（早于本进程内任何 backend 模块的
+# 导入，backend.database 在导入期就按 DATABASE_URL 建 engine，晚了改
+# 不动）按 PYTEST_XDIST_WORKER（gw0/gw1/...，xdist 在 worker 环境里
+# 注入）改写三处 env，给每个 worker 一套自己的运行时沙箱：
+# - DATABASE_URL：sqlite 文件名加 -<worker> 后缀（ci-smoke-gw0.db）；
+#   未显式设置时同样落到 per-worker 文件，不再用共享默认名。
+# - PROVIDER_RUNTIME_SOCK_DIR：下加 <worker> 子目录（socket 不撞名）。
+# - MOUNT_RCLONE_CONF：文件名加 -<worker> 后缀（写配置不互踩）。
+# 串行跑（无 PYTEST_XDIST_WORKER）整段不执行，行为与之前逐字一致。
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+
+if _XDIST_WORKER:
+    _db_url = os.environ.get("DATABASE_URL", "")
+    if _db_url.startswith("sqlite:///") and ":memory:" not in _db_url:
+        if _db_url.endswith(".db"):
+            os.environ["DATABASE_URL"] = f"{_db_url[:-3]}-{_XDIST_WORKER}.db"
+        else:
+            os.environ["DATABASE_URL"] = f"{_db_url}-{_XDIST_WORKER}"
+    elif not _db_url:
+        os.environ["DATABASE_URL"] = f"sqlite:///./ci-smoke-{_XDIST_WORKER}.db"
+    _sock_dir = os.environ.get("PROVIDER_RUNTIME_SOCK_DIR")
+    if _sock_dir:
+        os.environ["PROVIDER_RUNTIME_SOCK_DIR"] = os.path.join(
+            _sock_dir, _XDIST_WORKER)
+    _rclone_conf = os.environ.get("MOUNT_RCLONE_CONF")
+    if _rclone_conf:
+        _conf_root, _conf_ext = os.path.splitext(_rclone_conf)
+        os.environ["MOUNT_RCLONE_CONF"] = f"{_conf_root}-{_XDIST_WORKER}{_conf_ext}"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _xdist_worker_db_warmup():
+    """xdist 下每个 worker 开局先把自己的任务库 init_db 一次。
+
+    串行全量时，任务库（ci-smoke.db）在 pytest 开始前就被前面几十个冒烟
+    脚本步以同一 DATABASE_URL 起过服务、建好表并播种，跑在前面的测试文
+    件也会 init_db；多数用例默认这套表与种子已经在场（2026-11-02 夹具
+    隔离盘点定案的主要耦合面）。worker 的独立库开局是空文件，若不预热，
+    「直接用全局 SessionLocal 又不自建表」的用例会在 setup 期撞
+    no such table——那是隔离形态差异、不是用例本身的问题。故 session
+    起始按串行同口径预热一次。只在 xdist 下生效，串行行为不变。
+    """
+    if _XDIST_WORKER:
+        from backend import database as _database
+
+        _database.init_db()
+    yield
 
 
 @pytest.fixture(autouse=True)

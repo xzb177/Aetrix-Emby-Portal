@@ -442,17 +442,25 @@ jobs:
         # 等站主拍板）；不许再只改参数盲试。
         # 本步另删与「安装 CI 附加依赖」步重复的一次 requirements-ci
         # 安装（同一步骤上方已装过同一把锁）。
+        # 容量三期（2026-11-07）：二期定的重试前置——per-worker 隔离——
+        # 已落地 tests/conftest.py：xdist worker 进程在 conftest 导入期按
+        # PYTEST_XDIST_WORKER 把 DATABASE_URL 改写为 ci-smoke-<worker>.db，
+        # PROVIDER_RUNTIME_SOCK_DIR / MOUNT_RCLONE_CONF 同步分仓，并在
+        # session 起始对本 worker 的库 init_db 预热（复刻串行时任务库先被
+        # 冒烟脚本步建表播种的前提）。本步恢复 -n auto --dist loadfile
+        # （loadfile 保持文件内顺序与串行一致）；串行口径不变。若并行再现
+        # 新签失败，按失败文件逐个定性处理，不许只摘参数回滚了事。
         timeout-minutes: 45
         run: |
           _t0=$(date +%s)
           set +e
-          python -m pytest tests/ -q --durations=30
+          python -m pytest tests/ -q --durations=30 -n auto --dist loadfile
           _rc=$?
           _t1=$(date +%s)
           _el=$((_t1 - _t0))
           echo "pytest 耗时 ${_el} 秒" >> "$GITHUB_STEP_SUMMARY"
           if [ "$_el" -ge 900 ]; then
-            echo "::warning::pytest 已耗时 ${_el} 秒，超过 15 分钟预警线（步骤上限 45 分钟），套件容量三期（per-worker 隔离或跨 job 分片）需立项处理"
+            echo "::warning::pytest 已耗时 ${_el} 秒，超过 15 分钟预警线（步骤上限 45 分钟），per-worker 隔离已落地仍超线，下一步须立项跨 job 分片处理"
           fi
           exit "$_rc"
 
