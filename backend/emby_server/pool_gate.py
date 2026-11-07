@@ -32,7 +32,6 @@ import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
@@ -174,8 +173,10 @@ def ensure_playback_allowed_for_item(
 ) -> PoolDecision:
     """新判定入口（PR-2 起由 PlaybackInfo 接线消费；PR-3 再接取流）。
 
-    顺序见模块头。都不满足时抛 HTTPException 403，文案选择与
-    playback_gate.ensure_binding_playback_allowed 逐字一致。
+    顺序见模块头。①–④ 任一命中即返回裁决；都不满足时不自抛，
+    回落既有门禁本体 ``playback_gate.ensure_binding_playback_allowed``
+    裁决（403 文案与执法点全站只此一份，不在此复制第二套）：它抛
+    403 即本入口抛 403；它放行时（仅判定间隙边角）按已过门禁处理。
     软件授权前置在判定之首查（#1883 前置不动：CMS 免门禁条目
     同样先过授权；已绑路径内层 ensure_* 会再查一次，纯读无副
     作用）。
@@ -191,12 +192,8 @@ def ensure_playback_allowed_for_item(
         return PoolDecision(allowed=True, kind="bound")
     if pool_eligible(db, user, item) == "eligible":
         return PoolDecision(allowed=True, kind="pool")
-    if user_id is not None and _gate.has_removed_provider_binding(
-            db, user_id):
-        raise HTTPException(
-            status_code=403,
-            detail=_gate.GATE_MESSAGE_REMOVED_PROVIDER)
-    raise HTTPException(status_code=403, detail=_gate.GATE_MESSAGE)
+    _gate.ensure_binding_playback_allowed(db, user, request)
+    return PoolDecision(allowed=True, kind="bound")
 
 
 # ---------------------------------------------------------------- 成员资格
