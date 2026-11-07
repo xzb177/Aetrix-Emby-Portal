@@ -75,6 +75,19 @@ POOL_CONFIG_DEFAULTS: dict = {
 #: ejected）不在集合内——退出后回落个人上限（任务书口径写死）。
 POOL_LIMIT_MEMBER_STATUSES = ("candidate", "pending", "active", "suspended")
 
+#: 池 preparing 态给观众的说明（GA-034）：池观众没有绑定盘，不许
+#: 套用转存门禁缺省的「转存到你的绑定盘」文案。raise_for_transfer_
+#: gate 优先用门禁自带 detail，故本模块所有 preparing 返回都带
+#: 这一句；绑盘用户走 ensure_user_copy_gate，文案不受影响。
+POOL_PREPARING_DETAIL = (
+    "转存准备中：这部片正在往公共池里备，备好后就能看，请稍后再试")
+
+#: 池播出记账的写时去重窗口（分钟，GA-033）：同一观众对同一副本
+#: 窗口内只计首次——与 design §11.2 防刷口径一致，前移到写口是
+#: 因为 pool_usage_daily.play_starts 是聚合计数、事后无法去重，
+#: 写口必须同时管住事件行与聚合两处。其余防刷判定仍归 PR-6。
+POOL_PLAY_DEDUP_WINDOW_MIN = 30
+
 
 def _raw_config(db: Session) -> dict[str, str]:
     defaults = {
@@ -683,7 +696,8 @@ def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
     inflight = _latest_pool_job(db, item_id, statuses=("pending", "running"))
     if inflight is not None:
         return {"verdict": "preparing", "reason": "job_in_flight",
-                "job_id": inflight.id, "pool": True}
+                "job_id": inflight.id, "pool": True,
+                "detail": POOL_PREPARING_DETAIL}
     # ⑤ 最新池单失败。
     failed = _latest_pool_job(db, item_id, statuses=("failed",))
     if failed is not None:
@@ -697,13 +711,15 @@ def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
                     if exc.kind == "throttled":
                         return {"verdict": "preparing",
                                 "reason": "throttled",
-                                "job_id": failed.id, "pool": True}
+                                "job_id": failed.id, "pool": True,
+                                "detail": POOL_PREPARING_DETAIL}
                     return {"verdict": "failed", "reason": exc.kind,
                             "job_id": failed.id,
                             "detail": str(exc) or None, "pool": True}
                 return {"verdict": "preparing",
                         "reason": "job_retriggered",
-                        "job_id": new_job.id, "pool": True}
+                        "job_id": new_job.id, "pool": True,
+                        "detail": POOL_PREPARING_DETAIL}
             return {"verdict": "failed", "reason": "retriable",
                     "job_id": failed.id,
                     "detail": _pool_failed_detail(db, item, failed),
@@ -716,7 +732,8 @@ def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
                     "detail": _pool_failed_detail(db, item, failed),
                     "pool": True}
         return {"verdict": "preparing", "reason": "throttled",
-                "job_id": failed.id, "pool": True}
+                "job_id": failed.id, "pool": True,
+                "detail": POOL_PREPARING_DETAIL}
     # ⑥ done 单无 ready 副本（副本已释放/变 stale）：预算内重建。
     done = _latest_pool_job(db, item_id, statuses=("done",))
     if done is not None:
@@ -728,25 +745,29 @@ def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
                 if exc.kind == "throttled":
                     return {"verdict": "preparing",
                             "reason": "throttled",
-                            "job_id": done.id, "pool": True}
+                            "job_id": done.id, "pool": True,
+                            "detail": POOL_PREPARING_DETAIL}
                 return {"verdict": "failed", "reason": exc.kind,
                         "job_id": done.id,
                         "detail": str(exc) or None, "pool": True}
             return {"verdict": "preparing", "reason": "job_rebuilt",
-                    "job_id": new_job.id, "pool": True}
+                    "job_id": new_job.id, "pool": True,
+                    "detail": POOL_PREPARING_DETAIL}
         return {"verdict": "preparing", "reason": "throttled",
-                "job_id": done.id, "pool": True}
+                "job_id": done.id, "pool": True,
+                "detail": POOL_PREPARING_DETAIL}
     # ⑦ 建单。
     try:
         new_job = create_pool_job(db, item, quota_fn=quota_fn)
     except _tv.TransferError as exc:
         if exc.kind == "throttled":
             return {"verdict": "preparing", "reason": "throttled",
-                    "pool": True}
+                    "pool": True, "detail": POOL_PREPARING_DETAIL}
         return {"verdict": "failed", "reason": exc.kind,
                 "detail": str(exc) or None, "pool": True}
     return {"verdict": "preparing", "reason": "job_created",
-            "job_id": new_job.id, "pool": True}
+            "job_id": new_job.id, "pool": True,
+            "detail": POOL_PREPARING_DETAIL}
 
 
 # ---------------------------------------------------------------- 播出记账与令牌口（PR-3）
@@ -762,7 +783,16 @@ def note_pool_play_served(member_id, variant_id, item_id,
     原始事件。独立会话写、失败静默（沿 PlayStartEvent 纪律）：
     记账失败绝不打挂已经下发成功的播放，本函数永不抛异常，
     也不进起播热路径的同步事务（调用方经 run_db 或直接调都行，
-    内部另开会话）。事件只如实记录，不做防刷判定（PR-6 纯函数）。
+    内部另开会话）。
+
+    写时窗口去重（GA-033）：同一观众对同一副本
+    ``POOL_PLAY_DEDUP_WINDOW_MIN`` 分钟内只计首次——窗口内已有
+    事件行时不再新增事件、也不再累加 play_starts（聚合计数事后
+    无法去重，两处必须同管）；跨端点同一次播放（PlaybackInfo
+    直链下发后客户端再打 /stream）由此只记一笔。
+    ``last_played_at`` 不是计数、是淘汰热度输入，真实起播照常
+    刷新。其余防刷判定（本人/同人互看、日上限冻结）仍归 PR-6
+    聚合纯函数，本函数不做。
     """
     try:
         mid = int(member_id)
@@ -776,14 +806,25 @@ def note_pool_play_served(member_id, variant_id, item_id,
         from backend.database import SessionLocal
 
         db = SessionLocal()
-        _bump_pool_usage(db, mid, play_starts=1)
+        now = datetime.now()
+        window_start = now - timedelta(
+            minutes=POOL_PLAY_DEDUP_WINDOW_MIN)
+        dup = (db.query(em.PoolPlayEvent)
+               .filter(em.PoolPlayEvent.viewer_user_id == uid,
+                       em.PoolPlayEvent.variant_id == vid,
+                       em.PoolPlayEvent.created_at >= window_start)
+               .first())
+        counted = dup is None
+        if counted:
+            _bump_pool_usage(db, mid, play_starts=1)
         row = (db.query(em.TransferVariant)
                .filter(em.TransferVariant.id == vid).first())
         if row is not None:
-            row.last_played_at = datetime.now()
-        db.add(em.PoolPlayEvent(
-            member_id=mid, variant_id=vid, item_id=iid,
-            viewer_user_id=uid, created_at=datetime.now()))
+            row.last_played_at = now
+        if counted:
+            db.add(em.PoolPlayEvent(
+                member_id=mid, variant_id=vid, item_id=iid,
+                viewer_user_id=uid, created_at=now))
         db.commit()
     except Exception:  # noqa: BLE001 — 记账失败静默，不挡播放
         logger.warning(
@@ -801,6 +842,40 @@ def note_pool_play_served(member_id, variant_id, item_id,
                 db.close()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def reconcile_dead_pool_copy(db: Session, variant) -> dict:
+    """池副本 serve 路径实证不可用（302 前存在性校验 404）后的对账（GA-032）。
+
+    与用户副本 ``reconcile_dead_drive_copy`` 同形状：先自愈——
+    副本可能只是 anyone-reader 被贡献者收回（本体仍在成员盘
+    里），绕过已公开缓存、用成员绑定令牌经
+    ``ensure_variant_copy_public`` 重授；授成返回 healed，调用方
+    重走存在性校验即可放行。自愈失败（文件真被删 / 成员绑定
+    失效）记一次 stale strike（``mark_variant_stale_once``）：
+    ``_pick_ready_pool_variant`` 只挑 stale_count==0 的行，门禁
+    下轮不再判 serve、改走池建单重建，死副本不再反复下发。
+    本函数永不抛异常进播放热路径。
+    """
+    fid = (getattr(variant, "variant_file_id", "") or "").strip()
+    member_id = None
+    try:
+        member_id = int(getattr(variant, "owner_ref", "") or "")
+    except (TypeError, ValueError):
+        member_id = None
+    if fid and member_id is not None:
+        try:
+            _tv.copy_public_cache_drop(f"pool:{member_id}", fid)
+            if _tv.ensure_variant_copy_public(db, variant, fid):
+                return {"action": "healed"}
+        except Exception:  # noqa: BLE001
+            logger.warning("池副本死链自愈异常 variant=%s",
+                           getattr(variant, "id", None), exc_info=True)
+    try:
+        _tv.mark_variant_stale_once(db, getattr(variant, "id", None))
+    except Exception:  # noqa: BLE001
+        logger.warning("池副本死链记 strike 异常", exc_info=True)
+    return {"action": "stale_marked"}
 
 
 def pool_member_access_token(db: Session, member_id) -> str:

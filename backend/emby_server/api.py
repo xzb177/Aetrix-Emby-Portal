@@ -7322,6 +7322,48 @@ async def video_stream(
                                         else _tv
                                         .POOLCOPY_INTERSTITIAL_DETAIL))
                     if _pool_served_resp is None:
+                        # 死副本对账（GA-032）：302 前先做与通用
+                        # fast302 同口径的存在性校验——副本被贡献
+                        # 者删除/撤享后 DB 行仍 ready 时，不许把
+                        # 谷歌 404 直发给观众。404 先对账：能自愈
+                        # （成员令牌重授 anyone-reader）就复检放
+                        # 行；不能自愈记 stale，门禁下轮不再判
+                        # serve，观众拿 409 明示。挂载不可定位
+                        # （_ensure 回 None）无法校验，照旧下发；
+                        # 瞬时故障（503）原样明示，不回落共享。
+                        _pool_force = drive_exists_rapid_retry(
+                            request, user, _play_fid)
+                        _pool_gone_retried = False
+                        while True:
+                            try:
+                                await _ensure_drive_file_playable(
+                                    db, item, _play_fid,
+                                    force_recheck=(
+                                        _pool_force
+                                        or _pool_gone_retried))
+                                break
+                            except HTTPException as exc:
+                                if exc.status_code != 404:
+                                    raise
+                                if _pool_gone_retried:
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail="公共池副本权限已恢复，"
+                                               "正在生效中，请稍后"
+                                               "重试") from exc
+                                _pool_gone_retried = True
+                                _pool_rec = await run_db(
+                                    _pool_gate_vs
+                                    .reconcile_dead_pool_copy,
+                                    db, _pool_variant_row)
+                                if (_pool_rec or {}).get(
+                                        "action") == "healed":
+                                    continue
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail="公共池副本已失效，正在"
+                                           "重新准备中，请稍后再试"
+                                    ) from exc
                         # 主形态：免凭证 usercontent 302（副本已授
                         # anyone-reader）。成功下发记 §5.3 + H1。
                         await run_db(
