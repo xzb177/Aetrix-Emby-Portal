@@ -24,15 +24,11 @@ name: Publish Images
 # 绿）。如果不加 event / head_branch 判断，一个 fork 分支的 CI 变绿就能往 ghcr.io 推
 # 镜像。下面的 gate 步骤把这条路堵死：只接受 event == push 且 head_branch == main。
 #
-# ## Runner 路由（与 ci.yml 同口径）
-#
-# 本工作流只有 workflow_run 一种触发（CI 完成事件），没有 pull_request
-# 事件语境，路由表达式恒走自托管机组（label: aetrix-insta，InstaBox
-# 「aetrix」上 4 个 runner 实例），不再消耗 GitHub 托管分钟——仓库转
-# 私密后免费额度只有 2000 分钟/月，而发布每次约 6–8 分钟。表达式仍与
-# ci.yml 写成同款，是为了口径统一、防日后新增触发方式时漏改。发布安全
-# 不依赖路由：下面的 gate 步骤只认「main 的 push 且 CI 全绿」，路由
-# 写错也推不出去。
+# 走 GitHub 官方机（ubuntu-latest），公开仓库托管分钟免费。备用检查
+# 机组保留待命、不拆除；仓库转私密后免费额度只有 2000 分钟/月，而
+# 发布每次约 6–8 分钟，届时另开单与 ci.yml 一起切回备用机组。发布
+# 安全不依赖路由：下面的 gate 步骤只认「main 的 push 且 CI 全绿」，
+# 路由写错也推不出去。
 # ============================================================================
 
 on:
@@ -54,7 +50,7 @@ concurrency:
 jobs:
   publish:
     name: 镜像 · 构建并推送 ghcr.io
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'aetrix-insta' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:

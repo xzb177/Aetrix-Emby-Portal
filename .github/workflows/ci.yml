@@ -5,16 +5,12 @@ name: CI
 #   - 冒烟测试：TestClient 进程内跑认证 / 管理端接口（快，不需要构建产物）
 #   - 部署自检：scripts/deploy_check.py 真起 uvicorn、真发 HTTP，并托管上一步的 dist
 #
-# Runner 路由（自托管机组与 fork 隔离）：
-#   - 本仓 push / 本仓 PR / 手动 dispatch → 自托管机组（label: aetrix-insta，
-#     InstaBox「aetrix」上 4 个 runner 实例并行接活），不再消耗 GitHub 托管分钟。
-#   - fork 仓库来的 PR → 仍走 ubuntu-latest。理由：自托管机器绝不跑外部
-#     fork 的代码；且仓库设置已把 fork PR 的工作流审批收紧为「全部外部
-#     贡献者都要维护者批准后才启动」（all_external_contributors），即便
-#     fork 篡改本文件把 runs-on 写死为自托管标签，任何 job 也不会在批准
-#     前启动——批准 fork 的运行前必须先审它的 ci.yml diff（硬纪律）。
-#   - 路由表达式在每个 job 的 runs-on 各写一份（job 级无法共用变量）；
-#     改路由时四处一起改，检查名一字不动。
+# Runner 路由：
+#   - 全部 job 走 GitHub 官方机（ubuntu-latest）：每轮一台干净机器，
+#     公开仓库托管分钟免费，不受单机磁盘满 / 多 job 争抢影响。
+#   - 备用检查机组保留待命、不拆除；仓库转私密后免费额度只有
+#     2000 分钟/月，届时另开单把四处 runs-on 一起切回备用机组，
+#     检查名一字不动。
 on:
   push:
     branches: [main]
@@ -30,7 +26,7 @@ concurrency:
 jobs:
   frontend:
     name: 前端 · ${{ matrix.dir }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'aetrix-insta' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -93,7 +89,7 @@ jobs:
 
   smoke:
     name: 后端 · 冒烟测试
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'aetrix-insta' }}
+    runs-on: ubuntu-latest
     # job 级 55 分钟是后备上限：pytest 步骤 45 分钟（2026-10-30 容量一期，
     # 见 pytest 步注释）+ 其余步骤实测约 5 分钟，55 分钟留有余量；
     # 单步仍各有超时，卡死仍会失败报错，不会静默转圈。
@@ -555,7 +551,7 @@ jobs:
     # 方言映射（DATETIME→TIMESTAMP、BOOLEAN DEFAULT 0→FALSE）、JSON/Boolean/
     # DateTime 读写、ilike 搜索。SQLite 门禁拦不住的方言问题由这条拦。
     name: 后端 · PG 兼容冒烟
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'aetrix-insta' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
       postgres:
@@ -611,7 +607,7 @@ jobs:
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'ubuntu-latest' || 'aetrix-insta' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
       DATABASE_TYPE: sqlite
