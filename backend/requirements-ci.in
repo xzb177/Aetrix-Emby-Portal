@@ -6,3 +6,6 @@
 # CI 安装时与生产锁一起用 --require-hashes 装。
 zhconv
 pytest
+# pytest-xdist：冒烟 job 的 pytest 步并行（-n auto --dist loadfile）；
+# per-worker 隔离在 tests/conftest.py，串行跑不依赖它。
+pytest-xdist
