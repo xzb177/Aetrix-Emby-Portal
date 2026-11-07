@@ -11,15 +11,20 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, Database, Flag, HardDrive, Play, RefreshCw, Users,
+  AlertTriangle, Coins, Database, Flag, HardDrive, Play, RefreshCw, Users,
 } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile, EmptyState } from '@/components/ui'
 import {
   approvePoolMember, clearPoolMemberViolation, ejectPoolMember,
   fetchPoolCopies, fetchPoolMembers, fetchPoolOverview,
-  grantPoolCandidate, patchPoolMember, rejectPoolMember, releasePoolCopy,
-  resumePoolMember, suspendPoolMember,
+  fetchPoolRewardConfig, fetchPoolRewardDetails, fetchPoolRewardPreview,
+  fetchPoolRewardSettlements, grantPoolCandidate, patchPoolMember,
+  rejectPoolMember, releasePoolCopy, releasePoolRewardDetail,
+  resumePoolMember, savePoolRewardConfig, settlePoolRewards,
+  suspendPoolMember,
   type PoolCopy, type PoolMember, type PoolOverview,
+  type PoolRewardConfig, type PoolRewardDetail, type PoolRewardPreview,
+  type PoolRewardSettlement,
 } from '@/api/pool'
 
 const loading = ref(false)
@@ -229,7 +234,149 @@ async function doReleaseCopy(copy: PoolCopy) {
   }
 }
 
-onMounted(load)
+// ------------------------------------------------------------ 激励结算（PR-6）
+
+const rewardCfg = ref<PoolRewardConfig | null>(null)
+const rewardCfgSaving = ref(false)
+const rewardPeriod = ref('')
+const preview = ref<PoolRewardPreview | null>(null)
+const previewLoading = ref(false)
+const settling = ref(false)
+const settlements = ref<PoolRewardSettlement[]>([])
+const rewardDetails = ref<PoolRewardDetail[]>([])
+const detailSettlementId = ref<number | null>(null)
+const detailsLoading = ref(false)
+const releasingId = ref<number | null>(null)
+
+const REWARD_STATUS_LABELS: Record<string, string> = {
+  shadow: '影子（只算账）',
+  pending: '待发',
+  frozen: '冻结待审',
+  paid: '已发放',
+  skipped: '不结',
+}
+
+const REWARD_REASON_LABELS: Record<string, string> = {
+  below_threshold: '门槛不达',
+  ejected_violation: '违规清退',
+  daily_play_freeze: '单日激增冻结',
+  user_missing: '账号不存在',
+}
+
+async function loadRewards() {
+  try {
+    const [cfg, list] = await Promise.all([
+      fetchPoolRewardConfig(), fetchPoolRewardSettlements(),
+    ])
+    rewardCfg.value = cfg
+    settlements.value = list.settlements
+  } catch {
+    // 激励区加载失败不拖垮成员区；request 层已弹提示
+  }
+}
+
+async function doSaveRewardCfg() {
+  if (!rewardCfg.value) return
+  rewardCfgSaving.value = true
+  try {
+    rewardCfg.value = await savePoolRewardConfig({
+      pool_reward_enabled: rewardCfg.value.pool_reward_enabled,
+      pool_reward_payout_enabled: rewardCfg.value.pool_reward_payout_enabled,
+      pool_reward_points_per_play: rewardCfg.value.pool_reward_points_per_play,
+      pool_reward_points_per_active_day:
+        rewardCfg.value.pool_reward_points_per_active_day,
+      pool_reward_points_cap: rewardCfg.value.pool_reward_points_cap,
+      pool_reward_min_active_days: rewardCfg.value.pool_reward_min_active_days,
+      pool_reward_min_counted_plays:
+        rewardCfg.value.pool_reward_min_counted_plays,
+    })
+    ElMessage.success('激励配置已保存')
+  } catch {
+    // request 层已弹错误提示
+  } finally {
+    rewardCfgSaving.value = false
+  }
+}
+
+async function doPreview() {
+  previewLoading.value = true
+  try {
+    preview.value = await fetchPoolRewardPreview(
+      rewardPeriod.value.trim() || undefined)
+  } catch {
+    // request 层已弹错误提示
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+async function doSettle() {
+  try {
+    await ElMessageBox.confirm(
+      '按当前配置执行这一期结算。真发开关开着时会真的发积分/经验；' +
+      '关着时只落影子行对账。重复执行不会重复发钱。',
+      '执行激励结算',
+      { confirmButtonText: '执行结算', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  settling.value = true
+  try {
+    const res = await settlePoolRewards(rewardPeriod.value.trim() || undefined)
+    ElMessage.success(`结算完成：${res.settlement.period_key}`)
+    detailSettlementId.value = null
+    rewardDetails.value = []
+    await loadRewards()
+  } catch {
+    // request 层已弹错误提示
+  } finally {
+    settling.value = false
+  }
+}
+
+async function viewDetails(settlement: PoolRewardSettlement) {
+  detailsLoading.value = true
+  try {
+    const res = await fetchPoolRewardDetails(settlement.id)
+    rewardDetails.value = res.details
+    detailSettlementId.value = settlement.id
+  } catch {
+    // request 层已弹错误提示
+  } finally {
+    detailsLoading.value = false
+  }
+}
+
+async function doReleaseDetail(detail: PoolRewardDetail) {
+  try {
+    await ElMessageBox.confirm(
+      '放行后按冻结时已计（封顶后）的数发放；真发开关关着时先落影子行，' +
+      '开闸重跑后补发。',
+      '放行冻结明细',
+      { confirmButtonText: '放行', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  releasingId.value = detail.id
+  try {
+    const updated = await releasePoolRewardDetail(detail.id)
+    ElMessage.success('已放行')
+    const idx = rewardDetails.value.findIndex(d => d.id === updated.id)
+    if (idx >= 0) rewardDetails.value[idx] = updated
+    await loadRewards()
+  } catch {
+    // request 层已弹错误提示
+  } finally {
+    releasingId.value = null
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadRewards()
+})
 </script>
 
 <template>
@@ -392,6 +539,135 @@ onMounted(load)
         />
       </SectionCard>
 
+      <SectionCard title="激励结算" :icon="Coins" description="贡献者激励按周期结算：先影子跑对账（只算账落行、不发钱），核对无误再开真发开关。计奖口径：起播 1 分 + 有效在线日 5 分（默认，可改），门槛＝在线 ≥7 天且起播 ≥10，单期上限 900 分。">
+        <template v-if="rewardCfg">
+          <div class="pool-grant">
+            <el-switch v-model="rewardCfg.pool_reward_enabled" />
+            <span>激励总开关</span>
+            <el-switch v-model="rewardCfg.pool_reward_payout_enabled" />
+            <span>真发开关（关＝影子跑）</span>
+            <el-button type="primary" :loading="rewardCfgSaving" @click="doSaveRewardCfg">保存激励配置</el-button>
+          </div>
+          <div class="pool-grant" style="margin-top: 10px">
+            <span class="pool-cell-sub">每起播积分</span>
+            <el-input-number v-model="rewardCfg.pool_reward_points_per_play" :min="0" :controls="false" class="pool-num-input" />
+            <span class="pool-cell-sub">每在线日积分</span>
+            <el-input-number v-model="rewardCfg.pool_reward_points_per_active_day" :min="0" :controls="false" class="pool-num-input" />
+            <span class="pool-cell-sub">单期上限</span>
+            <el-input-number v-model="rewardCfg.pool_reward_points_cap" :min="0" :controls="false" class="pool-num-input" />
+            <span class="pool-cell-sub">门槛在线天</span>
+            <el-input-number v-model="rewardCfg.pool_reward_min_active_days" :min="0" :controls="false" class="pool-num-input" />
+            <span class="pool-cell-sub">门槛起播</span>
+            <el-input-number v-model="rewardCfg.pool_reward_min_counted_plays" :min="0" :controls="false" class="pool-num-input" />
+          </div>
+        </template>
+        <div class="pool-grant" style="margin-top: 14px">
+          <el-input
+            v-model="rewardPeriod"
+            placeholder="周期键，如 2026-11（留空＝上一完整周期）"
+            class="pool-grant-input"
+            clearable
+          />
+          <el-button :loading="previewLoading" @click="doPreview">结算预览</el-button>
+          <el-button type="primary" :loading="settling" @click="doSettle">执行结算</el-button>
+        </div>
+        <template v-if="preview">
+          <p class="pool-dialog-text" style="margin-top: 12px">
+            周期 {{ preview.period_key }}（{{ preview.period_start.slice(0, 10) }} 至 {{ preview.period_end.slice(0, 10) }}）；
+            激励总开关{{ preview.reward_enabled ? '开' : '关' }}、真发{{ preview.payout_enabled ? '开' : '关（影子）' }}。
+            预览只算账、不落行。
+          </p>
+          <el-table :data="preview.rows" stripe class="pool-table">
+            <el-table-column label="贡献者" min-width="120">
+              <template #default="{ row }">{{ row.username ?? `#${row.user_id}` }}</template>
+            </el-table-column>
+            <el-table-column label="计奖起播 / 原始" min-width="120">
+              <template #default="{ row }">{{ row.counted_plays }} / {{ row.raw_plays }}</template>
+            </el-table-column>
+            <el-table-column label="有效在线天" width="100">
+              <template #default="{ row }">{{ row.active_days }}</template>
+            </el-table-column>
+            <el-table-column label="应发积分" width="100">
+              <template #default="{ row }">{{ row.points }}</template>
+            </el-table-column>
+            <el-table-column label="预计走向" min-width="130">
+              <template #default="{ row }">
+                {{ REWARD_STATUS_LABELS[row.would_status] ?? row.would_status }}
+                <span v-if="row.reason" class="pool-cell-sub">（{{ REWARD_REASON_LABELS[row.reason] ?? row.reason }}）</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <EmptyState
+            v-if="!preview.rows.length"
+            compact :icon="Coins" title="这一期没有可结算的成员"
+            description="还没有成员真正进过池，或本期没有任何起播计量。"
+          />
+        </template>
+        <el-table v-if="settlements.length" :data="settlements" stripe class="pool-table" style="margin-top: 14px">
+          <el-table-column label="周期" width="110">
+            <template #default="{ row }">{{ row.period_key }}</template>
+          </el-table-column>
+          <el-table-column label="批次状态" width="110">
+            <template #default="{ row }">
+              {{ row.status }}{{ row.shadow ? '（影子建批）' : '' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="成员 / 已发 / 冻结 / 不结" min-width="170">
+            <template #default="{ row }">
+              {{ row.members }} / {{ row.paid }} / {{ row.frozen }} / {{ row.skipped }}
+            </template>
+          </el-table-column>
+          <el-table-column label="已发积分" width="100">
+            <template #default="{ row }">{{ row.paid_points_total }}</template>
+          </el-table-column>
+          <el-table-column label="建批时间" min-width="120">
+            <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="100">
+            <template #default="{ row }">
+              <el-button size="small" :loading="detailsLoading" @click="viewDetails(row)">明细</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <template v-if="detailSettlementId != null">
+          <p class="pool-dialog-text" style="margin-top: 12px">
+            批次 #{{ detailSettlementId }} 明细：冻结行核对后可放行（按已计封顶数发）。
+          </p>
+          <el-table :data="rewardDetails" stripe class="pool-table">
+            <el-table-column label="贡献者" min-width="120">
+              <template #default="{ row }">{{ row.username ?? `#${row.user_id}` }}</template>
+            </el-table-column>
+            <el-table-column label="计奖起播" width="90">
+              <template #default="{ row }">{{ row.counted_plays }}</template>
+            </el-table-column>
+            <el-table-column label="在线天" width="80">
+              <template #default="{ row }">{{ row.active_days }}</template>
+            </el-table-column>
+            <el-table-column label="积分 / 经验" width="110">
+              <template #default="{ row }">{{ row.points }} / {{ row.xp }}</template>
+            </el-table-column>
+            <el-table-column label="转存（对账）" width="110">
+              <template #default="{ row }">{{ fmtBytes(row.transfer_bytes) }}</template>
+            </el-table-column>
+            <el-table-column label="状态" min-width="140">
+              <template #default="{ row }">
+                {{ REWARD_STATUS_LABELS[row.status] ?? row.status }}
+                <span v-if="row.reason" class="pool-cell-sub">（{{ REWARD_REASON_LABELS[row.reason] ?? row.reason }}）</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.status === 'frozen'"
+                  size="small" type="primary" :loading="releasingId === row.id"
+                  @click="doReleaseDetail(row)"
+                >放行</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </template>
+      </SectionCard>
+
       <SectionCard title="按条目查副本" :icon="HardDrive" description="看某个条目的池副本都在哪些盘上；可单份手动下线（停发 + 尝试删文件）。">
         <div class="pool-grant">
           <el-input-number
@@ -483,6 +759,9 @@ onMounted(load)
 }
 .pool-grant-input {
   width: 200px;
+}
+.pool-num-input {
+  width: 90px;
 }
 .pool-table {
   width: 100%;

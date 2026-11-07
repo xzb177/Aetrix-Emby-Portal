@@ -425,7 +425,9 @@ DRIVE_API_CONFIG_SCHEMA: dict[str, tuple] = {
 # 日转存 600GiB），不是 design §3 的旧默认（0 不限 / 20GiB）。
 # 字节类上限给到 10**15：4.5TB 已超 _BIG（10**9）量级。
 # pool_enabled 默认关由读侧兜底（通审决议 1：分阶段接线期默认关，
-# 正式开池由管理员开闸）；激励子家族 pool_reward_* 本单不注册。
+# 正式开池由管理员开闸）；激励子家族 pool_reward_* 随 PR-6 注册
+# 为独立家族 POOL_REWARD_CONFIG_SCHEMA（本表 16 键的键集已被
+# PR-1 测试钉死，扩键只能另立家族；校验/存储仍走同一体系）。
 POOL_CONFIG_SCHEMA: dict[str, tuple] = {
     "pool_enabled": ("bool",),
     "pool_audience": ("enum", ("all", "whitelist", "subscribers")),
@@ -445,6 +447,33 @@ POOL_CONFIG_SCHEMA: dict[str, tuple] = {
     # 池候选/成员的个人绑定上限（通审决议 2）：管理员预批资格先行，
     # 见候选/成员资格时改走本键，个人上限（env，默认 3）不变。
     "pool_member_max_bindings_per_user": ("int", 1, 100),
+}
+
+# 激励子家族 pool_reward_*（goal-33 PR-6，design §11.3）：计量、
+# 单价、门槛全进配置；默认值在 pool_gate
+# .POOL_REWARD_CONFIG_DEFAULTS（与下表同口径）。独立家族的理由
+# 见 POOL_CONFIG_SCHEMA 上方注释（16 键键集已钉死）。
+POOL_REWARD_CONFIG_SCHEMA: dict[str, tuple] = {
+    "pool_reward_enabled": ("bool",),
+    # 真发开关（PR-6 任务书新增）：关＝结算只算账落影子行不发钱，
+    # 开＝按明细真发积分/经验；与总开关分开，先影子跑对账再开闸。
+    "pool_reward_payout_enabled": ("bool",),
+    "pool_reward_period": ("enum", ("monthly", "weekly")),
+    "pool_reward_points_per_play": ("int", 0, _BIG),
+    "pool_reward_points_per_active_day": ("int", 0, _BIG),
+    "pool_reward_points_cap": ("int", 0, _BIG),
+    "pool_reward_min_active_days": ("int", 0, 366),
+    "pool_reward_min_counted_plays": ("int", 0, _BIG),
+    "pool_reward_play_dedupe_window_sec": ("int", 0, 604800),
+    "pool_reward_daily_play_freeze": ("int", 0, _BIG),
+    # 公益天数：一期关闭（默认 0 不发），键位按 design 留。
+    "pool_reward_welfare_days": ("int", 0, 365),
+    "pool_reward_welfare_min_plays": ("int", 0, _BIG),
+    "pool_reward_xp_per_play": ("int", 0, _BIG),
+    "pool_reward_xp_cap": ("int", 0, _BIG),
+    # 订阅延期：一期恒关（二期能力），键位按 design 留。
+    "pool_reward_subscription_enabled": ("bool",),
+    "pool_reward_title_enabled": ("bool",),
 }
 
 # 上游聚合拉取参数（2026-10-31 优化 O-05 起，后续 O-01/O-02/O-03

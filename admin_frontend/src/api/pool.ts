@@ -129,3 +129,118 @@ export const fetchPoolCopies = (itemId: number) =>
 export const releasePoolCopy = (variantId: number) =>
   post<{ id: number; status: string; item_id: number }>(
     `/pool/copies/${variantId}/release`)
+
+/** 激励结算 API（PR-6，见 backend/api/pool_admin.py 与 admin_pool.py） */
+
+export interface PoolRewardConfig {
+  pool_reward_enabled: boolean
+  pool_reward_payout_enabled: boolean
+  pool_reward_period: 'monthly' | 'weekly'
+  pool_reward_points_per_play: number
+  pool_reward_points_per_active_day: number
+  pool_reward_points_cap: number
+  pool_reward_min_active_days: number
+  pool_reward_min_counted_plays: number
+  pool_reward_play_dedupe_window_sec: number
+  pool_reward_daily_play_freeze: number
+  pool_reward_welfare_days: number
+  pool_reward_welfare_min_plays: number
+  pool_reward_xp_per_play: number
+  pool_reward_xp_cap: number
+  pool_reward_subscription_enabled: boolean
+  pool_reward_title_enabled: boolean
+}
+
+export type PoolRewardConfigPayload = Partial<PoolRewardConfig>
+
+export const fetchPoolRewardConfig = () =>
+  get<PoolRewardConfig>('/pool/reward-config')
+
+export const savePoolRewardConfig = (payload: PoolRewardConfigPayload) =>
+  put<PoolRewardConfig>('/pool/reward-config', payload)
+
+export interface PoolRewardPreviewRow {
+  member_id: number
+  user_id: number
+  username: string | null
+  member_status: string
+  counted_plays: number
+  active_days: number
+  raw_plays: number
+  transfer_bytes: number
+  points: number
+  xp: number
+  would_status: string
+  reason: string | null
+}
+
+export interface PoolRewardPreview {
+  period_key: string
+  period_kind: string
+  period_start: string
+  period_end: string
+  reward_enabled: boolean
+  payout_enabled: boolean
+  rows: PoolRewardPreviewRow[]
+}
+
+export const fetchPoolRewardPreview = (periodKey?: string) =>
+  get<PoolRewardPreview>(
+    '/pool/rewards/preview',
+    periodKey ? { period_key: periodKey } : undefined)
+
+export interface PoolRewardSettlement {
+  id: number
+  period_key: string
+  period_kind: string
+  period_start: string | null
+  period_end: string | null
+  status: string
+  shadow: boolean
+  created_by: number | null
+  last_error: string | null
+  members: number
+  paid: number
+  shadow_rows: number
+  frozen: number
+  skipped: number
+  paid_points_total: number
+  created_at: string | null
+  finished_at: string | null
+}
+
+export interface PoolRewardDetail {
+  id: number
+  settlement_id: number
+  member_id: number
+  user_id: number
+  username: string | null
+  counted_plays: number
+  active_days: number
+  raw_plays: number
+  transfer_bytes: number
+  points: number
+  xp: number
+  welfare_days: number
+  status: string
+  reason: string | null
+  points_log_id: number | null
+  granted_at: string | null
+  released_by: number | null
+  released_at: string | null
+  created_at: string | null
+}
+
+export const settlePoolRewards = (periodKey?: string) =>
+  post<{ summary: Record<string, unknown>; settlement: PoolRewardSettlement }>(
+    '/pool/rewards/settle', periodKey ? { period_key: periodKey } : {})
+
+export const fetchPoolRewardSettlements = () =>
+  get<{ settlements: PoolRewardSettlement[] }>('/pool/rewards/settlements')
+
+export const fetchPoolRewardDetails = (settlementId: number) =>
+  get<{ settlement: PoolRewardSettlement; details: PoolRewardDetail[] }>(
+    `/pool/rewards/settlements/${settlementId}/details`)
+
+export const releasePoolRewardDetail = (detailId: number) =>
+  post<PoolRewardDetail>(`/pool/rewards/details/${detailId}/release`)

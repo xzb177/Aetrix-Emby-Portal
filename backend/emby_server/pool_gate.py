@@ -92,28 +92,51 @@ POOL_CONFIG_DEFAULTS: dict = {
 POOL_LIMIT_MEMBER_STATUSES = ("candidate", "pending", "active", "suspended")
 
 
-def _raw_config(db: Session) -> dict[str, str]:
+#: 激励子家族 pool_reward_* 的代码默认值（goal-33 PR-6，
+#: design §11.3；与 config_schema.POOL_REWARD_CONFIG_SCHEMA 同口径）。
+#: 与本体 16 键分开一份字典：GET /api/admin/pool/config 的
+#: 16 键口径（PR-1 已钉）不许被激励键撑大，激励键走
+#: reward-config 端点与 reward_config_payload 这一份读取。
+POOL_REWARD_CONFIG_DEFAULTS: dict = {
+    "pool_reward_enabled": False,
+    "pool_reward_payout_enabled": False,
+    "pool_reward_period": "monthly",
+    "pool_reward_points_per_play": 1,
+    "pool_reward_points_per_active_day": 5,
+    "pool_reward_points_cap": 900,
+    "pool_reward_min_active_days": 7,
+    "pool_reward_min_counted_plays": 10,
+    "pool_reward_play_dedupe_window_sec": 1800,
+    "pool_reward_daily_play_freeze": 1500,
+    "pool_reward_welfare_days": 0,
+    "pool_reward_welfare_min_plays": 50,
+    "pool_reward_xp_per_play": 1,
+    "pool_reward_xp_cap": 500,
+    "pool_reward_subscription_enabled": False,
+    "pool_reward_title_enabled": True,
+}
+
+
+def _raw_config_for(db: Session, defaults_map: dict) -> dict[str, str]:
     defaults = {
         key: ("true" if value is True else "false" if value is False
               else str(value))
-        for key, value in POOL_CONFIG_DEFAULTS.items()
+        for key, value in defaults_map.items()
     }
     try:
-        return store.get_values(db, list(POOL_CONFIG_DEFAULTS), defaults)
+        return store.get_values(db, list(defaults_map), defaults)
     except Exception:  # noqa: BLE001 配置层异常不许把判定打成 500
         logger.warning("公共池配置读取失败，回落代码默认", exc_info=True)
         return defaults
 
 
-def pool_config_payload(db: Session) -> dict:
-    """池配置生效值（类型化）：存量行优先，缺行/非法回代码默认。
+def _raw_config(db: Session) -> dict[str, str]:
+    return _raw_config_for(db, POOL_CONFIG_DEFAULTS)
 
-    管理端 GET /api/admin/pool/config 与判定层共用这一份 payload，
-    不许两处各解析一遍。
-    """
-    raw = _raw_config(db)
+
+def _typed_payload(raw: dict, defaults_map: dict) -> dict:
     out: dict = {}
-    for key, default in POOL_CONFIG_DEFAULTS.items():
+    for key, default in defaults_map.items():
         value = raw.get(key, "")
         if isinstance(default, bool):
             out[key] = str(value).strip().lower() == "true"
@@ -125,6 +148,25 @@ def pool_config_payload(db: Session) -> dict:
         else:
             out[key] = str(value) if value not in (None, "") else default
     return out
+
+
+def pool_config_payload(db: Session) -> dict:
+    """池配置生效值（类型化）：存量行优先，缺行/非法回代码默认。
+
+    管理端 GET /api/admin/pool/config 与判定层共用这一份 payload，
+    不许两处各解析一遍。
+    """
+    return _typed_payload(_raw_config(db), POOL_CONFIG_DEFAULTS)
+
+
+def reward_config_payload(db: Session) -> dict:
+    """激励子家族配置生效值（类型化）：口径与 pool_config_payload
+    同一份解析，键集是 POOL_REWARD_CONFIG_DEFAULTS。管理端
+    reward-config 端点与 pool_reward 结算共用这一份，不许两处
+    各解析一遍。"""
+    return _typed_payload(
+        _raw_config_for(db, POOL_REWARD_CONFIG_DEFAULTS),
+        POOL_REWARD_CONFIG_DEFAULTS)
 
 
 def pool_enabled(db: Session) -> bool:

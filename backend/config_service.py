@@ -50,6 +50,8 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "drive_api": config_schema.DRIVE_API_CONFIG_SCHEMA,
     # 公共贡献池（goal-33 PR-1 地基）：16 键，含池成员绑定上限键
     "pool": config_schema.POOL_CONFIG_SCHEMA,
+    # 公共池激励子家族（goal-33 PR-6）：pool_reward_* 16 键
+    "pool_reward": config_schema.POOL_REWARD_CONFIG_SCHEMA,
     # 上游聚合拉取/任务参数（2026-10-31 优化首批）：页大小、分页
     # 重试、心跳过期、认领轮询、进度日志、任务保留天数。
     "upstream_aggregate": config_schema.UPSTREAM_AGGREGATE_CONFIG_SCHEMA,
