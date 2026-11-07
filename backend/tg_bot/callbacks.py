@@ -898,7 +898,10 @@ def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | 
     amount = result["amount"]
     _answer(f"🧧 恭喜抢到 {amount} 能量！")
     if getattr(packet, "funding", "user") == "system":
-        # 红包雨不按普通红包那样每抢一次刷一条群消息，只改原面板。
+        # 红包雨的包走普通 claim 按钮领时同样补群反馈（用户口径：
+        # 抢了有反馈），再改原面板收尾。
+        if chat.get("type") in ("group", "supergroup"):
+            _send_claim_feedback(db, chat_id, user, amount, packet.remaining_count)
         from backend.tg_bot import rain_ui
 
         rain_ui.after_claim(db, getattr(packet, "rain_id", None))
@@ -1016,7 +1019,7 @@ def _send_slots_group_result(db, chat_id, player_name: str, spin, dice_message_i
 
 
 def _handle_rain_grab(db, callback_query: dict) -> None:
-    """红包雨「抢」。个人结果只弹 toast，面板原地改剩余份数。"""
+    """红包雨「抢」。抢成功：toast + 群反馈消息（30 秒自毁）＋原地改面板。"""
     from backend import rain as rain_svc
     from backend import welfare_redpacket
     from backend.tg_bot import rain_ui
@@ -1069,6 +1072,10 @@ def _handle_rain_grab(db, callback_query: dict) -> None:
         _answer("系统繁忙，请稍后再试", show_alert=True)
         return
     _answer(f"抢到 {int(result['amount'])} 能量")
+    # 抢成功补一条群反馈（用户口径：抢了有反馈），与普通红包同款、
+    # 同自毁口径；失败只记日志，绝不影响领取与面板刷新。
+    if chat.get("type") in ("group", "supergroup") and chat.get("id"):
+        _send_claim_feedback(db, int(chat["id"]), user, int(result["amount"]), int(result["remaining_count"]))
     rain_ui.after_claim(db, rain_id)
 
 

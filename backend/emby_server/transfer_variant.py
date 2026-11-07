@@ -1627,9 +1627,13 @@ def _item_provider(db, item):
         return None
     if mount is None:
         return None
-    if mount.mount_type == getattr(mount_lib, "MOUNT_PAN115", "115"):
+    # 挂载行没 mount_type（只可能是非 ORM 桩对象：真实行该列
+    # nullable=False 且有默认值）即判定不清，按本函数“不认识的
+    # 形状返回 None（proceed）”口径回落，不抛错拦播放。
+    mount_type = getattr(mount, "mount_type", None)
+    if mount_type == getattr(mount_lib, "MOUNT_PAN115", "115"):
         return "pan115"
-    if mount.mount_type == getattr(mount_lib, "MOUNT_DRIVE", "drive"):
+    if mount_type == getattr(mount_lib, "MOUNT_DRIVE", "drive"):
         return "drive"
     return None
 
