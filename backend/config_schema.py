@@ -461,7 +461,7 @@ UPSTREAM_AGGREGATE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 「上游源」页（/upstream-exclusive-line-config）。纯 SystemConfig
     # 键，不进 env.example。
     "upstream_aggregate_exclusive_source_ids": ("int_list", 1, 1000000),
-    # 飞牛试点基址：形如 https://pilot.135505.autos/p/<TOKEN>，路径
+    # 飞牛试点基址：形如 https://pilot.example.com/p/<TOKEN>，路径
     # token 只许经配置注入（从飞牛本地 token.txt 读出后写入），不许
     # 进代码与仓库。空串/无行＝未配，专属线路整体惰性。读取唯一实现
     # upstream_playback.feiniu_pilot_base_url。纯 SystemConfig 键。

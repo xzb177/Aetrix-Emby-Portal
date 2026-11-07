@@ -782,7 +782,7 @@ onUnmounted(() => {
           <el-input v-model="lineForm.name" placeholder="如：白名单专属线路" />
         </el-form-item>
         <el-form-item label="入口地址">
-          <el-input v-model="lineForm.entry_url" placeholder="https://pilot.135505.autos" />
+          <el-input v-model="lineForm.entry_url" placeholder="https://pilot.example.com" />
           <div class="detail-line-hint">对用户展示的公网地址，用户在播放器里填这个。</div>
         </el-form-item>
         <el-form-item label="取流基址">

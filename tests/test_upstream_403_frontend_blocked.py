@@ -61,7 +61,9 @@ def _assert_frontend_blocked(exc_info):
     assert exc_info.value.status == 502
     assert exc_info.value.code == "upstream_frontend_blocked"
     assert "上游前门（nginx）拦截" in exc_info.value.message
-    assert "15.204.95.101" in exc_info.value.message
+    # 文案只许说「本方出口 IP」，不许写死任何一台机器的真实 IP
+    # （隐私底线 + 发行包干净断言，2026-11-07）
+    assert "放行本方出口 IP" in exc_info.value.message
     assert "重录凭据无效" in exc_info.value.message
 
 

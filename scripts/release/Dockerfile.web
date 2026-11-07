@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1
+# 发行版前端镜像：直接使用发行包内已构建好的前端产物
+# （frontend_dist/user、frontend_dist/admin），买家机器上不需要装 Node。
+# 与仓库 Dockerfile.frontend 的最终阶段同构：nginx serve 两个前端，
+# /api/* 反代到后端（BACKEND_HOST 由 docker/web-entrypoint.sh 渲染）。
+FROM nginx:1.27-alpine
+COPY frontend_dist/user/ /usr/share/nginx/html/
+COPY frontend_dist/admin/ /usr/share/nginx/html/admin/
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf.template
+COPY docker/web-entrypoint.sh /docker-entrypoint.d/15-backend-host.sh
+RUN chmod +x /docker-entrypoint.d/15-backend-host.sh
+EXPOSE 80
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1/ || exit 1

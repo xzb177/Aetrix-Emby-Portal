@@ -80,6 +80,7 @@ from backend.api.admin_apikey import router as admin_apikey_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 from backend.api.admin_player_blacklist import admin_player_blacklist_router
+from backend.api.admin_license import admin_license_router
 # v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
 # 只提供能力，密钥一律由管理员自己填。
 from backend.api.capabilities_admin import capabilities_router
@@ -251,6 +252,17 @@ async def lifespan(app: FastAPI):
                 logger.info("媒体信息探测 worker 已启动")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
+
+        # 软件授权校验（发行版专用）：总开关 AETRIX_LICENSE_ENFORCE
+        # 默认关，关时 start() 直接返回 False、零行为变化（自家部署
+        # 永不受影响）；发行包默认开，启动后异步首验 + 每 24 小时
+        # 复验，绝不阻塞启动。与 worker.py 共用同一幂等入口。
+    if not _is_api_role:
+        try:
+            from backend import license_client
+            license_client.start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动软件授权校验失败（可忽略）: {e}")
 
         # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
         # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
@@ -847,6 +859,8 @@ app.include_router(admin_orders_router)
 app.include_router(admin_coupons_router)
 # 播放器登录黑名单（2026-10-30）：规则读写，见 backend/api/admin_player_blacklist.py
 app.include_router(admin_player_blacklist_router)
+# 软件授权（2026-11-07）：状态/填码/立即校验，见 backend/api/admin_license.py
+app.include_router(admin_license_router)
 # 外部服务能力中心（v2.19.0）：能力总览 / 配置 / 测试，见 backend/api/capabilities_admin.py
 app.include_router(capabilities_router)
 # 用户端 AI 助手（v2.19.0）：能力「AI 模型设置」的消费点，见 backend/api/assistant.py

@@ -425,8 +425,8 @@ def _unavailable_error() -> UpstreamAggregateRunError:
 def _frontend_blocked_error() -> UpstreamAggregateRunError:
     return UpstreamAggregateRunError(
         502, "upstream_frontend_blocked",
-        "上游前门（nginx）拦截，未到 Emby：请对方放行本方出口 IP "
-        "15.204.95.101，重录凭据无效")
+        "上游前门（nginx）拦截，未到 Emby：请对方放行本方出口 IP，"
+        "重录凭据无效")
 
 
 def _forbidden_error(body) -> UpstreamAggregateRunError:
