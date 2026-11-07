@@ -419,6 +419,34 @@ DRIVE_API_CONFIG_SCHEMA: dict[str, tuple] = {
     "drive_binding_enabled": ("bool",),
 }
 
+# 公共贡献池（goal-33 PR-1 地基，2026-11-07）：16 键，读取唯一实现
+# 在 emby_server.pool_gate（POOL_CONFIG_DEFAULTS 与本表同口径）；
+# 默认值按 25TB 补充节修正值（单盘容量 4.5TB、保底空闲 300GiB、
+# 日转存 600GiB），不是 design §3 的旧默认（0 不限 / 20GiB）。
+# 字节类上限给到 10**15：4.5TB 已超 _BIG（10**9）量级。
+# pool_enabled 默认关由读侧兜底（通审决议 1：分阶段接线期默认关，
+# 正式开池由管理员开闸）；激励子家族 pool_reward_* 本单不注册。
+POOL_CONFIG_SCHEMA: dict[str, tuple] = {
+    "pool_enabled": ("bool",),
+    "pool_audience": ("enum", ("all", "whitelist", "subscribers")),
+    "pool_join_mode": ("enum", ("apply_review", "admin_assign", "open")),
+    "pool_enabled_providers": ("str",),
+    "pool_member_capacity_bytes": ("int", 0, 10**15),
+    "pool_member_reserve_free_bytes": ("int", 0, 10**15),
+    "pool_member_daily_transfer_bytes": ("int", 0, 10**15),
+    "pool_member_daily_transfer_jobs": ("int", 0, _BIG),
+    "pool_item_max_copies": ("int", 1, 8),
+    "pool_copy_idle_evict_days": ("int", 0, 3650),
+    "pool_global_concurrency": ("int", 1, 16),
+    "pool_enqueue_jitter_sec": ("int", 0, 600),
+    "pool_breaker_quota_hits_per_day": ("int", 0, _BIG),
+    "pool_breaker_cooldown_sec": ("int", 60, 604800),
+    "pool_pick_top_k": ("int", 1, 8),
+    # 池候选/成员的个人绑定上限（通审决议 2）：管理员预批资格先行，
+    # 见候选/成员资格时改走本键，个人上限（env，默认 3）不变。
+    "pool_member_max_bindings_per_user": ("int", 1, 100),
+}
+
 # 上游聚合拉取参数（2026-10-31 优化 O-05 起，后续 O-01/O-02/O-03
 # 的任务参数同家族登记）：读取唯一实现在 upstream_aggregate_run /
 # upstream_aggregate_jobs，范围与读取侧钳制同口径；无行时读取侧

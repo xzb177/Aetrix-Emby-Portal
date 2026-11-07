@@ -716,10 +716,16 @@ def _validate_label_and_quota(db: Session, user_id: int,
     if exclude_binding_id is not None:
         count_q = count_q.filter(
             em.UserStorageBinding.id != exclude_binding_id)
-    if count_q.count() >= ub.binding_limit_per_user():
+    # 上限口径（goal-33 通审决议 2）：有池候选/成员资格的用户走
+    # pool_gate.binding_limit_for_user 的池独立上限键，其余仍是个人
+    # 上限（env，默认 3）——判定收口在 pool_gate 一处，本处不另算。
+    from backend.emby_server import pool_gate as _pool_gate
+
+    limit = _pool_gate.binding_limit_for_user(db, user_id)
+    if count_q.count() >= limit:
         raise DriveOAuthError(
             "validation",
-            f"绑定已达上限（{ub.binding_limit_per_user()} 个），请先解绑不用的账号。")
+            f"绑定已达上限（{limit} 个），请先解绑不用的账号。")
     return label
 
 

@@ -2327,6 +2327,77 @@ class UserStorageBinding(Base):
     oauth_client = Column(String(20), nullable=True)
 
 
+class PoolMember(Base):
+    """公共贡献池成员（goal-33 PR-1 地基）：一行 = 一条被接纳为池盘
+    的用户绑定，或一条管理员预批的候选资格。
+
+    - ``binding_id``：指向 ``user_storage_bindings.id``，unique（一行
+      绑定至多一个成员行）；候选资格行（status=candidate，管理员在
+      贡献者绑盘之前预批）尚无绑定，``binding_id`` 为 NULL——上限
+      判定（pool_gate.binding_limit_for_user）靠候选行先行，贡献者
+      才能绑满 5 个盘（GOAL 通审决议 2）。
+    - ``user_id``：贡献者 WebUser.id（冗余存一份，免每次 join 查）。
+    - ``provider``：入池时从绑定行快照；候选行为 NULL（还没绑定）。
+      能力层不写死 provider（见 design §2.5）。
+    - ``status``：candidate（预批资格）| pending（申请待审）|
+      active | suspended | exited | rejected | ejected。
+    - ``capacity_cap_bytes``：管理员对单盘的覆盖上限，NULL = 用
+      全局配置 pool_member_capacity_bytes。
+    - ``suspended_reason``：manual / breaker / binding_invalid /
+      contributor_exit / admin_eject。
+    - 无外键（照 TransferVariant 先例）；新表由 create_all 建出。
+    """
+
+    __tablename__ = "pool_members"
+
+    __table_args__ = (
+        Index("ix_pool_members_user", "user_id"),
+        Index("ix_pool_members_status", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    binding_id = Column(Integer, unique=True, nullable=True)
+    user_id = Column(Integer, nullable=False)
+    provider = Column(String(20), nullable=True)
+    status = Column(String(20), nullable=False, default="pending")
+    capacity_cap_bytes = Column(BigInteger, nullable=True)
+    suspended_reason = Column(String(40), nullable=True)
+    breaker_until = Column(DateTime, nullable=True)
+    joined_at = Column(DateTime, nullable=True)
+    status_changed_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now,
+                        onupdate=datetime.now)
+
+
+class PoolUsageDaily(Base):
+    """公共贡献池单盘日用量（goal-33 PR-1 地基）：一盘一天一行，
+    (member_id, day) 唯一。限额与选盘打分的数据面（PR-2 起写入）。
+
+    播放字节数不可观测（池副本走免凭证直链、字节不过服务器），
+    本表只记起播次数，不编造字节数。
+    """
+
+    __tablename__ = "pool_usage_daily"
+
+    __table_args__ = (
+        UniqueConstraint("member_id", "day",
+                         name="uq_pool_usage_daily_member_day"),
+        Index("ix_pool_usage_daily_member", "member_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, nullable=False)
+    day = Column(Date, nullable=False)
+    transfer_jobs = Column(Integer, nullable=False, default=0)
+    transfer_bytes = Column(BigInteger, nullable=False, default=0)
+    play_starts = Column(Integer, nullable=False, default=0)
+    quota_hits = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now,
+                        onupdate=datetime.now)
+
+
 class Pan115Account(Base):
     """115 账号配置档（Cookie 型，不依赖 115 OpenAPI）
 

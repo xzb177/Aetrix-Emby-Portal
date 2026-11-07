@@ -48,6 +48,8 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "transfer": config_schema.TRANSFER_CONFIG_SCHEMA,
     # Drive API 全局限速（2026-10-30）：全局令牌桶 QPS
     "drive_api": config_schema.DRIVE_API_CONFIG_SCHEMA,
+    # 公共贡献池（goal-33 PR-1 地基）：16 键，含池成员绑定上限键
+    "pool": config_schema.POOL_CONFIG_SCHEMA,
     # 上游聚合拉取/任务参数（2026-10-31 优化首批）：页大小、分页
     # 重试、心跳过期、认领轮询、进度日志、任务保留天数。
     "upstream_aggregate": config_schema.UPSTREAM_AGGREGATE_CONFIG_SCHEMA,
