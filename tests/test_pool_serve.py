@@ -24,7 +24,12 @@ import os
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
-os.environ.setdefault("TRANSFER_VARIANT_ENABLED", "1")
+# 注意：TRANSFER_VARIANT_ENABLED 不能在这里导入期 setdefault——
+# 它是运行时动态读的开关，导入期写死会泄漏进同进程后续全部用例
+# （总闸被误开，别的文件的桩库/桩条目会走进转存门禁深处报错；
+# 全量里 test_drive_exists_invalidate 两条即因此红）。
+# 改由下方 autouse fixture 用 monkeypatch.setenv 按用例设置、
+# 用例结束自动撤销。
 
 import time
 import uuid
@@ -228,6 +233,10 @@ def _h(token):
 
 @pytest.fixture(autouse=True)
 def _fake_member_quota(monkeypatch):
+    # 本文件用例需要转存总闸开：按用例设置，结束自动撤销，
+    # 不许导入期写死泄漏给同进程其它文件（见文件头注释）。
+    monkeypatch.setenv("TRANSFER_VARIANT_ENABLED", "1")
+
     class _FakeQuotaClient:
         def __init__(self, db_arg, binding):
             pass
