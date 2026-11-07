@@ -81,6 +81,13 @@ BYOS_DRIVE_RELAY = "byos_drive_relay"
 #: 打点口径：转存副本走主线源出流（与 115 副本同款，不进
 #: list_variants 显式清单），不许拿它当可选变体下发。
 BYOS_QUARK_RELAY = "byos_quark_relay"
+#: 公共贡献池副本（goal-33 PR-3）：未绑用户播池中 ready 副本——
+#: 经贡献者令牌给副本授 anyone-reader 后下发免凭证 usercontent
+#: 直链，客户端自拉、字节不过服务器，与 drive_direct 同形
+#: （is_remote=True / needs_relay=False）。只在调用方信号
+#: pool_copy_available（未绑 + 池 eligible + 变体行复核有 ready
+#: 池副本）为真时才进清单，绑盘用户与池外条目恒不列。
+POOL_COPY = "pool_copy"
 
 
 @dataclass(frozen=True)
@@ -113,6 +120,9 @@ _VARIANTS: dict[str, Variant] = {
     # 中继形态：字节过服务器（凭用户 Cookie 现取链取流），故
     # is_remote=False / needs_relay=True——与 drive 中继同形。
     BYOS_QUARK_RELAY: Variant(BYOS_QUARK_RELAY, "我的夸克中继", "Http", False, True),
+    # 池副本直链形态：客户端从贡献者盘自拉（免凭证公开链），
+    # is_remote=True / needs_relay=False——与 drive_direct 同形。
+    POOL_COPY: Variant(POOL_COPY, "公共池", "Http", True, False),
 }
 
 
@@ -125,7 +135,8 @@ def list_variants(db: Session, item, *,
                   drive_mount_locatable: bool = False,
                   mount_can_generate_play_target: bool | None = None,
                   user115_direct_available: bool = False,
-                  user_drive_byos_available: bool = False) -> list[Variant]:
+                  user_drive_byos_available: bool = False,
+                  pool_copy_available: bool = False) -> list[Variant]:
     """按条目算可用变体清单（唯一判定口），第一条恒为现行主线变体。
 
     排序即兼容：第一条就是今天 video_stream 自动判定实际会走的那条
@@ -158,6 +169,12 @@ def list_variants(db: Session, item, *,
     byos_drive_relay（第一条仍是现行主线，老客户端无感）。清单阶段
     不真取令牌——令牌只在取流时现取现用，失效时取流报 409/503，
     不静默回落共享 SA 池。
+
+    ``pool_copy_available`` 由调用方用 api._pool_copy_available 算好
+    传进来（未绑 + 池 eligible + 已复核有 ready 池副本行）：True
+    时在清单末尾追加 pool_copy（第一条仍是现行主线）。本函数内再
+    以 drive_file_id 兜底：无 fid 的条目即使调用方误传信号也不
+    追加（与 byos 双保险同纪律）。
     """
     fid = (getattr(item, "drive_file_id", "") or "").strip()
     file_path = getattr(item, "file_path", "") or ""
@@ -186,6 +203,11 @@ def list_variants(db: Session, item, *,
     # + fid，这里是第二道门）。
     if user_drive_byos_available and fid:
         names.append(BYOS_DRIVE_RELAY)
+    # 公共池：排在主线与 BYOS 之后（第一条仍是现行主线）；信号由
+    # 调用方按「未绑 + 池 eligible + 变体行复核」算好，这里再以
+    # fid 兜底防信号外溢。
+    if pool_copy_available and fid:
+        names.append(POOL_COPY)
     return [_VARIANTS[n] for n in names]
 
 
