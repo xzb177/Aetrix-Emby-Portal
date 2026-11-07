@@ -23,6 +23,12 @@ name: Publish Images
 # workflow_run 对**所有** CI 运行都会触发，包括 fork 仓库发来的 PR（它们的 CI 也可能
 # 绿）。如果不加 event / head_branch 判断，一个 fork 分支的 CI 变绿就能往 ghcr.io 推
 # 镜像。下面的 gate 步骤把这条路堵死：只接受 event == push 且 head_branch == main。
+#
+# 走 GitHub 官方机（ubuntu-latest），公开仓库托管分钟免费。备用检查
+# 机组保留待命、不拆除；仓库转私密后免费额度只有 2000 分钟/月，而
+# 发布每次约 6–8 分钟，届时另开单与 ci.yml 一起切回备用机组。发布
+# 安全不依赖路由：下面的 gate 步骤只认「main 的 push 且 CI 全绿」，
+# 路由写错也推不出去。
 # ============================================================================
 
 on:
