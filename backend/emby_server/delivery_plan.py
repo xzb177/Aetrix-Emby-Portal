@@ -456,6 +456,12 @@ def plan_ready_leg(db, item, user):
     user_id = getattr(user, "id", None)
     if db is None or item is None or user_id is None:
         return None
+    # item 可能是只有 drive_file_id 的桩对象（无 id）：没有真实 id
+    # 就查不到计划，按本函数“其余一切情形回 None”口径回落；真实
+    # MediaItem 的 id 是主键恒有值，此守卫不会掩盖真实数据问题。
+    item_id = getattr(item, "id", None)
+    if item_id is None:
+        return None
     if not delivery_plan_enabled(db):
         return None
     try:
@@ -464,16 +470,16 @@ def plan_ready_leg(db, item, user):
             return None
     except Exception:  # noqa: BLE001 — 总闸读不到按不采用处理
         return None
-    plan = get_fresh_plan(db, user_id, item.id)
+    plan = get_fresh_plan(db, user_id, item_id)
     if plan is None:
         logger.debug("delivery_plan outcome=miss user=%s item=%s",
-                     user_id, item.id)
+                     user_id, item_id)
         return None
     legs = plan.get("legs") or []
     top = legs[0] if legs else {}
     if top.get("leg") != "user_copy_ready":
         logger.debug("delivery_plan outcome=miss user=%s item=%s "
-                     "top=%s", user_id, item.id, top.get("leg"))
+                     "top=%s", user_id, item_id, top.get("leg"))
         return None
     variant_id = top.get("variant_id")
     row = None
@@ -487,15 +493,15 @@ def plan_ready_leg(db, item, user):
           and row.status == "ready"
           and row.owner_scope == "user"
           and row.owner_ref == str(user_id)
-          and int(row.item_id) == int(item.id)
+          and int(row.item_id) == int(item_id)
           and not (row.variant_drive_id or "").startswith(
               ("quark:", "pan115:"))
           and bool((row.variant_file_id or "").strip()))
     if not ok:
         logger.info("delivery_plan outcome=fallback user=%s item=%s "
                     "reason=variant_recheck_failed variant_id=%s",
-                    user_id, item.id, variant_id)
+                    user_id, item_id, variant_id)
         return None
     logger.info("delivery_plan outcome=hit user=%s item=%s "
-                "variant_id=%s", user_id, item.id, row.id)
+                "variant_id=%s", user_id, item_id, row.id)
     return row.variant_file_id, row
