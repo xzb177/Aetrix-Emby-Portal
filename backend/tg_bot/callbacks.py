@@ -236,9 +236,9 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         elif action == "admin_whois":
             text = layout.card(layout.title("查人"), [
                 layout.row("🔍", "私聊用法",
-                           "/whois 站内名 / TG 号 / IP / 设备，定位到人出管理面板"),
+                           "/kk 站内名 / TG 号 / IP / 设备，定位到人出管理面板"),
                 layout.row("👥", "群里用法",
-                           "回复某人的消息发送 /whois，出精简卡（自动删除）"),
+                           "回复某人的消息发送 /kk，出精简卡（自动删除）"),
                 layout.row("🎛️", "面板动作",
                            "查到人后可封禁/解封、赠送能量/公益/查看凭证；"
                            "只读审计角色仅查看"),

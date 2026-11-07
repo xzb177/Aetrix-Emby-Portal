@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""TG Bot 管理员审计反查 /whois（embyboss 借鉴第 2 项）。
+"""TG Bot 管理员审计反查 /kk（embyboss 借鉴第 2 项）。
 
 口径：
 - 审计全卡仅私聊、仅网站管理员（is_staff 现行判定，与 handle_admin
   同一口径）；非管理员回现行拒绝卡（🔒 仅管理员可用），未绑定回
   绑定指引，handler 层对未声明群上下文的直调仍有私聊 guard。
-- 群聊模式（2026-11-01 用户拍板）：管理员在群里发 /whois 出精简卡
+- 群聊模式（2026-11-01 用户拍板）：管理员在群里发 /kk 出精简卡
   （字段白名单、无审计痕迹），见 test_tg_bot_whois_group_lite.py。
 - 全只读：只查 web_users / login_logs / emby_playback_sessions /
   user_storage_bindings / emby_items，不建行不改行不提交。
@@ -165,12 +165,12 @@ def test_handler_group_chat_double_guard(db):
 
 
 def test_router_group_whois_staff_gets_lite_card(db, sent):
-    # 2026-11-01 起 /whois 不再被 router private_only 拦：管理员群里
+    # 2026-11-01 起 /kk 不再被 router private_only 拦：管理员群里
     # 带参查人出精简卡（用户名在、登录 IP 等审计痕迹不在）。
     _staff(db)
     target = _user(db, "grouptarget", tg_id=700301)
     _login(db, target)
-    router.dispatch(db, _group_update("/whois grouptarget"))
+    router.dispatch(db, _group_update("/kk grouptarget"))
     assert len(sent) == 1
     assert "grouptarget" in sent[0]
     assert "1.2.3.4" not in sent[0]
@@ -234,7 +234,7 @@ def test_no_hit_says_not_found(db):
 def test_empty_args_shows_usage(db):
     _staff(db)
     out = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "  ")
-    assert "/whois" in out
+    assert "/kk" in out
 
 
 # ---------- 卡片内容：最近 5 条登录/播放、绑定状态、脱敏 ----------
@@ -319,9 +319,9 @@ def test_lookup_is_readonly(db):
 
 def test_command_registered(db, sent):
     _staff(db)
-    assert policy.COMMAND_SWITCHES.get("/whois") == "bot_cmd_whois"
-    assert ("whois", "[群/私聊] 账号反查（管理员）") in poller.BOT_COMMANDS
-    router.dispatch(db, _private_update("/whois nothinghere"))
+    assert policy.COMMAND_SWITCHES.get("/kk") == "bot_cmd_whois"
+    assert ("kk", "[群/私聊] 账号反查（管理员）") in poller.BOT_COMMANDS
+    router.dispatch(db, _private_update("/kk nothinghere"))
     assert len(sent) == 1
     assert "未知命令" not in sent[0]
     assert "没查到" in sent[0]
@@ -331,6 +331,24 @@ def test_command_switch_off(db, sent):
     _staff(db)
     db.add(models.SystemConfig(key="bot_cmd_whois", value="false"))
     db.commit()
-    router.dispatch(db, _private_update("/whois nothinghere"))
+    router.dispatch(db, _private_update("/kk nothinghere"))
     assert len(sent) == 1
     assert "该功能已关闭" in sent[0]
+
+
+def test_old_whois_command_no_longer_dispatched(db, sent):
+    # 2026-11-07 命令改名 /kk：旧名 /whois 是替换不是别名，私聊与
+    # 群里都应回未知命令，且绝不许落进查人逻辑出任何结果。
+    _staff(db)
+    target = _user(db, "oldname_target", tg_id=701301)
+    _login(db, target)
+    router.dispatch(db, _private_update("/whois oldname_target"))
+    assert len(sent) == 1
+    assert "未知命令" in sent[0]
+    assert "oldname_target" not in sent[0]
+    router._user_cmd_limits.clear()
+    router._group_windows.clear()
+    router.dispatch(db, _group_update("/whois oldname_target"))
+    assert len(sent) == 2
+    assert "未知命令" in sent[1]
+    assert "oldname_target" not in sent[1]

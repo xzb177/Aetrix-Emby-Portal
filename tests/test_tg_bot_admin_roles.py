@@ -292,7 +292,7 @@ def test_viewer_menu_excludes_write_commands(db, monkeypatch):
             if (scope or {}).get("chat_id") == VIEWER_TG]
     assert mine, "viewer 管理员应有单独下发"
     names = [n for n, _d in mine[0]]
-    assert "whois" in names and "reconcile" in names and "govlog" in names
+    assert "kk" in names and "reconcile" in names and "govlog" in names
     assert "rankpush" not in names and "rain" not in names
 
 
@@ -329,7 +329,7 @@ def test_bind_operator_gets_admin_scope_immediately(db, monkeypatch):
                        "810001")
     assert mine, "绑定成功后应立即补发管理员 scope"
     names = [n for n, _d in mine[0]]
-    assert "rankpush" in names and "whois" in names
+    assert "rankpush" in names and "kk" in names
 
 
 def test_bind_viewer_gets_readonly_scope_immediately(db, monkeypatch):
@@ -337,7 +337,7 @@ def test_bind_viewer_gets_readonly_scope_immediately(db, monkeypatch):
                        "810002")
     assert mine, "绑定成功后应立即补发管理员 scope"
     names = [n for n, _d in mine[0]]
-    assert "whois" in names and "rankpush" not in names
+    assert "kk" in names and "rankpush" not in names
 
 
 # ---------- 二、管理面板：真实角色 + 按角色裁剪按钮 ----------

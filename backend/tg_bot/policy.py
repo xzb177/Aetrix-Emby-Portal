@@ -77,7 +77,7 @@ COMMAND_SWITCHES: dict[str, str] = {
     "/whyplay": "bot_cmd_whyplay",
     "/wants": "bot_cmd_wants",
     "/reconcile": "bot_cmd_reconcile",
-    "/whois": "bot_cmd_whois",
+    "/kk": "bot_cmd_whois",
 }
 
 _DEFAULT_RATE_LIMIT_SECONDS = 3.0

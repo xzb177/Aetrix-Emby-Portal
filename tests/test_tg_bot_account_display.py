@@ -290,7 +290,7 @@ def test_bot_commands_cover_router_commands():
         "login", "renew", "redeem", "lottery", "redpacket", "slots", "duel", "rain",
         "bindings", "transfers", "whyplay", "wants", "chatpoints",
         "level", "report", "propose", "launch", "govlog",
-        "reconcile", "rankpush", "whois",
+        "reconcile", "rankpush", "kk",
     }
     aliases = {"account", "renew", "chatpoints", "level"}
     assert aliases <= router_commands
