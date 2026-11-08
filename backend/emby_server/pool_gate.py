@@ -18,6 +18,14 @@ last_played_at + H1 原始事件 pool_play_events）、成员令牌口
 （``pool_member_access_token``）与 sign 轨池判定
 （``pool_sign_allowed``）。
 
+PR-4 生命周期（本单）：成员状态机全套（申请/批准/拒绝/暂停/
+恢复/清退/退出）收口在文末「成员生命周期」一节——所有状态
+变更经 ``transition_member_status`` 落 H2 流水
+（``pool_member_status_events``）；清退违规标志在成员行
+``violation_*`` 列；绑定失效/解绑连带钩子（``on_binding_failed``
+/ ``on_binding_deleted``）由 user_bindings 两处落态口调用。
+管理端入口在 backend/api/pool_admin.py，用户端三口在 portal.py。
+
 硬闸：池总开关关时一切按池不存在（未绑用户仍走既有门禁原 403，
 回归测试 test_pool_foundation
 .test_redline_existing_gate_unchanged_when_pool_enabled 钉住）。
@@ -933,3 +941,581 @@ def pool_sign_allowed(db: Session, user_id, item) -> bool:
     except Exception:  # noqa: BLE001 — 判定异常不许签
         logger.warning("池 sign 判定异常，按不可签处理", exc_info=True)
         return False
+
+
+# ---------------------------------------------------------------- 成员生命周期（PR-4）
+# design §2.4 状态机 + §6.4 下线连带 + §11.5 钩子 H2。
+#
+# 状态变更唯一收口是 transition_member_status：改 status /
+# status_changed_at 并落 pool_member_status_events 流水一行。
+# 本节所有流转（申请/批准/拒绝/暂停/恢复/清退/退出/绑定失效
+# 连带）都经它，PR-5 熔断连带也必须经它——绕过收口直接写
+# member.status 会让在线天数结算（PR-6）缺区间数据。
+#
+# 事务口径：收口与内部流转不 commit，公共服务函数在末尾统一
+# commit；绑定钩子（on_binding_failed / on_binding_deleted）
+# 骑调用方事务，不自提交。
+
+#: 成员终态（不可再流转；exited/rejected 允许对同一绑定重新申请，
+#: ejected 不许——清退是管理员决定，翻案走 clear/人工处置）。
+POOL_MEMBER_TERMINAL_STATUSES = ("exited", "rejected", "ejected")
+
+#: 退出/清退时同步删文件的上限（请求内 best-effort，防大池成员
+#: 在退出请求里串行删几千个文件；超出的行照样标 released——
+#: 文件残留在贡献者自己盘里、与站无关，见 design §7 风险 3）。
+_EXIT_DELETE_LIMIT = 50
+
+
+class PoolLifecycleError(Exception):
+    """生命周期操作被拒：kind 是机器可读原因，message 是人话。
+
+    kind：not_found / invalid_state / no_binding /
+    binding_inactive / provider_not_enabled / needs_rebind /
+    assign_required / ejected。
+    """
+
+    def __init__(self, kind: str, message: str):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+
+
+def record_member_status_event(db: Session, member, from_status,
+                               to_status, reason) -> em.PoolMemberStatusEvent:
+    """落一笔 H2 状态流水（不 commit，随调用方事务）。"""
+    event = em.PoolMemberStatusEvent(
+        member_id=member.id, from_status=from_status,
+        to_status=to_status, reason=reason)
+    db.add(event)
+    return event
+
+
+def transition_member_status(db: Session, member, to_status: str, *,
+                             reason: str):
+    """状态变更唯一收口：改状态 + 变更时刻 + H2 流水（不 commit）。"""
+    from_status = member.status
+    if from_status == to_status:
+        return member
+    member.status = to_status
+    member.status_changed_at = datetime.now()
+    db.flush()
+    record_member_status_event(db, member, from_status, to_status, reason)
+    return member
+
+
+def get_pool_member(db: Session, member_id) -> em.PoolMember:
+    member = (db.query(em.PoolMember)
+              .filter(em.PoolMember.id == member_id).first())
+    if member is None:
+        raise PoolLifecycleError("not_found", "池成员不存在。")
+    return member
+
+
+def _member_binding(db: Session, member) -> em.UserStorageBinding | None:
+    if member is None or member.binding_id is None:
+        return None
+    return (db.query(em.UserStorageBinding)
+            .filter(em.UserStorageBinding.id == member.binding_id)
+            .first())
+
+
+def _check_binding_pool_ready(db: Session, binding) -> None:
+    """入池/恢复时对绑定行的硬查（design §2.5）：provider 在配置
+    名单内、drive 含 drive.file 范围。不合格抛 PoolLifecycleError。"""
+    cfg = pool_config_payload(db)
+    if binding.provider not in _enabled_providers(cfg):
+        raise PoolLifecycleError(
+            "provider_not_enabled",
+            "这个盘的类型不在公共池准入名单内。")
+    if binding.provider == "drive":
+        from backend.emby_server import drive_oauth as _do
+
+        if _do.binding_needs_rebind(binding.granted_scopes):
+            raise PoolLifecycleError(
+                "needs_rebind",
+                "这个盘的授权范围不足（缺写入范围），"
+                "请先在「我的网盘」里对它重新授权，再申请加入。")
+
+
+def _require_binding_active(db: Session, member) -> em.UserStorageBinding:
+    binding = _member_binding(db, member)
+    if binding is None:
+        raise PoolLifecycleError(
+            "no_binding", "该成员尚未绑定盘，无法执行此操作。")
+    if binding.status != "active":
+        raise PoolLifecycleError(
+            "binding_inactive",
+            "成员绑定的盘已失效，先恢复绑定再操作。")
+    return binding
+
+
+def _join_target_status(db: Session, *, has_candidate: bool) -> str:
+    """按 pool_join_mode 定申请落态（design §3/§8.3）。
+
+    apply_review → pending（等管理员审）；open → active；
+    admin_assign → 只有已有候选资格行（管理员已授予）才 active，
+    没有则拒绝自助申请。
+    """
+    mode = pool_config_payload(db)["pool_join_mode"]
+    if mode == "open":
+        return "active"
+    if mode == "admin_assign":
+        if has_candidate:
+            return "active"
+        raise PoolLifecycleError(
+            "assign_required",
+            "公共池由管理员指定成员，请联系管理员授予资格后再绑定申请。")
+    return "pending"
+
+
+def _land_application(db: Session, member, *, reason="apply"):
+    """申请落态：按 join_mode 定目标状态并经收口流转（末尾 commit）。"""
+    target = _join_target_status(
+        db, has_candidate=(member.status == "candidate"))
+    if target == "active" and member.joined_at is None:
+        member.joined_at = datetime.now()
+    transition_member_status(db, member, target, reason=reason)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def apply_pool_membership(db: Session, user_id: int, binding_id: int):
+    """贡献者对自己某个绑定申请入池（用户端 apply 口）。
+
+    幂等：该绑定已有非终态成员行直接返回；终态行（exited /
+    rejected）重新申请走同一行流转回 pending/active；ejected
+    行拒绝再申请。候选行（管理员预批、binding_id 为空）优先
+    挂接本绑定。校验：绑定属本人、active、provider 在名单、
+    范围满足（§2.5）。
+    """
+    binding = (db.query(em.UserStorageBinding)
+               .filter(em.UserStorageBinding.id == binding_id,
+                       em.UserStorageBinding.user_id == user_id)
+               .first())
+    if binding is None:
+        raise PoolLifecycleError(
+            "not_found", "绑定不存在或不属于你。")
+    if binding.status != "active":
+        raise PoolLifecycleError(
+            "binding_inactive",
+            "这个盘当前不可用（绑定已失效），先恢复绑定再申请。")
+    _check_binding_pool_ready(db, binding)
+    existing = (db.query(em.PoolMember)
+                .filter(em.PoolMember.binding_id == binding.id)
+                .order_by(em.PoolMember.id.asc()).first())
+    if existing is not None:
+        if existing.status == "ejected":
+            raise PoolLifecycleError(
+                "ejected", "该盘已被管理员清退，无法再次申请。")
+        if existing.status not in POOL_MEMBER_TERMINAL_STATUSES:
+            return existing
+        return _land_application(db, existing)
+    candidate = (db.query(em.PoolMember)
+                 .filter(em.PoolMember.user_id == user_id,
+                         em.PoolMember.status == "candidate",
+                         em.PoolMember.binding_id.is_(None))
+                 .order_by(em.PoolMember.id.asc()).first())
+    if candidate is not None:
+        candidate.binding_id = binding.id
+        candidate.provider = binding.provider
+        db.flush()
+        return _land_application(db, candidate)
+    # 无候选行：admin_assign 模式在此拒绝（有候选行才轮到建行）
+    target = _join_target_status(db, has_candidate=False)
+    now = datetime.now()
+    row = em.PoolMember(
+        binding_id=binding.id, user_id=user_id,
+        provider=binding.provider, status=target,
+        joined_at=now if target == "active" else None,
+        status_changed_at=now)
+    db.add(row)
+    db.flush()
+    record_member_status_event(db, row, None, target, "apply")
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def approve_pool_member(db: Session, member_id: int, *, actor_id=None):
+    """待审 → active（管理员批准）。批准前复查绑定仍合格。"""
+    member = get_pool_member(db, member_id)
+    if member.status != "pending":
+        raise PoolLifecycleError(
+            "invalid_state",
+            f"成员当前是「{member.status}」，只有待审状态可以批准。")
+    binding = _require_binding_active(db, member)
+    _check_binding_pool_ready(db, binding)
+    if member.joined_at is None:
+        member.joined_at = datetime.now()
+    transition_member_status(db, member, "active", reason="approve")
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def reject_pool_member(db: Session, member_id: int, *, actor_id=None):
+    """候选/待审 → rejected（管理员拒绝）。"""
+    member = get_pool_member(db, member_id)
+    if member.status not in ("candidate", "pending"):
+        raise PoolLifecycleError(
+            "invalid_state",
+            f"成员当前是「{member.status}」，只有候选/待审状态可以拒绝。")
+    transition_member_status(db, member, "rejected", reason="reject")
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def suspend_pool_member(db: Session, member_id: int, *, actor_id=None,
+                        reason: str = "manual"):
+    """active → suspended（管理员暂停；熔断连带走 on_* 钩子/PR-5）。"""
+    member = get_pool_member(db, member_id)
+    if member.status != "active":
+        raise PoolLifecycleError(
+            "invalid_state",
+            f"成员当前是「{member.status}」，只有在池成员可以暂停。")
+    member.suspended_reason = reason
+    member.breaker_until = None
+    transition_member_status(db, member, "suspended", reason=reason)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def resume_pool_member(db: Session, member_id: int, *, actor_id=None):
+    """suspended → active（管理员恢复）。绑定已死/范围不足时拒绝，
+    防把死盘放回选盘候选集。"""
+    member = get_pool_member(db, member_id)
+    if member.status != "suspended":
+        raise PoolLifecycleError(
+            "invalid_state",
+            f"成员当前是「{member.status}」，只有暂停状态可以恢复。")
+    binding = _require_binding_active(db, member)
+    _check_binding_pool_ready(db, binding)
+    member.suspended_reason = None
+    member.breaker_until = None
+    transition_member_status(db, member, "active", reason="resume")
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def release_member_copies(db: Session, member, *,
+                          client_factory=None) -> dict:
+    """成员下线时的副本处置（design §6.4）：ready/orphan 池副本
+    先用成员令牌 best-effort 删盘内文件（失败只计数不阻塞），
+    行一律标 released。不 commit（随调用方事务）。
+
+    client_factory(db, binding) 可注入（测试替身）；默认按成员
+    绑定建 UserDriveApiClient（与池单执行同一客户端，令牌只用
+    成员自己的，绝不回落 SA）。绑定已死则不尝试删除——文件随
+    账号生死，行标 released 收尾（§7 风险 3）。
+    """
+    rows = (db.query(em.TransferVariant)
+            .filter(em.TransferVariant.owner_scope == "pool",
+                    em.TransferVariant.owner_ref == str(member.id),
+                    em.TransferVariant.status.in_(("ready", "orphan")))
+            .order_by(em.TransferVariant.id.asc())
+            .all())
+    stats = {"released": 0, "delete_failed": 0, "delete_skipped": 0}
+    if not rows:
+        return stats
+    binding = _member_binding(db, member)
+    client = None
+    if binding is not None and binding.status == "active":
+        try:
+            if client_factory is not None:
+                client = client_factory(db, binding)
+            else:
+                client = _tv.UserDriveApiClient(db, binding)
+        except Exception:  # noqa: BLE001 — 客户端建不出来按无令牌处理
+            logger.warning("池成员副本清理客户端构建失败 member=%s",
+                           member.id, exc_info=True)
+            client = None
+    marker = f"myDrive:{member.user_id}"
+    for idx, row in enumerate(rows):
+        fid = (row.variant_file_id or "").strip()
+        if client is not None and fid and idx < _EXIT_DELETE_LIMIT:
+            try:
+                client.delete_file_ignore_missing(marker, fid)
+            except Exception:  # noqa: BLE001 — 删不掉不阻塞下线
+                logger.warning("池副本删文件失败 member=%s fid=%s",
+                               member.id, fid, exc_info=True)
+                stats["delete_failed"] += 1
+        elif client is not None and fid:
+            stats["delete_skipped"] += 1
+        row.status = "released"
+        stats["released"] += 1
+    db.flush()
+    return stats
+
+
+def _exit_member(db: Session, member, *, reason: str,
+                 client_factory=None) -> dict:
+    """退出/连带下线的内部实现（不 commit）：流转 + 副本处置。"""
+    transition_member_status(db, member, "exited", reason=reason)
+    member.suspended_reason = reason
+    stats = release_member_copies(
+        db, member, client_factory=client_factory)
+    stats["member_id"] = member.id
+    return stats
+
+
+def exit_pool_membership(db: Session, member_id: int, *,
+                         reason: str = "contributor_exit",
+                         client_factory=None) -> dict:
+    """成员退出（贡献者主动退出/解绑连带共用）：→ exited + 副本
+    处置。返回处置统计（含 member_id/released/delete_failed）。"""
+    member = get_pool_member(db, member_id)
+    if member.status in POOL_MEMBER_TERMINAL_STATUSES:
+        raise PoolLifecycleError(
+            "invalid_state",
+            f"成员已是终态「{member.status}」，不能再退出。")
+    stats = _exit_member(db, member, reason=reason,
+                         client_factory=client_factory)
+    db.commit()
+    return stats
+
+
+def eject_pool_member(db: Session, member_id: int, *, actor_id=None,
+                      violation: bool = False,
+                      violation_reason: str | None = None,
+                      client_factory=None):
+    """管理员清退：→ ejected + 副本处置（同退出清理）。
+
+    violation=True 时置违规标志（谁置位/时间/原因落
+    pool_members.violation_*），PR-6 结算据此对该期不结
+    （design §11.2 第 4 条）；普通清退不置位，历史贡献照常结。
+    """
+    member = get_pool_member(db, member_id)
+    if member.status in POOL_MEMBER_TERMINAL_STATUSES:
+        raise PoolLifecycleError(
+            "invalid_state",
+            f"成员已是终态「{member.status}」，不能再清退。")
+    if violation:
+        member.violation_flagged = True
+        member.violation_reason = (violation_reason or "").strip() or None
+        member.violation_flagged_at = datetime.now()
+        member.violation_flagged_by = actor_id
+        member.violation_cleared_at = None
+        member.violation_cleared_by = None
+    member.suspended_reason = "admin_eject"
+    transition_member_status(db, member, "ejected", reason="admin_eject")
+    release_member_copies(db, member, client_factory=client_factory)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def clear_member_violation(db: Session, member_id: int, *,
+                           actor_id=None):
+    """清除违规标志（管理员翻案）：落 cleared_by/at，置位痕迹
+    （flagged_by/at/reason）保留备查，成员状态不变。"""
+    member = get_pool_member(db, member_id)
+    if not member.violation_flagged:
+        raise PoolLifecycleError(
+            "invalid_state", "该成员没有可清除的违规标志。")
+    member.violation_flagged = False
+    member.violation_cleared_at = datetime.now()
+    member.violation_cleared_by = actor_id
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def member_violation_ejected(db: Session, member_id: int) -> bool:
+    """PR-6 结算判定依据：该成员是否「违规清退」（ejected +
+    违规标志在位）。标志被清除后按普通清退处理（可结）。"""
+    member = (db.query(em.PoolMember)
+              .filter(em.PoolMember.id == member_id).first())
+    return bool(member is not None and member.status == "ejected"
+                and member.violation_flagged)
+
+
+def release_pool_copy(db: Session, variant_id: int, *,
+                      client_factory=None):
+    """管理员手动下线一份池副本（design §8.1）：标 stale 停发 +
+    best-effort 删盘内文件（删除失败不阻塞标态，巡检再收尾）。"""
+    row = (db.query(em.TransferVariant)
+           .filter(em.TransferVariant.id == variant_id).first())
+    if row is None or row.owner_scope != "pool":
+        raise PoolLifecycleError("not_found", "池副本不存在。")
+    member = (db.query(em.PoolMember)
+              .filter(em.PoolMember.id == int(row.owner_ref or 0))
+              .first()) if (row.owner_ref or "").isdigit() else None
+    if member is not None:
+        binding = _member_binding(db, member)
+        fid = (row.variant_file_id or "").strip()
+        if binding is not None and binding.status == "active" and fid:
+            try:
+                client = (client_factory(db, binding)
+                          if client_factory is not None
+                          else _tv.UserDriveApiClient(db, binding))
+                client.delete_file_ignore_missing(
+                    f"myDrive:{member.user_id}", fid)
+            except Exception:  # noqa: BLE001 — 删不掉只记日志
+                logger.warning("池副本手动下线删文件失败 variant=%s",
+                               row.id, exc_info=True)
+    row.status = "stale"
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+# ------------------------------------------------------------ 绑定连带钩子
+# 调用点只有两处（user_bindings._mark_failed 落失效态、
+# user_bindings.delete_binding 删行前段），都以 try/except 包住
+# 本节函数——连带失败绝不阻塞绑定主流程。两钩子均不 commit，
+# 骑调用方事务（_mark_failed 由其调用方提交；delete_binding
+# 末尾统一提交）。
+
+
+def on_binding_failed(db: Session, binding) -> None:
+    """绑定失效连带（design §2.4）：该绑定的 active/pending 成员
+    自动 suspended(binding_invalid)；恢复走管理员 resume（绑定
+    恢复 active 后由管理员确认，不自动回 active——同 §2.4 口径）。"""
+    if binding is None or binding.id is None:
+        return
+    member = (db.query(em.PoolMember)
+              .filter(em.PoolMember.binding_id == binding.id,
+                      em.PoolMember.status.in_(("active", "pending")))
+              .order_by(em.PoolMember.id.asc()).first())
+    if member is None:
+        return
+    member.suspended_reason = "binding_invalid"
+    member.breaker_until = None
+    transition_member_status(db, member, "suspended",
+                             reason="binding_invalid")
+    db.flush()
+
+
+def on_binding_deleted(db: Session, binding) -> None:
+    """解绑连带（design §6.4）：删行前段、令牌尚有效时触发——
+    该绑定的非终态成员按贡献者退出同链处置（→ exited + 副本
+    删除/标 released）。候选行（无绑定）不受影响。"""
+    if binding is None or binding.id is None:
+        return
+    member = (db.query(em.PoolMember)
+              .filter(em.PoolMember.binding_id == binding.id,
+                      ~em.PoolMember.status.in_(
+                          POOL_MEMBER_TERMINAL_STATUSES))
+              .order_by(em.PoolMember.id.asc()).first())
+    if member is None:
+        return
+    _exit_member(db, member, reason="contributor_exit")
+    db.flush()
+
+
+# ------------------------------------------------------------ 用户端贡献状态
+
+
+def _member_stats(db: Session, member) -> dict:
+    """成员聚合小账（用户端「我的贡献」与管理端列表共用口径）：
+    副本数/占用按变体行现算，今日量按 pool_usage_daily 当日行。"""
+    from sqlalchemy import func
+
+    copies, copies_bytes = (
+        db.query(func.count(em.TransferVariant.id),
+                 func.coalesce(func.sum(em.TransferVariant.size_bytes), 0))
+        .filter(em.TransferVariant.owner_scope == "pool",
+                em.TransferVariant.owner_ref == str(member.id),
+                em.TransferVariant.status.in_(("ready", "stale", "orphan")))
+        .one())
+    from datetime import date as _date
+
+    usage = (db.query(em.PoolUsageDaily)
+             .filter(em.PoolUsageDaily.member_id == member.id,
+                     em.PoolUsageDaily.day == _date.today())
+             .first())
+    return {
+        "copies_count": int(copies or 0),
+        "copies_bytes": int(copies_bytes or 0),
+        "today_play_starts": int(usage.play_starts) if usage else 0,
+        "today_transfer_bytes": int(usage.transfer_bytes) if usage else 0,
+        "today_transfer_jobs": int(usage.transfer_jobs) if usage else 0,
+        "today_quota_hits": int(usage.quota_hits) if usage else 0,
+    }
+
+
+def member_public_payload(db: Session, member) -> dict:
+    """成员行对用户端的安全序列化（绝不含凭据/令牌材料）。"""
+    payload = {
+        "id": member.id,
+        "binding_id": member.binding_id,
+        "provider": member.provider,
+        "status": member.status,
+        "suspended_reason": member.suspended_reason,
+        "violation_flagged": bool(member.violation_flagged),
+        "capacity_cap_bytes": member.capacity_cap_bytes,
+        "joined_at": (member.joined_at.isoformat()
+                      if member.joined_at else None),
+        "status_changed_at": (member.status_changed_at.isoformat()
+                              if member.status_changed_at else None),
+    }
+    payload.update(_member_stats(db, member))
+    return payload
+
+
+def _apply_block_reason(db: Session, binding, member, candidate) -> str | None:
+    """用户端 can_apply=False 时的人话原因；可申请返回 None。"""
+    if member is not None and member.status not in (
+            POOL_MEMBER_TERMINAL_STATUSES):
+        return "这个盘已在公共池流程中"
+    if member is not None and member.status == "ejected":
+        return "该盘已被管理员清退"
+    if binding.status != "active":
+        return "绑定已失效，先恢复绑定"
+    cfg = pool_config_payload(db)
+    if binding.provider not in _enabled_providers(cfg):
+        return "这个盘的类型不在公共池准入名单内"
+    if binding.provider == "drive":
+        from backend.emby_server import drive_oauth as _do
+
+        if _do.binding_needs_rebind(binding.granted_scopes):
+            return "授权范围不足，请先对这个盘重新授权"
+    if (cfg["pool_join_mode"] == "admin_assign" and candidate is None
+            and member is None):
+        return "公共池由管理员指定成员，请联系管理员授予资格"
+    return None
+
+
+def contribution_status(db: Session, user) -> dict:
+    """GET /pool/contribution 的数据面（design §8.3）：我的每个
+    绑定一行（成员状态 + 能否申请 + 不能申请的人话原因），外加
+    候选资格行与池配置摘要。无绑定/未加入都出明确状态不报错。"""
+    cfg = pool_config_payload(db)
+    bindings = (db.query(em.UserStorageBinding)
+                .filter(em.UserStorageBinding.user_id == user.id)
+                .order_by(em.UserStorageBinding.id.asc())
+                .all())
+    members = (db.query(em.PoolMember)
+               .filter(em.PoolMember.user_id == user.id)
+               .order_by(em.PoolMember.id.asc())
+               .all())
+    by_binding = {m.binding_id: m for m in members
+                  if m.binding_id is not None}
+    candidate = next(
+        (m for m in members
+         if m.binding_id is None and m.status == "candidate"), None)
+    entries = []
+    for binding in bindings:
+        member = by_binding.get(binding.id)
+        block = _apply_block_reason(db, binding, member, candidate)
+        entries.append({
+            "binding_id": binding.id,
+            "account_label": binding.account_label,
+            "provider": binding.provider,
+            "binding_status": binding.status,
+            "member": (member_public_payload(db, member)
+                       if member is not None else None),
+            "can_apply": block is None,
+            "apply_block_reason": block,
+        })
+    return {
+        "pool_enabled": bool(cfg["pool_enabled"]),
+        "join_mode": cfg["pool_join_mode"],
+        "candidate": (member_public_payload(db, candidate)
+                      if candidate is not None else None),
+        "bindings": entries,
+    }

@@ -76,6 +76,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'identify-review', name: 'IdentifyReview', component: () => import('@/views/IdentifyReview.vue'), meta: { title: '识别审查' } },
       // 上游源（FMBY #25 25-1）：只做源管理，聚合/探活/播放接入是后续步骤
       { path: 'upstream-sources', name: 'UpstreamSources', component: () => import('@/views/UpstreamSources.vue'), meta: { title: '上游源' } },
+      { path: 'pool', name: 'PoolAdmin', component: () => import('@/views/PoolAdmin.vue'), meta: { title: '贡献池' } },
       // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
       { path: 'storage-bindings', redirect: { path: '/upstream-sources', query: { tab: 'bindings' } } },
       { path: 'upstream-mappings', redirect: { path: '/upstream-sources', query: { tab: 'mappings' } } },

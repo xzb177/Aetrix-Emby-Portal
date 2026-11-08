@@ -2366,11 +2366,48 @@ class PoolMember(Base):
     capacity_cap_bytes = Column(BigInteger, nullable=True)
     suspended_reason = Column(String(40), nullable=True)
     breaker_until = Column(DateTime, nullable=True)
+    # 清退违规标志（PR-4）：管理员清退时勾选违规才置位——置位人
+    # （violation_flagged_by，管理员 WebUser.id）、置位时间、原因
+    # 三件留痕；清除走 clear_member_violation，只落 cleared_by/at，
+    # 置位痕迹保留备查。PR-6 结算的判定依据：status=ejected 且
+    # violation_flagged 的成员该期不结（design §11.2 第 4 条）。
+    violation_flagged = Column(Boolean, nullable=False, default=False)
+    violation_reason = Column(String(200), nullable=True)
+    violation_flagged_at = Column(DateTime, nullable=True)
+    violation_flagged_by = Column(Integer, nullable=True)
+    violation_cleared_at = Column(DateTime, nullable=True)
+    violation_cleared_by = Column(Integer, nullable=True)
     joined_at = Column(DateTime, nullable=True)
     status_changed_at = Column(DateTime, default=datetime.now)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now,
                         onupdate=datetime.now)
+
+
+class PoolMemberStatusEvent(Base):
+    """公共贡献池成员状态变迁流水（goal-33 PR-4，激励钩子 H2）。
+
+    成员每次状态变更经 pool_gate.transition_member_status 收口
+    写一行：from_status（新建行为 NULL）→ to_status + reason。
+    在线天数结算（PR-6）靠本表把 active 区间与北京时间自然日
+    求交——只有 pool_members 当前状态算不出历史区间，晚落即
+    数据永久缺失，故随生命周期首批调用点（PR-4）必落；PR-5
+    熔断连带复用同一写函数。无外键（照 TransferVariant 先例）。
+    """
+
+    __tablename__ = "pool_member_status_events"
+
+    __table_args__ = (
+        Index("ix_pool_member_status_events_member", "member_id"),
+        Index("ix_pool_member_status_events_created", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, nullable=False)
+    from_status = Column(String(20), nullable=True)
+    to_status = Column(String(20), nullable=False)
+    reason = Column(String(80), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class PoolUsageDaily(Base):

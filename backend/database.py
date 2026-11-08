@@ -1194,6 +1194,18 @@ def _auto_migrate():
         ("emby_items", [
             ("enrich_field_refill_done", "BOOLEAN", "0"),
         ]),
+        # 公共贡献池 PR-4（2026-11-08）：成员行清退违规标志六列。
+        # 老库补列后 flagged=0（未置位）、其余 NULL（无置位/清除
+        # 痕迹），与升级前行为一致；新表 pool_member_status_events
+        # 由 create_all 建出，不走这里。
+        ("pool_members", [
+            ("violation_flagged", "BOOLEAN", "0"),
+            ("violation_reason", "VARCHAR(200)", "NULL"),
+            ("violation_flagged_at", "DATETIME", "NULL"),
+            ("violation_flagged_by", "INTEGER", "NULL"),
+            ("violation_cleared_at", "DATETIME", "NULL"),
+            ("violation_cleared_by", "INTEGER", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
