@@ -870,6 +870,82 @@ def verify_storage_binding(
     return user_bindings.serialize_binding(binding)
 
 
+# ==================== 公共贡献池（goal-33 PR-4 用户端） ====================
+# design §8.3 三口：贡献状态/申请/退出。本体与状态机在
+# pool_gate 生命周期一节；本处只做鉴权语境（只许操作本人行）
+# 与错误映射。池总开关关时申请/退出照常可用（成员先行、开闸
+# 后生效，与 design 补充节 S2 的入池顺序一致）；开关只管门禁、
+# 进池建单与播出，不冻结成员关系本身。
+
+
+class PoolContributionApply(BaseModel):
+    binding_id: int
+
+
+class PoolContributionWithdraw(BaseModel):
+    member_id: int
+
+
+def _pool_lifecycle_status(exc) -> int:
+    return 404 if exc.kind == "not_found" else 400
+
+
+@user_emby_router.get("/pool/contribution")
+def get_pool_contribution(
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """我的贡献状态：每个绑定一行（成员状态/能否申请/人话原因）
+    + 候选资格 + 我的贡献小账。无绑定/未加入都出明确状态。"""
+    from backend.emby_server import pool_gate
+
+    return pool_gate.contribution_status(db, request_user)
+
+
+@user_emby_router.post("/pool/contribution/apply")
+def apply_pool_contribution(
+        body: PoolContributionApply,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """对自己的某个绑定申请入池（落态随 pool_join_mode：
+    审核制 pending / 开放制 active / 管理员指定须先有候选资格）。"""
+    from backend.emby_server import pool_gate
+
+    try:
+        member = pool_gate.apply_pool_membership(
+            db, request_user.id, body.binding_id)
+    except pool_gate.PoolLifecycleError as exc:
+        raise HTTPException(
+            status_code=_pool_lifecycle_status(exc),
+            detail=exc.message) from exc
+    return {"member": pool_gate.member_public_payload(db, member)}
+
+
+@user_emby_router.post("/pool/contribution/withdraw")
+def withdraw_pool_contribution(
+        body: PoolContributionWithdraw,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """退出贡献：成员 → exited，池副本同步处置（删文件
+    best-effort + 标 released）；绑定本身不解绑。只能退自己的
+    成员行（他人行按不存在处理）。"""
+    from backend.emby_server import pool_gate
+
+    try:
+        member = pool_gate.get_pool_member(db, body.member_id)
+    except pool_gate.PoolLifecycleError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    if member.user_id != request_user.id:
+        raise HTTPException(status_code=404, detail="池成员不存在。")
+    try:
+        pool_gate.exit_pool_membership(db, member.id)
+    except pool_gate.PoolLifecycleError as exc:
+        raise HTTPException(
+            status_code=_pool_lifecycle_status(exc),
+            detail=exc.message) from exc
+    db.refresh(member)
+    return {"member": pool_gate.member_public_payload(db, member)}
+
+
 class DriveOAuthStart(BaseModel):
     account_label: str
     rebind_binding_id: int | None = None
