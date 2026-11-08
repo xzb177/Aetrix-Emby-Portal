@@ -1311,14 +1311,16 @@ def _apply_usercopy_direct(db, user, source, file_id) -> bool:
 def _apply_poolcopy_direct(db, variant, source, file_id) -> bool:
     """公共池副本直链下发（goal-33 PR-3，design §5.1 第 10 步）。
 
-    主形态：先按变体 owner 用贡献者（成员）绑定令牌给池副本授
+    唯一形态：先按变体 owner 用贡献者（成员）绑定令牌给池副本授
     anyone-reader（transfer_variant.ensure_variant_copy_public），
     授成发免凭证 usercontent 地址 + 空头（与用户副本同形态，
-    SenPlayer 不发头也能播）。授权限失败回落 alt=media + 贡献者
-    令牌头（design §5.1 定版）：令牌只许是成员自己绑定的令牌，
-    绝不下发 SA 令牌、绝不换共享原件 fid。两路都失败返回 False，
-    调用方保留本站 /stream 地址、由 video_stream 现场裁决。
-    永不抛异常。
+    SenPlayer 不发头也能播）。授权限失败返回 False、一个字不改
+    source：调用方保留本站 /stream 地址、由 video_stream 现场
+    裁决，绝不下发直链（GA-030，用户 2026-11-08 裁定：授权失败
+    就不播）。成员令牌绝不许写进响应——旧回落（alt=media + 成员
+    令牌头）会把贡献者令牌发给未绑陌生观众、观众可冒成员读其
+    整盘，已按裁定删除；成员令牌只许服务端内部取流（中继腿）
+    使用。绝不换共享原件 fid。永不抛异常。
     """
     try:
         if not isinstance(source, dict):
@@ -1327,31 +1329,15 @@ def _apply_poolcopy_direct(db, variant, source, file_id) -> bool:
         if not fid or variant is None:
             return False
         from backend.emby_server import transfer_variant as _tv
-        if _tv.ensure_variant_copy_public(db, variant, fid):
-            from backend.emby_server import drive_auth as _da
-            url = _da.drive_usercontent_download_url(fid)
-            if not url:
-                return False
-            source["DirectPlayUrl"] = url
-            source["DirectStreamUrl"] = url
-            source["RequiredHttpHeaders"] = {}
-            return True
-        # 授权限失败回落：alt=media + 贡献者令牌头。
-        try:
-            member_id = int(getattr(variant, "owner_ref", "") or "")
-        except (TypeError, ValueError):
+        if not _tv.ensure_variant_copy_public(db, variant, fid):
             return False
-        from backend.emby_server import pool_gate as _pg
-        token = _pg.pool_member_access_token(db, member_id)
-        if not token:
-            return False
-        url = _drive_alt_media_url(fid)
+        from backend.emby_server import drive_auth as _da
+        url = _da.drive_usercontent_download_url(fid)
         if not url:
             return False
         source["DirectPlayUrl"] = url
         source["DirectStreamUrl"] = url
-        source["RequiredHttpHeaders"] = {
-            "Authorization": f"Bearer {token}"}
+        source["RequiredHttpHeaders"] = {}
         return True
     except Exception:
         return False
@@ -7322,6 +7308,48 @@ async def video_stream(
                                         else _tv
                                         .POOLCOPY_INTERSTITIAL_DETAIL))
                     if _pool_served_resp is None:
+                        # 死副本对账（GA-032）：302 前先做与通用
+                        # fast302 同口径的存在性校验——副本被贡献
+                        # 者删除/撤享后 DB 行仍 ready 时，不许把
+                        # 谷歌 404 直发给观众。404 先对账：能自愈
+                        # （成员令牌重授 anyone-reader）就复检放
+                        # 行；不能自愈记 stale，门禁下轮不再判
+                        # serve，观众拿 409 明示。挂载不可定位
+                        # （_ensure 回 None）无法校验，照旧下发；
+                        # 瞬时故障（503）原样明示，不回落共享。
+                        _pool_force = drive_exists_rapid_retry(
+                            request, user, _play_fid)
+                        _pool_gone_retried = False
+                        while True:
+                            try:
+                                await _ensure_drive_file_playable(
+                                    db, item, _play_fid,
+                                    force_recheck=(
+                                        _pool_force
+                                        or _pool_gone_retried))
+                                break
+                            except HTTPException as exc:
+                                if exc.status_code != 404:
+                                    raise
+                                if _pool_gone_retried:
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail="公共池副本权限已恢复，"
+                                               "正在生效中，请稍后"
+                                               "重试") from exc
+                                _pool_gone_retried = True
+                                _pool_rec = await run_db(
+                                    _pool_gate_vs
+                                    .reconcile_dead_pool_copy,
+                                    db, _pool_variant_row)
+                                if (_pool_rec or {}).get(
+                                        "action") == "healed":
+                                    continue
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail="公共池副本已失效，正在"
+                                           "重新准备中，请稍后再试"
+                                    ) from exc
                         # 主形态：免凭证 usercontent 302（副本已授
                         # anyone-reader）。成功下发记 §5.3 + H1。
                         await run_db(

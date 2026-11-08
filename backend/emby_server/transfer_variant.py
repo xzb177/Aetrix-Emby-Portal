@@ -2183,7 +2183,8 @@ def ensure_variant_copy_public(db, variant, file_id) -> bool:
     成员绑定的属主——令牌只许来自成员行的绑定（binding_id），
     绝不用观众本人的绑定、绝不用 SA 令牌。成员不存在/已非
     active、绑定失效、令牌取不到、授权限失败一律 False（调用方
-    回落贡献者令牌形态），永不抛异常。
+    按各自口径处理：PlaybackInfo 不下发直链、取流端点走服务端
+    中继或明示失败；成员令牌绝不下发观众，GA-030），永不抛异常。
     """
     try:
         fid = (file_id or "").strip()
