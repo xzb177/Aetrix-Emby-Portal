@@ -77,7 +77,7 @@ POOL_CONFIG_DEFAULTS: dict = {
     "pool_member_daily_transfer_bytes": 600 * _GIB,
     "pool_member_daily_transfer_jobs": 0,
     "pool_item_max_copies": 2,
-    "pool_copy_idle_evict_days": 30,
+    "pool_copy_idle_evict_days": 7,
     "pool_global_concurrency": 2,
     "pool_enqueue_jitter_sec": 120,
     "pool_breaker_quota_hits_per_day": 3,
@@ -180,6 +180,28 @@ def reward_config_payload(db: Session) -> dict:
     return _typed_payload(
         _raw_config_for(db, POOL_REWARD_CONFIG_DEFAULTS),
         POOL_REWARD_CONFIG_DEFAULTS)
+
+
+#: 巡检子家族的代码默认值：本体 16 键键集已被 PR-1 测试钉死，
+#: 扩键另立家族（同 POOL_REWARD 先例）；与
+#: config_schema.POOL_JANITOR_CONFIG_SCHEMA 同口径，读取经
+#: janitor_config_payload，唯一消费方是 pool_janitor。
+POOL_JANITOR_CONFIG_DEFAULTS: dict = {
+    # 闲置主动清理（用户 2026-11-09 亲点）：开＝巡检淘汰步不等
+    # 容量触发，闲置超 pool_copy_idle_evict_days 天的 ready
+    # 副本直接清；默认开。
+    "pool_idle_evict_proactive_enabled": True,
+}
+
+
+def janitor_config_payload(db: Session) -> dict:
+    """巡检子家族配置生效值（类型化）：口径与 pool_config_payload
+    同一份解析，键集是 POOL_JANITOR_CONFIG_DEFAULTS。管理端
+    janitor-config 端点与 pool_janitor 共用这一份，不许两处
+    各解析一遍。"""
+    return _typed_payload(
+        _raw_config_for(db, POOL_JANITOR_CONFIG_DEFAULTS),
+        POOL_JANITOR_CONFIG_DEFAULTS)
 
 
 def pool_enabled(db: Session) -> bool:

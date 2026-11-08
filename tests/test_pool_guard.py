@@ -573,6 +573,10 @@ def _evict_setup(db, *, cap=1000):
 
 def test_evict_over_cap_order_and_hysteresis(db):
     _set_pool(db, pool_enabled=True)
+    # 本例只测容量分支的顺序与滞后带：关掉闲置主动清理隔离，
+    # 否则 40 天闲置的 ready 会被主动分支另清一份（新行为，
+    # 见 idle_proactive 一节）。
+    _set_janitor(db, pool_idle_evict_proactive_enabled=False)
     member = _evict_setup(db)
     item = _item(db)
     orphan = _variant(db, item.id, member.id, status="orphan", size=400)
@@ -650,6 +654,156 @@ def test_evict_idle_days_zero_keeps_ready(db):
     assert stats["evict"]["evicted"] == 0
     db.refresh(ready)
     assert ready.status == "ready"
+
+
+# ------------------------------------------------ janitor：闲置主动清理
+
+
+def _set_janitor(db, **values):
+    config_service.save_config(db, values, schema="pool_janitor")
+    db.commit()
+
+
+def _proactive_setup(db, *, idle_days=7):
+    """主动清理场景：池开、成员无个人容量上限（盘不紧张，容量
+    分支永不触发），副本闲置与否只看 last_played_at/created_at。"""
+    _set_pool(db, pool_enabled=True,
+              pool_copy_idle_evict_days=idle_days)
+    return _member(db, _user(db, "pi").id)
+
+
+def test_idle_proactive_default_on_and_payload(db):
+    # 缺行回代码默认开（用户 2026-11-09 亲点加主动清理）。
+    assert pool_gate.janitor_config_payload(db) == {
+        "pool_idle_evict_proactive_enabled": True}
+    # 存量行覆盖默认。
+    _set_janitor(db, pool_idle_evict_proactive_enabled=False)
+    assert pool_gate.janitor_config_payload(db) == {
+        "pool_idle_evict_proactive_enabled": False}
+
+
+def test_idle_proactive_evicts_without_capacity_pressure(db):
+    member = _proactive_setup(db)
+    item = _item(db)
+    idle = _variant(db, item.id, member.id, size=500,
+                    last_played_at=datetime.now()
+                    - timedelta(days=10))
+    never_played_old = _variant(db, item.id, member.id, size=500,
+                                created_days=10)
+    fresh = _variant(db, item.id, member.id, size=500,
+                     last_played_at=datetime.now())
+    fake = _FakeClient()
+    stats = pool_janitor.run_pool_janitor_once(
+        db, client_factory=_factory(fake), quota_fn=_quota_ok)
+    # 盘不紧张：容量分支一份不淘，主动分支清掉两份闲置。
+    assert stats["evict"]["evicted"] == 0
+    assert stats["idle_proactive"]["evicted"] == 2
+    assert stats["idle_proactive"]["members"] == 1
+    assert len(fake.delete_calls) == 2
+    db.refresh(idle)
+    assert idle.status == "released"
+    db.refresh(never_played_old)
+    assert never_played_old.status == "released"
+    db.refresh(fresh)
+    assert fresh.status == "ready"
+    # 决策留痕与容量淘汰同 scope，reason 带 proactive 标记。
+    rounds = _decisions(db, "pool_evict")
+    assert rounds and "proactive_idle" in (rounds[-1].reason or "")
+
+
+def test_idle_proactive_switch_off_keeps_copies(db):
+    _set_janitor(db, pool_idle_evict_proactive_enabled=False)
+    member = _proactive_setup(db)
+    item = _item(db)
+    idle = _variant(db, item.id, member.id, size=500,
+                    last_played_at=datetime.now()
+                    - timedelta(days=30))
+    fake = _FakeClient()
+    stats = pool_janitor.run_pool_janitor_once(
+        db, client_factory=_factory(fake), quota_fn=_quota_ok)
+    assert "idle_proactive" not in stats
+    assert fake.delete_calls == []
+    db.refresh(idle)
+    assert idle.status == "ready"
+
+
+def test_idle_proactive_skips_playing_retention_and_nonready(db):
+    member = _proactive_setup(db)
+    item = _item(db)
+    old = datetime.now() - timedelta(days=30)
+    playing = _variant(db, item.id, member.id, size=500,
+                       last_played_at=old)
+    db.add(em.PoolPlayEvent(
+        member_id=member.id, variant_id=playing.id, item_id=item.id,
+        viewer_user_id=999, created_at=datetime.now()))
+    kept = _variant(db, item.id, member.id, size=500,
+                    last_played_at=old,
+                    retention_until=datetime.now()
+                    + timedelta(days=1))
+    stale = _variant(db, item.id, member.id, status="stale",
+                     size=500, last_played_at=old)
+    db.commit()
+    fake = _FakeClient()
+    stats = pool_janitor.run_pool_janitor_once(
+        db, client_factory=_factory(fake), quota_fn=_quota_ok)
+    # 正在播/保留期内恒跳过；非 ready 行不归主动分支。
+    assert stats["idle_proactive"]["evicted"] == 0
+    assert fake.delete_calls == []
+    for row, want in ((playing, "ready"), (kept, "ready"),
+                      (stale, "stale")):
+        db.refresh(row)
+        assert row.status == want
+
+
+def test_idle_proactive_caps_per_member_per_round(db):
+    member = _proactive_setup(db)
+    item = _item(db)
+    rows = [
+        _variant(db, item.id, member.id, size=100,
+                 last_played_at=datetime.now()
+                 - timedelta(days=30))
+        for _ in range(25)]
+    fake = _FakeClient()
+    stats = pool_janitor.run_pool_janitor_once(
+        db, client_factory=_factory(fake), quota_fn=_quota_ok)
+    # 每成员每轮上限 20 份，不许一轮清爆。
+    assert stats["idle_proactive"]["evicted"] == 20
+    assert len(fake.delete_calls) == 20
+    for row in rows:
+        db.refresh(row)
+    assert sum(1 for r in rows if r.status == "released") == 20
+    assert sum(1 for r in rows if r.status == "ready") == 5
+
+
+def test_idle_proactive_delete_failure_marks_orphan(db):
+    member = _proactive_setup(db)
+    item = _item(db)
+    idle = _variant(db, item.id, member.id, size=500,
+                    last_played_at=datetime.now()
+                    - timedelta(days=30))
+    fake = _FakeClient(delete_error=RuntimeError("boom"))
+    stats = pool_janitor.run_pool_janitor_once(
+        db, client_factory=_factory(fake), quota_fn=_quota_ok)
+    assert stats["idle_proactive"]["evicted"] == 0
+    assert stats["idle_proactive"]["delete_failed"] == 1
+    db.refresh(idle)
+    assert idle.status == "orphan"
+
+
+def test_idle_proactive_days_zero_disables(db):
+    member = _proactive_setup(db, idle_days=0)
+    item = _item(db)
+    idle = _variant(db, item.id, member.id, size=500,
+                    last_played_at=datetime.now()
+                    - timedelta(days=90))
+    fake = _FakeClient()
+    stats = pool_janitor.run_pool_janitor_once(
+        db, client_factory=_factory(fake), quota_fn=_quota_ok)
+    # 闲置天数 0 = 闲置淘汰关：主动分支同口径不淘。
+    assert stats["idle_proactive"]["evicted"] == 0
+    assert fake.delete_calls == []
+    db.refresh(idle)
+    assert idle.status == "ready"
 
 
 # ------------------------------------------------------------ janitor：退出残留收尾

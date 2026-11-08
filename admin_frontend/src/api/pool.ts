@@ -27,6 +27,18 @@ export const fetchPoolConfig = () => get<PoolConfig>('/pool/config')
 export const savePoolConfig = (payload: PoolConfigPayload) =>
   put<PoolConfig>('/pool/config', payload)
 
+/** 巡检配置（闲置主动清理开关；与本体 16 键分开一份端点） */
+
+export interface PoolJanitorConfig {
+  pool_idle_evict_proactive_enabled: boolean
+}
+
+export const fetchPoolJanitorConfig = () =>
+  get<PoolJanitorConfig>('/pool/janitor-config')
+
+export const savePoolJanitorConfig = (payload: PoolJanitorConfig) =>
+  put<PoolJanitorConfig>('/pool/janitor-config', payload)
+
 /** 成员管理 API（PR-4，见 backend/api/pool_admin.py） */
 
 export type PoolMemberStatus =

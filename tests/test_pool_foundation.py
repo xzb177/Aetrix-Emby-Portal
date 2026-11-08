@@ -42,7 +42,7 @@ EXPECTED_DEFAULTS = {
     "pool_member_daily_transfer_bytes": 600 * GIB,
     "pool_member_daily_transfer_jobs": 0,
     "pool_item_max_copies": 2,
-    "pool_copy_idle_evict_days": 30,
+    "pool_copy_idle_evict_days": 7,
     "pool_global_concurrency": 2,
     "pool_enqueue_jitter_sec": 120,
     "pool_breaker_quota_hits_per_day": 3,

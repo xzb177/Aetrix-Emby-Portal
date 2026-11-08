@@ -123,6 +123,54 @@ def pool_update_reward_config(
     return pool_gate.reward_config_payload(db)
 
 
+class PoolJanitorConfigRequest(BaseModel):
+    # 巡检子家族（闲置主动清理）：与本体 16 键分开一份端点，
+    # 校验走 config_service 家族 pool_janitor（与本体同一体系）。
+    pool_idle_evict_proactive_enabled: Optional[bool] = None
+
+
+@admin_pool_router.get("/janitor-config")
+def pool_get_janitor_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """巡检配置生效值（存量行优先，缺行回代码默认；闲置主动
+    清理默认开）。"""
+    return pool_gate.janitor_config_payload(db)
+
+
+@admin_pool_router.put("/janitor-config")
+def pool_update_janitor_config(
+    request: PoolJanitorConfigRequest,
+    raw_request: Request,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """保存巡检配置：走 config_service 家族 pool_janitor 校验
+    通道（与本体同一体系），非法整批 400、不落库；写时失效，
+    巡检侧即时生效。"""
+    values: dict[str, Any] = {
+        key: getattr(request, key) for key in request.model_fields_set
+    }
+    saved: list[str] = []
+    if values:
+        try:
+            saved = config_service.save_config(
+                db, values, schema="pool_janitor",
+                descriptions={
+                    key: "公共贡献池巡检配置（闲置主动清理）"
+                    for key in values
+                })
+        except ConfigValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
+    _audit(db, current_admin, "pool_update_janitor_config", "system",
+           None, {"keys": saved},
+           ip=raw_request.client.host if raw_request.client else None)
+    db.commit()
+    return pool_gate.janitor_config_payload(db)
+
+
 @admin_pool_router.put("/config")
 def pool_update_config(
     request: PoolConfigRequest,

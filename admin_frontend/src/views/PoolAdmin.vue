@@ -14,18 +14,21 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, Coins, Database, Flag, HardDrive, Play, RefreshCw, Users,
+  AlertTriangle, Brush, Coins, Database, Flag, HardDrive, Play, RefreshCw, Users,
 } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile, EmptyState } from '@/components/ui'
 import {
   approvePoolMember, clearPoolMemberViolation, ejectPoolMember,
-  fetchPoolCopies, fetchPoolMembers, fetchPoolOverview,
+  fetchPoolCopies, fetchPoolJanitorConfig, fetchPoolMembers,
+  fetchPoolOverview,
   fetchPoolRewardConfig, fetchPoolRewardDetails, fetchPoolRewardPreview,
   fetchPoolRewardSettlements, grantPoolCandidate, patchPoolMember,
   rejectPoolMember, releasePoolCopy, releasePoolRewardDetail,
-  resumePoolMember, savePoolRewardConfig, settlePoolRewards,
+  resumePoolMember, savePoolJanitorConfig, savePoolRewardConfig,
+  settlePoolRewards,
   suspendPoolMember,
-  type PoolCopy, type PoolMember, type PoolOverview,
+  type PoolCopy, type PoolJanitorConfig, type PoolMember,
+  type PoolOverview,
   type PoolRewardConfig, type PoolRewardDetail, type PoolRewardPreview,
   type PoolRewardSettlement,
 } from '@/api/pool'
@@ -301,6 +304,35 @@ async function doReleaseCopy(copy: PoolCopy) {
   }
 }
 
+// ------------------------------------------------------------ 巡检清理（闲置主动清理）
+
+const janitorCfg = ref<PoolJanitorConfig | null>(null)
+const janitorCfgSaving = ref(false)
+
+async function loadJanitorCfg() {
+  try {
+    janitorCfg.value = await fetchPoolJanitorConfig()
+  } catch {
+    // 巡检区加载失败不拖垮成员区；request 层已弹提示
+  }
+}
+
+async function doSaveJanitorCfg() {
+  if (!janitorCfg.value) return
+  janitorCfgSaving.value = true
+  try {
+    janitorCfg.value = await savePoolJanitorConfig({
+      pool_idle_evict_proactive_enabled:
+        janitorCfg.value.pool_idle_evict_proactive_enabled,
+    })
+    ElMessage.success('巡检配置已保存')
+  } catch {
+    // request 层已弹错误提示
+  } finally {
+    janitorCfgSaving.value = false
+  }
+}
+
 // ------------------------------------------------------------ 激励结算（PR-6）
 
 const rewardCfg = ref<PoolRewardConfig | null>(null)
@@ -443,6 +475,7 @@ async function doReleaseDetail(detail: PoolRewardDetail) {
 onMounted(() => {
   void load()
   void loadRewards()
+  void loadJanitorCfg()
 })
 </script>
 
@@ -635,6 +668,16 @@ onMounted(() => {
           compact :icon="Users" title="暂无成员"
           description="先在上方授予候选资格，或等贡献者从用户端申请。"
         />
+      </SectionCard>
+
+      <SectionCard title="巡检清理" :icon="Brush" description="巡检每 30 分钟一轮：闲置主动清理开时，不等成员盘容量紧张，闲置超过「闲置淘汰天数」（系统设置 · 公共贡献池，默认 7 天）的池副本直接清掉；正在播的与保留期内的副本不动，每成员每轮最多清 20 份。">
+        <template v-if="janitorCfg">
+          <div class="pool-grant">
+            <el-switch v-model="janitorCfg.pool_idle_evict_proactive_enabled" />
+            <span>闲置主动清理</span>
+            <el-button type="primary" :loading="janitorCfgSaving" @click="doSaveJanitorCfg">保存巡检配置</el-button>
+          </div>
+        </template>
       </SectionCard>
 
       <SectionCard title="激励结算" :icon="Coins" description="贡献者激励按周期结算：先影子跑对账（只算账落行、不发钱），核对无误再开真发开关。计奖口径：起播 1 分 + 有效在线日 5 分（默认，可改），门槛＝在线 ≥7 天且起播 ≥10，单期上限 900 分。">

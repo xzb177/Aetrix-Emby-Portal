@@ -86,6 +86,8 @@ def test_get_config_returns_defaults(client):
     assert body["pool_member_reserve_free_bytes"] == 300 * GIB
     assert body["pool_member_daily_transfer_bytes"] == 600 * GIB
     assert body["pool_member_max_bindings_per_user"] == 10
+    # 闲置天数默认 30 → 7（用户 2026-11-09 亲点：30 天太久）。
+    assert body["pool_copy_idle_evict_days"] == 7
     assert len(body) == 16
 
 
@@ -123,6 +125,32 @@ def test_put_config_invalid_batch_400_and_nothing_persisted(client, db):
         key="pool_item_max_copies").first() is None
     got = client.get(URL)
     assert got.json()["pool_item_max_copies"] == 2
+
+
+JANITOR_URL = "/api/admin/pool/janitor-config"
+
+
+def test_get_janitor_config_returns_default_on(client):
+    resp = client.get(JANITOR_URL)
+    assert resp.status_code == 200, resp.text
+    # 闲置主动清理默认开（用户 2026-11-09 亲点）。
+    assert resp.json() == {"pool_idle_evict_proactive_enabled": True}
+
+
+def test_put_janitor_config_roundtrips(client, db):
+    resp = client.put(JANITOR_URL, json={
+        "pool_idle_evict_proactive_enabled": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"pool_idle_evict_proactive_enabled": False}
+    row = db.query(models.SystemConfig).filter_by(
+        key="pool_idle_evict_proactive_enabled").one()
+    assert row.value == "false"
+    got = client.get(JANITOR_URL)
+    assert got.json()["pool_idle_evict_proactive_enabled"] is False
+    # 审计留痕
+    log = db.query(models.AdminLog).filter_by(
+        action="pool_update_janitor_config").one()
+    assert log is not None
 
 
 def test_viewer_role_cannot_write_pool_config():

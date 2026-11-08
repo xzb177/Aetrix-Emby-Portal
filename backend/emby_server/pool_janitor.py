@@ -28,8 +28,13 @@
 6. 容量淘汰（design §6.5，仅池开时）：成员盘用量超上限或
    剩余低于保底 → 按 orphan → stale → 闲置冷副本（热度升
    序）的顺序淘汰，删文件后标 released、删失败标 orphan
-   等下轮；淘汰到上限 95% 滞后带即停，防反复横跳。退出/
-   清退成员的残留文件不在本步（见第 7 步）；
+   等下轮；淘汰到上限 95% 滞后带即停，防反复横跳。闲置主
+   动清理是本步的独立分支（pool_idle_evict_proactive_
+   enabled 开时，仅池开时）：不等容量触发，闲置超
+   pool_copy_idle_evict_days 天的 ready 副本直接走同一删
+   除路径清掉（同每成员每轮上限、同保护口径），盘不紧张
+   时冷副本也不会无限躺。退出/清退成员的残留文件不在本
+   步（见第 7 步）；
 7. 退出残留收尾：exited/ejected 成员名下 status=released
    但文件可能残留的行（PR-4 同步删文件上限 50 的超出部分、
    以及当时令牌已死没删成的），绑定还活着时逐个核对删
@@ -53,7 +58,8 @@ CPU 与 DB 连接——单线程顺序执行、每步有批量上限（对账 40
 记 stats、不拖垮整轮。每轮收尾一条结构化日志。
 
 配置：行为阈值全走既有 pool 配置键（熔断两键、容量/保底/
-闲置淘汰天数、副本上限）；轮间隔与批量上限是运维节律、
+闲置淘汰天数、副本上限），闲置主动清理开关走 pool_janitor
+家族键；轮间隔与批量上限是运维节律、
 非业务口径，作模块常量（同 PR-4 _EXIT_DELETE_LIMIT 先例）。
 池总开关关时：第 6/8 步（淘汰/补位）跳过（池不存在就不
 生产新动作），其余卫生步照跑（无成员/无数据时天然空转，
@@ -358,9 +364,58 @@ def _evict_candidates(db, member, cfg, now, playing_ids) -> list:
     return orphans + stales + [t[3] for t in readies]
 
 
+def _execute_evictions(db, member, client, candidates, *,
+                       should_stop=None, usage=0,
+                       reason_for) -> dict:
+    """淘汰删除执行（容量触发与闲置主动清理共用的唯一删除路径）。
+
+    按候选顺序逐个删文件：成功标 released、失败标 orphan 等
+    下轮；每成员每轮上限 EVICT_MAX_PER_MEMBER；should_stop
+    (stats, usage) 在每份删除前判定、真则提前收手（容量分支
+    的滞后带停口）；收尾留一条 pool_evict 决策痕并提交。
+    reason_for(stats, usage) 在收尾时按最终计数拼 reason。
+    """
+    stats = {"evicted": 0, "delete_failed": 0, "freed_bytes": 0}
+    snapshot = []
+    marker = f"myDrive:{member.user_id}"
+    for row in candidates:
+        if stats["evicted"] >= EVICT_MAX_PER_MEMBER:
+            break
+        if should_stop is not None and should_stop(stats, usage):
+            break
+        fid = (row.variant_file_id or "").strip()
+        snapshot.append({"variant_id": int(row.id),
+                         "item_id": int(row.item_id),
+                         "status": row.status,
+                         "size_bytes": int(row.size_bytes or 0)})
+        if fid:
+            try:
+                client.delete_file_ignore_missing(marker, fid)
+            except Exception:  # noqa: BLE001 — 删失败标 orphan 等下轮
+                logger.warning("池淘汰删文件失败 member=%s variant=%s",
+                               member.id, row.id, exc_info=True)
+                row.status = "orphan"
+                stats["delete_failed"] += 1
+                continue
+        row.status = "released"
+        usage -= int(row.size_bytes or 0)
+        stats["freed_bytes"] += int(row.size_bytes or 0)
+        stats["evicted"] += 1
+    if snapshot:
+        from backend.emby_server import transfer_decisions as _decisions
+
+        _decisions.note_decision(
+            scope="pool_evict", resource_key=f"member:{member.id}",
+            decision=f"evicted:{stats['evicted']}",
+            reason=reason_for(stats, usage),
+            candidates=snapshot)
+    db.commit()
+    return stats
+
+
 def _evict_member_once(db, member, cfg, now, *, client_factory=None,
                        quota_fn=None) -> dict:
-    """单盘淘汰一轮：触发判定 + 按候选顺序删到滞后带为止。"""
+    """单盘容量淘汰一轮：触发判定 + 按候选顺序删到滞后带为止。"""
     stats = {"evicted": 0, "delete_failed": 0, "freed_bytes": 0,
              "triggered": False}
     cap = int(member.capacity_cap_bytes
@@ -391,45 +446,21 @@ def _evict_member_once(db, member, cfg, now, *, client_factory=None,
         return stats
     playing_ids = _actively_playing_variant_ids(db, now)
     candidates = _evict_candidates(db, member, cfg, now, playing_ids)
-    snapshot = []
-    marker = f"myDrive:{member.user_id}"
-    for row in candidates:
-        if stats["evicted"] >= EVICT_MAX_PER_MEMBER:
-            break
-        cap_ok = (not over_cap) or usage <= target_usage
+
+    def _at_band(inner, cur_usage):
+        cap_ok = (not over_cap) or cur_usage <= target_usage
         free_ok = (not low_free) or (
             free is not None
-            and free + stats["freed_bytes"] >= reserve)
-        if cap_ok and free_ok:
-            break
-        fid = (row.variant_file_id or "").strip()
-        snapshot.append({"variant_id": int(row.id),
-                         "item_id": int(row.item_id),
-                         "status": row.status,
-                         "size_bytes": int(row.size_bytes or 0)})
-        if fid:
-            try:
-                client.delete_file_ignore_missing(marker, fid)
-            except Exception:  # noqa: BLE001 — 删失败标 orphan 等下轮
-                logger.warning("池淘汰删文件失败 member=%s variant=%s",
-                               member.id, row.id, exc_info=True)
-                row.status = "orphan"
-                stats["delete_failed"] += 1
-                continue
-        row.status = "released"
-        usage -= int(row.size_bytes or 0)
-        stats["freed_bytes"] += int(row.size_bytes or 0)
-        stats["evicted"] += 1
-    if snapshot:
-        from backend.emby_server import transfer_decisions as _decisions
+            and free + inner["freed_bytes"] >= reserve)
+        return cap_ok and free_ok
 
-        _decisions.note_decision(
-            scope="pool_evict", resource_key=f"member:{member.id}",
-            decision=f"evicted:{stats['evicted']}",
-            reason=(f"usage={usage} cap={cap} free={free} "
-                    f"reserve={reserve}"),
-            candidates=snapshot)
-    db.commit()
+    done = _execute_evictions(
+        db, member, client, candidates, should_stop=_at_band,
+        usage=usage,
+        reason_for=lambda _s, final_usage: (
+            f"usage={final_usage} cap={cap} free={free} "
+            f"reserve={reserve}"))
+    stats.update(done)
     return stats
 
 
@@ -444,6 +475,74 @@ def _sweep_evictions(db, cfg, now, *, client_factory=None,
         one = _evict_member_once(
             db, member, cfg, now, client_factory=client_factory,
             quota_fn=quota_fn)
+        if one.get("triggered"):
+            stats["members"] += 1
+        stats["evicted"] += one["evicted"]
+        stats["delete_failed"] += one["delete_failed"]
+        stats["freed_bytes"] += one["freed_bytes"]
+    return stats
+
+
+# ------------------------------------------ 6b 闲置主动清理
+
+
+def _idle_proactive_enabled(db) -> bool:
+    """闲置主动清理开关（pool_janitor 家族键，默认开）：读取
+    异常按关处理（fail-closed，不许因读不到配置就多删文件）。"""
+    try:
+        return bool(pool_gate.janitor_config_payload(
+            db)["pool_idle_evict_proactive_enabled"])
+    except Exception:  # noqa: BLE001
+        logger.warning("闲置主动清理开关读取失败，按关处理",
+                       exc_info=True)
+        return False
+
+
+def _evict_idle_member_once(db, member, cfg, now, *,
+                            client_factory=None) -> dict:
+    """单盘闲置主动清理一轮（不依赖容量触发）：只取闲置超标的
+    ready 副本（候选口径与容量淘汰共用 _evict_candidates——
+    正在播、retention_until 未到的恒跳过），删除/标态/决策
+    留痕与容量淘汰共用 _execute_evictions。"""
+    stats = {"evicted": 0, "delete_failed": 0, "freed_bytes": 0,
+             "triggered": False}
+    idle_days = int(cfg["pool_copy_idle_evict_days"])
+    if idle_days <= 0:
+        # 闲置天数 0 = 闲置淘汰关：与容量分支同口径不淘。
+        return stats
+    playing_ids = _actively_playing_variant_ids(db, now)
+    candidates = [
+        row for row in _evict_candidates(db, member, cfg, now,
+                                         playing_ids)
+        if row.status == "ready"]
+    if not candidates:
+        return stats
+    client, _binding = _member_client(
+        db, member, client_factory=client_factory)
+    if client is None:
+        # 令牌建不出来：删不了文件，本轮只记账不假装已清。
+        stats["no_client"] = True
+        return stats
+    stats["triggered"] = True
+    done = _execute_evictions(
+        db, member, client, candidates,
+        reason_for=lambda _s, _u: f"proactive_idle days={idle_days}")
+    stats.update(done)
+    return stats
+
+
+def _sweep_idle_proactive_evictions(db, cfg, now, *,
+                                    client_factory=None) -> dict:
+    """闲置主动清理一轮（第 6 步的独立分支）：逐个 active 成员
+    清闲置超标的 ready 副本，不看容量上限与剩余空间。"""
+    stats = {"members": 0, "evicted": 0, "delete_failed": 0,
+             "freed_bytes": 0}
+    members = (db.query(em.PoolMember)
+               .filter(em.PoolMember.status == "active")
+               .order_by(em.PoolMember.id.asc()).all())
+    for member in members:
+        one = _evict_idle_member_once(
+            db, member, cfg, now, client_factory=client_factory)
         if one.get("triggered"):
             stats["members"] += 1
         stats["evicted"] += one["evicted"]
@@ -640,6 +739,10 @@ def run_pool_janitor_once(db, now=None, *, client_factory=None,
         _step("evict", lambda: _sweep_evictions(
             db, cfg, now, client_factory=client_factory,
             quota_fn=quota_fn))
+        if _idle_proactive_enabled(db):
+            _step("idle_proactive", lambda:
+                  _sweep_idle_proactive_evictions(
+                      db, cfg, now, client_factory=client_factory))
     _step("leftover_cleanup", lambda: _sweep_leftover_cleanup(
         db, now, client_factory=client_factory))
     if enabled:
