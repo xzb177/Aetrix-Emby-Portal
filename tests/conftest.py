@@ -35,13 +35,18 @@ _XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
 
 if _XDIST_WORKER:
     _db_url = os.environ.get("DATABASE_URL", "")
+    _worker_db_path = None
+    _shared_db_path = None
     if _db_url.startswith("sqlite:///") and ":memory:" not in _db_url:
+        _shared_db_path = _db_url[len("sqlite:///"):]
         if _db_url.endswith(".db"):
             os.environ["DATABASE_URL"] = f"{_db_url[:-3]}-{_XDIST_WORKER}.db"
         else:
             os.environ["DATABASE_URL"] = f"{_db_url}-{_XDIST_WORKER}"
+        _worker_db_path = os.environ["DATABASE_URL"][len("sqlite:///"):]
     elif not _db_url:
         os.environ["DATABASE_URL"] = f"sqlite:///./ci-smoke-{_XDIST_WORKER}.db"
+        _worker_db_path = f"./ci-smoke-{_XDIST_WORKER}.db"
     _sock_dir = os.environ.get("PROVIDER_RUNTIME_SOCK_DIR")
     if _sock_dir:
         os.environ["PROVIDER_RUNTIME_SOCK_DIR"] = os.path.join(
@@ -50,6 +55,48 @@ if _XDIST_WORKER:
     if _rclone_conf:
         _conf_root, _conf_ext = os.path.splitext(_rclone_conf)
         os.environ["MOUNT_RCLONE_CONF"] = f"{_conf_root}-{_XDIST_WORKER}{_conf_ext}"
+
+    # worker 自己的库必须在任何测试模块导入前就建好表并带上种子。
+    #
+    # 只靠 session 级 warmup fixture 预热不够：xdist worker 在跑第一个
+    # 用例之前先要导入测试模块（收集期），而八十多个测试文件在导入期
+    # 就以 `from backend.database import SessionLocal` 捕获当时的
+    # sessionmaker、或干脆把全局 engine/SessionLocal 重绑到自己的临时
+    # 库。等 warmup fixture 执行时，当前 engine 往往已是某个重绑文件
+    # 的临时库——init_db 预热的是它，worker 自己的库（被早期导入捕获
+    # 的原始 SessionLocal 正指着它）始终是空文件，于是这些用例在
+    # setup 期整片撞 no such table。串行时这条链成立，是因为共享库
+    # 在 pytest 开始前已被前面几十个冒烟脚本步建好表并播种。
+    #
+    # 故导入期就对齐串行的开局状态：先把共享库（冒烟步的种子）整库
+    # 复制到 worker 独立文件（sqlite backup，含 WAL 内容），再导入
+    # backend.database（此时 engine/SessionLocal 按改写后的
+    # DATABASE_URL 建）并 init_db 补齐表结构。之后各测试文件在导入
+    # 期重绑/捕获的都是已初始化的库，与串行同口径。本段失败不阻断
+    # 收集：session warmup fixture 还会按原口径再预热一次兜底。
+    if _worker_db_path:
+        try:
+            if (_shared_db_path and os.path.exists(_shared_db_path)
+                    and not os.path.exists(_worker_db_path)):
+                import sqlite3
+
+                _src = sqlite3.connect(
+                    f"file:{_shared_db_path}?mode=ro", uri=True)
+                try:
+                    _dst = sqlite3.connect(_worker_db_path)
+                    try:
+                        _src.backup(_dst)
+                    finally:
+                        _dst.close()
+                finally:
+                    _src.close()
+            from backend import database as _dbmod
+
+            _dbmod.init_db()
+        except Exception as _exc:  # noqa: BLE001 — 兜底在 warmup fixture
+            import warnings
+
+            warnings.warn(f"xdist worker 库导入期预热失败: {_exc!r}")
 
 
 @pytest.fixture(scope="session", autouse=True)

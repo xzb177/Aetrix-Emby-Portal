@@ -41,6 +41,10 @@ def seed(db):
     u = WebUser(username="hist_" + _guid()[:8], password_hash="x")
     db.add(u)
     db.flush()
+    # xdist 并行下新用户可能复用刚被删用户的 id、继承其孤儿会话行，
+    # 聚合结果会多出别人的条目；先清掉本 id 名下已有会话再造数。
+    db.query(em.PlaybackSession).filter(
+        em.PlaybackSession.user_id == u.id).delete()
 
     lib = em.Library(guid=_guid(), name="测试库", collection_type="tvshows")
     db.add(lib)

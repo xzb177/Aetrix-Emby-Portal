@@ -89,6 +89,12 @@ def _cleanup(db: Session) -> None:
             db.query(em.MountCredential).filter(
                 em.MountCredential.owner_user_id == u.id).delete()
             db.delete(u)
+    # xdist 并行下别的用例可能在同一 worker 库里留下无主绑定（用户已删、
+    # 绑定还在）；新种子用户复用其 id 时会撞 (user_id, provider,
+    # account_label) 唯一约束。清掉 user_id 已不存在的孤儿绑定。
+    db.query(em.UserStorageBinding).filter(
+        ~em.UserStorageBinding.user_id.in_(
+            db.query(models.WebUser.id))).delete()
     db.commit()
 
 
