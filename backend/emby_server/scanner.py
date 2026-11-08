@@ -604,6 +604,9 @@ def _find_duplicate_series(db, library_id: int, tmdb_id=None,
         MI.library_id == library_id,
         MI.item_type == "series",
         MI.deleted_at.is_(None),
+        # 已合并分身不许被复用当挂集目标（新集挂分身 = 永久滞留）；
+        # 其存活正主同键同库，复用查询自然会命中正主。
+        MI.merged_into_id.is_(None),
     )
     tmdb_id = (str(tmdb_id or "")).strip()
     if tmdb_id:
@@ -627,6 +630,7 @@ def _find_duplicate_series(db, library_id: int, tmdb_id=None,
         MI.library_id == library_id,
         MI.item_type == "series",
         MI.deleted_at.is_(None),
+        MI.merged_into_id.is_(None),
     )
     if year:
         rows = rows.filter(MI.production_year.between(year - 1, year + 1))
@@ -641,6 +645,31 @@ def _find_duplicate_series(db, library_id: int, tmdb_id=None,
             continue
         out.append(row_id)
     return out
+
+
+def _resolve_merged_series_root(db, series):
+    """series 行已被合并时，沿 merged_into_id 跟随到存活正主。
+
+    与 upstream_import 的进库口径一致（已合并 → 跟随 merged_into_id
+    返回存活行）：扫描按目录 guid / 同名复用解析到的 series 行可能
+    早已在合并中成为分身，合并工人的集跟随只在合并当时触发一次，
+    之后新扫入的集若继续挂在分身名下就永久不可见（2026-11-08
+    普查：修复后入库的滞留集即此来源）。链断（目标不可见）/成环/
+    深度耗尽时返回链上最后一个可见行，绝不让扫描丢文件。
+    """
+    seen = {series.id}
+    row = series
+    for _ in range(8):
+        nxt_id = getattr(row, "merged_into_id", None)
+        if not nxt_id or nxt_id in seen:
+            break
+        seen.add(nxt_id)
+        nxt = db.query(emby_models.MediaItem).filter(
+            emby_models.MediaItem.id == nxt_id).first()
+        if nxt is None:
+            break
+        row = nxt
+    return row
 
 
 def _file_fingerprint(scan_file: "ScanFile") -> str:
@@ -6999,6 +7028,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             # B2 季行随批预取（2026-10-20）：本批新建的 series，
                             # _ensure_season_row 对它跳过回退 SELECT（季行不可能已存在）。
                             ctx.new_series_ids.add(series.id)
+                    # 解析到的 series 若已在早前合并中成为分身，跟随到
+                    # 存活正主再挂集（见 _resolve_merged_series_root）；
+                    # 本批后续集数也统一挂正主。
+                    if getattr(series, "merged_into_id", None):
+                        _root = _resolve_merged_series_root(db, series)
+                        if _root is not None and _root.id != series.id:
+                            series = _root
+                            ctx.series_items[series_guid] = series
                     # 现有隐式 series 可能是旧版本用 episode 文件名建出来的污染名称；
                     # 只要还没有 TMDB/NFO 的权威名称，就用目录名纠正。
                     if _pending.series_name and not series.tmdb_id:
