@@ -1083,6 +1083,14 @@ def _auto_migrate():
         ("emby_play_start_events", [
             ("variant", "VARCHAR(30)", "NULL"),
         ]),
+        # 暖地址重做批 0（2026-11-08，goal-35）：起播事件表加暖归因两列
+        # warm_hits（命中的预热步，逗号分隔）/ warm_in_signal（是否信号
+        # 内目标）。老库补列后为 NULL（= 未暖/未判定），批 1/2 工人接线
+        # 前全部事件恒 NULL，聚合与读口行为与升级前一致。
+        ("emby_play_start_events", [
+            ("warm_hits", "VARCHAR(40)", "NULL"),
+            ("warm_in_signal", "BOOLEAN", "NULL"),
+        ]),
         # 远端身份四件套（清单第 10 项 #13，PR-1）：emby_items 加 scan 身份列。
         # 老库补列后为 NULL（= 身份未知），认亲层无键跳过该层，行为与升级前一致。
         ("emby_items", [
