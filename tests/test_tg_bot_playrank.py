@@ -1,11 +1,15 @@
 """每日播放排行榜（文字三榜）测试。
 
-规格（站主拿竞品 StevenEmby 机器人 21:30 榜单截图亲点补做）：
+规格（站主拿竞品机器人 21:30 榜单截图亲点补做，后按竞品「月饼
+Emby」实际发布追加图文合一＋置顶）：
 - 每天 21:30（Asia/Shanghai，可配 bot_playrank_time）由站内机器人把
-  当日（00:00 至发送时刻）三榜以纯文字发到正式群（bot_group_ids
-  第一个群），不置顶：观看时长用户榜 / 📺 剧集排名 / 🎬 电影排名，
+  当日（00:00 至发送时刻）三榜发到正式群（bot_group_ids 第一个群）：
+  海报图（电影/剧集各前 5）＋文字榜 caption 合一一条、发出后置顶；
+  文字超 caption 上限时图、文两条；海报关/失败降级纯文字。
+  文字榜两行式，正文顺序 🎬 电影 / 📺 剧集 / 👑 观看时长榜，
   各 Top 5（可配 bot_playrank_top_n），按总时长降序、同长按播放
-  次数降序。三榜总开关默认关，各榜可单独关。当日无播放不发。
+  次数降序。三榜总开关默认关，各榜可单独关、海报可单独关。
+  当日无播放不发。
 
 数据口径（不新造采集，与站内既有榜单同源）：
 - 表 emby_playback_sessions（窗口按 start_time 落入上海自然日，
@@ -147,7 +151,19 @@ def _stub_send(monkeypatch, ok=True):
         calls.append({"chat_id": chat_id, "text": text, "kw": kw})
         return ok, None if ok else "boom"
 
+    def fake_ex(db_, chat_id, text, reply_markup=None, **kw):
+        calls.append({"chat_id": chat_id, "text": text, "kw": kw})
+        return ok, None if ok else "boom", 4242 if ok else None
+
     monkeypatch.setattr(sender, "send_message", fake)
+    monkeypatch.setattr(sender, "send_message_ex", fake_ex)
+    # 海报默认开：本文件的用例只验文字路径与调度，海报发送一律
+    # 打桩失败、走纯文字降级；置顶打桩成功（置顶另在海报测试验）。
+    monkeypatch.setattr(sender, "send_photo", lambda *a, **kw: (False, "stubbed"))
+    monkeypatch.setattr(
+        sender, "send_photo_ex", lambda *a, **kw: (False, "stubbed", None)
+    )
+    monkeypatch.setattr(sender, "pin_message", lambda *a, **kw: (True, None))
     return calls
 
 
@@ -335,16 +351,18 @@ def test_push_sends_formatted_text(db, monkeypatch):
     # 纯文字口径（与 updatedigest 一致，不走 HTML 解析免转义事故）
     assert calls[0]["kw"].get("parse_mode") is None
     text = calls[0]["text"]
-    assert "今日播放排行榜" in text
+    assert text.startswith("📺 今日热播榜\n──────────")
+    # 正文顺序：电影 → 剧集 → 用户榜（与海报上下呼应）
+    assert text.index("🎬 电影") < text.index("📺 剧集") < text.index("👑 观看时长榜")
     # 用户榜：隐藏榜单者不出现；alice 总时长 1800+600+3600=6000 秒
-    assert "1. alice (1 小时 40 分钟)" in text
+    assert "1. alice\n  观看 1 小时 40 分钟" in text
     assert "hidden" not in text
     # 剧集榜：集汇总到剧
-    assert "📺 剧集排名" in text
-    assert "1. 剧甲\n播放次数：3 时长：1 小时 10 分钟" in text
+    assert "📺 剧集" in text
+    assert "1. 剧甲\n  播放 3 次 · 时长 1 小时 10 分钟" in text
     # 电影榜：hidden 的会话计入条目榜（条目榜不按用户过滤）
-    assert "🎬 电影排名" in text
-    assert "1. 片甲\n播放次数：2 时长：3 小时 0 分钟" in text
+    assert "🎬 电影" in text
+    assert "1. 片甲\n  播放 2 次 · 时长 3 小时 0 分钟" in text
 
 
 def test_push_sub_board_switches(db, monkeypatch):
@@ -362,9 +380,9 @@ def test_push_sub_board_switches(db, monkeypatch):
     res = playrank.push_daily_rank(db)
     assert res["pushed"] is True
     text = calls[0]["text"]
-    assert "剧集排名" not in text
+    assert "📺 剧集" not in text
     assert "观看时长榜" not in text
-    assert "🎬 电影排名" in text
+    assert "🎬 电影" in text
 
 
 def test_push_all_sub_boards_off_is_empty(db, monkeypatch):

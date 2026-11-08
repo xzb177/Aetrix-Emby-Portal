@@ -1,21 +1,29 @@
-"""每日播放排行榜（文字三榜）：站主拿竞品 StevenEmby 机器人 21:30
-发的榜单截图亲点补做。与「观影榜海报日推」（rankpush，用户时长榜
-海报＋发分）是两回事：本模块发纯文字、带条目榜、不发分、不置顶。
+"""每日播放排行榜：站主拿竞品机器人 21:30 的榜单截图亲点补做。
+与「观影榜海报日推」（rankpush，用户时长榜海报＋发分）是两回事：
+本模块不发分；播报默认图文合一（海报图＋文字榜 caption 一条发），
+发出后置顶。
 
-消息形态（照截图）：一条纯文字，标题行＋三榜，哪榜有货出哪榜：
+消息形态（照竞品「月饼 Emby」实际发布）：海报图一张（电影/剧集
+各前 5，深色底红点缀，playrank_poster 渲染）＋文字榜全文作
+caption；文字超 Telegram caption 上限（1024 字符）时退回图、文
+两条（图无 caption、文字紧随）；海报关掉或生成/发送失败时降级
+为纯文字一条。文字榜两行式，正文顺序电影 → 剧集 → 用户榜
+（与海报上下呼应），哪榜有货出哪榜：
 
-    🏆 今日播放排行榜（11月8日）
+    📺 今日热播榜
+    ──────────
+
+    🎬 电影
+    1. 生化危机：爆发夜
+      播放 4 次 · 时长 2 小时 57 分钟
+
+    📺 剧集
+    1. 后会友期
+      播放 29 次 · 时长 8 小时 46 分钟
 
     👑 观看时长榜
-    1. gztony (8 小时 18 分钟)
-
-    📺 剧集排名
-    1. 后会友期
-    播放次数：29 时长：8 小时 46 分钟
-
-    🎬 电影排名
-    1. 生化危机：爆发夜
-    播放次数：4 时长：2 小时 57 分钟
+    1. gztony
+      观看 8 小时 18 分钟
 
 排序：三榜都按总观看时长降序，同长按播放次数降序（用户榜无次数
 概念，同秒沿用 watch_duration_rank 的 user_id 升序）。片名用库内
@@ -47,6 +55,8 @@
 - bot_playrank_top_n 每榜条数，默认 5（1~20）。
 - bot_playrank_users_enabled / _series_enabled / _movies_enabled
   三榜各自开关，默认开。
+- bot_playrank_poster_enabled 海报图开关，默认开；关了只发文字。
+  海报固定取电影/剧集前 5，与 bot_playrank_top_n 无关。
 调度标记 bot_playrank_last_run 存 SystemConfig，只在推送成功或
 空榜时写入；发送失败/未配群不写，下个 tick 重试（与 rankpush
 同纪律）。定时搭 tg-rankpush 调度线程的分钟巡检（与 gamerank
@@ -60,6 +70,7 @@ from datetime import datetime
 from backend.emby_server import models as em
 from backend.integrations import store
 from backend.tg_bot import queries, rankpush, sender
+from backend.tg_bot.layout import caption_fits
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +80,7 @@ TOP_N_KEY = "bot_playrank_top_n"
 USERS_KEY = "bot_playrank_users_enabled"
 SERIES_KEY = "bot_playrank_series_enabled"
 MOVIES_KEY = "bot_playrank_movies_enabled"
+POSTER_KEY = "bot_playrank_poster_enabled"
 LAST_RUN_KEY = "bot_playrank_last_run"
 
 DEFAULT_TIME = (21, 30)
@@ -105,6 +117,10 @@ def series_enabled(db) -> bool:
 
 def movies_enabled(db) -> bool:
     return _switch(db, MOVIES_KEY, True)
+
+
+def poster_enabled(db) -> bool:
+    return _switch(db, POSTER_KEY, True)
 
 
 def send_clock(db) -> tuple[int, int]:
@@ -261,26 +277,25 @@ def collect_boards(db) -> dict:
 
 
 def render_message(date_sh, users, series, movies) -> str:
-    """渲染纯文字榜单（照截图形态）。date_sh 为上海自然日 datetime。"""
-    lines = [f"🏆 今日播放排行榜（{date_sh.month}月{date_sh.day}日）"]
-    if users:
-        lines += ["", "👑 观看时长榜"]
-        for idx, row in enumerate(users, 1):
-            lines.append(
-                f"{idx}. {row.get('username') or ''} ({fmt_duration(row.get('seconds'))})"
-            )
-    for title, board in (("📺 剧集排名", series), ("🎬 电影排名", movies)):
+    """渲染文字榜（竞品两行式）。date_sh 为上海自然日 datetime
+    （日期只上海报图，文字标题行不带日期）。正文顺序电影 → 剧集
+    → 用户榜，与海报上下呼应；每条两行，第二行缩进写数据。"""
+    lines = ["📺 今日热播榜", "──────────"]
+    for title, board in (("🎬 电影", movies), ("📺 剧集", series)):
         if not board:
             continue
         lines += ["", title]
         for idx, row in enumerate(board, 1):
-            if idx > 1:
-                lines.append("")
             lines.append(f"{idx}. {row.get('name') or ''}")
             lines.append(
-                f"播放次数：{int(row.get('plays') or 0)} "
-                f"时长：{fmt_duration(row.get('seconds'))}"
+                f"  播放 {int(row.get('plays') or 0)} 次 "
+                f"· 时长 {fmt_duration(row.get('seconds'))}"
             )
+    if users:
+        lines += ["", "👑 观看时长榜"]
+        for idx, row in enumerate(users, 1):
+            lines.append(f"{idx}. {row.get('username') or ''}")
+            lines.append(f"  观看 {fmt_duration(row.get('seconds'))}")
     return "\n".join(lines)
 
 
@@ -290,7 +305,7 @@ def push_daily_rank(db) -> dict:
     """生成并推送今日播放排行榜。返回 {pushed, reason, users, series, movies}。
 
     reason: ok / disabled / empty / no_group / send_failed。
-    空榜（三榜皆空，含三榜全关）不发；不置顶、不发分。
+    空榜（三榜皆空，含三榜全关）不发；发出后置顶，不发分。
     """
     empty = {"users": [], "series": [], "movies": []}
     if not playrank_enabled(db):
@@ -305,19 +320,88 @@ def push_daily_rank(db) -> dict:
         logger.warning("playrank 未配置交流群（bot_group_ids），跳过推送")
         return {"pushed": False, "reason": "no_group", **payload}
     text = render_message(boards["date_sh"], **payload)
-    try:
-        ok, err = sender.send_message(db, group_id, text, parse_mode=None)
-    except Exception:
-        logger.exception("playrank 发送异常")
-        ok, err = False, "exception"
-    if not ok:
-        logger.warning("playrank 推送失败 err=%s", err)
-        return {"pushed": False, "reason": "send_failed", **payload}
+    sent = False
+    message_id = None
+    if poster_enabled(db) and (payload["movies"] or payload["series"]):
+        sent, message_id = _try_send_with_poster(
+            db, group_id, boards["date_sh"], payload, text
+        )
+    if not sent:
+        try:
+            ok, err, message_id = sender.send_message_ex(
+                db, group_id, text, parse_mode=None
+            )
+        except Exception:
+            logger.exception("playrank 发送异常")
+            ok, err, message_id = False, "exception", None
+        if not ok:
+            logger.warning("playrank 推送失败 err=%s", err)
+            return {"pushed": False, "reason": "send_failed", **payload}
+    _try_pin(db, group_id, message_id)
     logger.info(
         "playrank 已推送 group=%s users=%s series=%s movies=%s",
         group_id, len(payload["users"]), len(payload["series"]), len(payload["movies"]),
     )
     return {"pushed": True, "reason": "ok", **payload}
+
+
+def _try_send_with_poster(db, group_id, date_sh, payload, text):
+    """图文播报：海报先行，文字榜全文塞得进 caption 就合一一条；
+    超限退回图（无 caption）＋文字两条。返回 (是否已发出, 承载
+    文字那条消息的 id)。海报任何失败回 (False, None)，调用方
+    降级纯文字——海报问题绝不堵死播报。"""
+    try:
+        from backend.tg_bot import playrank_poster
+
+        movies = list(payload["movies"])
+        series = list(payload["series"])
+        limit = playrank_poster.POSTER_LIMIT
+        if (movies and len(movies) < limit) or (
+            series and len(series) < limit
+        ):
+            # 海报固定前 5：文字榜 top_n 不足 5 时用同一聚合补齐。
+            from backend.emby_server.portal import leaderboard_window
+
+            full = item_play_rank(db, leaderboard_window("day")[1], limit)
+            if movies:
+                movies = full["movies"]
+            if series:
+                series = full["series"]
+        if caption_fits(text):
+            ok, mid = playrank_poster.send_rank_photo(
+                db, group_id, date_sh, movies, series, caption=text
+            )
+            if ok:
+                return True, mid
+            logger.warning("playrank 图文合一发送失败，降级纯文字")
+            return False, None
+        ok, _photo_mid = playrank_poster.send_rank_photo(
+            db, group_id, date_sh, movies, series, caption=None
+        )
+        if not ok:
+            return False, None
+        ok, err, mid = sender.send_message_ex(db, group_id, text, parse_mode=None)
+        if not ok:
+            logger.warning(
+                "playrank 海报已发但文字发送失败 err=%s，走纯文字兜底", err
+            )
+            return False, None
+        return True, mid
+    except Exception:
+        logger.exception("playrank 海报推送异常（文字榜照常发送）")
+        return False, None
+
+
+def _try_pin(db, group_id, message_id) -> None:
+    """播报置顶（与竞品一致）：失败只记日志，不影响播报本身。"""
+    if not message_id:
+        return
+    try:
+        ok, err = sender.pin_message(db, group_id, int(message_id))
+        if not ok:
+            logger.warning("playrank 置顶失败 err=%s", err)
+    except Exception:
+        logger.exception("playrank 置顶异常")
 
 
 def run_scheduled_tick(db, now_sh: datetime | None = None) -> list[str]:

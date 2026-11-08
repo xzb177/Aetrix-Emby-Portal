@@ -114,6 +114,10 @@ const playrankMoviesEnabled = computed({
   get: () => (form.value['bot_playrank_movies_enabled'] ?? 'true') === 'true',
   set: (v: boolean) => { form.value['bot_playrank_movies_enabled'] = v ? 'true' : 'false' },
 })
+const playrankPosterEnabled = computed({
+  get: () => (form.value['bot_playrank_poster_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['bot_playrank_poster_enabled'] = v ? 'true' : 'false' },
+})
 
 const playrankFields = [
   { key: 'bot_playrank_time', label: '发送时间', hint: '上海时间，如 21:30', suffix: '' },
@@ -464,7 +468,7 @@ onMounted(load)
       <SectionCard
         title="每日播放排行榜"
         :icon="Trophy"
-        description="每天到点把今日观看时长榜、剧集榜、电影榜以文字消息发到主群"
+        description="每天到点把今日电影榜、剧集榜、观看时长榜发到主群（海报图＋文字榜一条发，发出后置顶）"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
           <el-form-item label="总开关">
@@ -487,6 +491,10 @@ onMounted(load)
           <el-form-item label="电影榜">
             <el-switch v-model="playrankMoviesEnabled" />
             <span class="field-hint">按总时长排电影，默认开</span>
+          </el-form-item>
+          <el-form-item label="海报图">
+            <el-switch v-model="playrankPosterEnabled" />
+            <span class="field-hint">播报时配一张海报图（电影/剧集各前 5）与文字榜一起发，默认开；关掉只发文字</span>
           </el-form-item>
         </el-form>
       </SectionCard>
