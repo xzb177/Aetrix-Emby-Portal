@@ -55,6 +55,10 @@ class PlayTimer:
         """记录一个检查点（毫秒精度）。"""
         self._marks.append((name, (time.perf_counter() - self._start) * 1000))
 
+    def elapsed_ms(self) -> int:
+        """自计时器创建起已耗的毫秒数（起播事件 total_ms 的取数口）。"""
+        return int((time.perf_counter() - self._start) * 1000)
+
     def done(self) -> None:
         """输出汇总日志：``[play-timing] <label> <阶段>=<毫秒>ms ... total=<毫秒>ms``。"""
         total = (time.perf_counter() - self._start) * 1000
@@ -72,11 +76,31 @@ class _NoopTimer:
     def mark(self, name: str) -> None:  # noqa: ARG002
         pass
 
+    def elapsed_ms(self) -> None:
+        """关闭时无计时：返回 None（调用方据此把 total_ms 留空）。"""
+        return None
+
     def done(self) -> None:
         pass
 
 
 _NOOP = _NoopTimer()
+
+
+def elapsed_ms(timer) -> int | None:
+    """安全取计时器的已耗毫秒：None / 无 elapsed_ms 的桩替身一律 None。
+
+    供跨函数传递计时器的记账点用（如额度后路的 pt 参数，测试桩可能
+    只实现 mark）：取不到就留空，绝不因打点取数打断播放。
+    """
+    fn = getattr(timer, "elapsed_ms", None)
+    if not callable(fn):
+        return None
+    try:
+        value = fn()
+    except Exception:  # noqa: BLE001 — 打点取数永不抛
+        return None
+    return None if value is None else int(value)
 
 
 def new_timer(label: str) -> PlayTimer | _NoopTimer:

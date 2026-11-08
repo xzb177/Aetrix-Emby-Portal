@@ -6215,6 +6215,8 @@ async def _usercopy_quota_relay_attempt(
     from backend.emby_server.async_db import run_db
     from backend.emby_server import playback_strategy as _strategy_q
     from backend.emby_server import transfer_variant as _tv_q
+    from backend.emby_server.play_timing import (
+        elapsed_ms as _timer_elapsed_ms)
 
     uid = getattr(user, "id", None)
     if uid is None or not play_fid:
@@ -6259,7 +6261,8 @@ async def _usercopy_quota_relay_attempt(
             item, user_id=uid, method="relay",
             variant=play_variants.BYOS_DRIVE_RELAY, result="error",
             error_kind=f"usercopy_quota_relay_{exc.status_code}",
-            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+            resolve_ms=int((time.perf_counter() - _t0) * 1000),
+            total_ms=_timer_elapsed_ms(pt))
         return None
     except Exception as exc:  # noqa: BLE001 — 中继任何失败都回现行口径
         _tv_q.log_byos(
@@ -6270,7 +6273,8 @@ async def _usercopy_quota_relay_attempt(
             item, user_id=uid, method="relay",
             variant=play_variants.BYOS_DRIVE_RELAY, result="error",
             error_kind="usercopy_quota_relay_error",
-            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+            resolve_ms=int((time.perf_counter() - _t0) * 1000),
+            total_ms=_timer_elapsed_ms(pt))
         return None
     if _resp_q is None or getattr(_resp_q, "status_code", 500) >= 400:
         _tv_q.log_byos(
@@ -6282,7 +6286,8 @@ async def _usercopy_quota_relay_attempt(
             item, user_id=uid, method="relay",
             variant=play_variants.BYOS_DRIVE_RELAY, result="error",
             error_kind="usercopy_quota_relay_status",
-            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+            resolve_ms=int((time.perf_counter() - _t0) * 1000),
+            total_ms=_timer_elapsed_ms(pt))
         return None
     _tv_q.log_byos(
         "byos_usercopy_quota_relay", item=getattr(item, "id", None),
@@ -6290,7 +6295,8 @@ async def _usercopy_quota_relay_attempt(
     _note_play_start_safe(
         item, user_id=uid, method="relay",
         variant=play_variants.BYOS_DRIVE_RELAY, result="ok",
-        resolve_ms=int((time.perf_counter() - _t0) * 1000))
+        resolve_ms=int((time.perf_counter() - _t0) * 1000),
+        total_ms=_timer_elapsed_ms(pt))
     return _resp_q
 
 
@@ -6711,6 +6717,7 @@ async def playback_info(
     except Exception:  # noqa: BLE001 — 预计算失败不影响本次播放
         logger.warning("交付计划预计算失败 item=%s",
                        getattr(item, "id", "?"), exc_info=True)
+    _pt.mark("plan_spawn")
     base = _base_url(request)
     body = {}
     try:
@@ -6856,6 +6863,7 @@ async def playback_info(
                 media_source, _variants, guid=item.guid,
                 stream_url=stream_url,
                 direct_stream_ok=bool(direct))
+    _pt.mark("variants")
 
     # 阶段 3 一等会话（默认关）：开时 PlaySessionId 不再是每次现生成的随机
     # 票据，而是服务端在 PlaybackInfo 时预建的会话 id——上报侧 session_key
@@ -6927,6 +6935,7 @@ async def playback_info(
             _src.setdefault(
                 "Readiness",
                 "ready" if _src.get("DirectPlayUrl") else "unavailable")
+        _pt.mark("copy_gate")
     # 直链 MIME 修复（2026-10-27）：门禁已放行（proceed）且直链开关开时，
     # 把第一条源的直链换成 Drive alt=media + RequiredHttpHeaders（SA 短期
     # 令牌）。实测：alt=media + Bearer 头回 206 video/x-matroska；不带头
@@ -6989,6 +6998,7 @@ async def playback_info(
                         user.id, _alt_fid)
                     _pi_quota_page = (
                         _pi_probe_detail.get("page") == "quota")
+                    _pt.mark("quota_probe")
                     if (_pi_probe_verdict in ("quota", "interstitial")
                             or _pi_quota_page):
                         # 改道口径（2026-10-31 修订）：只看 detail
@@ -7067,6 +7077,7 @@ async def playback_info(
                     _alt_applied = await run_db(
                         _apply_usercopy_direct, db, user, sources[0],
                         _alt_fid)
+                    _pt.mark("copy_grant")
                     if _alt_applied:
                         # 防外流发放可查（2026-10-28）：只记可转发即用
                         # 的免凭证直链这一次。记账走独立短会话、永不抛
@@ -7257,6 +7268,7 @@ async def playback_info(
                 sources.extend(_up_lines)
         except Exception as exc:  # noqa: BLE001 — 线路组装失败不打挂主响应
             logger.warning("上游线路组装失败 item=%s: %s", item.id, exc)
+    _pt.mark("upstream_lines")
     _playback_variants = None
     if _variants:
         _requires_transfer = bool(
@@ -7827,7 +7839,8 @@ async def video_stream(
                     _note_play_start_safe(
                         item, user_id=getattr(user, "id", None),
                         method="direct_302", variant=play_variants.DRIVE_DIRECT,
-                        result="error", error_kind=_block_kind)
+                        result="error", error_kind=_block_kind,
+                        total_ms=_pt.elapsed_ms())
                     raise HTTPException(status_code=409, detail=_block_detail)
             elif _probe_detail.get("shape") == "get" and _probe_detail.get("page"):
                 # Range 健康但 GET 腿探到插页（scan / html）：只打
@@ -7947,7 +7960,8 @@ async def video_stream(
                 item, user_id=getattr(user, "id", None),
                 method="relay", variant=play_variants.BYOS_DRIVE_RELAY,
                 result="error", error_kind=f"byos_token_{exc.kind}",
-                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000),
+                total_ms=_pt.elapsed_ms())
             raise HTTPException(
                 status_code=503, detail=_byos_detail) from exc
         _pt.mark("relay")
@@ -7962,7 +7976,8 @@ async def video_stream(
                 method="relay", variant=play_variants.BYOS_DRIVE_RELAY,
                 result="error",
                 error_kind=f"upstream_{exc.status_code}",
-                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000),
+                total_ms=_pt.elapsed_ms())
             raise
         _note_play_start_safe(
             item, user_id=getattr(user, "id", None), method="relay",
@@ -7970,7 +7985,8 @@ async def video_stream(
             result="error" if _byos_drive_resp.status_code >= 400 else "ok",
             error_kind=(f"upstream_{_byos_drive_resp.status_code}"
                         if _byos_drive_resp.status_code >= 400 else None),
-            resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+            resolve_ms=int((time.perf_counter() - _byos_t0) * 1000),
+            total_ms=_pt.elapsed_ms())
         return _observe_traffic(_byos_drive_resp)
     # BYOS 用户令牌中继（Drive 腿，闭环 #13）：条目是 byos:// 路径且
     # drive_relay_enabled 开时，字节走该用户自己的 Drive 令牌中继，
@@ -8050,7 +8066,8 @@ async def video_stream(
                     item, user_id=getattr(user, "id", None),
                     method="relay", variant=play_variants.DRIVE_RELAY,
                     result="error", error_kind=f"byos_token_{exc.kind}",
-                    resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                    resolve_ms=int((time.perf_counter() - _byos_t0) * 1000),
+                    total_ms=_pt.elapsed_ms())
                 raise HTTPException(
                     status_code=503, detail=_byos_detail) from exc
             _pt.mark("relay")
@@ -8065,7 +8082,8 @@ async def video_stream(
                     method="relay", variant=play_variants.DRIVE_RELAY,
                     result="error",
                     error_kind=f"upstream_{exc.status_code}",
-                    resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                    resolve_ms=int((time.perf_counter() - _byos_t0) * 1000),
+                    total_ms=_pt.elapsed_ms())
                 raise
             _note_play_start_safe(
                 item, user_id=getattr(user, "id", None), method="relay",
@@ -8073,7 +8091,8 @@ async def video_stream(
                 result="error" if _byos_resp.status_code >= 400 else "ok",
                 error_kind=(f"upstream_{_byos_resp.status_code}"
                             if _byos_resp.status_code >= 400 else None),
-                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000),
+                total_ms=_pt.elapsed_ms())
             return _observe_traffic(_byos_resp)
     if (_drive_switch_on and await run_db(_strategy.drive_relay_enabled, db)
             and (_requested_variant is None
@@ -8118,7 +8137,8 @@ async def video_stream(
                         method="relay", variant=play_variants.DRIVE_RELAY,
                         result="error", error_kind="all_variants_unavailable",
                         resolve_ms=int(
-                            (time.perf_counter() - _evt_t0) * 1000))
+                            (time.perf_counter() - _evt_t0) * 1000),
+                        total_ms=_pt.elapsed_ms())
                     raise HTTPException(
                         status_code=409,
                         detail="播放变体均不可用：drive_relay、drive_direct"
@@ -8161,7 +8181,8 @@ async def video_stream(
                         variant=play_variants.DRIVE_RELAY,
                         result="error", error_kind="quota_page",
                         resolve_ms=int(
-                            (time.perf_counter() - _evt_t0) * 1000))
+                            (time.perf_counter() - _evt_t0) * 1000),
+                        total_ms=_pt.elapsed_ms())
                     # 绑定用户：不换号、不把 fid 指回共享原件。
                     # 未绑定才继续：方案 1 总闸开且没有用户副本时 409
                     # 先转存；总闸关或已有用户副本则保持旧的 302/502 回落。
@@ -8232,7 +8253,8 @@ async def video_stream(
                                 if exc.status_code == 403
                                 else "upstream_502"),
                             resolve_ms=int(
-                                (time.perf_counter() - _evt_t0) * 1000))
+                                (time.perf_counter() - _evt_t0) * 1000),
+                            total_ms=_pt.elapsed_ms())
                         _, _avail2, _ = await run_db(
                             _variant_switch.drive_route_choice, db)
                         if play_variants.DRIVE_DIRECT not in [
@@ -8258,7 +8280,8 @@ async def video_stream(
                         result="error" if _relay_resp.status_code >= 400 else "ok",
                         error_kind=(f"upstream_{_relay_resp.status_code}"
                                     if _relay_resp.status_code >= 400 else None),
-                        resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+                        resolve_ms=int((time.perf_counter() - _evt_t0) * 1000),
+                        total_ms=_pt.elapsed_ms())
                     if (_relay_resp.status_code == 404 and _on_user_copy
                             and _is_user_drive_copy_variant(_play_variant)):
                         # 中继取用户 Drive 副本回 404：与直链同一对账
@@ -8356,7 +8379,8 @@ async def video_stream(
                         variant=play_variants.DRIVE_DIRECT,
                         result="error", error_kind="drive_copy_dead",
                         resolve_ms=int(
-                            (time.perf_counter() - _evt_t0) * 1000))
+                            (time.perf_counter() - _evt_t0) * 1000),
+                        total_ms=_pt.elapsed_ms())
                     if _gone_retried:
                         # 自愈后复检仍 404：多半是谷歌权限生效延迟，
                         # 不再重试、也不当死链重建，明示稍后重试。
@@ -8418,7 +8442,8 @@ async def video_stream(
             item, user_id=getattr(user, "id", None), method="direct_302",
             variant=play_variants.DRIVE_DIRECT,
             result="ok",
-            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000),
+            total_ms=_pt.elapsed_ms())
         from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
             RedirectResponse(drive_usercontent_download_url(_play_fid), status_code=302,

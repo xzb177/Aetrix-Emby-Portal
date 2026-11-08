@@ -711,7 +711,20 @@ class PlayStartEvent(Base):
     # upstream_<状态码>（中继上游错误）/ resolve_error（未分类解析异常）
     error_kind = Column(String(40))
     resolve_ms = Column(Integer)       # 解析/调度段耗时（毫秒）
-    total_ms = Column(Integer)         # 预留：整段起播耗时（本期未填）
+    # 整段起播耗时（毫秒）：暖地址批 0（goal-35）起真填——video_stream
+    # 请求入口计时器（与 [play-timing] 同一 PlayTimer）到该事件记账点
+    # 的服务端请求内总耗时，不含客户端拉流/出画；计时关闭或事件不经
+    # video_stream（如 _play_target 解析收口、PlaybackInfo 预检口）时
+    # 为 NULL，不许拿 resolve_ms 冒充。
+    total_ms = Column(Integer)
+    # 暖归因（goal-35 批 0 先行落列，批 1/2 工人接线后才有非空值）：
+    # warm_hits = 本次起播命中了哪几步预热（逗号分隔的步骤名子集：
+    # plan=W1 交付计划 / quota=W2b 额度裁决 / exists=W5 存在性）；
+    # warm_in_signal = 本次起播的 (user,item) 是否信号内目标
+    # （True/False 为已判定，NULL 为未判定）。本批全部现行调用方
+    # 不传参，两列恒 NULL（= 未暖口径，与 variant 老事件同口径）。
+    warm_hits = Column(String(40))
+    warm_in_signal = Column(Boolean)
 
 
 class WorldWallPost(Base):

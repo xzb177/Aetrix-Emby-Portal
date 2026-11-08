@@ -89,12 +89,20 @@ def note_play_start(*, provider: str = "unknown", mount_id=None,
                     variant: Optional[str] = None,
                     result: str = "ok", error_kind: Optional[str] = None,
                     resolve_ms: Optional[int] = None,
-                    total_ms: Optional[int] = None) -> None:
+                    total_ms: Optional[int] = None,
+                    warm_hits=None,
+                    warm_in_signal: Optional[bool] = None) -> None:
     """记一条起播事件（只入队，永不抛、永不阻塞）。
 
     任何异常（队列满、关开关、参数怪异）都只体现为计数里的 dropped，
     调用方（播放入口）不需要、也不应该为打点写 try/except 兜底逻辑
     之外的任何东西。
+
+    暖归因（goal-35 批 0 落列、批 1/2 接线）：``warm_hits`` 是本次
+    起播命中的预热步（步骤名 plan/quota/exists，传逗号分隔字符串
+    或字符串序列，存逗号分隔）；``warm_in_signal`` 是 (user,item)
+    是否信号内目标。不传时两列均为 NULL（未暖/未判定口径），与
+    本批全部现行调用方的行为逐字一致。
     """
     if not _ENABLED:
         _bump("dropped")
@@ -114,6 +122,9 @@ def note_play_start(*, provider: str = "unknown", mount_id=None,
             "error_kind": (error_kind or None) and error_kind[:40],
             "resolve_ms": None if resolve_ms is None else max(0, int(resolve_ms)),
             "total_ms": None if total_ms is None else max(0, int(total_ms)),
+            "warm_hits": _normalize_warm_hits(warm_hits),
+            "warm_in_signal": (
+                None if warm_in_signal is None else bool(warm_in_signal)),
         }
         _QUEUE.put_nowait(event)
         _bump("noted")
@@ -122,6 +133,16 @@ def note_play_start(*, provider: str = "unknown", mount_id=None,
         _bump("dropped")
     except Exception:  # noqa: BLE001 — 打点永不抛，见模块 docstring 铁律
         _bump("dropped")
+
+
+def _normalize_warm_hits(warm_hits) -> Optional[str]:
+    """暖命中步归一：字符串原样（截断 40）、序列按逗号拼、空即 None。"""
+    if warm_hits is None:
+        return None
+    if isinstance(warm_hits, str):
+        return warm_hits[:40] or None
+    steps = [str(step).strip() for step in warm_hits if str(step).strip()]
+    return (",".join(steps)[:40] or None) if steps else None
 
 
 def _ensure_writer_thread() -> None:
