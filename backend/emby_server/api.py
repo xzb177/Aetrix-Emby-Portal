@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import random
+import re
 import secrets
 import threading
 import time
@@ -291,6 +292,164 @@ def _download_ok(db: Session) -> bool:
     return cache["value"]
 
 
+# ==================== 季的「有效季号」统一口径 ====================
+# 现场（2026-11-08）：大量季行 season_number 为 NULL（全库约 7 千行），
+# 只认该列会让真季行在 get_seasons 里「不存在」→ 又按集季号合成虚拟季，
+# 真行 + 虚拟季叠出重复季卡；客户端拿不到 IndexNumber 也只能靠名字猜号。
+# 有效季号三处（get_seasons / get_episodes / _item_dto）共用本节口径，
+# 不许各写一套：① season_number 非空优先；② 名字保守解析；
+# ③ 名下集 season_number 的众数。
+
+_SEASON_NAME_PATTERNS = (
+    re.compile(r"第\s*(\d+)\s*季"),
+    re.compile(r"[Ss]eason\s*(\d+)"),
+    re.compile(r"^[Ss](\d+)$"),
+    re.compile(r"^第\s*(\d+)\s*$"),
+)
+
+
+def _parse_season_number_from_name(name) -> "int | None":
+    """从季名保守解析季号；解析不出返回 None（绝不猜）。"""
+    if not name:
+        return None
+    text = str(name).strip()
+    for pat in _SEASON_NAME_PATTERNS:
+        m = pat.search(text)
+        if m:
+            try:
+                return int(m.group(1))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _effective_season_number(row, ep_numbers_by_parent=None) -> "int | None":
+    """季行的有效季号（纯函数，不查库）。
+
+    ep_numbers_by_parent：{parent_id: [集的 season_number, ...]}，供第 ③ 级
+    众数兜底；同数并列时取最小号，保证结果确定性。
+    """
+    num = getattr(row, "season_number", None)
+    if num is not None:
+        return num
+    parsed = _parse_season_number_from_name(getattr(row, "name", None))
+    if parsed is not None:
+        return parsed
+    if ep_numbers_by_parent:
+        nums = [n for n in (ep_numbers_by_parent.get(getattr(row, "id", None)) or [])
+                if n is not None]
+        if nums:
+            counts: dict[int, int] = {}
+            for n in nums:
+                counts[n] = counts.get(n, 0) + 1
+            return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    return None
+
+
+def _ep_season_numbers_by_parent(db: Session, parent_ids) -> dict:
+    """{季行 id: [其名下可见集的 season_number（非空）, ...]}，一条 IN 查询。"""
+    ids = [i for i in (parent_ids or []) if i is not None]
+    if not ids:
+        return {}
+    rows = (
+        db.query(em.MediaItem.parent_id, em.MediaItem.season_number)
+        .filter(em.MediaItem.parent_id.in_(ids),
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.merged_into_id.is_(None),
+                em.MediaItem.season_number.isnot(None))
+        .all()
+    )
+    out: dict[int, list] = {}
+    for pid, num in rows:
+        out.setdefault(pid, []).append(num)
+    return out
+
+
+def _effective_season_number_resolved(db: Session, row,
+                                      ep_numbers_by_parent=None) -> "int | None":
+    """带库解析的有效季号：前两级命中就不查库；只剩众数兜底时才查该季的集。"""
+    eff = _effective_season_number(row, ep_numbers_by_parent)
+    if eff is not None or ep_numbers_by_parent is not None:
+        return eff
+    return _effective_season_number(
+        row, _ep_season_numbers_by_parent(db, [getattr(row, "id", None)]))
+
+
+def _season_sibling_ids(db: Session, season, series_ids) -> list:
+    """与 season 同家族（series_id ∈ series_ids）、同有效季号的全部可见季行 id。
+
+    get_episodes 按代表季行取集时用它把 parent 过滤扩到被去重压掉的重复行，
+    否则挂在重复行下的集会消失。有效季号为 None 时无从判同季，只回自身。
+    """
+    rows = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.series_id.in_(list(series_ids or [])),
+                em.MediaItem.item_type == "season",
+                em.MediaItem.merged_into_id.is_(None))
+        .all()
+    )
+    if not rows:
+        return [season.id]
+    need = [r.id for r in rows
+            if r.season_number is None
+            and _parse_season_number_from_name(r.name) is None]
+    ep_map = _ep_season_numbers_by_parent(db, need) if need else {}
+    target = _effective_season_number(season, ep_map)
+    if target is None:
+        return [season.id]
+    sibs = [r.id for r in rows if _effective_season_number(r, ep_map) == target]
+    return sibs or [season.id]
+
+
+def _series_counts(db: Session, series_id: int) -> "tuple[int, int]":
+    """series 的 (季数, 集数)，_child_count 与 _recursive_item_count 共用口径。
+
+    季数 = 可见集的 distinct season_number ∪ 本剧自己季行的有效季号。
+    两者皆空但有集时季数记 0：get_seasons 在该形态下同样返回 0 行季
+    （NULL 季号的集不触发虚拟季、无季行可列），ChildCount 与实际能点开
+    的季列表长度保持一致，不虚构一季；集数仍如实进 RecursiveItemCount。
+    集数 = 可见集行数（merged_into_id 为空、软删过滤，与旧 ChildCount
+    的集数口径一致）。结果按请求会话缓存，避免 DTO 两次调用重复查。
+    """
+    cache = db.info.setdefault("_aetrix_series_counts", {})
+    if series_id in cache:
+        return cache[series_id]
+    ep_count = (
+        db.query(func.count(em.MediaItem.id))
+        .filter(em.MediaItem.series_id == series_id,
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.merged_into_id.is_(None))
+        .scalar()
+    ) or 0
+    season_numbers = {n for (n,) in (
+        db.query(em.MediaItem.season_number)
+        .filter(em.MediaItem.series_id == series_id,
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.merged_into_id.is_(None),
+                em.MediaItem.season_number.isnot(None))
+        .distinct()
+        .all()
+    )}
+    season_rows = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.series_id == series_id,
+                em.MediaItem.item_type == "season",
+                em.MediaItem.merged_into_id.is_(None))
+        .all()
+    )
+    need = [r.id for r in season_rows
+            if r.season_number is None
+            and _parse_season_number_from_name(r.name) is None]
+    ep_map = _ep_season_numbers_by_parent(db, need) if need else {}
+    for r in season_rows:
+        eff = _effective_season_number(r, ep_map)
+        if eff is not None:
+            season_numbers.add(eff)
+    result = (len(season_numbers), ep_count)
+    cache[series_id] = result
+    return result
+
+
 # ==================== 列表批量预取（消除 N+1）====================
 
 def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) -> None:
@@ -333,8 +492,15 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
         if it.parent_id is not None and it.parent_id not in item_ids:
             it.parent = relations.get(it.parent_id)
 
-    # 3) series / season 的子项计数（ChildCount）
+    # 3) series / season 的子项计数（ChildCount + RecursiveItemCount）
+    # 协议口径：series 的 ChildCount 是季数（不是集数——集数填进去会被
+    # 客户端显示成「共 N 季」），集数进 RecursiveItemCount；season 的
+    # ChildCount 维持其名下集数，RecursiveItemCount 同值。与 _child_count /
+    # _recursive_item_count 的回退口径必须一致（同走 _series_counts 的定义：
+    # 季数 = 可见集 distinct season_number ∪ 自己季行的有效季号）。
     counts: dict[int, int] = {}
+    recursive_counts: dict[int, int] = {}
+    season_effective: dict[int, "int | None"] = {}
     series_ids_all = [i.id for i in items if i.item_type == "series"]
     season_ids_all = [i.id for i in items if i.item_type == "season"]
     if series_ids_all:
@@ -346,7 +512,37 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
             .group_by(em.MediaItem.series_id)
             .all()
         )
-        counts.update({sid: n for sid, n in rows})
+        recursive_counts.update({sid: n for sid, n in rows})
+        distinct_rows = (
+            db.query(em.MediaItem.series_id, em.MediaItem.season_number)
+            .filter(em.MediaItem.series_id.in_(series_ids_all),
+                    em.MediaItem.item_type == "episode",
+                    em.MediaItem.merged_into_id.is_(None),
+                    em.MediaItem.season_number.isnot(None))
+            .distinct()
+            .all()
+        )
+        season_numbers: dict[int, set] = {}
+        for sid, num in distinct_rows:
+            season_numbers.setdefault(sid, set()).add(num)
+        season_rows_all = (
+            db.query(em.MediaItem)
+            .filter(em.MediaItem.series_id.in_(series_ids_all),
+                    em.MediaItem.item_type == "season",
+                    em.MediaItem.merged_into_id.is_(None))
+            .all()
+        )
+        need = [r.id for r in season_rows_all
+                if r.season_number is None
+                and _parse_season_number_from_name(r.name) is None]
+        ep_map = _ep_season_numbers_by_parent(db, need) if need else {}
+        for r in season_rows_all:
+            eff = _effective_season_number(r, ep_map)
+            if eff is not None:
+                season_numbers.setdefault(r.series_id, set()).add(eff)
+        for sid in series_ids_all:
+            counts[sid] = len(season_numbers.get(sid, set()))
+            recursive_counts.setdefault(sid, 0)
     if season_ids_all:
         rows = (
             db.query(em.MediaItem.parent_id, func.count(em.MediaItem.id))
@@ -354,7 +550,20 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
             .group_by(em.MediaItem.parent_id)
             .all()
         )
-        counts.update({pid: n for pid, n in rows})
+        for pid, n in rows:
+            counts[pid] = n
+            recursive_counts[pid] = n
+        for sid in season_ids_all:
+            counts.setdefault(sid, 0)
+            recursive_counts.setdefault(sid, 0)
+        # 季行自身的有效季号（供 _item_dto 的 IndexNumber，口径同 _series_counts）
+        season_items = [i for i in items if i.item_type == "season"]
+        need = [r.id for r in season_items
+                if r.season_number is None
+                and _parse_season_number_from_name(r.name) is None]
+        ep_map = _ep_season_numbers_by_parent(db, need) if need else {}
+        for r in season_items:
+            season_effective[r.id] = _effective_season_number(r, ep_map)
 
     # 3b) series 未播放集数（卡片「未看 N 集」角标用，一条分组 SQL，不逐卡查询）
     # 单集多版本：被合并的版本不计入（与上面 total 计数、_item_dto 回退查询同口径，
@@ -397,6 +606,8 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
     db.info["_aetrix_prefetch"] = {
         "umd": umd_map,
         "counts": counts,
+        "recursive_counts": recursive_counts,
+        "season_effective": season_effective,
         "unplayed": unplayed,
         "people": people_map,
         "items": {i.id: i for i in items},
@@ -673,6 +884,9 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
     cc = _child_count(item, db)
     if cc is not None:
         dto["ChildCount"] = cc
+    rc = _recursive_item_count(item, db)
+    if rc is not None:
+        dto["RecursiveItemCount"] = rc
     if item.item_type == "series":
         # 剧集卡片「未看 N 集」角标：列表页走上面的批量预取，单个详情回退为单条查询
         unp = prefetch.get("unplayed", {}).get(item.id)
@@ -702,9 +916,16 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
             "IndexNumber": item.episode_number,
         })
     if item.item_type == "season":
+        # IndexNumber 用有效季号：season_number 为 NULL 时靠名字解析/集众数
+        # 兜底（口径见 _effective_season_number），解析不出保持 None。
+        _eff_map = prefetch.get("season_effective", {})
+        if item.id in _eff_map:
+            _eff_num = _eff_map[item.id]
+        else:
+            _eff_num = _effective_season_number_resolved(db, item)
         dto.update({"SeriesId": item.series.guid if item.series else None,
                     "SeriesName": item.series.name if item.series else None,
-                    "IndexNumber": item.season_number})
+                    "IndexNumber": _eff_num})
     if full:
         # 详情面 MediaSource 的转码申报须与 PlaybackInfo 同源（批二 #11）：
         # 单口要用户本人（策略 or staff 且个人开关），按 user_id 取行传入；
@@ -834,22 +1055,45 @@ def _emby_type(t: str) -> str:
 
 
 def _child_count(item: em.MediaItem, db: Session) -> int | None:
+    """ChildCount（协议口径）：series = 季数，season = 其名下集数。
+
+    旧 series 口径填集数，客户端按协议把 ChildCount 当子项（季）数显示，
+    出现「共 32 季」式错误（32 是集数）。集数改走 _recursive_item_count。
+    """
     if item.item_type not in ("series", "season"):
         return None
     prefetch = _prefetched(db)
     counts = prefetch.get("counts", {})
     if item.id in counts:
         return counts[item.id] or None
-    return (
-        soft_delete.count_visible(db, em.MediaItem.series_id == item.id,
-                                  em.MediaItem.item_type == "episode",
-                                  em.MediaItem.merged_into_id.is_(None))
-        if item.item_type == "series"
-        # season 分支同样排除被合并的版本（与 series 分支同口径），
-        # 否则季封面的集数会把隐藏版本也算进去
-        else soft_delete.count_visible(db, em.MediaItem.parent_id == item.id,
-                                       em.MediaItem.merged_into_id.is_(None))
-    ) or None
+    if item.item_type == "series":
+        season_count, _ = _series_counts(db, item.id)
+        return season_count or None
+    # season 分支排除被合并的版本（与 series 集数口径一致），
+    # 否则季封面的集数会把隐藏版本也算进去
+    return soft_delete.count_visible(
+        db, em.MediaItem.parent_id == item.id,
+        em.MediaItem.merged_into_id.is_(None)) or None
+
+
+def _recursive_item_count(item: em.MediaItem, db: Session) -> int | None:
+    """RecursiveItemCount（协议口径）：后代条目总数。
+
+    series/season 均为可见集数（merged_into_id 为空、软删过滤），
+    与 _prefetch_list_data 的批量口径一致。
+    """
+    if item.item_type not in ("series", "season"):
+        return None
+    prefetch = _prefetched(db)
+    recursive_counts = prefetch.get("recursive_counts", {})
+    if item.id in recursive_counts:
+        return recursive_counts[item.id] or None
+    if item.item_type == "series":
+        _, ep_count = _series_counts(db, item.id)
+        return ep_count or None
+    return soft_delete.count_visible(
+        db, em.MediaItem.parent_id == item.id,
+        em.MediaItem.merged_into_id.is_(None)) or None
 
 
 def _people_dto(item: em.MediaItem, db: Session, prefetch: dict) -> list[dict]:
@@ -4526,6 +4770,7 @@ def _virtual_season_dto(item: em.MediaItem, season_number: int, ep_count: int,
         "PrimaryImageAspectRatio": 0.6666667, "SyncStatus": "Synced",
         "RunTimeTicks": 0, "Container": "", "IsHD": False,
         "ChildCount": ep_count or 0,
+        "RecursiveItemCount": ep_count or 0,
         "SeriesId": item.guid, "SeriesName": item.name or "",
         "IndexNumber": season_number,
     }
@@ -4554,16 +4799,61 @@ def get_seasons(item_id: str, request: Request,
         db.query(em.MediaItem)
         .filter(em.MediaItem.series_id.in_(series_ids), em.MediaItem.item_type == "season",
                 em.MediaItem.merged_into_id.is_(None))
-        .order_by(em.MediaItem.season_number)
+        .order_by(em.MediaItem.id)
         .all()
     )
+    # 真季行按有效季号分组去重（2026-11-08 现场：分身名下 3 行 NULL 季号的
+    # 季、其中同季两行，旧实现全部原样列出又叠虚拟季 → 5 张重复卡）。
+    # 有效季号为 None 的行无从判同季，各自成组不合并。
+    _need = [s.id for s in seasons
+             if s.season_number is None
+             and _parse_season_number_from_name(s.name) is None]
+    _ep_map = _ep_season_numbers_by_parent(db, _need) if _need else {}
+    _ep_counts_by_parent = dict(
+        db.query(em.MediaItem.parent_id, func.count(em.MediaItem.id))
+        .filter(em.MediaItem.parent_id.in_([s.id for s in seasons]),
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.merged_into_id.is_(None))
+        .group_by(em.MediaItem.parent_id).all()) if seasons else {}
+
+    def _rep_key(s):
+        # 代表行确定性：season_number 非空优先 → 名下集多优先
+        # → 有图优先 → id 小优先
+        return (0 if s.season_number is not None else 1,
+                -_ep_counts_by_parent.get(s.id, 0),
+                0 if (s.poster_path or s.primary_image_url) else 1,
+                s.id)
+
+    _groups: dict = {}
+    for s in seasons:
+        eff = _effective_season_number(s, _ep_map)
+        key = eff if eff is not None else ("none", s.id)
+        _groups.setdefault(key, (eff, []))[1].append(s)
+    _rep_entries = []  # (有效季号, 代表行, 同组全部行)
+    for key in _groups:
+        eff, members = _groups[key]
+        _rep_entries.append((eff, sorted(members, key=_rep_key)[0], members))
+    # 最终排序：有效季号升序；有效号为 None 的行排末尾、按 id
+    _rep_entries.sort(key=lambda t: (t[0] is None, t[0] or 0, t[1].id))
+    rep_seasons = [rep for _, rep, _ in _rep_entries]
     base = _base_url(request)
-    _prefetch_list_data(db, user.id, seasons)
-    items = [_item_dto(s, base, user.id, db) for s in seasons]
+    _prefetch_list_data(db, user.id, rep_seasons)
+    items = []
+    for eff, rep, members in _rep_entries:
+        dto = _item_dto(rep, base, user.id, db)
+        if len(members) > 1:
+            # 代表行的计数是同组全部季行的集数合计（与 get_episodes 扩到
+            # 同组后的可达集数一致），不是代表行自己名下的那份
+            total_eps = sum(_ep_counts_by_parent.get(m.id, 0) for m in members)
+            if total_eps:
+                dto["ChildCount"] = total_eps
+                dto["RecursiveItemCount"] = total_eps
+        items.append(dto)
     # 桶B（缺集普查 2026-10-19）：有可见集但无可见季行的季 → 合成虚拟季条目
     # 返回，避免季列表缺口。已有季行的内容与相对排序语义不动：虚拟条目只补
-    # 没有的行，按季号并入同一顺序。
-    present = {s.season_number for s in seasons if s.season_number is not None}
+    # 没有的行，按季号并入同一顺序。present 用有效季号：NULL 季号的真季行
+    # 也算「已存在」，同号不再合成虚拟季（本次现场的 5 张卡根因之一）。
+    present = {eff for eff, _, _ in _rep_entries if eff is not None}
     missing = _missing_season_numbers(db, item, series_ids, present)
     if missing:
         ep_counts = dict(
@@ -4573,10 +4863,11 @@ def get_seasons(item_id: str, request: Request,
             .group_by(em.MediaItem.season_number).all())
         vdtos = [_virtual_season_dto(item, n, ep_counts.get(n, 0), db)
                  for n in missing]
-        keyed = ([((s.season_number if s.season_number is not None else -1), i, d)
-                  for i, (s, d) in enumerate(zip(seasons, items))]
-                 + [(n, len(seasons) + k, d)
-                    for k, (n, d) in enumerate(zip(missing, vdtos))])
+        _INF = float("inf")
+        keyed = ([((eff if eff is not None else _INF), rep.id, d)
+                  for (eff, rep, _), d in zip(_rep_entries, items)]
+                 + [(n, float("inf"), d)
+                    for n, d in zip(missing, vdtos)])
         items = [d for _, _, d in sorted(keyed, key=lambda t: (t[0], t[1]))]
     # r50：补 Limit/StartIndex 分页（虚拟季并入最终列表后分页；此前全量一次序列化）
     start = qstart(request.query_params)
@@ -4620,7 +4911,14 @@ def get_episodes(item_id: str, request: Request,
             and season.series_id in series_ids
         )
         if season and (_season_belongs_to(season, item) or family_season):
-            query = query.filter(em.MediaItem.parent_id == season.id)
+            # 同家族、同有效季号的全部季行一起算（get_seasons 去重后客户端
+            # 只拿得到代表行；挂在被压掉的重复行下的集必须随代表行可达，
+            # 否则点开代表季会少集）。有效季号判不出时退回单行口径。
+            sibling_ids = _season_sibling_ids(db, season, series_ids)
+            if len(sibling_ids) > 1:
+                query = query.filter(em.MediaItem.parent_id.in_(sibling_ids))
+            else:
+                query = query.filter(em.MediaItem.parent_id == season.id)
             warm_anchor_id = season.id
         else:
             # 虚拟季（桶B：get_seasons 合成的 ``vseason-<剧 db id>-<季号>`` 条目）：
