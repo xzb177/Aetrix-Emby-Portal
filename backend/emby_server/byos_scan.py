@@ -133,6 +133,17 @@ def _default_drive_http_get(url: str, token: str, params: dict) -> dict:
                 headers={"Authorization": f"Bearer {token}"})
     except Exception as exc:  # noqa: BLE001 — 网络失败 = 一过性
         raise mount_lib.MountError(f"Drive 列举网络失败：{exc}") from exc
+    if resp.status_code in (403, 429):
+        # 报错原因落库（drive_error_events 唯一落点）：只观测，
+        # 不改变下面的报错口径，失败在模块内静默吞掉。
+        try:
+            from backend.emby_server import drive_error_events
+            drive_error_events.note_drive_response(
+                resp,
+                caller=drive_error_events.caller_label("byos_scan"),
+                account=token)
+        except Exception:  # noqa: BLE001 — 观测点永不影响列举
+            pass
     if resp.status_code in (401, 403):
         raise mount_lib.MountAuthError(
             f"Drive 令牌失效（HTTP {resp.status_code}），请重新绑定。")

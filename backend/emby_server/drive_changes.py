@@ -810,6 +810,20 @@ def _api_get(url: str, token: str, params: dict) -> dict:
             # token，该盘增量发现永久停摆）。
             raise PageTokenExpiredError(
                 "Drive Changes page token 已过期，需重新初始化")
+        if resp.status_code in (403, 429):
+            # 报错原因落库（drive_error_events 唯一落点）：403/429 的
+            # reason 此前只被下面的分支解析用于退避分类、算完即弃，
+            # 撞限归因无从查。这里在分支处理前统一记一行——只观测，
+            # 不改变任何重试/抛错行为；落库失败在模块内静默吞掉。
+            try:
+                from backend.emby_server import drive_error_events
+                drive_error_events.note_drive_response(
+                    resp,
+                    caller=drive_error_events.caller_label(
+                        "drive_changes._api_get"),
+                    account=token)
+            except Exception:  # noqa: BLE001 — 观测点永不影响主请求
+                pass
         if resp.status_code == 429:
             # 429 限流：优先尊重 Retry-After 头，没有头时按 2 倍退避（更保守）
             last_exc = httpx.HTTPStatusError(
