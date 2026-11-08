@@ -4,8 +4,9 @@
 钉死：
 - PlaybackInfo：未绑用户 + ready 池副本 → 下发池副本免凭证直链
   （usercontent + 空头），响应里绝不出现共享原件 fid；授权限失败
-  回落 alt=media + 贡献者令牌头（绝不下发 SA 令牌）；授权限与令牌
-  都失败 → 保留本站 /stream（由取流端点现场裁决），不记 H1。
+  → 不下发直链、保留本站 /stream（由取流端点现场裁决），响应里
+  任何位置都不许出现贡献者成员令牌（GA-030：授权失败就不播，
+  绝不把成员令牌发给观众）；未下发直链不记 H1。
 - quota 改道：探测判额度页时，后路关 → 剥清单 + NoCompatibleStream
   明示；后路开 → 保留 /stream（取流时走贡献者令牌中继）。
 - 成功下发记账：pool_play_events 落一条原始事件（H1）、
@@ -24,7 +25,12 @@ import os
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
-os.environ.setdefault("TRANSFER_VARIANT_ENABLED", "1")
+# 注意：TRANSFER_VARIANT_ENABLED 不能在这里导入期 setdefault——
+# 它是运行时动态读的开关，导入期写死会泄漏进同进程后续全部用例
+# （总闸被误开，别的文件的桩库/桩条目会走进转存门禁深处报错；
+# 全量里 test_drive_exists_invalidate 两条即因此红）。
+# 改由下方 autouse fixture 用 monkeypatch.setenv 按用例设置、
+# 用例结束自动撤销。
 
 import time
 import uuid
@@ -228,6 +234,10 @@ def _h(token):
 
 @pytest.fixture(autouse=True)
 def _fake_member_quota(monkeypatch):
+    # 本文件用例需要转存总闸开：按用例设置，结束自动撤销，
+    # 不许导入期写死泄漏给同进程其它文件（见文件头注释）。
+    monkeypatch.setenv("TRANSFER_VARIANT_ENABLED", "1")
+
     class _FakeQuotaClient:
         def __init__(self, db_arg, binding):
             pass
@@ -243,6 +253,7 @@ def _fake_member_quota(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fake_drive_serve(monkeypatch):
     """池播出的外部腿全假：成员令牌、授权限、quota 探测两腿。"""
+    from backend.emby_server import api as _api
     from backend.emby_server import drive_oauth, drive_share
     monkeypatch.setattr(
         drive_oauth, "get_binding_drive_access_token",
@@ -255,6 +266,13 @@ def _fake_drive_serve(monkeypatch):
     monkeypatch.setattr(
         tv, "_usercopy_probe_http_get",
         lambda url: (200, "video/mp4", b"\x00" * 32))
+
+    async def _ensure_ok(db_, item_, fid, **kwargs):
+        return True
+
+    # GA-032：池 302 前的存在性校验腿，缺省按文件在位处理；
+    # 死副本用例各自覆写。
+    monkeypatch.setattr(_api, "_ensure_drive_file_playable", _ensure_ok)
 
 
 @pytest.fixture(autouse=True)
@@ -542,8 +560,16 @@ def test_playbackinfo_pool_serve_usercontent(client, free_token, seed):
         db.close()
 
 
-def test_playbackinfo_pool_serve_alt_media_fallback(
+def test_playbackinfo_pool_serve_auth_fail_no_token_fallback(
         client, free_token, seed, monkeypatch):
+    """GA-030：授 anyone-reader 失败 → 不下发直链，成员令牌绝不进响应。
+
+    旧行为（已废止）：回落 alt=media + 贡献者令牌头，把成员令牌
+    发给未绑陌生观众，观众在令牌有效期内可冒成员读其整盘。
+    新口径（用户 2026-11-08 裁定选①）：授权失败就不播——保留
+    本站 /stream 由取流端点现场裁决，响应任何位置不许出现成员
+    令牌，未下发直链不记 H1。本用例由旧回落用例改口径而来。
+    """
     from backend.emby_server import drive_share
     monkeypatch.setattr(
         drive_share, "ensure_shared", lambda fid, tok: "failed")
@@ -553,16 +579,43 @@ def test_playbackinfo_pool_serve_alt_media_fallback(
     finally:
         db.close()
     body = _playbackinfo(client, free_token, seed["movie"])
-    assert ORIG_FID not in str(body)
+    text = str(body)
+    assert ORIG_FID not in text
+    # 成员令牌（fixture 里取得到）绝不许出现在响应任何位置
+    assert MEMBER_TOKEN not in text
     src = body["MediaSources"][0]
-    assert "alt=media" in src["DirectPlayUrl"]
-    assert POOL_FID in src["DirectPlayUrl"]
-    # 回落头里是贡献者令牌，绝不是 SA 令牌
-    assert src["RequiredHttpHeaders"] == {
-        "Authorization": f"Bearer {MEMBER_TOKEN}"}
+    assert "alt=media" not in (src.get("DirectPlayUrl") or "")
+    assert "usercontent" not in (src.get("DirectPlayUrl") or "")
+    assert "stream" in (src.get("DirectPlayUrl") or "")
+    assert MEMBER_TOKEN not in str(src.get("RequiredHttpHeaders"))
+    # 未下发直链 → 本次不记 H1（与令牌也取不到时同口径）
     db = SessionLocal()
     try:
-        assert len(_play_events(db)) == 1
+        assert _play_events(db) == []
+    finally:
+        db.close()
+
+
+def test_apply_poolcopy_direct_auth_fail_returns_false_no_token(
+        seed, monkeypatch):
+    """GA-030 单元口径：_apply_poolcopy_direct 授权限失败必须返回
+    False 且一个字都不许改 source——哪怕成员令牌取得到。"""
+    from backend.emby_server import api as _api
+    monkeypatch.setattr(
+        tv, "ensure_variant_copy_public",
+        lambda db_, variant, fid: False)
+    db = SessionLocal()
+    try:
+        variant = SimpleNamespace(
+            id=1, owner_ref=str(seed["member_id"]),
+            variant_drive_id=f"pooldrive:{seed['member_id']}")
+        source = {"DirectPlayUrl": "http://x/stream",
+                  "RequiredHttpHeaders": {}}
+        assert _api._apply_poolcopy_direct(
+            db, variant, source, POOL_FID) is False
+        assert source == {"DirectPlayUrl": "http://x/stream",
+                          "RequiredHttpHeaders": {}}
+        assert MEMBER_TOKEN not in str(source)
     finally:
         db.close()
 
@@ -752,6 +805,214 @@ def test_stream_pool_signed_url_serves_copy(client, free_token, seed):
     loc = r.headers.get("location") or ""
     assert POOL_FID in loc
     assert ORIG_FID not in loc
+    db = SessionLocal()
+    try:
+        assert len(_play_events(db)) == 1
+    finally:
+        db.close()
+
+
+# ------------------------------------------------------- GA-033 写时去重
+
+
+def test_note_pool_play_served_dedup_window(seed):
+    from datetime import datetime, timedelta
+
+    db = SessionLocal()
+    try:
+        variant_id = _add_pool_variant(db, seed)
+        args = (seed["member_id"], variant_id, seed["movie_id"],
+                seed["free_id"])
+        pool_gate.note_pool_play_served(*args)
+        # 同一观众同一副本 30 分钟内重复起播：只计首次——事件行
+        # 与 play_starts 聚合两处都不许双记。
+        pool_gate.note_pool_play_served(*args)
+        assert len(_play_events(db)) == 1
+        assert _usage_play_starts(db, seed["member_id"]) == 1
+        # 换观众：另计一笔。
+        pool_gate.note_pool_play_served(
+            seed["member_id"], variant_id, seed["movie_id"],
+            seed["bound_id"])
+        assert len(_play_events(db)) == 2
+        assert _usage_play_starts(db, seed["member_id"]) == 2
+        # 首笔事件已过窗口（31 分钟前）：同观众再播重新计数。
+        ev = db.query(em.PoolPlayEvent).filter(
+            em.PoolPlayEvent.viewer_user_id == seed["free_id"]).one()
+        ev.created_at = datetime.now() - timedelta(minutes=31)
+        db.commit()
+        pool_gate.note_pool_play_served(*args)
+        assert len(_play_events(db)) == 3
+        assert _usage_play_starts(db, seed["member_id"]) == 3
+    finally:
+        db.close()
+
+
+def test_playbackinfo_then_stream_counts_once(client, free_token, seed):
+    """跨端点叠加：PlaybackInfo 直链下发已记一笔，客户端再打
+    /stream 取 302 不许第二笔（GA-033）。"""
+    db = SessionLocal()
+    try:
+        variant_id = _add_pool_variant(db, seed)
+    finally:
+        db.close()
+    body = _playbackinfo(client, free_token, seed["movie"])
+    assert POOL_FID in body["MediaSources"][0]["DirectPlayUrl"]
+    r = _stream(client, free_token, seed["movie"])
+    assert r.status_code == 302, r.text
+    db = SessionLocal()
+    try:
+        events = _play_events(db)
+        assert len(events) == 1
+        assert events[0].variant_id == variant_id
+        assert _usage_play_starts(db, seed["member_id"]) == 1
+    finally:
+        db.close()
+
+
+# ------------------------------------------------------- GA-034 池文案
+
+
+def test_pool_gate_preparing_detail_is_pool_wording(seed):
+    db = SessionLocal()
+    try:
+        item = db.query(em.MediaItem).filter(
+            em.MediaItem.id == seed["movie_id"]).one()
+        user = db.query(models.WebUser).filter(
+            models.WebUser.id == seed["free_id"]).one()
+        out = pool_gate.ensure_pool_copy_gate(db, item, user)
+        assert out["verdict"] == "preparing"
+        detail = out.get("detail") or ""
+        assert "公共池" in detail
+        assert "绑定盘" not in detail
+    finally:
+        db.close()
+
+
+def test_stream_pool_preparing_409_pool_wording(
+        client, free_token, seed, monkeypatch):
+    monkeypatch.setenv("TRANSFER_WAIT_STREAM_ENABLED", "0")
+    r = _stream(client, free_token, seed["movie"])
+    assert r.status_code == 409, r.text
+    # 池观众没有绑定盘：文案不许再说「转存到你的绑定盘」。
+    assert "公共池" in r.text
+    assert "绑定盘" not in r.text
+    assert ORIG_FID not in r.text
+
+
+# ------------------------------------------------------- GA-032 死副本
+
+
+def _fake_ensure_dead(monkeypatch, mode):
+    """覆写存在性校验腿：always_dead 恒 404；dead_then_ok 首查
+    404、复检通过。返回调用计数 dict。"""
+    from fastapi import HTTPException
+
+    from backend.emby_server import api as _api
+
+    calls = {"n": 0}
+
+    async def _ensure(db_, item_, fid, **kwargs):
+        calls["n"] += 1
+        if mode == "always_dead" or (
+                mode == "dead_then_ok" and calls["n"] == 1):
+            raise HTTPException(
+                404, f"媒体来源不可用：Drive 文件已不存在：{fid}")
+        return True
+
+    monkeypatch.setattr(_api, "_ensure_drive_file_playable", _ensure)
+    return calls
+
+
+def test_reconcile_dead_pool_copy_healed(seed, monkeypatch):
+    db = SessionLocal()
+    try:
+        variant_id = _add_pool_variant(db, seed)
+        row = db.query(em.TransferVariant).filter(
+            em.TransferVariant.id == variant_id).one()
+        dropped = []
+        monkeypatch.setattr(
+            tv, "copy_public_cache_drop",
+            lambda uid_, fid: dropped.append((uid_, fid)))
+        monkeypatch.setattr(
+            tv, "ensure_variant_copy_public",
+            lambda db_, v, fid: True)
+        out = pool_gate.reconcile_dead_pool_copy(db, row)
+        assert out == {"action": "healed"}
+        # 自愈必须绕过已公开缓存、用池缓存键（pool:<成员>）。
+        assert dropped == [(f"pool:{seed['member_id']}", POOL_FID)]
+        db.refresh(row)
+        assert (row.stale_count or 0) == 0
+    finally:
+        db.close()
+
+
+def test_reconcile_dead_pool_copy_marks_stale(seed, monkeypatch):
+    db = SessionLocal()
+    try:
+        variant_id = _add_pool_variant(db, seed)
+        row = db.query(em.TransferVariant).filter(
+            em.TransferVariant.id == variant_id).one()
+        monkeypatch.setattr(
+            tv, "copy_public_cache_drop", lambda uid_, fid: None)
+        monkeypatch.setattr(
+            tv, "ensure_variant_copy_public",
+            lambda db_, v, fid: False)
+        out = pool_gate.reconcile_dead_pool_copy(db, row)
+        assert out == {"action": "stale_marked"}
+        db.refresh(row)
+        assert row.stale_count == 1
+        # 记 strike 后门禁不再挑这份副本 serve。
+        assert pool_gate._pick_ready_pool_variant(
+            db, seed["movie_id"]) is None
+    finally:
+        db.close()
+
+
+def test_stream_pool_dead_copy_409_not_302(
+        client, free_token, seed, monkeypatch):
+    db = SessionLocal()
+    try:
+        _add_pool_variant(db, seed)
+    finally:
+        db.close()
+    calls = _fake_ensure_dead(monkeypatch, "always_dead")
+    rec = []
+    monkeypatch.setattr(
+        pool_gate, "reconcile_dead_pool_copy",
+        lambda db_, v: rec.append(getattr(v, "id", None))
+        or {"action": "stale_marked"})
+    r = _stream(client, free_token, seed["movie"])
+    # 死副本不许直发 302 让观众吃谷歌 404：对账后 409 明示，
+    # 且不记播出账。
+    assert r.status_code == 409, r.text
+    assert "公共池副本已失效" in r.text
+    assert "location" not in {k.lower() for k in r.headers}
+    assert calls["n"] == 1
+    assert len(rec) == 1
+    db = SessionLocal()
+    try:
+        assert _play_events(db) == []
+        assert _usage_play_starts(db, seed["member_id"]) == 0
+    finally:
+        db.close()
+
+
+def test_stream_pool_dead_copy_healed_302(
+        client, free_token, seed, monkeypatch):
+    db = SessionLocal()
+    try:
+        _add_pool_variant(db, seed)
+    finally:
+        db.close()
+    calls = _fake_ensure_dead(monkeypatch, "dead_then_ok")
+    monkeypatch.setattr(
+        pool_gate, "reconcile_dead_pool_copy",
+        lambda db_, v: {"action": "healed"})
+    r = _stream(client, free_token, seed["movie"])
+    assert r.status_code == 302, r.text
+    assert POOL_FID in (r.headers.get("location") or "")
+    # 首查 404 → 对账自愈 → 复检通过才发 302。
+    assert calls["n"] == 2
     db = SessionLocal()
     try:
         assert len(_play_events(db)) == 1

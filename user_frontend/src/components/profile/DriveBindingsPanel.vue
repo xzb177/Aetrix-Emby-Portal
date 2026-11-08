@@ -740,7 +740,7 @@ defineExpose({
 .acct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .v4-empty p { margin: 0 0 8px; text-align: left; }
 .v4-empty p:last-child { margin-bottom: 0; }
-.dev-badge.warn { background: var(--au-warning-soft, #fdf3d7); color: var(--amber, #9a6b0f); }
+.dev-badge.warn { background: var(--au-warning-soft, #fdf3d7); color: var(--paper-warning, #9a6b0f); }
 /* 公共贡献池块（PR-4）：挂在每个绑定行下方 */
 .pool-block {
   margin: 2px 0 10px;
@@ -754,17 +754,17 @@ defineExpose({
   gap: 10px;
   flex-wrap: wrap;
 }
-.pool-text { flex: 1; min-width: 200px; font-size: 13px; color: var(--ink-2); line-height: 1.5; }
-.pool-note { font-size: 12.5px; color: var(--ink-3); }
+.pool-text { flex: 1; min-width: 200px; font-size: 13px; color: var(--paper-ink-2); line-height: 1.5; }
+.pool-note { font-size: 12.5px; color: var(--paper-ink-3); }
 .pool-faq-toggle {
   margin-top: 6px;
   padding: 0;
   background: none;
   border: none;
   font-size: 12.5px;
-  color: var(--accent);
+  color: var(--paper-primary);
   cursor: pointer;
 }
-.pool-faq { margin-top: 6px; font-size: 12.5px; color: var(--ink-3); line-height: 1.6; }
+.pool-faq { margin-top: 6px; font-size: 12.5px; color: var(--paper-ink-3); line-height: 1.6; }
 .pool-faq p { margin: 0; }
 </style>

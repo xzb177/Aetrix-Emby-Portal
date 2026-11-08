@@ -778,11 +778,11 @@ onMounted(() => {
   font-weight: 600;
 }
 .pool-status.is-active {
-  color: var(--au-ok, #2e9e5b);
+  color: var(--au-success, #2e9e5b);
 }
 .pool-status.is-pending,
 .pool-status.is-candidate {
-  color: var(--au-warn, #c07f13);
+  color: var(--au-warning, #c07f13);
 }
 .pool-status.is-suspended,
 .pool-status.is-ejected {
