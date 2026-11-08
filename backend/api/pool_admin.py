@@ -27,7 +27,7 @@ from backend import models
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 from backend.emby_server import models as em
-from backend.emby_server import pool_gate
+from backend.emby_server import pool_gate, pool_reward
 
 logger = logging.getLogger(__name__)
 
@@ -395,3 +395,175 @@ def pool_copy_release(
            row.id, {"item_id": row.item_id}, ip=_client_ip(raw_request))
     db.commit()
     return {"id": row.id, "status": row.status, "item_id": row.item_id}
+
+
+# ------------------------------------------------------------ 激励结算（PR-6）
+
+
+class SettleRewardsRequest(BaseModel):
+    period_key: Optional[str] = None
+
+
+def _reward_http(exc: pool_reward.PoolRewardError) -> HTTPException:
+    status = 404 if exc.kind == "not_found" else 400
+    return HTTPException(status_code=status, detail=exc.message)
+
+
+def _settlement_payload(db: Session, batch) -> dict:
+    counts = dict(
+        db.query(em.PoolRewardDetail.status,
+                 func.count(em.PoolRewardDetail.id))
+        .filter(em.PoolRewardDetail.settlement_id == batch.id)
+        .group_by(em.PoolRewardDetail.status).all())
+    points_total = (
+        db.query(func.coalesce(func.sum(em.PoolRewardDetail.points), 0))
+        .filter(em.PoolRewardDetail.settlement_id == batch.id,
+                em.PoolRewardDetail.status == "paid")
+        .scalar())
+    return {
+        "id": batch.id,
+        "period_key": batch.period_key,
+        "period_kind": batch.period_kind,
+        "period_start": (batch.period_start.isoformat()
+                         if batch.period_start else None),
+        "period_end": (batch.period_end.isoformat()
+                       if batch.period_end else None),
+        "status": batch.status,
+        "shadow": bool(batch.shadow),
+        "created_by": batch.created_by,
+        "last_error": batch.last_error,
+        "members": int(sum(counts.values())),
+        "paid": int(counts.get("paid", 0)),
+        "shadow_rows": int(counts.get("shadow", 0)),
+        "frozen": int(counts.get("frozen", 0)),
+        "skipped": int(counts.get("skipped", 0)),
+        "paid_points_total": int(points_total or 0),
+        "created_at": (batch.created_at.isoformat()
+                       if batch.created_at else None),
+        "finished_at": (batch.finished_at.isoformat()
+                        if batch.finished_at else None),
+    }
+
+
+def _detail_payload(db: Session, detail) -> dict:
+    user = (db.query(models.WebUser)
+            .filter(models.WebUser.id == detail.user_id).first())
+    return {
+        "id": detail.id,
+        "settlement_id": detail.settlement_id,
+        "member_id": detail.member_id,
+        "user_id": detail.user_id,
+        "username": user.username if user is not None else None,
+        "counted_plays": detail.counted_plays,
+        "active_days": detail.active_days,
+        "raw_plays": detail.raw_plays,
+        "transfer_bytes": detail.transfer_bytes,
+        "points": detail.points,
+        "xp": detail.xp,
+        "welfare_days": detail.welfare_days,
+        "status": detail.status,
+        "reason": detail.reason,
+        "points_log_id": detail.points_log_id,
+        "granted_at": (detail.granted_at.isoformat()
+                       if detail.granted_at else None),
+        "released_by": detail.released_by,
+        "released_at": (detail.released_at.isoformat()
+                        if detail.released_at else None),
+        "created_at": (detail.created_at.isoformat()
+                       if detail.created_at else None),
+    }
+
+
+@pool_admin_router.get("/rewards/preview")
+def pool_rewards_preview(
+    period_key: Optional[str] = None,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """结算预览（只算不落行）：每位成员当期 counted/在线日/应发
+    积分与预计走向（paid/shadow/frozen/skipped）。与执行结算
+    共用 pool_reward 同一份计量，总开关关时也可预览。"""
+    try:
+        return pool_reward.preview_settlement(db, period_key)
+    except pool_reward.PoolRewardError as exc:
+        raise _reward_http(exc) from exc
+
+
+@pool_admin_router.post("/rewards/settle")
+def pool_rewards_settle(
+    raw_request: Request,
+    body: Optional[SettleRewardsRequest] = None,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """执行结算（手动触发，自动定时默认不开）：period_key 缺省
+    结上一个完整周期。影子模式（真发开关关）只落行不发钱；
+    重跑幂等不双发。总开关关时 400 不建批。"""
+    try:
+        summary = pool_reward.run_settlement(
+            db, body.period_key if body else None,
+            created_by=current_admin.id)
+    except pool_reward.PoolRewardError as exc:
+        db.rollback()
+        raise _reward_http(exc) from exc
+    _audit(db, current_admin, "pool_reward_settle", "pool_reward",
+           summary["settlement_id"],
+           {"period_key": summary["period_key"],
+            "payout": summary["payout"]},
+           ip=_client_ip(raw_request))
+    db.commit()
+    batch = (db.query(em.PoolRewardSettlement)
+             .filter(em.PoolRewardSettlement.id
+                     == summary["settlement_id"]).first())
+    return {"summary": summary,
+            "settlement": _settlement_payload(db, batch)}
+
+
+@pool_admin_router.get("/rewards/settlements")
+def pool_rewards_settlements(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    rows = (db.query(em.PoolRewardSettlement)
+            .order_by(em.PoolRewardSettlement.id.desc()).all())
+    return {"settlements": [_settlement_payload(db, b) for b in rows]}
+
+
+@pool_admin_router.get("/rewards/settlements/{settlement_id}/details")
+def pool_rewards_settlement_details(
+    settlement_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    batch = (db.query(em.PoolRewardSettlement)
+             .filter(em.PoolRewardSettlement.id == settlement_id)
+             .first())
+    if batch is None:
+        raise HTTPException(status_code=404, detail="结算批次不存在。")
+    rows = (db.query(em.PoolRewardDetail)
+            .filter(em.PoolRewardDetail.settlement_id == settlement_id)
+            .order_by(em.PoolRewardDetail.id.asc()).all())
+    return {"settlement": _settlement_payload(db, batch),
+            "details": [_detail_payload(db, d) for d in rows]}
+
+
+@pool_admin_router.post("/rewards/details/{detail_id}/release")
+def pool_rewards_release_detail(
+    detail_id: int,
+    raw_request: Request,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """frozen 明细人工审放行：按已 capped 的计量数发放（真发
+    关时落 shadow 待开闸补发）。"""
+    try:
+        detail = pool_reward.release_frozen_detail(
+            db, detail_id, actor_id=current_admin.id)
+    except pool_reward.PoolRewardError as exc:
+        db.rollback()
+        raise _reward_http(exc) from exc
+    _audit(db, current_admin, "pool_reward_release", "pool_reward",
+           detail.id, {"member_id": detail.member_id},
+           ip=_client_ip(raw_request))
+    db.commit()
+    return _detail_payload(db, detail)

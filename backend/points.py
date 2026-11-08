@@ -67,6 +67,7 @@ POINT_TYPE_SELF_EARNED: dict[str, bool] = {
     "checkin_milestone": True,  # 签到连签里程碑（签到行为入账，2026-11-01）
     "checkin_full": True,  # 签到全勤奖（签到行为入账，2026-11-01）
     "chat": True,
+    "pool_reward": True,  # 池贡献激励：成员本人贡献的磁盘被播放/在线挣来的分，属本人真实行为入账（2026-11-08，#1895）
     # 非自挣入账
     "transfer_in": False,
     "invitee": False,

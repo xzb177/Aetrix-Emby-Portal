@@ -6473,6 +6473,9 @@ def _run_drive_pool_job(db, job, item, drive_api):
                          "或源已撤分享），不重试")
     except _CopyQuotaExceeded:
         _pg._bump_pool_usage(db, member.id, quota_hits=1)
+        # PR-5 熔断：本次命中记数后顺手查阈值，达线即当场熔断
+        # 该成员（状态变更骑 _fail_job 的提交，不另起事务）。
+        _pg.maybe_trip_member_breaker(db, member)
         free, shortfall = _fresh_quota_numbers(
             user_client, member_drive, _file_size)
         return _fail_job(db, job, "insufficient_space",
@@ -8270,6 +8273,8 @@ def patrol_once(db, drive_api_factory, now=None):
     - 已下线 provider 的副本行（variant_drive_id 以 quark: /
       pan115: 开头，2026-11-02 删除单）整行跳过：不再验活、不再
       取链、不记 strike、不复活，行数据原样留存（二期清理）；
+    - 池副本行（owner_scope=pool，goal-33 PR-5）整行跳过：文件
+      在成员盘里、SA 看不见，验活归 pool_janitor 成员令牌口径；
     - 其它异常（429/5xx/网络）→ 只记日志，不记 strike。
     孤儿文件的自动删除不在 v1（删用户数据自动执行风险高，留复核）。
     """
@@ -8280,6 +8285,12 @@ def patrol_once(db, drive_api_factory, now=None):
     rows = db.query(em.TransferVariant).filter(
         em.TransferVariant.status == "ready").all()
     for row in rows:
+        if (getattr(row, "owner_scope", "") or "") == "pool":
+            # 池副本（goal-33 PR-5）：文件在成员自己的盘里，SA
+            # 客户端看不见——用 SA 口径验活只会误记 strike。
+            # 池行验活归 pool_janitor（成员令牌口径），本巡检
+            # 整行跳过、不记 strike、不改状态。
+            continue
         if _dest_is_removed(row.variant_drive_id):
             # 已下线 provider 的存量副本行：整行跳过，不发任何
             # 夸克/115 请求（2026-11-02 删除单）。

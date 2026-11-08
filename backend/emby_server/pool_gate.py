@@ -26,6 +26,14 @@ PR-4 生命周期（本单）：成员状态机全套（申请/批准/拒绝/暂
 / ``on_binding_deleted``）由 user_bindings 两处落态口调用。
 管理端入口在 backend/api/pool_admin.py，用户端三口在 portal.py。
 
+PR-5 保护收尾（本单）：熔断判定本体在本模块「熔断与副本计数」
+一节（成员级 trip/半开试探恢复 + 池级暂停建单判定 + 可下发
+副本计数）；周期执行面（巡检/淘汰/补位/半开试探调度）在
+``pool_janitor.py``，只调本模块与 transfer_variant 的既有口，
+不另立判定。GA-036 的熔断类死键（pool_breaker_quota_hits_
+per_day / pool_breaker_cooldown_sec）与 pool_item_max_copies
+自本单起有真实消费方。
+
 硬闸：池总开关关时一切按池不存在（未绑用户仍走既有门禁原 403，
 回归测试 test_pool_foundation
 .test_redline_existing_gate_unchanged_when_pool_enabled 钉住）。
@@ -97,28 +105,51 @@ POOL_PREPARING_DETAIL = (
 POOL_PLAY_DEDUP_WINDOW_MIN = 30
 
 
-def _raw_config(db: Session) -> dict[str, str]:
+#: 激励子家族 pool_reward_* 的代码默认值（goal-33 PR-6，
+#: design §11.3；与 config_schema.POOL_REWARD_CONFIG_SCHEMA 同口径）。
+#: 与本体 16 键分开一份字典：GET /api/admin/pool/config 的
+#: 16 键口径（PR-1 已钉）不许被激励键撑大，激励键走
+#: reward-config 端点与 reward_config_payload 这一份读取。
+POOL_REWARD_CONFIG_DEFAULTS: dict = {
+    "pool_reward_enabled": False,
+    "pool_reward_payout_enabled": False,
+    "pool_reward_period": "monthly",
+    "pool_reward_points_per_play": 1,
+    "pool_reward_points_per_active_day": 5,
+    "pool_reward_points_cap": 900,
+    "pool_reward_min_active_days": 7,
+    "pool_reward_min_counted_plays": 10,
+    "pool_reward_play_dedupe_window_sec": 1800,
+    "pool_reward_daily_play_freeze": 1500,
+    "pool_reward_welfare_days": 0,
+    "pool_reward_welfare_min_plays": 50,
+    "pool_reward_xp_per_play": 1,
+    "pool_reward_xp_cap": 500,
+    "pool_reward_subscription_enabled": False,
+    "pool_reward_title_enabled": True,
+}
+
+
+def _raw_config_for(db: Session, defaults_map: dict) -> dict[str, str]:
     defaults = {
         key: ("true" if value is True else "false" if value is False
               else str(value))
-        for key, value in POOL_CONFIG_DEFAULTS.items()
+        for key, value in defaults_map.items()
     }
     try:
-        return store.get_values(db, list(POOL_CONFIG_DEFAULTS), defaults)
+        return store.get_values(db, list(defaults_map), defaults)
     except Exception:  # noqa: BLE001 配置层异常不许把判定打成 500
         logger.warning("公共池配置读取失败，回落代码默认", exc_info=True)
         return defaults
 
 
-def pool_config_payload(db: Session) -> dict:
-    """池配置生效值（类型化）：存量行优先，缺行/非法回代码默认。
+def _raw_config(db: Session) -> dict[str, str]:
+    return _raw_config_for(db, POOL_CONFIG_DEFAULTS)
 
-    管理端 GET /api/admin/pool/config 与判定层共用这一份 payload，
-    不许两处各解析一遍。
-    """
-    raw = _raw_config(db)
+
+def _typed_payload(raw: dict, defaults_map: dict) -> dict:
     out: dict = {}
-    for key, default in POOL_CONFIG_DEFAULTS.items():
+    for key, default in defaults_map.items():
         value = raw.get(key, "")
         if isinstance(default, bool):
             out[key] = str(value).strip().lower() == "true"
@@ -130,6 +161,25 @@ def pool_config_payload(db: Session) -> dict:
         else:
             out[key] = str(value) if value not in (None, "") else default
     return out
+
+
+def pool_config_payload(db: Session) -> dict:
+    """池配置生效值（类型化）：存量行优先，缺行/非法回代码默认。
+
+    管理端 GET /api/admin/pool/config 与判定层共用这一份 payload，
+    不许两处各解析一遍。
+    """
+    return _typed_payload(_raw_config(db), POOL_CONFIG_DEFAULTS)
+
+
+def reward_config_payload(db: Session) -> dict:
+    """激励子家族配置生效值（类型化）：口径与 pool_config_payload
+    同一份解析，键集是 POOL_REWARD_CONFIG_DEFAULTS。管理端
+    reward-config 端点与 pool_reward 结算共用这一份，不许两处
+    各解析一遍。"""
+    return _typed_payload(
+        _raw_config_for(db, POOL_REWARD_CONFIG_DEFAULTS),
+        POOL_REWARD_CONFIG_DEFAULTS)
 
 
 def pool_enabled(db: Session) -> bool:
@@ -285,6 +335,290 @@ def binding_limit_for_user(db: Session, user) -> int:
     from backend.emby_server import user_bindings as _ub
 
     return _ub.binding_limit_per_user()
+
+# ---------------------------------------------------------------- 熔断与副本计数（PR-5）
+# design §6.3 熔断 + §6.2 条目级副本上限 + 补充节 S4 补位共用计数。
+#
+# 成员级熔断：当日 quota_hits（pool_usage_daily；记数点在
+# transfer_variant 池单 copy 配额失败处与 api 两处 serve 探测
+# 处）达 pool_breaker_quota_hits_per_day → 经
+# transition_member_status 收口落 suspended(breaker) +
+# breaker_until = now + 冷却。同回合内再熔断冷却翻倍、上限
+# 24h；回合以 breaker_recovered 事件为界（恢复成功即清零）。
+# 半开试探：冷却到期后由 pool_janitor 调 breaker_recover_probe
+# 对该成员一份 ready 副本跑 quota 探测，非 quota 才恢复
+# active，再命中立即回熔断（breaker_retrip 事件留痕）。
+#
+# 池级熔断：今日参与成员人均 quota_hits 达同一阈值 → 全池
+# 暂停建单（create_pool_job 抛 pool_breaker）。单盘命中只摘
+# 单盘、全池普遍命中才摘全池，与成员级共用同一阈值键。
+
+#: 熔断冷却上限（design §6.3：翻倍上限 24h）。
+BREAKER_MAX_COOLDOWN_SEC = 24 * 3600
+
+
+def _member_usage_today(db: Session, member_id: int):
+    """成员当日用量行（无行回 None）。"""
+    return (db.query(em.PoolUsageDaily)
+            .filter(em.PoolUsageDaily.member_id == member_id,
+                    em.PoolUsageDaily.day == datetime.now().date())
+            .first())
+
+
+def _member_quota_hits_today(db: Session, member_id: int) -> int:
+    row = _member_usage_today(db, member_id)
+    return int(row.quota_hits or 0) if row is not None else 0
+
+
+def _breaker_episode_level(db: Session, member_id: int) -> int:
+    """当前熔断回合内已发生的熔断次数（trip + retrip 事件数）。
+
+    事件按 id 倒序走，碰到 breaker_recovered 即停：恢复成功
+    之后的历史熔断不算进本回合。
+    """
+    events = (db.query(em.PoolMemberStatusEvent)
+              .filter(em.PoolMemberStatusEvent.member_id == member_id)
+              .order_by(em.PoolMemberStatusEvent.id.desc())
+              .limit(200).all())
+    level = 0
+    for event in events:
+        if event.reason == "breaker_recovered":
+            break
+        if event.reason in ("breaker", "breaker_retrip"):
+            level += 1
+    return level
+
+
+def _breaker_cooldown_sec(db: Session, member, cfg: dict) -> int:
+    """本次熔断冷却秒数：基础值 × 2^回合层数，上限 24h。
+
+    在写本次事件之前调用：层数只数此前已落的熔断事件，首次
+    熔断层数 0 → 基础冷却；试探失败再熔断层数 1 → 翻倍。
+    """
+    base = int(cfg["pool_breaker_cooldown_sec"])
+    level = _breaker_episode_level(db, member.id)
+    return min(base * (2 ** level), BREAKER_MAX_COOLDOWN_SEC)
+
+
+def trip_member_breaker(db: Session, member, *, detail: str = "",
+                        now=None) -> bool:
+    """把 active 成员打进熔断（不 commit，随调用方事务）。
+
+    落 suspended(breaker) + breaker_until，并记 pool_breaker
+    决策留痕（scope=pool_breaker，design §2.3）。非 active
+    成员不重复打，返回 False。
+    """
+    if member is None or member.status != "active":
+        return False
+    cfg = pool_config_payload(db)
+    now = now or datetime.now()
+    cooldown = _breaker_cooldown_sec(db, member, cfg)
+    member.suspended_reason = "breaker"
+    member.breaker_until = now + timedelta(seconds=cooldown)
+    transition_member_status(db, member, "suspended", reason="breaker")
+    _decisions.note_decision(
+        scope="pool_breaker", resource_key=f"member:{member.id}",
+        decision="trip",
+        reason=f"cooldown_sec={cooldown} {detail}".strip(),
+        candidates=[])
+    return True
+
+
+def maybe_trip_member_breaker(db: Session, member, *, now=None) -> bool:
+    """当日 quota_hits 达阈值则熔断该成员（design §6.3）。
+
+    阈值 pool_breaker_quota_hits_per_day=0 表示不熔断。不
+    commit（骑调用方事务）。
+    """
+    if member is None or member.status != "active":
+        return False
+    cfg = pool_config_payload(db)
+    threshold = int(cfg["pool_breaker_quota_hits_per_day"])
+    if threshold <= 0:
+        return False
+    hits = _member_quota_hits_today(db, member.id)
+    if hits < threshold:
+        return False
+    return trip_member_breaker(
+        db, member, detail=f"quota_hits={hits}>={threshold}", now=now)
+
+
+def note_pool_quota_hit(member_id) -> None:
+    """池副本 quota 命中记数 + 熔断检查（serve 路专用记数口）。
+
+    与 note_pool_play_served 同纪律：独立会话写、失败静默——
+    记数失败绝不打挂已经裁决完的播放，本函数永不抛异常。
+    copy 路的命中在工人会话内 _bump_pool_usage +
+    maybe_trip_member_breaker，不经本口（防重复记数）。
+    """
+    try:
+        mid = int(member_id)
+    except (TypeError, ValueError):
+        return
+    db = None
+    try:
+        from backend.database import SessionLocal
+
+        db = SessionLocal()
+        member = (db.query(em.PoolMember)
+                  .filter(em.PoolMember.id == mid).first())
+        if member is None:
+            return
+        _bump_pool_usage(db, mid, quota_hits=1)
+        db.flush()
+        maybe_trip_member_breaker(db, member)
+        db.commit()
+    except Exception:  # noqa: BLE001 — 记数失败静默，不挡播放
+        logger.warning("池 quota 命中记数失败 member=%s",
+                       member_id, exc_info=True)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def pool_wide_breaker_open(db: Session, cfg: dict | None = None) -> bool:
+    """池级熔断判定：今日参与成员人均 quota_hits 达单盘阈值。
+
+    participants = 今日有 PoolUsageDaily 行的成员数，total =
+    今日 quota_hits 总和；total ≥ 阈值 × participants 即全池
+    暂停建单。阈值 0（不熔断）或今日无参与成员时恒 False。
+    """
+    cfg = cfg or pool_config_payload(db)
+    threshold = int(cfg["pool_breaker_quota_hits_per_day"])
+    if threshold <= 0:
+        return False
+    from sqlalchemy import func
+
+    participants, total = (
+        db.query(func.count(em.PoolUsageDaily.id),
+                 func.coalesce(func.sum(em.PoolUsageDaily.quota_hits), 0))
+        .filter(em.PoolUsageDaily.day == datetime.now().date())
+        .one())
+    participants = int(participants or 0)
+    if participants <= 0:
+        return False
+    return int(total or 0) >= threshold * participants
+
+
+def _servable_pool_rows(db: Session, item_id):
+    """条目当下「可下发」的池副本行 + 所属成员（design §6.3
+    名额口径）：status=ready、stale_count=0、成员 active 且不在
+    熔断冷却内——即 _pick_ready_pool_variant 会真挑中的行。
+    熔断/暂停/stale 的行不算（否则一盘熔断会把条目锁死）。
+    纯读、无副作用，返回 [(变体行, 成员行), ...]。
+    """
+    if item_id is None:
+        return []
+    rows = (db.query(em.TransferVariant)
+            .filter(em.TransferVariant.item_id == item_id,
+                    em.TransferVariant.owner_scope == "pool",
+                    em.TransferVariant.status == "ready",
+                    em.TransferVariant.stale_count == 0)
+            .all())
+    now = datetime.now()
+    out = []
+    for row in rows:
+        try:
+            member_id = int((row.owner_ref or "").strip())
+        except (TypeError, ValueError):
+            continue
+        member = (db.query(em.PoolMember)
+                  .filter(em.PoolMember.id == member_id).first())
+        if member is None or member.status != "active":
+            continue
+        if (member.breaker_until is not None
+                and member.breaker_until > now):
+            continue
+        out.append((row, member))
+    return out
+
+
+def _servable_pool_copy_count(db: Session, item_id) -> int:
+    """条目可下发池副本数（pool_item_max_copies 的计数口径）。"""
+    return len(_servable_pool_rows(db, item_id))
+
+
+def _servable_pool_holder_ids(db: Session, item_id) -> set:
+    """持有该条目可下发副本的成员 id 集合（PR-5 补位排除集：
+    补位只许往还没有该副本的盘上打，不重复占同一盘）。"""
+    return {int(member.id) for _, member in _servable_pool_rows(db, item_id)}
+
+
+def _pool_inflight_for_item(db: Session, item_id) -> int:
+    """条目在途池单数（pending + running）。"""
+    if item_id is None:
+        return 0
+    return (db.query(em.TransferJob)
+            .filter(em.TransferJob.item_id == item_id,
+                    em.TransferJob.owner_scope == "pool",
+                    em.TransferJob.status.in_(("pending", "running")))
+            .count())
+
+
+def breaker_recover_probe(db: Session, member, *, probe_fn=None,
+                          now=None) -> str:
+    """熔断半开试探（design §6.3，pool_janitor 冷却到期时调用）。
+
+    冷却未到期 / 成员不在熔断暂停态 → "not_due"（不动任何
+    状态）。到期：取该成员一份 ready 副本跑 quota 探测
+    （probe_fn(variant) 可注入；默认走 transfer_variant
+    .probe_user_copy_quota_decision，键 poolvar:<variant_id>
+    与 serve 路同口径）；无 ready 副本可探时直接恢复（没有
+    副本在下发，恢复后选盘自会再校验容量与绑定）。
+    探测非 quota → 恢复 active（breaker_recovered 事件、回合
+    清零），返回 "recovered"；仍 quota → 立即回熔断且冷却
+    翻倍（breaker_retrip 事件 + breaker_until 顺延），返回
+    "retripped"。全程经状态收口/流水落痕，不 commit。
+    """
+    now = now or datetime.now()
+    if (member is None or member.status != "suspended"
+            or member.suspended_reason != "breaker"
+            or member.breaker_until is None
+            or member.breaker_until > now):
+        return "not_due"
+    variant = (db.query(em.TransferVariant)
+               .filter(em.TransferVariant.owner_scope == "pool",
+                       em.TransferVariant.owner_ref == str(member.id),
+                       em.TransferVariant.status == "ready")
+               .order_by(em.TransferVariant.id.desc()).first())
+    verdict = None
+    if variant is not None:
+        if probe_fn is not None:
+            verdict = probe_fn(variant)
+        else:
+            verdict = _tv.probe_user_copy_quota_decision(
+                f"poolvar:{variant.id}",
+                (variant.variant_file_id or "").strip())
+    if verdict == "quota":
+        cfg = pool_config_payload(db)
+        cooldown = _breaker_cooldown_sec(db, member, cfg)
+        member.breaker_until = now + timedelta(seconds=cooldown)
+        record_member_status_event(
+            db, member, "suspended", "suspended", "breaker_retrip")
+        _decisions.note_decision(
+            scope="pool_breaker", resource_key=f"member:{member.id}",
+            decision="retrip",
+            reason=f"cooldown_sec={cooldown} probe=quota",
+            candidates=[])
+        return "retripped"
+    member.suspended_reason = None
+    member.breaker_until = None
+    transition_member_status(db, member, "active",
+                             reason="breaker_recovered")
+    _decisions.note_decision(
+        scope="pool_breaker", resource_key=f"member:{member.id}",
+        decision="recover",
+        reason=f"probe={verdict or 'no_variant'}", candidates=[])
+    return "recovered"
+
 
 # ---------------------------------------------------------------- 选盘与建单（PR-2 进池单）
 # design §6.1/§6.2：选盘打分 + create_pool_job + 池单并发计数。
@@ -455,7 +789,8 @@ def _serve_score(db: Session, member, *, quota_fn=None) -> float:
     return _clamp01(free / max(1, capacity_cap))
 
 
-def pick_pool_member(db: Session, item, *, force=False, quota_fn=None):
+def pick_pool_member(db: Session, item, *, force=False, quota_fn=None,
+                     exclude_member_ids=None):
     """选盘（design §6.1）：返回 (member|None, candidates)。
 
     candidates：每位 active 成员一行 {member_id, eligible, score,
@@ -464,14 +799,22 @@ def pick_pool_member(db: Session, item, *, force=False, quota_fn=None):
     分高者中选概率高、又不把全部新片压到同一盘。24h 内已有本条
     目池单的成员不参与（force 越过，供门禁重触发）。无可用盘时
     记一笔 decision=none 的留痕；有可用盘时留痕记在建单成功处。
+    exclude_member_ids（PR-5 补位用）：调用方明示排除的成员
+    （如已持有该条目可下发副本的盘，补位不许再往同一盘打）。
     """
     cfg = pool_config_payload(db)
+    excluded = {int(mid) for mid in (exclude_member_ids or ())}
     members = (db.query(em.PoolMember)
                .filter(em.PoolMember.status == "active")
                .order_by(em.PoolMember.id.asc()).all())
     candidates = []
     scored = []
     for member in members:
+        if int(member.id) in excluded:
+            candidates.append({"member_id": int(member.id),
+                               "eligible": False, "score": 0.0,
+                               "reason": "excluded_by_caller"})
+            continue
         if not force and _tv._recent_job_exists(
                 db, getattr(item, "id", None), "pool", str(member.id)):
             candidates.append({"member_id": int(member.id),
@@ -540,7 +883,7 @@ def _pool_failed_detail(db: Session, item, job) -> str:
 
 
 def create_pool_job(db: Session, item, *, trigger="playback",
-                    force=False, quota_fn=None):
+                    force=False, quota_fn=None, exclude_member_ids=None):
     """建池单（design §6.2）：选盘 → 限额 → 落行 → 留痕 → 唤醒。
 
     限额（任一命中抛 TransferError，不落行；错误优先级沿
@@ -550,6 +893,9 @@ def create_pool_job(db: Session, item, *, trigger="playback",
     - provider 不在池启用列表 → pool_provider_unsupported；
     - Drive 条目取不到源盘 → no_drive；
     - 进行中池单数 ≥ pool_global_concurrency → throttled；
+    - 池级熔断打开（PR-5）→ pool_breaker；
+    - 条目可下发副本 + 在途池单 ≥ pool_item_max_copies
+      （PR-5）→ copies_max；
     - 无可用盘 → no_member；
     - 目标成员 24h 内已有本条目池单（force 越过）→ throttled。
     建单：owner_scope=pool、owner_ref=成员 id、
@@ -574,8 +920,21 @@ def create_pool_job(db: Session, item, *, trigger="playback",
         raise _tv.TransferError("no_drive", "Drive 条目取不到源盘标识")
     if _pool_inflight_count(db) >= max(1, int(cfg["pool_global_concurrency"])):
         raise _tv.TransferError("throttled", "池进行中任务已达全局并发上限")
+    if pool_wide_breaker_open(db, cfg):
+        raise _tv.TransferError(
+            "pool_breaker",
+            "公共池今天额度紧张，已保护性暂停接收新片，"
+            "可以绑定自己的网盘立刻看，或稍后再试")
+    max_copies = max(1, int(cfg["pool_item_max_copies"]))
+    if (_servable_pool_copy_count(db, item.id)
+            + _pool_inflight_for_item(db, item.id)) >= max_copies:
+        raise _tv.TransferError(
+            "copies_max",
+            "这个片子的公共副本已达上限份数，"
+            "可以绑定自己的网盘立刻看，或稍后再试")
     member, candidates = pick_pool_member(
-        db, item, force=force, quota_fn=quota_fn)
+        db, item, force=force, quota_fn=quota_fn,
+        exclude_member_ids=exclude_member_ids)
     if member is None:
         # 24h 节流挡住全部候选（design §6.2 第 6 步）→ throttled，
         # 与“根本无可用盘”（no_member）区分：前者是限流、后者是缺盘。

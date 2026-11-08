@@ -7196,6 +7196,14 @@ async def playback_info(
                             shape=_pool_probe_detail.get("shape"),
                             page=_pool_probe_detail.get("page"),
                             scope="pool")
+                        if _pool_signal == "quota" and not _pool_cached:
+                            # PR-5 熔断记数：新鲜探测真命中额度页
+                            # 才记一次（缓存裁决命中不重复记，防
+                            # 同一副本被反复起播刷爆成员当日的
+                            # quota_hits 把盘误熔断）。
+                            await run_db(
+                                _pool_gate_pi.note_pool_quota_hit,
+                                _pool_member_id)
                         if _pool_divert:
                             _pool_diverted = True
                             _keep_stream_p = False
@@ -7580,6 +7588,12 @@ async def video_stream(
                             shape=_pool_q_detail.get("shape"),
                             page=_pool_q_detail.get("page"),
                             scope="pool")
+                        if _pool_q_signal == "quota" and not _pool_q_cached:
+                            # PR-5 熔断记数（与 PlaybackInfo 同
+                            # 口径：只记新鲜探测的真命中）。
+                            await run_db(
+                                _pool_gate_vs.note_pool_quota_hit,
+                                _pool_member_id)
                         if _pool_q_divert:
                             _pool_served_resp = (
                                 await _pool_quota_relay_attempt(
@@ -8626,8 +8640,13 @@ async def upstream_item_stream(
     # 无条件过门禁（与 upstream_stream 同口径）。2026-11-03 改定：
     # 无界（CMS）库条目免绑定——按条目判定须先拿到条目，故可见性
     # 护栏提到门禁之前（与 PlaybackInfo 同序；本地条目判定不变）。
-    from backend.emby_server import playback_gate as _gate
-    await run_db(_gate.ensure_binding_playback_allowed_for_item,
+    # 池分支（goal-33 PR-5，审计 GA-035）：详情 DTO 的上游线路
+    # 签名走 sign_allowed_for_item（含池分支：池 eligible 且有
+    # ready 池副本才签），取流口必须同口径——改走 pool_gate 新
+    # 判定入口：池放行判 pool，其余情形回落既有门禁本体抛原
+    # 403（文案与执法口径逐字不变，签了的线必须播得了）。
+    from backend.emby_server import pool_gate as _pool_gate
+    await run_db(_pool_gate.ensure_playback_allowed_for_item,
                  db, user, item)
     # 定向解析（多线形态）：MediaSourceId 带映射 id 时只解那一条，
     # 形态对不上（别条目的 id / 非上游 id / id 段非数字）直接 404

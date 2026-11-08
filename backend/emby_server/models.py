@@ -2444,9 +2444,15 @@ class PoolPlayEvent(Base):
     一行 = 一次池播出成功下发（PlaybackInfo 下发池副本地址、或
     video_stream 302/中继出字节）。只如实记录原始事件：哪个成员的
     哪份副本、被哪个观众起播、何时。防刷判定（本人及同人多盘互看
-    不计、同观众同副本 30 分钟只计首次、单日上限冻结等）与聚合
-    结算都是 PR-6 的纯函数活，本表不落 counted 结论——明细行结论
-    由结算聚合时回填或现算，写入点不做防刷判定（design §11.5）。
+    不计、单日上限冻结等）与聚合结算都是 PR-6 的纯函数活，本表
+    不落 counted 结论——明细行结论由结算聚合时现算。
+
+    写入点口径（GA-033）：同观众同副本 30 分钟内的重复起播在
+    写入点先行去重（与 pool_reward 计量纯函数的去重窗口同为
+    1800 秒），不落重复行；这只是省行数的先行过滤，不是防刷
+    结论——结算聚合仍按存量事件把去重与其余防刷规则全量复核
+    一遍，写时去重有无都不改变结算口径（design §11.5 的
+    「写入点不做防刷判定」指不下 counted 结论，与此不冲突）。
 
     写入纪律沿 PlayStartEvent：独立会话写、失败静默，绝不进起播
     热路径的同步事务（见 pool_gate.note_pool_play_served）。
@@ -2472,6 +2478,100 @@ class PoolPlayEvent(Base):
     item_id = Column(Integer, nullable=False)
     viewer_user_id = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
+
+
+class PoolRewardSettlement(Base):
+    """公共贡献池激励结算批次（goal-33 PR-6，钩子 H3）。
+
+    一行 = 一个结算周期的一次结算建批：period_key 唯一
+    （monthly 形如 2026-11、weekly 形如 2026-W45，边界按
+    Asia/Shanghai 自然日/月，见 pool_reward.period_bounds_utc）。
+    建批时把当期全部 pool_reward_* 配置落 params_snapshot 快照，
+    事后改配置不影响已建批次口径。shadow=True 表示本批建批时
+    真发开关（pool_reward_payout_enabled）为关：明细只算账
+    落行、不发钱（影子跑对账期）；开关开后重跑同批才真发。
+
+    status：pending 待执行 / running 执行中 / done 已完成 /
+    failed 中途失败（可重跑续结，明细唯一键兜底不双发）。
+    无外键（照本文件池表先例）；新表由 create_all 建出。
+    """
+
+    __tablename__ = "pool_reward_settlements"
+
+    __table_args__ = (
+        UniqueConstraint("period_key",
+                         name="uq_pool_reward_settlements_period"),
+        Index("ix_pool_reward_settlements_status", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    period_key = Column(String(16), nullable=False)
+    period_kind = Column(String(8), nullable=False, default="monthly")
+    period_start = Column(DateTime, nullable=False)
+    period_end = Column(DateTime, nullable=False)
+    status = Column(String(16), nullable=False, default="pending")
+    shadow = Column(Boolean, nullable=False, default=True)
+    params_snapshot = Column(Text, nullable=True)
+    created_by = Column(Integer, nullable=True)
+    last_error = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now,
+                        onupdate=datetime.now)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class PoolRewardDetail(Base):
+    """公共贡献池激励结算明细（goal-33 PR-6，钩子 H3）。
+
+    一行 = 一个成员在一个批次里的结算结论。(settlement_id,
+    member_id) 唯一约束是整条链的第一道幂等锚：重跑/续跑撞键
+    即已结；发放第二道锚是 points_logs.ref_id =
+    ``pool_reward:{detail_id}``（发放前双查）。
+
+    计量快照：counted_plays（过防刷后的起播数）、active_days
+    （有效在线日）、raw_plays（原始起播数，对账面）、
+    transfer_bytes（当期转存字节，仅展示/对账、一期不计奖）。
+    应发量：points（封顶后）、xp；welfare_days 一期恒 0
+    （公益天数一期关闭不发，键位与列先留）。
+
+    status：shadow 影子落行（只算账未发钱）/ pending 待发
+    （发放中断的中间态，续跑补发）/ frozen 冻结待人工审
+    （单日 counted 达冻结线）/ paid 已发放 / skipped 不结
+    （reason：below_threshold 门槛不达 / ejected_violation
+    违规清退 / user_missing 账号不存在）。
+    无外键（照本文件池表先例）；新表由 create_all 建出。
+    """
+
+    __tablename__ = "pool_reward_details"
+
+    __table_args__ = (
+        UniqueConstraint("settlement_id", "member_id",
+                         name="uq_pool_reward_details_batch_member"),
+        Index("ix_pool_reward_details_settlement", "settlement_id"),
+        Index("ix_pool_reward_details_member", "member_id"),
+        Index("ix_pool_reward_details_status", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    settlement_id = Column(Integer, nullable=False)
+    member_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    counted_plays = Column(Integer, nullable=False, default=0)
+    active_days = Column(Integer, nullable=False, default=0)
+    raw_plays = Column(Integer, nullable=False, default=0)
+    transfer_bytes = Column(BigInteger, nullable=False, default=0)
+    points = Column(Integer, nullable=False, default=0)
+    xp = Column(Integer, nullable=False, default=0)
+    welfare_days = Column(Integer, nullable=False, default=0)
+    status = Column(String(16), nullable=False, default="pending")
+    reason = Column(String(80), nullable=True)
+    points_log_id = Column(Integer, nullable=True)
+    granted_at = Column(DateTime, nullable=True)
+    released_by = Column(Integer, nullable=True)
+    released_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now,
+                        onupdate=datetime.now)
 
 
 class Pan115Account(Base):
