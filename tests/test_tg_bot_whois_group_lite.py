@@ -7,9 +7,12 @@
 - 入口两种：回复某人的消息发 /kk（凭被回复者 TG 身份定位），
   或 /kk 站内用户名 / TG 号带参定位。
 - 精简卡字段白名单：站内用户名、TG 显示名、等级、公益资格、订阅
-  到期、能量余额、网盘绑定（只 provider＋状态）、账号状态。
-  IP / 设备 / 登录记录 / 播放记录 / 绑定 label / 凭据 id / 密码
-  一律不许出现在卡里（断言型拦截）。
+  到期、能量余额、网盘绑定（2026-11-08 新设计：一行汇总、绑定
+  自设标签认盘＋状态符号，见 test_tg_bot_whois_kk_drive_line）、
+  账号状态。
+  IP / 设备 / 登录记录 / 播放记录 / 凭据 id / 密码一律不许出现
+  在卡里（断言型拦截）。绑定 label 是用户自设的展示名，2026-11-08
+  用户明确批准进群卡，不再列入禁止项。
 - 非管理员触发只回现行 🔒 拒绝卡，绝不带被查人任何信息；
   查无此人 / 对方未绑定回明示文案，不报错、不建行（全只读）。
 """
@@ -170,8 +173,9 @@ def test_group_reply_lookup_renders_lite_card(db, sent):
     assert "2027-01-15" in card            # 公益资格到期
     assert "2027-03-01" in card            # 订阅到期
     assert "321" in card                   # 能量余额
-    assert "谷歌网盘" in card              # 绑定 provider
-    assert "115 网盘" in card
+    # 绑定行（2026-11-08 新设计）：按 provider 分组一行汇总、标签认盘
+    assert "💾 谷歌盘 ×1：绝密主盘LABEL ✓" in card
+    assert "115 网盘 ×1：绝密副盘LABEL ✕已过期" in card
     assert "已过期" in card                # 绑定状态
     assert "正常" in card                  # 账号状态
 
@@ -246,12 +250,14 @@ def test_lite_card_has_no_sensitive_fields(db, sent):
         "9.9.9.9",                 # 登录/播放 IP
         "SecretClient",            # UA / 客户端名
         "SecretPhone",             # 设备名
-        "绝密主盘LABEL", "绝密副盘LABEL",  # 绑定 label
         "987654", "987655",        # 凭据 id
         "SECRET_HASH_SENTINEL", "SECRET_EMBY_PW_SENTINEL",
         "最近登录", "最近播放", "保密片目",
     ):
         assert banned not in card, banned
+    # 绑定 label（用户自设展示名）2026-11-08 起按新设计进卡认盘
+    assert "绝密主盘LABEL" in card
+    assert "绝密副盘LABEL" in card
 
 
 # ---------- 查不到 / 未绑定 / 用法：明示文案不报错 ----------
