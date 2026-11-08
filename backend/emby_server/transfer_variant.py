@@ -4758,6 +4758,23 @@ def _drive_error_snippet(resp, limit=300):
     return " ".join(text.split())[:limit]
 
 
+def _note_drive_error_resp(resp, account) -> None:
+    """Drive 报错原因落库的接线（drive_error_events 唯一落点）。
+
+    只观测：不改变响应/异常/重试行为，落库失败在模块内静默
+    吞掉。account 传账号标识（drive_id / 令牌原文），落库前
+    由 drive_error_events 哈希，原文不进表。
+    """
+    try:
+        from backend.emby_server import drive_error_events
+        drive_error_events.note_drive_response(
+            resp,
+            caller=drive_error_events.caller_label("transfer_variant"),
+            account=account)
+    except Exception:  # noqa: BLE001 — 观测点永不影响主请求
+        pass
+
+
 class DriveApiClient:
     """转存工人用的 Drive API 客户端。
 
@@ -4793,6 +4810,7 @@ class DriveApiClient:
                     httpx.RemoteProtocolError, httpx.ReadError) as exc:
                 raise _Retriable(
                     f"Drive 网络异常（刷新后）：{type(exc).__name__}") from exc
+        _note_drive_error_resp(resp, drive_id)
         return resp
 
     @staticmethod
@@ -5054,6 +5072,8 @@ class DriveApiClient:
                 raise _CrossRemoteError(
                     f"Drive 源下载网络异常（刷新后）：{type(exc).__name__}"
                     ) from exc
+        if resp.status_code in (403, 429):
+            _note_drive_error_resp(resp, drive_id)
         if resp.status_code in (401, 403):
             raise _CrossAuthError(
                 f"Drive 源下载被拒：{resp.status_code}（源凭据失效）")
@@ -5138,9 +5158,11 @@ class _RawTokenClient(DriveApiClient):
 
     def _request(self, method, url, drive_id, **kwargs):
         kwargs.setdefault("timeout", 60)
-        return httpx.request(
+        resp = httpx.request(
             method, url,
             headers={"Authorization": f"Bearer {self._raw_token}"}, **kwargs)
+        _note_drive_error_resp(resp, self._raw_token)
+        return resp
 
 
 class UserDriveApiClient(DriveApiClient):

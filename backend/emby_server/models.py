@@ -2076,6 +2076,46 @@ class TransferDecisionRound(Base):
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
 
+class DriveApiErrorEvent(Base):
+    """谷歌 Drive API 报错事件（403/429）落库：一行 = 中央出口收到
+    的一次限流/配额类响应，带谷歌原始 reason/domain。
+
+    此前 reason 只在各调用点被解析用于分类（退避/熔断判定），
+    算完即弃、全站不落库——撞限时只能知道「撞了几次」，分不清
+    是 rateLimitExceeded 还是 downloadQuotaExceeded，削减调用
+    无从验收（2026-11-08 盘点实证）。本表是唯一落点，写入纪律
+    照 TransferDecisionRound 先例：独立会话、写失败静默丢弃，
+    绝不影响主请求（见 drive_error_events 模块）。
+
+    账号标识只存不可逆短哈希（account_hash = 账号标识字符串的
+    sha256 前 12 位），绝不存邮箱/token 原文。行由 janitor 按
+    保留期清理（默认 14 天，SystemConfig
+    drive_api_error_events_retention_days 可配）。
+    """
+
+    __tablename__ = "drive_api_error_events"
+
+    __table_args__ = (
+        Index("ix_drive_api_error_events_created", "created_at"),
+        Index("ix_drive_api_error_events_reason_created",
+              "reason", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    # HTTP 状态（403 / 429）
+    status_code = Column(Integer, nullable=False)
+    # 谷歌错误体 errors[0].reason（如 userRateLimitExceeded）；
+    # 解析不出时为空串
+    reason = Column(String(80), nullable=False, default="")
+    # 谷歌错误体 errors[0].domain（如 usageLimits）
+    domain = Column(String(80), nullable=False, default="")
+    # 调用方标签：中央出口名或推断出的来源模块名
+    caller = Column(String(80), nullable=False, default="unknown")
+    # 账号标识的 sha256 前 12 位（不可逆）；无标识时为空串
+    account_hash = Column(String(16), nullable=False, default="")
+
+
 class TransferContentManifest(Base):
     """内容块哈希清单（换代线「分块清单同步」地基，2026-11-01）。
 

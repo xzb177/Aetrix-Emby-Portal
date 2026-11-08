@@ -128,6 +128,18 @@ def ensure_shared(file_id: str, bearer_token: str | None) -> str:
         playback_risk.note_drive_status(code)
     except Exception:  # noqa: BLE001 — 观测点永不影响补开分享
         pass
+    if code in (403, 429):
+        # 报错原因落库（drive_error_events 唯一落点）：本口的
+        # 403/429 此前只用于退避分类、reason 算完即弃。与上面
+        # 观测点同纪律：只记不扰，失败静默。
+        try:
+            from backend.emby_server import drive_error_events
+            drive_error_events.note_drive_response(
+                resp,
+                caller=drive_error_events.caller_label("drive_share"),
+                account=bearer_token)
+        except Exception:  # noqa: BLE001 — 观测点永不影响补开分享
+            pass
     if code in (200, 201):
         return "ok"
     if code == 404:

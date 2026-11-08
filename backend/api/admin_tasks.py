@@ -18,6 +18,10 @@ change_watcher.get_config，以及 ScanRun 流水）。
 
     GET  /api/admin/tasks/transfer-decision-rounds
 
+另有 Drive 报错原因聚合只读面（2026-11-08）：
+
+    GET  /api/admin/tasks/drive-error-summary
+
 取消只对排队中（pending）的转存任务开放，语义见文末专节注释。
 
 单个子系统采集失败不影响整体：每个任务独立 try/except，
@@ -628,6 +632,21 @@ def transfer_decision_rounds(limit: int = 50, scope: str = "",
         "success": True,
         "rounds": transfer_decisions.list_recent_rounds(
             db, limit=limit, scope=scope or None),
+    }
+
+
+@tasks_router.get("/tasks/drive-error-summary")
+def drive_error_summary(days: int = 7, db: Session = Depends(get_db),
+                        admin=Depends(get_current_admin)):
+    """Drive 报错原因聚合只读面：近 N 天（默认 7）403/429 事件
+    按 reason 总计 + 按（天, reason）计数，回答「撞限撞的是
+    哪种限额」。事件由各中央出口经 drive_error_events 落库；
+    只读，不写库；聚合口径在 drive_error_events.error_summary
+    单点维护，本口不另发明字段。"""
+    from backend.emby_server import drive_error_events
+    return {
+        "success": True,
+        **drive_error_events.error_summary(db, days=days),
     }
 
 
