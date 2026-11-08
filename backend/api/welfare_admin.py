@@ -302,6 +302,14 @@ WELFARE_CONFIG_KEYS = {
     # 更新入库播报：总开关默认开 / 攒批间隔默认 30 分钟
     "bot_update_digest_enabled": "true",
     "bot_update_digest_interval_minutes": "30",
+    # 每日播放排行榜（文字三榜）：总开关默认关 / 发送时间默认 21:30 /
+    # 每榜默认 5 条 / 三榜分开关默认开
+    "bot_playrank_enabled": "false",
+    "bot_playrank_time": "21:30",
+    "bot_playrank_top_n": "5",
+    "bot_playrank_users_enabled": "true",
+    "bot_playrank_series_enabled": "true",
+    "bot_playrank_movies_enabled": "true",
     # 主动私聊提醒：求片到货 / 转存终态，默认关；同一人合并窗口默认 60 秒
     "tg_notify_store_arrival_enabled": "false",
     "tg_notify_transfer_done_enabled": "false",

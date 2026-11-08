@@ -546,6 +546,50 @@ def handle_rankpush(db, tg_user: dict, chat_id: int, args: str) -> str:
     )
 
 
+def handle_playrank(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """管理员手动推送每日播放排行榜到交流群（/playrank），供验收。
+
+    身份门照 /rankpush 口径：TG 绑定的站账号且 is_staff；未绑定或
+    非管理员一律回同一张拒绝卡、不推送。推榜是写操作，只读审计
+    角色拒绝。实际推送走 tg_bot.playrank.push_daily_rank（与定时
+    推送同一条路，含总开关/空榜/未配群判定）。
+    """
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None or not bool(getattr(user, "is_staff", False)):
+        return layout.card(
+            layout.title("每日播放排行榜推送"),
+            [layout.row("🔒", "访问状态", "仅管理员可用")],
+        )
+    refusal = role_gate.readonly_refusal(user)
+    if refusal:
+        return layout.card(
+            layout.title("每日播放排行榜推送", user.username),
+            [layout.row("🔒", "访问状态", refusal)],
+        )
+    from backend.tg_bot import playrank
+
+    res = playrank.push_daily_rank(db)
+    if res.get("pushed"):
+        return layout.card(
+            layout.title("每日播放排行榜推送", user.username),
+            [
+                layout.row("✅", "推送", "今日播放排行榜已推送到交流群"),
+                layout.row("👥", "观看时长榜", f"{len(res.get('users') or [])} 人"),
+                layout.row("📺", "剧集榜", f"{len(res.get('series') or [])} 部"),
+                layout.row("🎬", "电影榜", f"{len(res.get('movies') or [])} 部"),
+            ],
+        )
+    hint = {
+        "disabled": "每日播放排行榜已关闭（bot_playrank_enabled），先在管理后台打开",
+        "empty": "今天暂时没人播放，榜是空的，没有推送",
+        "no_group": "还没配置交流群（bot_group_ids），无法推送",
+    }.get(res.get("reason") or "", "推送失败，请看服务日志")
+    return layout.card(
+        layout.title("每日播放排行榜推送", user.username),
+        [layout.row("⚠️", "未推送", hint)],
+    )
+
+
 def admin_markup(user=None) -> dict:
     """管理面板按钮：两列网格＋末行回主界面，写入口只给可写角色。
 

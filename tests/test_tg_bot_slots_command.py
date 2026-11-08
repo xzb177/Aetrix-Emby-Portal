@@ -226,7 +226,7 @@ _PRIVATE_ONLY_FACT = {
     # private_only 集合（me/account/level 是账号展示一家、群里放行，
     # 2026-10-28 定、2026-11-02 重申，不在本集）
     "request", "myrequests", "login", "renew", "govlog",
-    "report", "propose", "launch", "reconcile", "rankpush",
+    "report", "propose", "launch", "reconcile", "rankpush", "playrank",
     # P1 个人查询：群里不执行
     "bindings", "transfers", "whyplay", "wants",
     # 群里拒执行（删原消息＋提示私聊）

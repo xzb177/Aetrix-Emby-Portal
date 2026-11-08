@@ -19,8 +19,8 @@
 菜单里看不见的命令手动输入照样会被现行门禁拦下。
 
 角色分级（2026-11-07 对齐网站三级）：管理员 scope 按 admin_role 再分
-两档下发——viewer（只读审计）只拿只读子集（不含 rankpush/rain 两个
-写命令），operator/super 拿全量。下发时机除 poller 启动外，管理员
+两档下发——viewer（只读审计）只拿只读子集（不含 rankpush/playrank/
+rain 三个写命令），operator/super 拿全量。下发时机除 poller 启动外，管理员
 绑定成功时也当场补发（handlers.verify_bind_code 调
 deliver_staff_scope），不再等重启。
 """
@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 # 管理员级命令（不带斜杠）：绝不进 default 菜单，只随管理员 scope 全量下发。
 # - govlog：现行命令，治理审计日志查看（features.handle_govlog：仅私聊、
 #   仅公益服、仅 Lv.6），属特权查看，按更严一级归管理员级；
-# - kk / reconcile / rankpush：管理员命令（审计反查 / 群号对账 /
-#   观影榜手动推送），均已合入 BOT_COMMANDS 并归管理员级。
+# - kk / reconcile / rankpush / playrank：管理员命令（审计反查 /
+#   群号对账 / 观影榜手动推送 / 每日播放排行榜手动推送），均已合入
+#   BOT_COMMANDS 并归管理员级。
 #   kk 群内可执行（管理员精简卡，2026-11-01）但刻意不进下面的
 #   GROUP_COMMANDS：群菜单是给全群看的，管理员命令不挂上去，群里
 #   靠管理员手输触发，权限门禁在 handler 的 is_staff 判定（菜单
@@ -44,13 +45,14 @@ ADMIN_ONLY_COMMANDS: frozenset[str] = frozenset({
     "kk",
     "reconcile",
     "rankpush",
+    "playrank",
     "rain",
 })
 
 # 群内可执行命令（不带斜杠）：逐条对 router.dispatch 的现行群内拦截口径——
 # 不在 private_only、不在 _P1_COMMANDS、且不被群内专门拒执行。
-# 排除项（15)：private_only 10 (request/myrequests/login/renew/govlog/
-# report/propose/launch/reconcile/rankpush) + P1 私人查询 4 (bindings/
+# 排除项（16)：private_only 11 (request/myrequests/login/renew/govlog/
+# report/propose/launch/reconcile/rankpush/playrank) + P1 私人查询 4 (bindings/
 # transfers/whyplay/wants) + redeem（群内拒执行：删原消息并回私聊
 # 提示）。/chatpoints 是 /points 的手输别名（不在菜单），群内随
 # /points 口径执行合并输出，不单独登记。
@@ -86,10 +88,12 @@ def admin_commands(commands: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 
 #: 管理员级命令里的写命令（不带斜杠）：只读审计（viewer）菜单不下发。
-#: rankpush 推送含榜单奖励发放、rain 是发起红包雨，都是写操作；
-#: 其执行层另有角色门拦截（菜单可见性不是安全边界，见头注）。
+#: rankpush 推送含榜单奖励发放、playrank 是往群里发榜、rain 是发起
+#: 红包雨，都是写操作；其执行层另有角色门拦截（菜单可见性不是
+#: 安全边界，见头注）。
 WRITE_ONLY_ADMIN_COMMANDS: frozenset[str] = frozenset({
     "rankpush",
+    "playrank",
     "rain",
 })
 

@@ -213,7 +213,7 @@ _IDENTITY_COMMANDS = {
     "/govlog", "/level", "/report", "/propose", "/launch",
     "/redeem", "/lottery", "/redpacket", "/duel", "/rain",
     "/bindings", "/transfers", "/whyplay", "/wants", "/reconcile",
-    "/rankpush",
+    "/rankpush", "/playrank",
     "/kk",
 }
 
@@ -514,6 +514,7 @@ def dispatch(db, update: dict) -> None:
             "/wants": handlers.handle_wants,
             "/reconcile": handlers.handle_reconcile,
             "/rankpush": handlers.handle_rankpush,
+            "/playrank": handlers.handle_playrank,
             "/kk": handlers.handle_whois,
         }
         fn = commands.get(cmd)
@@ -543,7 +544,8 @@ def dispatch(db, update: dict) -> None:
         # 的管理员精简卡模式（is_staff 门禁 + 字段白名单，无审计痕迹），
         # 私聊仍出审计全卡；见 handlers.handle_whois 的 in_group 路径。
         private_only = {"/request", "/myrequests", "/login", "/renew", "/govlog",
-                        "/report", "/propose", "/launch", "/reconcile", "/rankpush"}
+                        "/report", "/propose", "/launch", "/reconcile", "/rankpush",
+                        "/playrank"}
         if cmd in private_only and in_group:
             _reply_private_only(db, chat_id, msg)
             return
