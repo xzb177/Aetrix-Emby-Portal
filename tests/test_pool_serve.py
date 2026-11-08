@@ -4,8 +4,9 @@
 钉死：
 - PlaybackInfo：未绑用户 + ready 池副本 → 下发池副本免凭证直链
   （usercontent + 空头），响应里绝不出现共享原件 fid；授权限失败
-  回落 alt=media + 贡献者令牌头（绝不下发 SA 令牌）；授权限与令牌
-  都失败 → 保留本站 /stream（由取流端点现场裁决），不记 H1。
+  → 不下发直链、保留本站 /stream（由取流端点现场裁决），响应里
+  任何位置都不许出现贡献者成员令牌（GA-030：授权失败就不播，
+  绝不把成员令牌发给观众）；未下发直链不记 H1。
 - quota 改道：探测判额度页时，后路关 → 剥清单 + NoCompatibleStream
   明示；后路开 → 保留 /stream（取流时走贡献者令牌中继）。
 - 成功下发记账：pool_play_events 落一条原始事件（H1）、
@@ -559,8 +560,16 @@ def test_playbackinfo_pool_serve_usercontent(client, free_token, seed):
         db.close()
 
 
-def test_playbackinfo_pool_serve_alt_media_fallback(
+def test_playbackinfo_pool_serve_auth_fail_no_token_fallback(
         client, free_token, seed, monkeypatch):
+    """GA-030：授 anyone-reader 失败 → 不下发直链，成员令牌绝不进响应。
+
+    旧行为（已废止）：回落 alt=media + 贡献者令牌头，把成员令牌
+    发给未绑陌生观众，观众在令牌有效期内可冒成员读其整盘。
+    新口径（用户 2026-11-08 裁定选①）：授权失败就不播——保留
+    本站 /stream 由取流端点现场裁决，响应任何位置不许出现成员
+    令牌，未下发直链不记 H1。本用例由旧回落用例改口径而来。
+    """
     from backend.emby_server import drive_share
     monkeypatch.setattr(
         drive_share, "ensure_shared", lambda fid, tok: "failed")
@@ -570,16 +579,43 @@ def test_playbackinfo_pool_serve_alt_media_fallback(
     finally:
         db.close()
     body = _playbackinfo(client, free_token, seed["movie"])
-    assert ORIG_FID not in str(body)
+    text = str(body)
+    assert ORIG_FID not in text
+    # 成员令牌（fixture 里取得到）绝不许出现在响应任何位置
+    assert MEMBER_TOKEN not in text
     src = body["MediaSources"][0]
-    assert "alt=media" in src["DirectPlayUrl"]
-    assert POOL_FID in src["DirectPlayUrl"]
-    # 回落头里是贡献者令牌，绝不是 SA 令牌
-    assert src["RequiredHttpHeaders"] == {
-        "Authorization": f"Bearer {MEMBER_TOKEN}"}
+    assert "alt=media" not in (src.get("DirectPlayUrl") or "")
+    assert "usercontent" not in (src.get("DirectPlayUrl") or "")
+    assert "stream" in (src.get("DirectPlayUrl") or "")
+    assert MEMBER_TOKEN not in str(src.get("RequiredHttpHeaders"))
+    # 未下发直链 → 本次不记 H1（与令牌也取不到时同口径）
     db = SessionLocal()
     try:
-        assert len(_play_events(db)) == 1
+        assert _play_events(db) == []
+    finally:
+        db.close()
+
+
+def test_apply_poolcopy_direct_auth_fail_returns_false_no_token(
+        seed, monkeypatch):
+    """GA-030 单元口径：_apply_poolcopy_direct 授权限失败必须返回
+    False 且一个字都不许改 source——哪怕成员令牌取得到。"""
+    from backend.emby_server import api as _api
+    monkeypatch.setattr(
+        tv, "ensure_variant_copy_public",
+        lambda db_, variant, fid: False)
+    db = SessionLocal()
+    try:
+        variant = SimpleNamespace(
+            id=1, owner_ref=str(seed["member_id"]),
+            variant_drive_id=f"pooldrive:{seed['member_id']}")
+        source = {"DirectPlayUrl": "http://x/stream",
+                  "RequiredHttpHeaders": {}}
+        assert _api._apply_poolcopy_direct(
+            db, variant, source, POOL_FID) is False
+        assert source == {"DirectPlayUrl": "http://x/stream",
+                          "RequiredHttpHeaders": {}}
+        assert MEMBER_TOKEN not in str(source)
     finally:
         db.close()
 

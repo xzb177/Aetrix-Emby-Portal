@@ -879,12 +879,15 @@ def reconcile_dead_pool_copy(db: Session, variant) -> dict:
 
 
 def pool_member_access_token(db: Session, member_id) -> str:
-    """成员绑定令牌（池播出回落/中继专用口）。
+    """成员绑定令牌（池中继专用口，绝不下发给观众）。
 
     成员行 → 绑定行 → 绑定级令牌口（drive_oauth
     .get_binding_drive_access_token，与 BYOS 中继同源）。只许取
     成员自己绑定的令牌：成员不存在、绑定缺失/非 active、令牌取
     不到一律回 ""，永不抛异常，绝不回落到 SA 令牌或观众令牌。
+    本口只许服务端内部取流（video_stream 的贡献者令牌中继腿）
+    使用；把返回值写进任何观众可见响应（PlaybackInfo 的
+    RequiredHttpHeaders 等）即 GA-030 泄漏，已按用户裁定禁止。
     """
     try:
         member = (db.query(em.PoolMember)

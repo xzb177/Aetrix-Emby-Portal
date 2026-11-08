@@ -1311,14 +1311,16 @@ def _apply_usercopy_direct(db, user, source, file_id) -> bool:
 def _apply_poolcopy_direct(db, variant, source, file_id) -> bool:
     """公共池副本直链下发（goal-33 PR-3，design §5.1 第 10 步）。
 
-    主形态：先按变体 owner 用贡献者（成员）绑定令牌给池副本授
+    唯一形态：先按变体 owner 用贡献者（成员）绑定令牌给池副本授
     anyone-reader（transfer_variant.ensure_variant_copy_public），
     授成发免凭证 usercontent 地址 + 空头（与用户副本同形态，
-    SenPlayer 不发头也能播）。授权限失败回落 alt=media + 贡献者
-    令牌头（design §5.1 定版）：令牌只许是成员自己绑定的令牌，
-    绝不下发 SA 令牌、绝不换共享原件 fid。两路都失败返回 False，
-    调用方保留本站 /stream 地址、由 video_stream 现场裁决。
-    永不抛异常。
+    SenPlayer 不发头也能播）。授权限失败返回 False、一个字不改
+    source：调用方保留本站 /stream 地址、由 video_stream 现场
+    裁决，绝不下发直链（GA-030，用户 2026-11-08 裁定：授权失败
+    就不播）。成员令牌绝不许写进响应——旧回落（alt=media + 成员
+    令牌头）会把贡献者令牌发给未绑陌生观众、观众可冒成员读其
+    整盘，已按裁定删除；成员令牌只许服务端内部取流（中继腿）
+    使用。绝不换共享原件 fid。永不抛异常。
     """
     try:
         if not isinstance(source, dict):
@@ -1327,31 +1329,15 @@ def _apply_poolcopy_direct(db, variant, source, file_id) -> bool:
         if not fid or variant is None:
             return False
         from backend.emby_server import transfer_variant as _tv
-        if _tv.ensure_variant_copy_public(db, variant, fid):
-            from backend.emby_server import drive_auth as _da
-            url = _da.drive_usercontent_download_url(fid)
-            if not url:
-                return False
-            source["DirectPlayUrl"] = url
-            source["DirectStreamUrl"] = url
-            source["RequiredHttpHeaders"] = {}
-            return True
-        # 授权限失败回落：alt=media + 贡献者令牌头。
-        try:
-            member_id = int(getattr(variant, "owner_ref", "") or "")
-        except (TypeError, ValueError):
+        if not _tv.ensure_variant_copy_public(db, variant, fid):
             return False
-        from backend.emby_server import pool_gate as _pg
-        token = _pg.pool_member_access_token(db, member_id)
-        if not token:
-            return False
-        url = _drive_alt_media_url(fid)
+        from backend.emby_server import drive_auth as _da
+        url = _da.drive_usercontent_download_url(fid)
         if not url:
             return False
         source["DirectPlayUrl"] = url
         source["DirectStreamUrl"] = url
-        source["RequiredHttpHeaders"] = {
-            "Authorization": f"Bearer {token}"}
+        source["RequiredHttpHeaders"] = {}
         return True
     except Exception:
         return False
