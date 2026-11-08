@@ -5,10 +5,13 @@
  * 成员生命周期运营面：授予候选资格、审核（批准/拒绝）、暂停/恢复、
  * 清退（可勾违规，置位后该成员违规清退期不结激励）、单盘上限覆盖，
  * 外加按条目查池副本与手动下线。池配置在「系统设置 · 公共贡献池」卡。
+ * 成员区按贡献者聚合（一人一卡、卡内逐号明细与操作）：后端逐行返回
+ * 每个盘一行，一个人贡献多个号时平铺成行看不出归属与待批准数；
+ * 卡片流式布局也避免宽表在手机上横滚 + 固定列遮挡。
  * 版式与其它页一致：PageHeader + StatTile + SectionCard，颜色只用
  * --au-* 令牌。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   AlertTriangle, Database, Flag, HardDrive, Play, RefreshCw, Users,
@@ -59,6 +62,70 @@ const REASON_LABELS: Record<string, string> = {
   contributor_exit: '贡献者退出',
   admin_eject: '管理员清退',
 }
+
+/** 卡头汇总口径：与逐行状态文案分开，用管理员口语（在池=已批准、待审=待批准）。 */
+const SUMMARY_LABELS: Record<string, string> = {
+  active: '已批准',
+  pending: '待批准',
+  candidate: '候选',
+  suspended: '已暂停',
+  exited: '已退出',
+  rejected: '已拒绝',
+  ejected: '已清退',
+}
+const SUMMARY_ORDER = [
+  'pending', 'active', 'candidate', 'suspended', 'exited', 'rejected', 'ejected',
+]
+/** 逐号行排序：待批准排最前，管理员先处理新申请。 */
+const ROW_ORDER: Record<string, number> = {
+  pending: 0, candidate: 1, active: 2, suspended: 3,
+  exited: 4, rejected: 5, ejected: 6,
+}
+
+interface ContributorGroup {
+  userId: number
+  username: string | null
+  rows: PoolMember[]
+  pendingCount: number
+  summary: string
+}
+
+/**
+ * 按贡献者聚合：后端逐行返回每个盘一行，前端按 user_id 收成一人一卡，
+ * 否则一个人贡献多个号时看不出归属、也看不出有几个待批准。
+ */
+const contributorGroups = computed<ContributorGroup[]>(() => {
+  const byUser = new Map<number, PoolMember[]>()
+  for (const m of members.value) {
+    const list = byUser.get(m.user_id)
+    if (list) list.push(m)
+    else byUser.set(m.user_id, [m])
+  }
+  const groups: ContributorGroup[] = []
+  for (const [userId, rows] of byUser) {
+    const sorted = [...rows].sort((a, b) =>
+      (ROW_ORDER[a.status] ?? 9) - (ROW_ORDER[b.status] ?? 9) || a.id - b.id)
+    const counts = new Map<string, number>()
+    for (const r of sorted) counts.set(r.status, (counts.get(r.status) ?? 0) + 1)
+    const summary = SUMMARY_ORDER
+      .filter((s) => counts.has(s))
+      .map((s) => `${SUMMARY_LABELS[s]} ×${counts.get(s)}`)
+      .join(' · ')
+    groups.push({
+      userId,
+      username: sorted[0]?.username ?? null,
+      rows: sorted,
+      pendingCount: counts.get('pending') ?? 0,
+      summary,
+    })
+  }
+  // 有待批准的贡献者排最前，其余按用户名稳定排序
+  groups.sort((a, b) =>
+    b.pendingCount - a.pendingCount
+    || (a.username ?? '').localeCompare(b.username ?? '')
+    || a.userId - b.userId)
+  return groups
+})
 
 function fmtBytes(n: number | null | undefined): string {
   if (n == null) return '—'
@@ -170,7 +237,7 @@ async function editCapacity(member: PoolMember) {
   try {
     const res = await ElMessageBox.prompt(
       '填这个盘的池占用上限（字节）。清空 = 回落全局配置。',
-      `单盘上限 · ${member.username ?? member.user_id}`,
+      `单盘上限 · ${member.username ?? member.user_id} · ${member.account_label ?? '候选资格'}`,
       {
         confirmButtonText: '保存',
         cancelButtonText: '取消',
@@ -257,6 +324,7 @@ onMounted(load)
           label="待审 / 候选"
           :value="overview.members_pending + overview.members_candidate"
           :hint="`待审 ${overview.members_pending} · 候选 ${overview.members_candidate}`"
+          :tone="overview.members_pending ? 'warn' : 'plain'"
           :icon="Users"
         />
         <StatTile
@@ -280,6 +348,14 @@ onMounted(load)
         />
       </div>
 
+      <div v-if="overview.members_pending > 0" class="pool-pending-banner" role="alert">
+        <AlertTriangle :size="18" class="pool-pending-banner__icon" />
+        <p class="pool-pending-banner__text">
+          <strong>{{ overview.members_pending }} 个盘待批准</strong>
+          <span>在下方成员卡里处理：带「待批准」角标的就是新申请，逐个号批准或拒绝。</span>
+        </p>
+      </div>
+
       <SectionCard title="授予候选资格" :icon="Flag" description="给某个站内账号预批入池资格：他绑盘时走池成员上限（默认 10 个），绑定后申请会挂到这行上。">
         <div class="pool-grant">
           <el-input-number
@@ -293,58 +369,80 @@ onMounted(load)
         </div>
       </SectionCard>
 
-      <SectionCard title="成员" :icon="Users" :meta="`${members.length} 行`" flush>
-        <el-table :data="members" stripe class="pool-table">
-          <el-table-column label="贡献者" min-width="130">
-            <template #default="{ row }">
-              <div class="pool-cell-main">{{ row.username ?? '—' }}</div>
-              <div class="pool-cell-sub">#{{ row.user_id }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column label="盘" min-width="140">
-            <template #default="{ row }">
-              <div class="pool-cell-main">{{ row.account_label ?? '（未绑定）' }}</div>
-              <div class="pool-cell-sub">
-                {{ row.provider ?? '—' }}
-                <template v-if="row.binding_status"> · 绑定{{ row.binding_status === 'active' ? '正常' : '已失效' }}</template>
+      <SectionCard title="成员" :icon="Users" :meta="`${contributorGroups.length} 位贡献者 · ${members.length} 个号`" description="一人一卡：卡头是这个人一共贡献了几个号、几个待批准；每个号一行明细，操作只作用于那一个号。">
+        <div v-if="contributorGroups.length" class="pool-groups">
+          <article
+            v-for="g in contributorGroups"
+            :key="g.userId"
+            class="pool-group"
+            :class="{ 'has-pending': g.pendingCount > 0 }"
+          >
+            <header class="pool-group-head">
+              <div class="pool-group-who">
+                <span class="pool-group-name">{{ g.username ?? '—' }}</span>
+                <span class="pool-cell-sub">#{{ g.userId }}</span>
+                <span class="pool-chip">共 {{ g.rows.length }} 个号</span>
+                <span v-if="g.pendingCount > 0" class="pool-badge-pending">
+                  {{ g.pendingCount }} 个待批准
+                </span>
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" min-width="120">
-            <template #default="{ row }">
-              <span class="pool-status" :class="`is-${row.status}`">
-                {{ STATUS_LABELS[row.status] ?? row.status }}
-              </span>
+              <div class="pool-group-summary">{{ g.summary }}</div>
+            </header>
+            <div
+              v-for="row in g.rows"
+              :key="row.id"
+              class="pool-acct"
+              :class="{ 'is-pending': row.status === 'pending' }"
+            >
+              <div class="pool-acct-top">
+                <div class="pool-acct-id">
+                  <template v-if="row.binding_id != null">
+                    <span class="pool-cell-main">{{ row.account_label ?? '（未命名）' }}</span>
+                    <span class="pool-cell-sub">
+                      {{ row.provider ?? '—' }} · 绑定 #{{ row.binding_id }}
+                      <template v-if="row.binding_status"> · 绑定{{ row.binding_status === 'active' ? '正常' : '已失效' }}</template>
+                    </span>
+                  </template>
+                  <template v-else>
+                    <span class="pool-cell-main">候选资格 · 未绑盘</span>
+                    <span class="pool-cell-sub">还没绑定网盘，绑盘后申请会挂到这个号上</span>
+                  </template>
+                </div>
+                <span class="pool-status" :class="`is-${row.status}`">
+                  {{ STATUS_LABELS[row.status] ?? row.status }}
+                </span>
+              </div>
               <div v-if="row.suspended_reason" class="pool-cell-sub">
-                {{ REASON_LABELS[row.suspended_reason] ?? row.suspended_reason }}
+                暂停原因：{{ REASON_LABELS[row.suspended_reason] ?? row.suspended_reason }}
+                <template v-if="row.breaker_until"> · 熔断至 {{ fmtTime(row.breaker_until) }}</template>
               </div>
               <div v-if="row.violation_flagged" class="pool-viol">
                 违规 · {{ row.violation_reason ?? '未写原因' }}
               </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="池占用 / 上限" min-width="130">
-            <template #default="{ row }">
-              <div class="pool-cell-main">{{ fmtBytes(row.copies_bytes) }}</div>
-              <div class="pool-cell-sub">
-                上限 {{ fmtBytes(row.effective_capacity_bytes) }}{{ row.capacity_cap_bytes != null ? '（单盘覆盖）' : '' }}
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="副本" width="70" align="center">
-            <template #default="{ row }">{{ row.copies_count }}</template>
-          </el-table-column>
-          <el-table-column label="今日" min-width="120">
-            <template #default="{ row }">
-              <div class="pool-cell-sub">转存 {{ row.today_transfer_jobs }} 单 · {{ fmtBytes(row.today_transfer_bytes) }}</div>
-              <div class="pool-cell-sub">起播 {{ row.today_play_starts }} · 额度命中 {{ row.today_quota_hits }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column label="加入" min-width="110">
-            <template #default="{ row }">{{ fmtTime(row.joined_at ?? row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" min-width="230" fixed="right">
-            <template #default="{ row }">
+              <dl class="pool-acct-meta">
+                <div class="pool-meta-item">
+                  <dt>池占用 / 上限</dt>
+                  <dd>
+                    {{ fmtBytes(row.copies_bytes) }} / {{ fmtBytes(row.effective_capacity_bytes) }}{{ row.capacity_cap_bytes != null ? '（单盘覆盖）' : '' }}
+                  </dd>
+                </div>
+                <div class="pool-meta-item">
+                  <dt>副本</dt>
+                  <dd>{{ row.copies_count }} 份</dd>
+                </div>
+                <div class="pool-meta-item">
+                  <dt>今日转存</dt>
+                  <dd>{{ row.today_transfer_jobs }} 单 · {{ fmtBytes(row.today_transfer_bytes) }}</dd>
+                </div>
+                <div class="pool-meta-item">
+                  <dt>今日起播 / 额度命中</dt>
+                  <dd>{{ row.today_play_starts }} 次 · {{ row.today_quota_hits }} 次</dd>
+                </div>
+                <div class="pool-meta-item">
+                  <dt>加入</dt>
+                  <dd>{{ fmtTime(row.joined_at ?? row.created_at) }}</dd>
+                </div>
+              </dl>
               <div class="pool-actions">
                 <el-button
                   v-if="row.status === 'pending'"
@@ -354,7 +452,7 @@ onMounted(load)
                 <el-button
                   v-if="row.status === 'pending' || row.status === 'candidate'"
                   size="small" :loading="actingId === row.id"
-                  @click="confirmDo('拒绝申请', '拒绝后这行落为已拒绝，贡献者可以重新申请。', () => rejectPoolMember(row.id), '已拒绝', row.id)"
+                  @click="confirmDo('拒绝申请', '拒绝后这个号落为已拒绝，贡献者可以重新申请。', () => rejectPoolMember(row.id), '已拒绝', row.id)"
                 >拒绝</el-button>
                 <el-button
                   v-if="row.status === 'active'"
@@ -382,9 +480,9 @@ onMounted(load)
                   @click="runAction(row.id, () => clearPoolMemberViolation(row.id), '违规标志已清除')"
                 >清除违规</el-button>
               </div>
-            </template>
-          </el-table-column>
-        </el-table>
+            </div>
+          </article>
+        </div>
         <EmptyState
           v-if="!members.length"
           compact :icon="Users" title="暂无成员"
@@ -443,8 +541,10 @@ onMounted(load)
     <el-dialog v-model="ejectVisible" title="清退成员" width="440px" :close-on-click-modal="false">
       <template v-if="ejectTarget">
         <p class="pool-dialog-text">
-          清退 {{ ejectTarget.username ?? ejectTarget.user_id }} 后：成员落终态，
-          它的池副本会停发并尝试删除。清退不可恢复（重新入池要重新走申请）。
+          清退 {{ ejectTarget.username ?? ejectTarget.user_id }} 的盘
+          「{{ ejectTarget.account_label ?? '候选资格 · 未绑盘' }}」后：这个号落终态，
+          它的池副本会停发并尝试删除（该贡献者的其它号不受影响）。
+          清退不可恢复（重新入池要重新走申请）。
         </p>
         <div class="pool-eject-form">
           <el-switch v-model="ejectViolation" />
@@ -516,7 +616,141 @@ onMounted(load)
 .pool-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
+  margin-top: 10px;
+}
+/* 待批准总览横幅：有新申请时一眼可见 */
+.pool-pending-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: var(--au-warning-soft);
+  border: 1px solid var(--au-warning-border);
+  border-radius: var(--au-r-lg);
+}
+.pool-pending-banner__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--au-warning);
+}
+.pool-pending-banner__text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--au-text-2);
+}
+.pool-pending-banner__text strong {
+  color: var(--au-text);
+}
+/* 成员区：一人一卡的流式布局（不用宽表，避免手机横滚 + 固定列遮挡） */
+.pool-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.pool-group {
+  min-width: 0;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  overflow: hidden;
+}
+.pool-group.has-pending {
+  border-color: var(--au-warning-border);
+}
+.pool-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--au-border);
+}
+.pool-group-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.pool-group-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--au-text);
+  overflow-wrap: anywhere;
+}
+.pool-chip {
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--au-text-2);
+  background: var(--au-surface-3);
+  border-radius: var(--au-r-full);
+}
+.pool-badge-pending {
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--au-on-warning);
+  background: var(--au-warning);
+  border-radius: var(--au-r-full);
+}
+.pool-group-summary {
+  font-size: 12.5px;
+  color: var(--au-text-3);
+  overflow-wrap: anywhere;
+}
+.pool-acct {
+  padding: 12px 14px;
+}
+.pool-acct + .pool-acct {
+  border-top: 1px solid var(--au-border);
+}
+.pool-acct.is-pending {
+  background: var(--au-warning-soft);
+}
+.pool-acct-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.pool-acct-id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pool-acct-id .pool-cell-main,
+.pool-acct-id .pool-cell-sub {
+  overflow-wrap: anywhere;
+}
+.pool-acct-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 6px 16px;
+  margin: 10px 0 0;
+}
+.pool-meta-item {
+  min-width: 0;
+}
+.pool-meta-item dt {
+  font-size: 11.5px;
+  color: var(--au-text-4);
+}
+.pool-meta-item dd {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--au-text-2);
+  overflow-wrap: anywhere;
 }
 .pool-dialog-text {
   color: var(--au-text-2);
