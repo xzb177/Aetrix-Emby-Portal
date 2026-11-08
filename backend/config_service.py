@@ -52,6 +52,9 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "pool": config_schema.POOL_CONFIG_SCHEMA,
     # 公共池激励子家族（goal-33 PR-6）：pool_reward_* 16 键
     "pool_reward": config_schema.POOL_REWARD_CONFIG_SCHEMA,
+    # 公共池巡检子家族：闲置主动清理开关（本体 16 键已钉死，
+    # 扩键另立家族，同 pool_reward 先例）
+    "pool_janitor": config_schema.POOL_JANITOR_CONFIG_SCHEMA,
     # 上游聚合拉取/任务参数（2026-10-31 优化首批）：页大小、分页
     # 重试、心跳过期、认领轮询、进度日志、任务保留天数。
     "upstream_aggregate": config_schema.UPSTREAM_AGGREGATE_CONFIG_SCHEMA,

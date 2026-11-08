@@ -494,6 +494,14 @@ POOL_REWARD_CONFIG_SCHEMA: dict[str, tuple] = {
     "pool_reward_title_enabled": ("bool",),
 }
 
+# 巡检子家族（闲置主动清理开关，用户 2026-11-09 亲点）：本体
+# POOL_CONFIG_SCHEMA 的 16 键键集已被 PR-1 测试钉死，扩键另立
+# 家族（同 pool_reward 先例）；默认值在 pool_gate
+# .POOL_JANITOR_CONFIG_DEFAULTS，唯一消费方是 pool_janitor。
+POOL_JANITOR_CONFIG_SCHEMA: dict[str, tuple] = {
+    "pool_idle_evict_proactive_enabled": ("bool",),
+}
+
 # 上游聚合拉取参数（2026-10-31 优化 O-05 起，后续 O-01/O-02/O-03
 # 的任务参数同家族登记）：读取唯一实现在 upstream_aggregate_run /
 # upstream_aggregate_jobs，范围与读取侧钳制同口径；无行时读取侧
