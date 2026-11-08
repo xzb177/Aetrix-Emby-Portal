@@ -904,6 +904,24 @@ def _winner_display_names(
     return names
 
 
+def _winner_dm_text(round_title: str, prize_name: str, delivered: bool) -> str:
+    """中奖私聊文案（开奖直发与补发到账共用同一份，口径不分叉）。
+
+    ``round_title`` 传入前已转义；未到账文案里承诺了「请留意到账通知」，
+    补发成功后由 ``_notify_redistributed`` 用 delivered=True 这份兑现。
+    """
+    if delivered:
+        return (
+            f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了"
+            f"「{html.escape(prize_name)}」，奖励已发放到账。"
+        )
+    return (
+        f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了"
+        f"「{html.escape(prize_name)}」，奖励发放遇到问题，"
+        f"系统将自动补发，请留意到账通知。"
+    )
+
+
 def notify_draw_results(db: Session, round_id: int, winners: list, distribute_errors: list | None = None) -> dict:
     """开奖后通知：群公告 + 中奖者私聊。
 
@@ -957,7 +975,7 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
         .filter(models.LotteryRoundWinner.round_id == round_id).all()
     }
     lines: list[str] = []
-    dm_targets: list[tuple[int, str, bool]] = []
+    dm_targets: list[tuple[int, int, str, bool]] = []
     for w in winners or []:
         prize = prizes_by_id.get(w.prize_id)
         entry = entries_by_id.get(w.entry_id)
@@ -965,7 +983,7 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
             continue
         shown_name = html.escape(display_names.get(entry.id) or _mask_telegram(entry.telegram_id))
         lines.append(f"🥇 {shown_name} — {_prize_unit_text(prize)}")
-        dm_targets.append((entry.telegram_id, str(prize.name),
+        dm_targets.append((entry.telegram_id, entry.user_id, str(prize.name),
                            distributed_by_winner_id.get(w.id, False)))
 
     round_title = html.escape(str(round.title or ""))
@@ -1002,19 +1020,14 @@ def notify_draw_results(db: Session, round_id: int, winners: list, distribute_er
             db.rollback()
             logger.exception("群抽奖开奖取消公告置顶异常 round_id=%s", round_id)
 
-    for telegram_id, prize_name, delivered in dm_targets:
+    from backend import notify_prefs
+
+    for telegram_id, dm_user_id, prize_name, delivered in dm_targets:
+        # 用户偏好：关了「活动中奖类」TG 的不发私聊（群公告不受影响）。
+        if not notify_prefs.tg_allowed(db, dm_user_id, notify_prefs.CAT_LOTTERY):
+            continue
         try:
-            if delivered:
-                dm_text = (
-                    f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了"
-                    f"「{html.escape(prize_name)}」，奖励已发放到账。"
-                )
-            else:
-                dm_text = (
-                    f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了"
-                    f"「{html.escape(prize_name)}」，奖励发放遇到问题，"
-                    f"系统将自动补发，请留意到账通知。"
-                )
+            dm_text = _winner_dm_text(round_title, prize_name, delivered)
             ok, err = sender.send_message(db, telegram_id, dm_text)
             if ok:
                 result["dm_sent"] += 1
@@ -1532,10 +1545,91 @@ def pending_distribution_round_ids(db: Session, since: datetime | None = None) -
     return sorted({row.id for row in q.distinct().all()})
 
 
+def _undistributed_winner_contacts(db: Session, round_id: int) -> dict:
+    """补发前快照：本轮尚未发放的中奖者联系信息。
+
+    返回 ``{winner_id: (telegram_id, user_id, prize_name)}``，补发后用它
+    对出「这批刚到账的人」，只给他们补到账私聊。
+    """
+    rows = (
+        db.query(models.LotteryRoundWinner, models.LotteryRoundEntry,
+                 models.LotteryRoundPrize)
+        .join(models.LotteryRoundEntry,
+              models.LotteryRoundWinner.entry_id == models.LotteryRoundEntry.id)
+        .join(models.LotteryRoundPrize,
+              models.LotteryRoundWinner.prize_id == models.LotteryRoundPrize.id)
+        .filter(
+            models.LotteryRoundWinner.round_id == round_id,
+            models.LotteryRoundWinner.distributed.is_(False),
+        )
+        .all()
+    )
+    return {
+        w.id: (e.telegram_id, e.user_id, str(p.name)) for w, e, p in rows
+    }
+
+
+def _notify_redistributed(db: Session, round_id: int,
+                          pending_before: dict,
+                          summary: dict | None = None) -> int:
+    """补发到账私聊：开奖时未到账文案承诺过「请留意到账通知」，这里兑现。
+
+    只通知「补发前未发放、补发后已发放」的人；受中奖通知总开关与用户
+    「活动中奖类」偏好双重门控。发送失败只记日志，不影响补发结果。
+    """
+    if not pending_before:
+        return 0
+    if not notify_winners_enabled(db):
+        return 0
+    round_row = db.query(models.LotteryRound).filter(
+        models.LotteryRound.id == round_id).first()
+    if round_row is None:
+        return 0
+    now_distributed = {
+        w.id
+        for w in db.query(models.LotteryRoundWinner).filter(
+            models.LotteryRoundWinner.id.in_(list(pending_before)),
+            models.LotteryRoundWinner.distributed.is_(True),
+        ).all()
+    }
+    if not now_distributed:
+        return 0
+    try:
+        from backend.tg_bot import sender
+    except Exception:
+        logger.exception("群抽奖补发通知：导入 tg_bot.sender 失败")
+        return 0
+    from backend import notify_prefs
+
+    round_title = html.escape(str(round_row.title or ""))
+    sent = 0
+    for winner_id in sorted(now_distributed):
+        telegram_id, dm_user_id, prize_name = pending_before[winner_id]
+        if not notify_prefs.tg_allowed(
+                db, dm_user_id, notify_prefs.CAT_LOTTERY):
+            continue
+        try:
+            ok, err = sender.send_message(
+                db, telegram_id,
+                _winner_dm_text(round_title, prize_name, True))
+            if ok:
+                sent += 1
+            else:
+                logger.warning("群抽奖补发到账私聊失败 round_id=%s: %s",
+                               round_id, err)
+        except Exception:
+            logger.exception("群抽奖补发到账私聊异常 round_id=%s", round_id)
+    if summary is not None and sent:
+        summary["redistribute_notified"] = (
+            summary.get("redistribute_notified", 0) + sent)
+    return sent
+
+
 def retry_pending_distributions(db: Session, summary: dict | None = None) -> list[int]:
     """补发：开奖后 distribute_round 中途失败（异常或单个发奖失败）时，轮次已是 done，
     run_due_draws 的"打回 open"匹配不到任何行，未发放的中奖者永远拿不到奖。
     这里按轮次重跑 distribute_round；原子认领（distributed=False → True）保证不会重复发奖。
+    补发成功的，给中奖者补一条到账私聊（兑现开奖未到账文案的承诺）。
     """
     retried: list[int] = []
     try:
@@ -1545,6 +1639,7 @@ def retry_pending_distributions(db: Session, summary: dict | None = None) -> lis
         logger.exception("群抽奖补发扫描失败")
         return retried
     for round_id in round_ids:
+        pending_before = _undistributed_winner_contacts(db, round_id)
         try:
             res = distribute_round(db, round_id)
             retried.append(round_id)
@@ -1557,6 +1652,8 @@ def retry_pending_distributions(db: Session, summary: dict | None = None) -> lis
             logger.exception("群抽奖补发失败 round_id=%s", round_id)
             if summary is not None:
                 summary["errors"].append({"round_id": round_id, "error": str(exc)})
+            continue
+        _notify_redistributed(db, round_id, pending_before, summary)
     if summary is not None:
         summary["redistributed"] = retried
     return retried

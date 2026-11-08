@@ -58,6 +58,58 @@
             </div>
           </section>
 
+          <!-- 通知：TG 私聊偏好（站内信不受影响） -->
+          <section class="pc-group">
+            <div class="pc-gtitle">通知</div>
+            <p class="pc-gsub">只管机器人私聊这一份，站内消息照常发</p>
+            <div class="v4-card pc-rows-card">
+              <div class="pc-row-static">
+                <span class="pc-row-ic" aria-hidden="true"><Bell :size="17" /></span>
+                <span class="pc-row-name">求片到货提醒</span>
+                <button
+                  type="button"
+                  class="srv-switch"
+                  :class="{ 'is-on': notifyPrefs.seek }"
+                  :disabled="notifyLoading"
+                  role="switch"
+                  :aria-checked="notifyPrefs.seek"
+                  aria-label="求片到货提醒"
+                  @click="toggleNotifyPref('seek')"
+                ></button>
+              </div>
+              <div class="pc-row-static">
+                <span class="pc-row-ic" aria-hidden="true"><Bell :size="17" /></span>
+                <span class="pc-row-name">到期提醒</span>
+                <button
+                  type="button"
+                  class="srv-switch"
+                  :class="{ 'is-on': notifyPrefs.expiry }"
+                  :disabled="notifyLoading"
+                  role="switch"
+                  :aria-checked="notifyPrefs.expiry"
+                  aria-label="到期提醒"
+                  @click="toggleNotifyPref('expiry')"
+                ></button>
+              </div>
+              <div class="pc-row-static">
+                <span class="pc-row-ic" aria-hidden="true"><Bell :size="17" /></span>
+                <span class="pc-row-name">活动中奖通知</span>
+                <button
+                  type="button"
+                  class="srv-switch"
+                  :class="{ 'is-on': notifyPrefs.lottery }"
+                  :disabled="notifyLoading"
+                  role="switch"
+                  :aria-checked="notifyPrefs.lottery"
+                  aria-label="活动中奖通知"
+                  @click="toggleNotifyPref('lottery')"
+                ></button>
+              </div>
+              <p class="pref-note">求片到货、会员/公益资格到期、抽奖中奖这三类机器人私聊，可以分别关掉；关掉后站内消息仍会发。</p>
+              <p v-if="notifyError" class="pref-err">{{ notifyError }}<button class="v4-retry" @click="loadNotifyPrefs">重试</button></p>
+            </div>
+          </section>
+
           <!-- 账号 -->
           <section class="pc-group">
             <div class="pc-gtitle">账号</div>
@@ -77,16 +129,16 @@
 <script setup lang="ts">
 /**
  * 账号设置页（/game/account/settings）：个人中心重做后设置类功能的家。
- * 四组——安全（改密码 / 我的设备 / 登录记录）、绑定（谷歌盘管理 + 已
- * 下线绑定解绑）、展示与隐私（发现页卡片展示 / 观影碑上榜开关）、账
- * 号（退出登录）。各块逻辑都在 components/profile/ 的对应组件里（自旧
+ * 五组——安全（改密码 / 我的设备 / 登录记录）、绑定（谷歌盘管理 + 已
+ * 下线绑定解绑）、展示与隐私（发现页卡片展示 / 观影碑上榜开关）、通
+ * 知（TG 私聊三类偏好开关）、账号（退出登录）。各块逻辑都在 components/profile/ 的对应组件里（自旧
  * 账号页原样抽出，行为口径不变）；本页只留上榜开关与退出登录。
  * 带 #my-drive 锚点进来（旧深链 / 播放器方案弹窗）时，等绑定组显示后
  * 自动展开谷歌盘并滚到位。
  */
 import { nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronLeft, Eye, Lock, LogOut } from 'lucide-vue-next'
+import { Bell, ChevronLeft, Eye, Lock, LogOut } from 'lucide-vue-next'
 import PcEntryRow from '@/components/profile/PcEntryRow.vue'
 import ChangePasswordModal from '@/components/profile/ChangePasswordModal.vue'
 import DevicesEntry from '@/components/profile/DevicesEntry.vue'
@@ -149,6 +201,49 @@ async function toggleLeaderboard() {
   }
 }
 
+// ── TG 私聊通知偏好（只管机器人私聊，站内信不受影响） ──
+type NotifyPrefKey = 'seek' | 'expiry' | 'lottery'
+const notifyPrefs = ref<Record<NotifyPrefKey, boolean>>({
+  seek: true, expiry: true, lottery: true,
+})
+const notifyLoading = ref(false)
+const notifyError = ref('')
+
+async function loadNotifyPrefs() {
+  notifyLoading.value = true
+  notifyError.value = ''
+  try {
+    const d = await panelApi.notifyPrefsGet()
+    notifyPrefs.value = {
+      seek: d.seek !== false,
+      expiry: d.expiry !== false,
+      lottery: d.lottery !== false,
+    }
+  } catch (e) {
+    notifyError.value = humanizeError(e)
+  } finally {
+    notifyLoading.value = false
+  }
+}
+async function toggleNotifyPref(key: NotifyPrefKey) {
+  if (notifyLoading.value) return
+  const next = !notifyPrefs.value[key]
+  notifyLoading.value = true
+  try {
+    const d = await panelApi.notifyPrefsSet({ [key]: next })
+    notifyPrefs.value = {
+      seek: d.seek !== false,
+      expiry: d.expiry !== false,
+      lottery: d.lottery !== false,
+    }
+    toast.success(next ? '已打开这类私聊通知' : '已关掉这类私聊通知')
+  } catch (e) {
+    toast.error(humanizeError(e))
+  } finally {
+    notifyLoading.value = false
+  }
+}
+
 /** 退出登录：与顶栏头像菜单同款动作——清登录态后回登录页，不另写一套 */
 async function handleLogout() {
   await userStore.logout()
@@ -157,6 +252,7 @@ async function handleLogout() {
 
 onMounted(() => {
   void loadPrivacy()
+  void loadNotifyPrefs()
 })
 </script>
 

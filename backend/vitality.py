@@ -238,6 +238,40 @@ def _lock_user_row(db: Session, user_id: int) -> None:
         db.execute(text("UPDATE web_users SET id = id WHERE id = :id"), {"id": user_id})
 
 
+def notify_vitality_change(db: Session, user_id: int, kind: str) -> bool:
+    """活力归零（暂停）/ 恢复（解封）时私聊本人一次（2026-11-08 新增）。
+
+    只发 TG 这一份：受「到期提醒类」用户偏好管；没绑 TG 直接跳过。
+    best-effort：任何失败只记日志，绝不影响活力值本身的事务。
+    kind: "suspended"（归零）/ "recovered"（从 0 恢复到 >0）。
+    """
+    try:
+        from backend import notify_prefs
+
+        user = db.query(models.WebUser).filter(
+            models.WebUser.id == user_id).first()
+        if user is None or not getattr(user, "telegram_id", None):
+            return False
+        if not notify_prefs.tg_allowed(db, user_id, notify_prefs.CAT_EXPIRY):
+            return False
+        if kind == "suspended":
+            text = ("⏸️ 活力值已归零，公益播放已暂停\n"
+                    "签到、观影或用积分都能把活力补回来，补回来后会自动恢复播放。")
+        elif kind == "recovered":
+            text = ("▶️ 活力值已恢复，公益播放已解封\n"
+                    "可以继续正常观看了。")
+        else:
+            return False
+        from backend.tg_bot import sender
+
+        ok, _err = sender.send_message(db, int(user.telegram_id), text)
+        return bool(ok)
+    except Exception:
+        logger.warning("活力状态通知失败 user=%s kind=%s", user_id, kind,
+                       exc_info=True)
+        return False
+
+
 def _add_vitality(db: Session, user_id: int, delta: int, reason: str) -> int:
     """原子增减活力值：单条 UPDATE 完成加减 + 钳制到 [0, max]，返回钳制后的值。
 
@@ -308,6 +342,7 @@ def _grant_free_vitality(db: Session, user_id: int, amount: int, caller: str) ->
     前者已发放的记录，不会超发（修复 TOCTOU）。
     """
     limit = int(get_vitality_config(db).get("daily_gain_limit", 0) or 0)
+    was_zero = False
     try:
         # 先锁行：把"查今日免费获取"和"发放"包进同一事务，避免并发超发
         _lock_user_row(db, user_id)
@@ -316,6 +351,7 @@ def _grant_free_vitality(db: Session, user_id: int, amount: int, caller: str) ->
         if not user or not getattr(user, "is_welfare", False):
             db.rollback()
             return 0
+        was_zero = int(getattr(user, "vitality", 0) or 0) <= 0
         if limit > 0:
             gained = get_today_free_gain(db, user_id)
             remaining = limit - gained
@@ -329,6 +365,9 @@ def _grant_free_vitality(db: Session, user_id: int, amount: int, caller: str) ->
         db.rollback()
         logger.exception("%s failed for user %s", caller, user_id)
         return 0
+    # 从 0 恢复：事务外补一条解封通知（失败不影响发放结果）
+    if was_zero and amount > 0:
+        notify_vitality_change(db, user_id, "recovered")
     return amount
 
 
@@ -477,6 +516,7 @@ def daily_deduct(db: Session) -> dict:
             logger.warning("签到日免日耗：跳过集合计算失败，本轮不跳过", exc_info=True)
             skip_ids = set()
     exempt_ids = _whitelist_exempt_ids(db)
+    zero_uids: list[int] = []  # 本轮新归零的用户，全部批次提交后统一发暂停通知
     last_id = 0
     # 键集分页（id > last_id）而不是 offset：过滤条件是 vitality > 0，本批扣到 0 的用户
     # 会从结果集里消失，offset 继续往后跳就会整批漏扣后面的用户。
@@ -488,6 +528,7 @@ def daily_deduct(db: Session) -> dict:
                 .order_by(models.WebUser.id).limit(_DEDUCT_BATCH).all())
         if not rows:
             break
+        batch_zero: list[int] = []
         for (uid,) in rows:
             if uid in exempt_ids:
                 skipped_whitelist += 1
@@ -503,6 +544,7 @@ def daily_deduct(db: Session) -> dict:
                 deducted += 1
                 if new_v <= 0:
                     suspended += 1
+                    batch_zero.append(uid)
             except Exception:
                 failed += 1
                 logger.exception("vitality daily_deduct failed for user %s", uid)
@@ -513,7 +555,12 @@ def daily_deduct(db: Session) -> dict:
             db.rollback()
             logger.exception("vitality daily_deduct batch commit failed, stop")
             break
+        zero_uids.extend(batch_zero)
         last_id = rows[-1][0]
+    # 归零通知在扣减全部落库后发：通知失败不影响扣减结果，也不重发
+    #（下轮 vitality>0 过滤天然挡住已归零用户，不会重复通知）。
+    for uid in zero_uids:
+        notify_vitality_change(db, uid, "suspended")
     return {"deducted": deducted, "suspended": suspended, "failed": failed,
             "skipped_checkin": skipped_checkin,
             "skipped_whitelist": skipped_whitelist}

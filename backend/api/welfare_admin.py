@@ -311,9 +311,11 @@ WELFARE_CONFIG_KEYS = {
     "bot_playrank_series_enabled": "true",
     "bot_playrank_movies_enabled": "true",
     "bot_playrank_poster_enabled": "true",
-    # 主动私聊提醒：求片到货 / 转存终态，默认关；同一人合并窗口默认 60 秒
-    "tg_notify_store_arrival_enabled": "false",
-    "tg_notify_transfer_done_enabled": "false",
+    # 主动私聊提醒：求片到货 / 转存终态，默认开（2026-11-08 私聊通报
+    # 优化批）；同一人合并窗口默认 60 秒。新求片提醒管理员默认开。
+    "tg_notify_store_arrival_enabled": "true",
+    "tg_notify_transfer_done_enabled": "true",
+    "tg_notify_new_request_enabled": "true",
     "tg_notify_merge_window_sec": "60",
     # 频道马甲治理＋退群处置（2026-10-30 借鉴 embyboss 第 1 项；读侧
     # tg_bot.policy，缺省与 policy.DEFAULTS 逐字对齐）

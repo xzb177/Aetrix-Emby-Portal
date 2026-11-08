@@ -1,6 +1,7 @@
 """Telegram 主动私聊提醒：求片到货、转存终态。
 
-两件事分开开关，默认关（system_configs，走公益配置注册表）：
+两件事分开开关，默认开（system_configs，走公益配置注册表；
+2026-11-08 私聊通报优化批由默认关改默认开）：
 
 - ``tg_notify_store_arrival_enabled``：入库/扫描对上求片（判定与
   ``find_library_item`` 一致）时，把处理中的求片行标成 completed，
@@ -12,10 +13,14 @@
 
 关着的时候：不发、不写已推记录。
 
-到货和转存成功只发纯文字，不带按钮，也不造播放链接。转存失败
-（终态，不是单内重试）说人话原因；仓库里没有用户可调用的重试接口，
-所以只给已有的 ``/whyplay`` 入口（按钮复用 ``menu:whyplay``），
-不新造重试口。
+到货消息带一个「去看看」链接按钮（站内没有条目详情页，落到
+``site_url`` 下的「我的求片/想看」页；``site_url`` 没配时不带按钮）。
+转存失败（终态，不是单内重试）说人话原因；仓库里没有用户可调用的
+重试接口，所以只给已有的 ``/whyplay`` 入口（按钮复用 ``menu:whyplay``），
+不新造重试口；两个按钮可以并存（whyplay 一行、去看看一行）。
+
+用户级偏好：发送前查「求片到货类」TG 偏好（backend/notify_prefs.py），
+关了的用户整批标 muted 静默丢弃，站内信不受影响。
 
 同一用户在合并窗口（``tg_notify_merge_window_sec``，默认 60 秒）里
 的多条收成一条。合并消息只列文字；里面有失败项时才挂「为什么播不了」
@@ -134,8 +139,8 @@ def _is_true(raw) -> bool:
     return str(raw or "").strip().lower() in _TRUE
 
 
-def _config_on(db: Session, key: str) -> bool:
-    """缺行、空值、读失败都当关。关 = 不发、不写已推记录。"""
+def _config_on(db: Session, key: str, default: bool = False) -> bool:
+    """缺行按 ``default``；显式写了值按值走。关 = 不发、不写已推记录。"""
     try:
         row = (
             db.query(models.SystemConfig)
@@ -144,18 +149,19 @@ def _config_on(db: Session, key: str) -> bool:
         )
     except Exception:
         logger.warning("主动提醒开关读取失败 key=%s", key, exc_info=True)
-        return False
+        return default
     if row is None:
-        return False
+        return default
     return _is_true(row.value)
 
 
 def store_arrival_enabled(db: Session) -> bool:
-    return _config_on(db, KEY_STORE)
+    # 2026-11-08 私聊通报优化批：到货类统一默认开（缺行=开）。
+    return _config_on(db, KEY_STORE, default=True)
 
 
 def transfer_done_enabled(db: Session) -> bool:
-    return _config_on(db, KEY_TRANSFER)
+    return _config_on(db, KEY_TRANSFER, default=True)
 
 
 def merge_window_sec(db: Session) -> int:
@@ -245,10 +251,15 @@ def _bound_user_ids(db: Session, user_ids: set[int]) -> list[int]:
     return [row[0] for row in rows]
 
 
-def note_store_request_completed(db: Session, request_row) -> int:
+def note_store_request_completed(db: Session, request_row,
+                                 voter_ids=None) -> int:
     """求片行已经是 completed 时，给求片人和附议人各入队一次。
 
     开关关着直接返回 0，不写已推记录。调用方负责提交。
+
+    ``voter_ids``：None（默认）= 附议人从 MovieRequestVote 全量派生；
+    显式传名单（含空名单）= 只用该名单——管理员手动标记入库的调用方
+    先按 media_seek 的「通知附议者」门控筛过再传进来，避免两处口径打架。
     """
     if not store_arrival_enabled(db):
         return 0
@@ -261,12 +272,14 @@ def note_store_request_completed(db: Session, request_row) -> int:
     owner = getattr(request_row, "user_id", None)
     if owner is not None:
         user_ids.add(int(owner))
-    votes = (
-        db.query(models.MovieRequestVote.user_id)
-        .filter(models.MovieRequestVote.request_id == request_id)
-        .all()
-    )
-    user_ids.update(int(row[0]) for row in votes if row[0] is not None)
+    if voter_ids is None:
+        votes = (
+            db.query(models.MovieRequestVote.user_id)
+            .filter(models.MovieRequestVote.request_id == request_id)
+            .all()
+        )
+        voter_ids = [row[0] for row in votes]
+    user_ids.update(int(uid) for uid in voter_ids if uid is not None)
     title = (getattr(request_row, "movie_name", "") or "").strip() or "这部片"
     claimed = 0
     for user_id in _bound_user_ids(db, user_ids):
@@ -397,10 +410,12 @@ def _line(row) -> str:
     return f"《{title}》没转成：{reason}"
 
 
-def render_notice(rows: list) -> tuple[str, dict | None]:
-    """拼一条合并消息。没有失败项就不带 reply_markup。
+def render_notice(rows: list, watch_url: str = "") -> tuple[str, dict | None]:
+    """拼一条合并消息。
 
     失败项排在前面，截断时人话原因不容易被「还有 N 部」吃掉。
+    按钮：有失败项挂 whyplay 行；``watch_url`` 非空且含到货/转存成功行时
+    再加一行「去看看」。两者并存时 whyplay 在前、去看看在后。
     """
     ordered = sorted(
         rows,
@@ -426,8 +441,32 @@ def render_notice(rows: list) -> tuple[str, dict | None]:
         text = "\n".join(lines)
     if len(text) > TEXT_LIMIT:
         text = text[: TEXT_LIMIT - 1] + "…"
-    markup = WHYPLAY_MARKUP if has_fail else None
+    buttons = []
+    if has_fail:
+        buttons.append(WHYPLAY_MARKUP["inline_keyboard"][0])
+    has_arrival = any(
+        row.kind in (KIND_ARRIVAL, KIND_OK) for row in ordered)
+    if watch_url and has_arrival:
+        buttons.append([{"text": "去看看", "url": watch_url}])
+    markup = {"inline_keyboard": buttons} if buttons else None
     return text, markup
+
+
+def _watch_url(db: Session) -> str:
+    """「去看看」的落点：站内没有条目详情页，统一落「我的求片/想看」页。
+
+    ``site_url`` 没配时返回空串＝不带按钮（不猜域名）。
+    """
+    try:
+        from backend.integrations import store as _store
+
+        # 直查库不用 TTL 热缓存：发送路径低频，且改完 site_url 应立即生效
+        base = str(_store.read_value(db, "site_url", "") or "").strip()
+    except Exception:
+        return ""
+    if not base:
+        return ""
+    return base.rstrip("/") + "/want"
 
 
 def _permanent_failure(err: str | None) -> bool:
@@ -530,6 +569,18 @@ def _flush_user(db: Session, user_id: int, now: datetime, window: int,
         if row.kind in (KIND_OK, KIND_FAIL) and not transfer_on:
             continue
         allowed.append(row)
+    if allowed:
+        # 用户偏好：关了「求片到货类」TG 的用户，这批整批静默丢弃
+        #（标 muted，不补发；站内信不受影响）。
+        from backend import notify_prefs
+
+        if not notify_prefs.tg_allowed(
+                db, user_id, notify_prefs.CAT_SEEK):
+            for row in allowed:
+                row.status = "muted"
+                row.updated_at = now
+            db.commit()
+            return 0
     ready = _eligible(allowed, now)
     if not ready:
         return 0
@@ -572,7 +623,7 @@ def _flush_user(db: Session, user_id: int, now: datetime, window: int,
             row.updated_at = now
         db.commit()
         return 0
-    text, markup = render_notice(rows)
+    text, markup = render_notice(rows, watch_url=_watch_url(db))
     ok, err = _send(db, int(chat_id), text, markup)
     if ok:
         for row in rows:

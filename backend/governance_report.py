@@ -15,8 +15,9 @@
 与设计稿的出入（有意为之，PR body 有说明）：
 - 复核不同意达 quorum＋阈值时，举报行以 review_rejected 关闭（不进终审），
   避免无结论报告永久挂起；设计稿只定义了同意侧升级， disagreements 侧未定义。
-- 终审结果通过列表／详情接口对举报人与复核员可见；v1 不另建推送通道
-  （全仓无可复用的举报通知发送器，media_seek 仅有通知开关、无发送实现）。
+- 终审结果通过列表／详情接口对举报人与复核员可见。2026-11-08 私聊
+  通报优化批补上推送：终审与复核关闭后经 notifications 服务通知举报人
+  （站内信＋TG），兑现 /report 回执「复核有结果会更新你」的承诺。
 - 可调参数走 SystemConfig 键（缺省／脏值回设计稿推荐值）；管理端字段暴露
   留给 Step 4 的管理端工具单，本单不在 admin UI 加字段。
 
@@ -27,6 +28,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import case, func
@@ -34,6 +36,8 @@ from sqlalchemy.orm import Session
 
 from backend import governance, models
 from backend.subscriptions import is_free_realm
+
+logger = logging.getLogger(__name__)
 
 REPORT_TARGET_MEDIA_SEEK = "media_seek"
 REPORT_REASONS = ("spam", "duplicate", "violation")
@@ -411,7 +415,59 @@ def cast_review_vote(
             report.status = REPORT_STATUS_REVIEW_REJECTED
     db.commit()
     db.refresh(report)
+    if report.status == REPORT_STATUS_REVIEW_REJECTED:
+        # 复核关闭也是终局：通知举报人（终审路径在 admin_decide 里发）
+        _notify_report_result(db, report, "rejected")
     return _report_dict(report, stats)
+
+
+def _notify_report_result(db: Session, report, outcome: str,
+                          admin_id: int | None = None) -> None:
+    """举报有了终局后通知举报人（站内信 + TG，2026-11-08 补承诺落点）。
+
+    /report 的回执承诺过「复核有结果会更新你」，此前没有发送点。
+    outcome: "accepted"（终审受理）/ "rejected"（终审驳回或复核关闭）。
+    决定已落库后调用；通知走 quiet 守卫、失败只记日志，不影响决定本身。
+    本模块的调用方都在同步上下文，用 asyncio.run 跑完（同站内既有范式）。
+    """
+    import asyncio
+
+    from backend.notifications import AdminEvent, notify_admin_event_quiet
+
+    target_name = "该内容"
+    if report.target_type == REPORT_TARGET_MEDIA_SEEK:
+        seek = (
+            db.query(models.MovieRequest)
+            .filter(models.MovieRequest.id == report.target_id)
+            .first()
+        )
+        if seek is not None and seek.movie_name:
+            target_name = f"《{seek.movie_name}》"
+    if outcome == "accepted":
+        title = "举报处理结果：已受理"
+        content = (f"你举报的{target_name}已经复核完成：举报成立，已受理。"
+                   "感谢你帮忙维护片库秩序。")
+    else:
+        title = "举报处理结果：未受理"
+        content = (f"你举报的{target_name}已经复核完成：这次没有受理。"
+                   "感谢你的反馈。")
+    note = (getattr(report, "admin_note", None) or "").strip()
+    if note:
+        content += f"\n处理备注：{note}"
+    try:
+        asyncio.run(notify_admin_event_quiet(
+            event_type=AdminEvent.REPORT_DECIDED,
+            log_ctx=f"governance_report_decided report_id={report.id}",
+            user_id=report.reporter_id,
+            title=title,
+            content=content,
+            related_id=report.id,
+            from_admin_id=admin_id,
+            channels=["in_app", "telegram"],
+        ))
+    except Exception:
+        logger.warning("举报结果通知失败 report=%s", report.id,
+                       exc_info=True)
 
 
 def admin_list_reports(
@@ -499,6 +555,10 @@ def admin_decide(
         suspension = _maybe_auto_suspend(db, report.reporter_id, now)
     if suspension is not None:
         out["auto_suspension"] = suspension
+    _notify_report_result(
+        db, report,
+        "accepted" if decision == REPORT_STATUS_ACCEPTED else "rejected",
+        admin_id=admin.id)
     return out
 
 

@@ -1513,6 +1513,12 @@ async def update_media_seek(
     # 用户看到的通知用中文状态与「（全季）」这样的范围说明，不把英文状态码和季混在一起
     status_text = {"approved": "已批准", "rejected": "已拒绝"}.get(status_value, status_value)
     season_text = media_seek.season_label(info["season"])
+    # 私聊通报优化批：审批结果纳入用户「求片到货类」TG 偏好——关了就
+    # 只发站内信，TG 那份不发（偏好只管 TG，见 backend/notify_prefs.py）。
+    from backend import notify_prefs as _notify_prefs
+
+    _channels = ["in_app", "telegram"] if _notify_prefs.tg_allowed(
+        db, info["user_id"], _notify_prefs.CAT_SEEK) else ["in_app"]
     # r46：审批已落库，通知走 quiet 守卫（失败只记日志，不抛 500）。
     await notify_admin_event_quiet(
         event_type=event_map.get(status_value, "media_seek.updated"),
@@ -1525,7 +1531,7 @@ async def update_media_seek(
                  + (f"\n备注：{note}" if note else "")),
         related_id=request_id,
         from_admin_id=admin_id,
-        channels=["in_app", "telegram"],
+        channels=_channels,
     )
     return {"success": True, "message": "求片状态更新成功"}
 
@@ -1558,6 +1564,20 @@ def _mark_media_seek_sync(db: Session, admin_id: int, request_id: int, force: bo
     voter_list = []
     if media_seek.notify_voters_enabled(db):
         voter_list = media_seek.voter_ids(db, request_id, exclude_user_id=media_request.user_id)
+    # 私聊通报优化批：TG 那份改走 proactive 到货管道——与自动到货同一
+    # 开关家族、同一合并窗口与去重（此前是端点里无条件直发，会与自动
+    # 到货双发）。附议人用上面已过「通知附议者」门控的名单。入队随本次
+    # commit 一起落库；失败只记日志，不挡标记入库。
+    try:
+        from backend.tg_bot import proactive as _proactive
+
+        _proactive.note_store_request_completed(
+            db, media_request, voter_ids=voter_list)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "标记入库到货入队失败 request=%s", request_id, exc_info=True)
     _audit(db, admin_id, "mark_media_seek_in_library", "media_seek", request_id,
            {"matched": match is not None, "force": force,
             "item_type": getattr(match, "item_type", None)})
@@ -1592,6 +1612,9 @@ async def mark_media_seek_in_library(
     info = await run_in_threadpool(_mark_media_seek_sync, db, admin_id, request_id, force)
 
     season_text = media_seek.season_label(info["season"])
+    # 私聊通报优化批：这里只发站内信；TG 那份已在 _mark_media_seek_sync
+    # 里走 proactive 到货管道（同一开关/合并/去重，并受用户 TG 偏好管），
+    # 再带 telegram 渠道会双发。
     # r46：入库标记已落库，主通知走 quiet 守卫（失败只记日志，不抛 500）。
     await notify_admin_event_quiet(
         event_type=AdminEvent.MEDIA_SEEK_COMPLETED,
@@ -1603,9 +1626,9 @@ async def mark_media_seek_in_library(
                  + ("已入库，可以直接观看了。" if info["matched"] else "已入库（管理员已确认）。")),
         related_id=request_id,
         from_admin_id=admin_id,
-        channels=["in_app", "telegram"],
+        channels=["in_app"],
     )
-    # v2：附议者也收到入库通知（开关可关；失败不影响主流程）
+    # v2：附议者也收到入库通知（站内信；TG 份同样走 proactive 管道）
     # r46：内联 try/except 并入统一 quiet 守卫（横切只许一套）。
     for voter_id in info.get("voter_ids") or []:
         await notify_admin_event_quiet(
@@ -1618,7 +1641,7 @@ async def mark_media_seek_in_library(
                      + "已入库，可以直接观看了。"),
             related_id=request_id,
             from_admin_id=admin_id,
-            channels=["in_app", "telegram"],
+            channels=["in_app"],
         )
     return {
         "success": True,

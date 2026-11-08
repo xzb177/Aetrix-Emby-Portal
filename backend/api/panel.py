@@ -1027,6 +1027,46 @@ def set_privacy(
     return _ok({"show_on_leaderboard": bool(user.show_on_leaderboard)})
 
 
+class NotifyPrefsIn(BaseModel):
+    # 三类 TG 私聊通知偏好；None = 本次不改这一类
+    seek: bool | None = None
+    expiry: bool | None = None
+    lottery: bool | None = None
+
+
+@router.get("/notify-prefs")
+def get_notify_prefs(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """我的通知偏好：三类 TG 私聊开关（只管 Telegram，站内信照常）"""
+    _guard()
+    db.refresh(user)
+    from backend import notify_prefs
+
+    return _ok(notify_prefs.get_prefs(user))
+
+
+@router.put("/notify-prefs")
+def set_notify_prefs(
+    payload: NotifyPrefsIn,
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """更新 TG 私聊通知偏好（只更新本次传入的类别）"""
+    _guard()
+    from backend import notify_prefs
+
+    for category in notify_prefs.CATEGORIES:
+        value = getattr(payload, category)
+        if value is None:
+            continue
+        setattr(user, notify_prefs.field_for(category), bool(value))
+    db.commit()
+    db.refresh(user)
+    return _ok(notify_prefs.get_prefs(user))
+
+
 # ==================== 7. GET /api/panel/server ====================
 
 @router.get("/server")

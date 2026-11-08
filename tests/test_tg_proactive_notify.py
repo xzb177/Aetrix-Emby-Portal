@@ -1,8 +1,9 @@
 """Telegram 主动私聊：求片到货、转存终态。
 
-不连生产库。开关默认关：不发、不写已推记录。开着时求片人与附议人
-各收一次，重复触发不重发，没绑 Telegram 的跳过。到货和转存成功
-只有文字、没有按钮；失败说人话并给已有的 /whyplay 入口。
+不连生产库。开关默认开（2026-11-08 私聊通报优化批；此前默认关）：
+显式关着时不发、不写已推记录。开着时求片人与附议人各收一次，
+重复触发不重发，没绑 Telegram 的跳过。到货消息可带「去看看」按钮；
+失败说人话并给已有的 /whyplay 入口。
 """
 
 import os
@@ -143,9 +144,10 @@ def _notices(db):
         models.TgProactiveNotice.id).all()
 
 
-def test_config_keys_default_off():
-    assert welfare_admin.WELFARE_CONFIG_KEYS[proactive.KEY_STORE] == "false"
-    assert welfare_admin.WELFARE_CONFIG_KEYS[proactive.KEY_TRANSFER] == "false"
+def test_config_keys_default_on():
+    # 2026-11-08 起两个到货开关默认开（缺行=开，默认值表同步 true）
+    assert welfare_admin.WELFARE_CONFIG_KEYS[proactive.KEY_STORE] == "true"
+    assert welfare_admin.WELFARE_CONFIG_KEYS[proactive.KEY_TRANSFER] == "true"
     assert welfare_admin.WELFARE_CONFIG_KEYS[proactive.KEY_WINDOW] == "60"
     from backend import config_schema
     assert config_schema.WELFARE_CONFIG_SCHEMA[proactive.KEY_STORE] == ("bool",)
@@ -154,6 +156,9 @@ def test_config_keys_default_off():
 
 
 def test_switch_off_does_not_send_or_record(db, sent):
+    # 默认已改开：本用例验「显式关」语义，先把两个开关写成 false
+    _cfg(db, proactive.KEY_STORE, "false")
+    _cfg(db, proactive.KEY_TRANSFER, "false")
     owner = _user(db, "owner", telegram_id=1001)
     item = _library_item(db, "t1", "到货片")
     row = _request(db, owner, "t1", "到货片")

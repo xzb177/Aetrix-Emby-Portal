@@ -231,6 +231,11 @@ export const panelApi = {
   privacyGet: () => get<{ show_on_leaderboard: boolean }>('/api/panel/privacy'),
   /** 隐私：设置是否允许上榜 */
   privacySet: (show: boolean) => put<{ show_on_leaderboard: boolean }>('/api/panel/privacy', { show_on_leaderboard: show }),
+  /** 通知偏好：三类 TG 私聊开关（只管 Telegram，站内信照常） */
+  notifyPrefsGet: () => get<{ seek: boolean; expiry: boolean; lottery: boolean }>('/api/panel/notify-prefs'),
+  /** 通知偏好：更新一类（其余类别不传即不变） */
+  notifyPrefsSet: (patch: Partial<{ seek: boolean; expiry: boolean; lottery: boolean }>) =>
+    put<{ seek: boolean; expiry: boolean; lottery: boolean }>('/api/panel/notify-prefs', patch),
   /** 佩戴/摘下徽章（存账号）；key=null 为摘下 */
   setWornBadge: (key: string | null) => post<{ worn_badge: WornBadge | null }>('/api/panel/worn-badge', { key }),
   /** 服务器状态 */

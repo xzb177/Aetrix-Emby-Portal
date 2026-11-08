@@ -12,8 +12,8 @@
 - 扫描对上库时，只有到货私聊开关开着才做同样的翻转并入队；
   关着时扫描不改求片行。读时翻转和扫描侧共用同一条到货入队，
   已推记录保证不重复发。
-- 到货私聊走 ``tg_bot.proactive``，开关默认关；关时不发、不写
-  已推记录。开时私聊求片人和附议人纯文字，不带播放按钮。
+- 到货私聊走 ``tg_bot.proactive``，开关默认开（2026-11-08 起）；
+  关时不发、不写已推记录。开时私聊求片人和附议人，可带「去看看」按钮。
 - 入库后用户下一次打开列表/榜单即看到已入库，随后可走正常想看
   流程（POST /want 的 R0 路）。
 - emby_item_id 的 guid 记录仍归既有管理端“标记已入库”入口，
@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 from contextlib import contextmanager
 
@@ -385,6 +386,16 @@ def post_request(
         ))
         db.commit()
         db.refresh(row)
+        # 私聊通报优化批：网页端新建求片同样给管理员发 TG 提醒（与机器人
+        # 提交同口径、同一开关）；附议/已登记分支不重复打扰。
+        try:
+            from backend.tg_bot import features as _tg_features
+
+            _tg_features._notify_staff_about_request(
+                db, row.id, user, row.movie_name)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "求片 TG 管理员通知失败 request=%s", row.id, exc_info=True)
         return _record(
             row, in_library=False, library_item_id=None,
             voted=True, message=REQUEST_REGISTERED_MESSAGE,

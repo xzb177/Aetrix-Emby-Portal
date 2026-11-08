@@ -507,8 +507,34 @@ def _request_help() -> str:
     )
 
 
+# 新求片提醒管理员开关（system_configs，缺行=开）。机器人提交与网页
+# 提交共用这一条通知、同一个开关（2026-11-08 私聊通报优化批）。
+KEY_NEW_REQUEST = "tg_notify_new_request_enabled"
+
+
+def new_request_notify_enabled(db) -> bool:
+    """缺行/空值/读失败都按开（与 proactive 的默认开口径一致）。"""
+    try:
+        row = (
+            db.query(models.SystemConfig)
+            .filter(models.SystemConfig.key == KEY_NEW_REQUEST)
+            .first()
+        )
+    except Exception:
+        logger.warning("新求片提醒开关读取失败", exc_info=True)
+        return True
+    if row is None or row.value is None:
+        return True
+    return str(row.value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _notify_staff_about_request(db, request_id: int, user, name: str) -> None:
-    """给已绑定 Telegram 的管理员发一条轻量通知，失败不影响求片落库。"""
+    """给已绑定 Telegram 的管理员发一条轻量通知，失败不影响求片落库。
+
+    开关关着直接不发。机器人 /request 与网页端提交求片都走这里。
+    """
+    if not new_request_notify_enabled(db):
+        return
     from backend.tg_bot import sender
 
     staff = db.query(models.WebUser).filter(

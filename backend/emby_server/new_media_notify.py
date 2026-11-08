@@ -1,5 +1,12 @@
 """新片入库通知（富媒体版）：扫描完成后，给管理员推 TG 富媒体消息
 
+⚠️ 已退役（2026-11-08 用户定调）：本私聊版与**群入库通报**
+（``backend/tg_bot/updatedigest.py``）报的是同一批新入库条目——群版
+是攒批汇总发到群里，本版是每轮扫描一条富媒体私聊，两边同叠。现统一
+只走群入库通报这一条线：本通道代码默认关、不再单独发；管理员看新
+入库走群播报与管理端（媒体库/扫描记录）。代码保留是为兼容存量配置
+行：显式把 ``new_media_notify_enabled`` 写成 "1" 仍可单独打开。
+
 要解决的问题：扫描器发现新片后从不通知，管理员不知道库里进了什么。
 通知管道（TG/邮件/站内）早已存在，这里只做「扫描完成 → 汇总新增 → 发 TG」的接线。
 
@@ -15,7 +22,8 @@
   caption 挂第一张）；发图失败自动降级为纯文本，通知不丢。
 - 排版用 HTML parse_mode（标题加粗、年份/集数/评分享受结构化展示），
   所有来自数据的文本都做 HTML 转义。
-- 配置（SystemConfig）：``new_media_notify_enabled``（"1"/"0"，默认 "1"，开箱即有）、
+- 配置（SystemConfig）：``new_media_notify_enabled``（"1"/"0"，默认 "0"——
+  已退役并入群入库通报，不再单独发；见文件头）、
   ``new_media_notify_channels``（逗号分隔，默认 "telegram"，以后可扩展）。
 - 收件人：全部启用中的管理员（``is_staff``），走他们绑定的 TG 账号。
   没绑 TG 的管理员记一条 warning 跳过，不报错。
@@ -42,7 +50,10 @@ logger = logging.getLogger(__name__)
 CONFIG_ENABLED = "new_media_notify_enabled"
 CONFIG_CHANNELS = "new_media_notify_channels"
 
-DEFAULT_ENABLED = True
+# 已退役：默认关。新片入库统一由群入库通报（tg_bot.updatedigest）播报，
+# 本私聊版不再单独发（文件头有完整说明）。生产若存量配置行还是 "1"，
+# 需上线后把 new_media_notify_enabled 改成 "0" 才真正停发。
+DEFAULT_ENABLED = False
 DEFAULT_CHANNELS = "telegram"
 
 # 消息里最多展示的条目个数，超出截断（防刷屏）

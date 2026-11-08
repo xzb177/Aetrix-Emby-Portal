@@ -68,8 +68,9 @@ def _add_library(db, lib_id=1, name="动漫库", collection_type="tvshows"):
 # ---------- 配置 ----------
 
 def test_config_defaults(db):
+    # 2026-11-08 退役：私聊版默认关，并入群入库通报（见模块文件头）
     enabled, channels = nmn._get_config(db)
-    assert enabled is True
+    assert enabled is False
     assert channels == ["telegram"]
 
 
@@ -406,6 +407,8 @@ def test_do_notify_no_start_time_sends_nothing(db, monkeypatch):
 
 
 def test_do_notify_happy_path(db, monkeypatch):
+    # 私聊版已退役默认关：本用例验显式开启后的发送路径，手动写开配置
+    _add_config(db, nmn.CONFIG_ENABLED, "1")
     start = datetime.now()
     _add_library(db, 1, "动漫库", "tvshows")
     _add_item(db, "新剧A", "series", start + timedelta(seconds=1),

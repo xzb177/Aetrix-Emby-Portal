@@ -747,6 +747,11 @@ def _auto_migrate():
             ("vitality", "INTEGER", "14"),
             # 探险世界 · 时长榜隐私开关：老库补列默认上榜，与升级前行为一致。
             ("show_on_leaderboard", "BOOLEAN", "1"),
+            # 私聊通报优化批 · TG 通知偏好三类：老库补列默认收，与新列
+            # server_default 一致（backend/notify_prefs.py）。
+            ("tg_notify_seek", "BOOLEAN", "1"),
+            ("tg_notify_expiry", "BOOLEAN", "1"),
+            ("tg_notify_lottery", "BOOLEAN", "1"),
         ]),
         # v2.44.0 邀请码白名单（内测码 / 渠道码）：NULL / 空串都按「不限」处理，
         # 所以存量邀请码行为升级前后完全一致（见 backend/api/invitation.py）

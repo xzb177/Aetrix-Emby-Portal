@@ -202,6 +202,44 @@ def _run_action(db, fn, *args, **kwargs):
         raise _lifecycle_http(exc) from exc
 
 
+def _notify_member_review(member: em.PoolMember, *, approved: bool,
+                          admin_id: int) -> None:
+    """审核结果通知申请人（站内信 + TG，2026-11-08 补承诺落点）。
+
+    审核已落库后调用；通知走 quiet 守卫、失败只记日志，不影响审核结果。
+    本端点是同步 def，通知服务是 async 的，用 asyncio.run 在本线程跑完
+    （与 new_media_notify / maintenance 的同步上下文发通知同款范式）。
+    """
+    import asyncio
+
+    from backend.notifications import AdminEvent, notify_admin_event_quiet
+
+    if approved:
+        event_type = AdminEvent.POOL_MEMBER_APPROVED
+        title = "贡献池申请已通过"
+        content = ("你申请加入公共贡献池已经通过啦。你的网盘会开始为池子"
+                   "提供副本，贡献情况可以在个人中心的贡献池页面查看。")
+    else:
+        event_type = AdminEvent.POOL_MEMBER_REJECTED
+        title = "贡献池申请未通过"
+        content = ("你申请加入公共贡献池这次没有通过。如需重新申请，"
+                   "可以在个人中心的贡献池页面再次提交。")
+    try:
+        asyncio.run(notify_admin_event_quiet(
+            event_type=event_type,
+            log_ctx=f"pool_member_review member_id={member.id}",
+            user_id=member.user_id,
+            title=title,
+            content=content,
+            related_id=member.id,
+            from_admin_id=admin_id,
+            channels=["in_app", "telegram"],
+        ))
+    except Exception:
+        logger.warning("贡献池审核通知失败 member=%s", member.id,
+                       exc_info=True)
+
+
 @pool_admin_router.post("/members/{member_id}/approve")
 def pool_approve_member(
     member_id: int,
@@ -215,6 +253,8 @@ def pool_approve_member(
     _audit(db, current_admin, "pool_member_approve", "pool_member",
            member.id, {}, ip=_client_ip(raw_request))
     db.commit()
+    _notify_member_review(member, approved=True,
+                          admin_id=current_admin.id)
     return _member_payload(db, member)
 
 
@@ -231,6 +271,8 @@ def pool_reject_member(
     _audit(db, current_admin, "pool_member_reject", "pool_member",
            member.id, {}, ip=_client_ip(raw_request))
     db.commit()
+    _notify_member_review(member, approved=False,
+                          admin_id=current_admin.id)
     return _member_payload(db, member)
 
 

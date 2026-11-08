@@ -1,8 +1,14 @@
-"""订阅到期提醒（续费通知）
+"""订阅到期提醒（续费通知）＋公益资格到期提醒
 
 要解决的问题：**会员到期前没有任何提醒**。`AdminEvent.SUBSCRIPTION_EXPIRED` 这个事件类型
 早就定义好了，却从来没有发送点；续期只能靠用户自己想起来。对会员制站点来说，
 「快到期了」是转化率最高的一次触达，缺了它等于白白流失续费。
+
+2026-11-08 私聊通报优化批：同一轮调度里顺带扫**公益资格**
+（``WebUser.welfare_expires_at``）——档位、去重、占位/撤回口径与订阅
+一模一样，去重表换成 ``welfare_reminders``（kind 带到期日指纹，
+续期改日后旧记录不挡新一轮）。两类提醒的 TG 份都受用户「到期提醒类」
+偏好管（backend/notify_prefs.py）：关了只发站内信。
 
 这一模块负责三件事：
 
@@ -247,6 +253,109 @@ def _reminder_text(db: Session, item: dict) -> tuple[str, str]:
     return title, content
 
 
+def _welfare_kind(end: datetime, tier: str) -> str:
+    """公益去重 kind：到期日指纹 + 档位。续期改了到期日就是新一轮。"""
+    return f"{end.date().isoformat()}:{tier}"
+
+
+def collect_welfare_due(db: Session, now: Optional[datetime] = None) -> dict:
+    """算出这一轮该发的公益资格提醒（不改数据）。
+
+    口径与 ``collect_due`` 一致：最贴近档 + expired 档；永久资格
+    （``welfare_expires_at`` 为空）与非公益/已停用用户不参与。
+    """
+    now = now or datetime.now()
+    thresholds = parse_thresholds(db)
+    horizon = now + timedelta(days=max(thresholds))
+
+    reminders: list[dict] = []
+    expired: list[dict] = []
+    last_id = 0
+    while True:
+        page = db.query(models.WebUser).filter(
+            models.WebUser.id > last_id,
+            models.WebUser.is_welfare.is_(True),
+            models.WebUser.is_active.is_(True),
+            models.WebUser.welfare_expires_at.isnot(None),
+        ).order_by(models.WebUser.id.asc()).limit(_SCAN_BATCH).all()
+        if not page:
+            break
+        last_id = page[-1].id
+        sent_map: dict[int, set[str]] = {}
+        rows = db.query(
+            models.WelfareReminder.user_id, models.WelfareReminder.kind,
+        ).filter(
+            models.WelfareReminder.user_id.in_([u.id for u in page])
+        ).all()
+        for uid, kind in rows:
+            sent_map.setdefault(uid, set()).add(kind)
+        for user in page:
+            end = user.welfare_expires_at
+            if end is None:
+                continue
+            sent = sent_map.get(user.id, set())
+            seconds_left = (end - now).total_seconds()
+            days_left = int(seconds_left // 86400) if seconds_left > 0 else -1
+            info = {"user_id": user.id, "end_date": end}
+            if seconds_left <= 0:
+                kind = _welfare_kind(end, "expired")
+                if kind not in sent:
+                    expired.append({**info, "kind": kind, "days_left": 0})
+                continue
+            if end > horizon:
+                continue
+            tightest = next((t for t in sorted(thresholds) if days_left <= t), None)
+            if tightest is not None:
+                kind = _welfare_kind(end, f"{tightest}d")
+                if kind not in sent:
+                    reminders.append({**info, "kind": kind,
+                                      "threshold": tightest,
+                                      "days_left": days_left})
+    return {"reminders": reminders, "expired": expired}
+
+
+def _welfare_record(db: Session, user_id: int, kind: str) -> bool:
+    """公益提醒去重占位（同订阅 _record 口径）。"""
+    db.add(models.WelfareReminder(
+        user_id=user_id, kind=kind, sent_at=datetime.now()))
+    try:
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+
+
+def _welfare_retract(db: Session, user_id: int, kind: str) -> None:
+    db.query(models.WelfareReminder).filter(
+        models.WelfareReminder.user_id == user_id,
+        models.WelfareReminder.kind == kind,
+    ).delete(synchronize_session=False)
+    db.commit()
+
+
+def _welfare_reminder_text(db: Session, item: dict) -> tuple[str, str]:
+    """公益资格提醒文案（续期口径只说「积分续期」，不写死价格）。"""
+    days = item["days_left"]
+    end_text = item["end_date"].strftime("%Y-%m-%d")
+    url = _site_url(db)
+    tail = (f"\n续期入口：{url}/wallet" if url
+            else "\n请前往「钱包 / 补给站」用积分续期，以免公益资格中断。")
+    if days <= 0:
+        title = "⚠️ 公益资格已到期"
+        content = (
+            f"你的公益资格已于 {end_text} 到期。\n"
+            "到期后公益服将无法播放。" + tail
+        )
+    else:
+        title = f"⏳ 公益资格还有 {days} 天到期"
+        content = (
+            f"你的公益资格将于 {end_text} 到期（剩余 {days} 天）。\n"
+            "提前续期不会浪费剩余时长，新时长会在当前到期日之后叠加。" + tail
+        )
+    return title, content
+
+
 async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
                                dry_run: bool = False) -> dict:
     """执行一轮到期提醒，返回统计结果
@@ -262,6 +371,11 @@ async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
         "skipped": 0,
         "failed": 0,
         "due": [],
+        "welfare_reminded": 0,
+        "welfare_expired_notified": 0,
+        "welfare_skipped": 0,
+        "welfare_failed": 0,
+        "welfare_due": [],
     }
     if not result["enabled"]:
         return result
@@ -273,9 +387,16 @@ async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
          "kind": i["kind"], "days_left": i["days_left"]}
         for i in due["reminders"] + due["expired"]
     ]
+    welfare_due = collect_welfare_due(db, now=now)
+    result["welfare_due"] = [
+        {"user_id": i["user_id"], "kind": i["kind"],
+         "days_left": i["days_left"]}
+        for i in welfare_due["reminders"] + welfare_due["expired"]
+    ]
     if dry_run:
         return result
 
+    from backend import notify_prefs
     from backend.notifications import notify_admin_event, AdminEvent
 
     for item in due["reminders"] + due["expired"]:
@@ -284,6 +405,9 @@ async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
             result["skipped"] += 1
             continue
         title, content = _reminder_text(db, item)
+        # 用户偏好：关了「到期提醒类」TG 的只发站内信。
+        sub_channels = (["in_app", "telegram"] if notify_prefs.tg_allowed(
+            db, item["user_id"], notify_prefs.CAT_EXPIRY) else ["in_app"])
         try:
             sent_result = await notify_admin_event(
                 event_type=AdminEvent.SUBSCRIPTION_EXPIRED if is_expired
@@ -294,7 +418,7 @@ async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
                 related_id=item["subscription_id"],
                 # 站内信保留；绑定了 Telegram 的用户同步收到续费提醒。
                 # 未配置 Telegram 或未绑定时，该渠道返回 False，不影响站内信成功。
-                channels=["in_app", "telegram"],
+                channels=sub_channels,
             ) or {}
         except Exception as exc:  # noqa: BLE001 — 一条失败不能带走整轮
             logger.warning("到期提醒发送失败（订阅 %s）: %s", item["subscription_id"], exc)
@@ -313,10 +437,51 @@ async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
         else:
             result["reminded"] += 1
 
+    # 公益资格提醒：同一套占位/撤回/全渠道失败判定，只是去重表与事件不同。
+    for item in welfare_due["reminders"] + welfare_due["expired"]:
+        is_expired = item["kind"].endswith(":expired")
+        if not _welfare_record(db, item["user_id"], item["kind"]):
+            result["welfare_skipped"] += 1
+            continue
+        title, content = _welfare_reminder_text(db, item)
+        welfare_channels = (["in_app", "telegram"] if notify_prefs.tg_allowed(
+            db, item["user_id"], notify_prefs.CAT_EXPIRY) else ["in_app"])
+        try:
+            sent_result = await notify_admin_event(
+                event_type=AdminEvent.WELFARE_EXPIRED if is_expired
+                else AdminEvent.WELFARE_REMINDER,
+                user_id=item["user_id"],
+                title=title,
+                content=content,
+                related_id=item["user_id"],
+                channels=welfare_channels,
+            ) or {}
+        except Exception as exc:  # noqa: BLE001 — 一条失败不能带走整轮
+            logger.warning("公益到期提醒发送失败（用户 %s）: %s",
+                           item["user_id"], exc)
+            _welfare_retract(db, item["user_id"], item["kind"])
+            result["welfare_failed"] += 1
+            continue
+        if not any(sent_result.values()):
+            logger.warning("公益到期提醒全部渠道发送失败（用户 %s）: %s",
+                           item["user_id"], sent_result)
+            _welfare_retract(db, item["user_id"], item["kind"])
+            result["welfare_failed"] += 1
+            continue
+        if is_expired:
+            result["welfare_expired_notified"] += 1
+        else:
+            result["welfare_reminded"] += 1
+
     if result["reminded"] or result["expired_notified"] or result["skipped"]:
         logger.info(
             "到期提醒完成: 提醒 %s 条 / 到期通知 %s 条 / 跳过 %s 条",
             result["reminded"], result["expired_notified"], result["skipped"],
+        )
+    if result["welfare_reminded"] or result["welfare_expired_notified"]:
+        logger.info(
+            "公益到期提醒完成: 提醒 %s 条 / 到期通知 %s 条",
+            result["welfare_reminded"], result["welfare_expired_notified"],
         )
     return result
 

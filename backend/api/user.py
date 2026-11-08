@@ -828,6 +828,19 @@ async def create_media_seek(
     except Exception as exc:  # 通知失败不应影响求片提交
         logger.warning("求片通知发送失败: %s", exc)
 
+    # 私聊通报优化批：网页提交也要给管理员发 TG 提醒——与机器人
+    # /request 走同一条通知、同一个开关（tg_notify_new_request_enabled，
+    # 缺行默认开）。TG 发送是同步调用，下放线程池不堵事件循环。
+    try:
+        from backend.tg_bot import features as _tg_features
+
+        await run_in_threadpool(
+            _tg_features._notify_staff_about_request,
+            db, request_id, current_user, name,
+        )
+    except Exception as exc:  # 通知失败不应影响求片提交
+        logger.warning("求片 TG 管理员通知发送失败: %s", exc)
+
     return {"success": True, "request_id": request_id, "message": "求片请求已提交"}
 
 

@@ -282,6 +282,12 @@ class WebUser(Base):
     welfare_granted_at = Column(DateTime, nullable=True)
     # 观影碑时长榜隐私：True=允许上榜（默认），False=不上榜
     show_on_leaderboard = Column(Boolean, default=True, nullable=False, server_default="1")
+    # TG 私聊通知偏好（2026-11-08 私聊通报优化批）：三类各一个开关，
+    # 只管 Telegram 那一份，站内信不受影响。默认 True=收。
+    # 语义见 backend/notify_prefs.py。
+    tg_notify_seek = Column(Boolean, default=True, nullable=False, server_default="1")
+    tg_notify_expiry = Column(Boolean, default=True, nullable=False, server_default="1")
+    tg_notify_lottery = Column(Boolean, default=True, nullable=False, server_default="1")
     last_login_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -382,6 +388,32 @@ class SubscriptionReminder(Base):
     # 冗余存一份归属服：结算/排查时不必再回查订阅行
     realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
     kind = Column(String(20), nullable=False)  # 7d / 3d / 1d / expired
+    sent_at = Column(DateTime, default=datetime.now)
+
+
+class WelfareReminder(Base):
+    """公益资格到期提醒的发送记录（去重表）。
+
+    与 SubscriptionReminder 同口径：每个（用户 × 档位）只发一次，
+    ``kind`` 是 ``7d`` / ``3d`` / ``1d`` / ``expired``。公益资格挂在
+    WebUser 上（``welfare_expires_at``）、没有订阅行，所以单独一张表；
+    但同一次续期只有一个到期日，若用户续期后到期日变远，旧档位记录
+    不会误挡新一轮——collect 时按当前到期日重新落档（见 reminders.py
+    的 ``expires_key``：kind 里带上到期日指纹）。新表由 create_all 建。
+    """
+
+    __tablename__ = 'welfare_reminders'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'kind', name='uq_welfare_reminder_kind'),
+        Index('idx_welfare_reminder_user', 'user_id'),
+        Index('idx_welfare_reminder_time', 'sent_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    # kind 形如 "2026-11-20:3d"：到期日 + 档位，续期改日后旧记录不挡新提醒
+    kind = Column(String(32), nullable=False)
     sent_at = Column(DateTime, default=datetime.now)
 
 
@@ -2304,7 +2336,8 @@ class TgProactiveNotice(Base):
     - inflight：某个进程已领走、正在发；
     - sent：已发出；
     - blocked：对方屏蔽了机器人或聊不了，不再重试；
-    - gave_up：可重试的失败用完次数，不再重试。
+    - gave_up：可重试的失败用完次数，不再重试；
+    - muted：发送时用户关了「求片到货类」TG 偏好，静默丢弃、不补发。
     开关关着时不写本表。新表由 init_db 的 create_all 建出，
     不走补列（老库升级同样靠 create_all 补新表）。
     """

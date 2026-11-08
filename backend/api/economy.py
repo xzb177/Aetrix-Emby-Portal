@@ -673,6 +673,7 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
     # C1 活力值：公益服用户签到恢复活力（受每日免费获取上限钳制）
     # 恢复点数走 SystemConfig vitality_checkin_gain（默认 1，填 0 则签到不恢复活力）
     vitality_gained = 0
+    vitality_recovered = False  # 本次签到是否把活力从 0 拉起来（解封通知用）
     if is_welfare:
         try:
             cfg = _vitality.get_vitality_config(db)
@@ -694,6 +695,7 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
                     before = int(before or 0)
                     after = _vitality._add_vitality(db, user_id, gain, "checkin")
                     vitality_gained = after - before
+                    vitality_recovered = before <= 0 and after > 0
         except Exception:
             logger.exception("checkin vitality restore failed for user %s", user_id)
     # Step 0 公益原生经验：签到 +1（可刷日封顶 10 钳制；不提交，随签到事务提交）
@@ -704,6 +706,9 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
     except Exception:
         logger.exception("checkin XP award failed for user %s", user_id)
     db.commit()
+    if vitality_recovered:
+        # 活力从 0 恢复＝解封：补一条 TG 通知（best-effort，失败不影响签到）
+        _vitality.notify_vitality_change(db, user_id, "recovered")
     return {"points_awarded": reward, "streak": streak, "balance": balance,
             "penalty": penalty, "vitality_gained": vitality_gained, "xp_gained": xp_gained,
             "crit": crit, "milestone_points": milestone_points,
@@ -848,6 +853,9 @@ async def recharge_vitality(
             raise HTTPException(status_code=400, detail="能量不足")
         new_v = _vitality._add_vitality(db, current_user.id, gain, "recharge")
         db.commit()
+        if current_v <= 0 and new_v > 0:
+            # 积分续活把活力从 0 拉起来＝解封：补一条 TG 通知
+            _vitality.notify_vitality_change(db, current_user.id, "recovered")
         return {"vitality_gained": gain, "points_spent": spend,
                 "vitality": new_v, "points_balance": balance}
 

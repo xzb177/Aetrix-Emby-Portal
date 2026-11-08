@@ -262,10 +262,12 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "bot_playrank_series_enabled": ("bool",),
     "bot_playrank_movies_enabled": ("bool",),
     "bot_playrank_poster_enabled": ("bool",),
-    # 主动私聊提醒（tg_bot.proactive）：两个开关默认关，合并窗口秒数默认 60。
-    # word 风格 ("bool",) 存 true/false。关时不发、不写已推记录。
+    # 主动私聊提醒（tg_bot.proactive）：两个开关默认开（2026-11-08），
+    # 合并窗口秒数默认 60。word 风格 ("bool",) 存 true/false。
+    # 关时不发、不写已推记录。新求片提醒管理员（tg_bot.features）默认开。
     "tg_notify_store_arrival_enabled": ("bool",),
     "tg_notify_transfer_done_enabled": ("bool",),
+    "tg_notify_new_request_enabled": ("bool",),
     "tg_notify_merge_window_sec": ("int", 0, 3600),
 
     "lottery_group_ids": ("str",),
