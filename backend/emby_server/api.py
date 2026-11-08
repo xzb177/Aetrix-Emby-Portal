@@ -1308,6 +1308,41 @@ def _apply_usercopy_direct(db, user, source, file_id) -> bool:
         return False
 
 
+def _apply_poolcopy_direct(db, variant, source, file_id) -> bool:
+    """公共池副本直链下发（goal-33 PR-3，design §5.1 第 10 步）。
+
+    唯一形态：先按变体 owner 用贡献者（成员）绑定令牌给池副本授
+    anyone-reader（transfer_variant.ensure_variant_copy_public），
+    授成发免凭证 usercontent 地址 + 空头（与用户副本同形态，
+    SenPlayer 不发头也能播）。授权限失败返回 False、一个字不改
+    source：调用方保留本站 /stream 地址、由 video_stream 现场
+    裁决，绝不下发直链（GA-030，用户 2026-11-08 裁定：授权失败
+    就不播）。成员令牌绝不许写进响应——旧回落（alt=media + 成员
+    令牌头）会把贡献者令牌发给未绑陌生观众、观众可冒成员读其
+    整盘，已按裁定删除；成员令牌只许服务端内部取流（中继腿）
+    使用。绝不换共享原件 fid。永不抛异常。
+    """
+    try:
+        if not isinstance(source, dict):
+            return False
+        fid = (file_id or "").strip()
+        if not fid or variant is None:
+            return False
+        from backend.emby_server import transfer_variant as _tv
+        if not _tv.ensure_variant_copy_public(db, variant, fid):
+            return False
+        from backend.emby_server import drive_auth as _da
+        url = _da.drive_usercontent_download_url(fid)
+        if not url:
+            return False
+        source["DirectPlayUrl"] = url
+        source["DirectStreamUrl"] = url
+        source["RequiredHttpHeaders"] = {}
+        return True
+    except Exception:
+        return False
+
+
 def hide_media_path() -> bool:
     """EMBY_HIDE_MEDIA_PATH（默认开）：客户端协议响应里不下发服务器上的媒体路径。
 
@@ -5668,6 +5703,31 @@ def _user_drive_byos_available(db: Session, item: em.MediaItem,
     return getattr(row, "status", "") == "active"
 
 
+def _pool_copy_available(db: Session, item: em.MediaItem,
+                         user) -> bool:
+    """公共池变体可用性信号（goal-33 PR-3，design §5.1）。
+
+    同时满足才 True：用户未绑定、池 eligible（总开关 + 人群）、
+    该条目有 ready 池副本行（行复核在 pool_gate
+    .pool_serve_candidate，含成员 active / 未熔断）。信号与变体
+    行双对上才列 pool_copy（照 _user_drive_byos_available 双保险
+    纪律）；清单阶段不真取令牌。异常一律 False（按无池副本）。
+    """
+    try:
+        uid = getattr(user, "id", None)
+        if uid is None:
+            return False
+        from backend.emby_server import playback_gate as _gate_pc
+        if _gate_pc.has_active_binding(db, uid):
+            return False
+        from backend.emby_server import pool_gate as _pg_pc
+        if _pg_pc.pool_eligible(db, user, item) != "eligible":
+            return False
+        return _pg_pc.pool_serve_candidate(db, item) is not None
+    except Exception:  # noqa: BLE001 — 信号算不出按无池副本
+        return False
+
+
 def _drive_file_exists_sync(drive_id: str, file_id: str,
                             force_recheck: bool = False) -> None:
     """同步：一次 files.get 判定存在性。只在 _DRIVE_EXISTS_EXECUTOR 里调用。
@@ -5934,6 +5994,112 @@ async def _usercopy_quota_relay_attempt(
         variant=play_variants.BYOS_DRIVE_RELAY, result="ok",
         resolve_ms=int((time.perf_counter() - _t0) * 1000))
     return _resp_q
+
+
+async def _pool_quota_relay_attempt(
+        request: Request, db: Session, item: em.MediaItem, user,
+        play_fid: str, play_variant, *, media_type: str,
+        member_id, pt=None, via_fallback: bool = True):
+    """池副本贡献者令牌中继（goal-33 PR-3，design §5.1/§5.2）。
+
+    池副本公开直链被谷歌额度页挡住（quota 改道）、或免凭证形态
+    不可用时，用**贡献者（成员）自己绑定的令牌**走 API 中继取
+    同一份池副本——与 _usercopy_quota_relay_attempt 同形态，令牌
+    属主换成池成员：只许成员令牌、只试一次（serve_drive_relay_async
+    的 access_token 腿单次直试、从不调 get_token_for_drive、不进
+    SA failover 轮换）；本函数同样绝不直接或间接取 SA 令牌，
+    失败绝不回落共享原件。
+
+    ``via_fallback=True``（quota 改道/授权限失败的后路）时先查
+    后路开关 usercopy_quota_relay_fallback_enabled（design §5.1
+    「后路开关沿」）；``via_fallback=False`` 时调用方已按中继
+    主线开关（drive_relay_enabled）判定，本函数不再查后路开关。
+    成功返回中继响应；未启用/无成员令牌/中继任何失败返回 None，
+    调用方回 409 明示口径。
+    """
+    from backend.emby_server.async_db import run_db
+    from backend.emby_server import playback_strategy as _strategy_p
+    from backend.emby_server import pool_gate as _pool_gate_p
+    from backend.emby_server import transfer_variant as _tv_p
+
+    uid = getattr(user, "id", None)
+    if uid is None or not play_fid or member_id is None:
+        return None
+    if via_fallback:
+        try:
+            _enabled_p = await run_db(
+                _strategy_p.usercopy_quota_relay_fallback_enabled, db)
+        except Exception:  # noqa: BLE001 — 开关读不到不贸然改道
+            return None
+        if not _enabled_p:
+            return None
+    _tv_p.log_byos(
+        "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+        user=uid, fid=play_fid, result="attempt", scope="pool",
+        member=member_id)
+    _t0 = time.perf_counter()
+    try:
+        _token_p = await run_db(
+            _pool_gate_p.pool_member_access_token, db, member_id)
+    except Exception:  # noqa: BLE001 — 令牌口异常回现行口径
+        _token_p = ""
+    if not _token_p:
+        _tv_p.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind="member_token_missing", scope="pool")
+        return None
+    if pt is not None:
+        pt.mark("relay")
+    try:
+        _resp_p = await serve_drive_relay_async(
+            request,
+            getattr(play_variant, "variant_drive_id", None)
+            or f"pooldrive:{member_id}",
+            play_fid, media_type=media_type, pt=pt,
+            access_token=_token_p)
+    except HTTPException as exc:
+        _tv_p.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind=f"upstream_{exc.status_code}", scope="pool")
+        _note_play_start_safe(
+            item, user_id=uid, method="relay",
+            variant=play_variants.POOL_COPY, result="error",
+            error_kind=f"pool_quota_relay_{exc.status_code}",
+            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+        return None
+    except Exception as exc:  # noqa: BLE001 — 中继任何失败回现行口径
+        _tv_p.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind=type(exc).__name__, scope="pool")
+        _note_play_start_safe(
+            item, user_id=uid, method="relay",
+            variant=play_variants.POOL_COPY, result="error",
+            error_kind="pool_quota_relay_error",
+            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+        return None
+    if _resp_p is None or getattr(_resp_p, "status_code", 500) >= 400:
+        _tv_p.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind="upstream_%s" % getattr(
+                _resp_p, "status_code", None), scope="pool")
+        _note_play_start_safe(
+            item, user_id=uid, method="relay",
+            variant=play_variants.POOL_COPY, result="error",
+            error_kind="pool_quota_relay_status",
+            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+        return None
+    _tv_p.log_byos(
+        "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+        user=uid, fid=play_fid, result="ok", scope="pool")
+    _note_play_start_safe(
+        item, user_id=uid, method="relay",
+        variant=play_variants.POOL_COPY, result="ok",
+        resolve_ms=int((time.perf_counter() - _t0) * 1000))
+    return _resp_p
 
 
 def _play_target(db: Session, item: em.MediaItem, *, variant=None):
@@ -6368,12 +6534,17 @@ async def playback_info(
         # 清单追加 byos_drive_relay（用户令牌中继，走用户自己额度）。
         _user_drive_byos_ok = await run_db(
             _user_drive_byos_available, db, item, user)
+        # 公共池（goal-33 PR-3）：未绑 + 池 eligible + 有 ready
+        # 池副本行时，清单追加 pool_copy 变体。
+        _pool_copy_ok = await run_db(
+            _pool_copy_available, db, item, user)
         _variants = await run_db(
             play_variants.list_variants, db, item,
             drive_mount_locatable=_drive_mount_ok,
             mount_can_generate_play_target=_mount_can_generate,
             user115_direct_available=_user115_ok,
-            user_drive_byos_available=_user_drive_byos_ok)
+            user_drive_byos_available=_user_drive_byos_ok,
+            pool_copy_available=_pool_copy_ok)
         # 挂载第 5 步播放过滤（变体层）：源已隐藏时变体清单清零，
         # 且不静默回落单源——下发空 MediaSources，客户端无可播变体。
         # 只新增本调用，不改上面任何变体判定行。
@@ -6425,13 +6596,9 @@ async def playback_info(
         if _pool_decision.kind == "pool":
             _pi_gate = await run_db(
                 _pool_gate_pi.ensure_pool_copy_gate, db, item, user)
-            if (_pi_gate or {}).get("verdict") == "serve_pool_copy":
-                # PR-2：播出未接通，serve 态回 failed 明示（池副本
-                # 已就绪、播出下一单接通后才可播放；清单不下发地址）。
-                _pi_gate = dict(_pi_gate, verdict="failed",
-                                reason="pool_serve_not_ready",
-                                detail="池副本已就绪，播出下一单接通后"
-                                       "才可播放")
+            # PR-3：serve_pool_copy 正式接通——下方池播出段按池
+            # 副本下发地址（不再映射 failed）；preparing/failed
+            # 仍由紧接着的 apply_transfer_status 覆盖清单。
         elif _pool_decision.kind == "bound":
             _pi_gate = await run_db(
                 _tv_pi.ensure_user_copy_gate, db, item, user)
@@ -6674,6 +6841,102 @@ async def playback_info(
                             resolve_ms=_verified.get("precheck_ms"))
         except Exception:  # noqa: BLE001 — 本段失败只保留旧地址
             pass
+    # 公共池播出（goal-33 PR-3，design §5.1）：池门禁判
+    # serve_pool_copy 时按池副本下发——fid 只取门禁确认的池变体
+    # 行（prefer_pool_variant，不许被 resolve 异常回退换成共享
+    # 原件）；quota 探测复用用户副本一套，缓存键按 (variant_id,
+    # fid) 记（不把观众 id 写进池副本探测键）；额度页改道时后路
+    # 开 → 保留本站 /stream（取流时走贡献者令牌中继），无后路 →
+    # 剥清单 + 明确报错（沿 _pi_quota_error 形态）。成功下发记
+    # §5.3 记账 + H1 事件。直链开关关时本段不下发，保留 /stream
+    # 由 video_stream 按中继主线现场裁决。令牌只进本次响应，
+    # 不进基础体缓存（缓存已在上面存完）。任何异常只保留旧地址。
+    if sources and _pi_verdict == "serve_pool_copy":
+        try:
+            from backend.emby_server import playback_strategy as _ps_pool
+            from backend.emby_server import transfer_variant as _tv_pool
+
+            _pool_fid, _pool_variant = _tv_pool.prefer_pool_variant(
+                "", None, _pi_gate)
+            _pool_member_id = (_pi_gate or {}).get("member_id")
+            if _pool_fid and _pool_member_id:
+                _pool_direct_on = await run_db(
+                    _ps_pool.drive_direct_play_enabled, db)
+                if _pool_direct_on:
+                    _pool_probe_key = (
+                        f"poolvar:{getattr(_pool_variant, 'id', '')}")
+                    _pool_cached = await run_db(
+                        _tv_pool.usercopy_quota_probe_cached,
+                        _pool_probe_key, _pool_fid)
+                    _pool_probe_verdict = await run_db(
+                        _tv_pool.probe_user_copy_quota_decision,
+                        _pool_probe_key, _pool_fid)
+                    _pool_probe_detail = await run_db(
+                        _tv_pool.usercopy_quota_probe_detail,
+                        _pool_probe_key, _pool_fid)
+                    _pool_quota_page = (
+                        _pool_probe_detail.get("page") == "quota")
+                    _pool_diverted = False
+                    if (_pool_probe_verdict in ("quota", "interstitial")
+                            or _pool_quota_page):
+                        _pool_divert = (
+                            _pool_probe_verdict == "quota"
+                            or _tv_pool.usercopy_quota_divert(
+                                _pool_probe_detail))
+                        _pool_signal = (
+                            "quota" if (_pool_probe_verdict == "quota"
+                                        or _pool_quota_page)
+                            else _pool_probe_verdict)
+                        _tv_pool.log_byos(
+                            "byos_usercopy_quota"
+                            if _pool_signal == "quota"
+                            else "byos_usercopy_interstitial",
+                            item=item.id, user=user.id, fid=_pool_fid,
+                            cached=_pool_cached,
+                            verdict=(_pool_signal if _pool_divert
+                                     else "direct"),
+                            shape=_pool_probe_detail.get("shape"),
+                            page=_pool_probe_detail.get("page"),
+                            scope="pool")
+                        if _pool_divert:
+                            _pool_diverted = True
+                            _keep_stream_p = False
+                            if await run_db(
+                                    _ps_pool
+                                    .usercopy_quota_relay_fallback_enabled,
+                                    db):
+                                # 后路开：保留本站 /stream，取流时
+                                # 由 video_stream 走贡献者令牌中继，
+                                # 这里不剥光清单、不报 NoCompatibleStream。
+                                _keep_stream_p = True
+                            if not _keep_stream_p:
+                                for _s in sources:
+                                    for _k in ("DirectPlayUrl",
+                                               "DirectStreamUrl",
+                                               "TranscodingUrl", "Path"):
+                                        _s.pop(_k, None)
+                                    _s["SupportsDirectPlay"] = False
+                                    _s["SupportsDirectStream"] = False
+                                    _s["RequiredHttpHeaders"] = {}
+                                _pi_quota_error = (
+                                    _tv_pool.POOLCOPY_QUOTA_DETAIL
+                                    if _pool_signal == "quota"
+                                    else _tv_pool
+                                    .POOLCOPY_INTERSTITIAL_DETAIL)
+                    if not _pool_diverted:
+                        _pool_applied = await run_db(
+                            _apply_poolcopy_direct, db, _pool_variant,
+                            sources[0], _pool_fid)
+                        if _pool_applied:
+                            # §5.3 记账 + H1：只记成功下发的这一次，
+                            # 独立会话、失败静默（pool_gate 内部）。
+                            await run_db(
+                                _pool_gate_pi.note_pool_play_served,
+                                _pool_member_id,
+                                getattr(_pool_variant, "id", None),
+                                item.id, user.id)
+        except Exception:  # noqa: BLE001 — 本段失败只保留旧地址
+            pass
     # 详情页「上游」线路（U-02）：来源列表末尾追加上游线路（排在本地
     # 变体之后）。追加点在转存门禁状态与 quota 改道处理之后——上游线路
     # 是独立来源，不随用户副本门禁变 preparing/failed；quota 明确报错
@@ -6777,7 +7040,8 @@ def _available_variant_names(db: Session, item: em.MediaItem,
         mount_can_generate_play_target=_mount_can_generate_play_target(
             db, item),
         user115_direct_available=_user115_direct_available(db, item, user),
-        user_drive_byos_available=_user_drive_byos_available(db, item, user))]
+        user_drive_byos_available=_user_drive_byos_available(db, item, user),
+        pool_copy_available=_pool_copy_available(db, item, user))]
     # 挂载第 5 步播放过滤（变体层）：源已隐藏时可用变体为空，
     # 已选变体按 resolve_requested_variant 现成语义报 409。
     from backend.emby_server import playback_source_health as _psh
@@ -6807,8 +7071,28 @@ async def video_stream(
     await run_db(ensure_playback_allowed, db, user)
     # 播放门禁（2026-10-26 用户亲定硬规矩）：Emby token 直接调流是新播放，
     # 必须过门禁；带有效 play_sign 的请求是在消费已下发的链接，不追溯。
+    # goal-33 PR-3（design §5.2）：§4.1 新判定入口（按条目）接管
+    # 本端点的门禁裁决——组合方式保旧口径逐字不变：二值门禁先行，
+    # 它放行的情形（已绑 / 签名消费）新入口必同判放行；它抛 403
+    # 时才问新入口复核（池 eligible → 放行到下方池门禁段；CMS 免
+    # 门禁 → 放行；其余新入口自己抛同文案 403，含下线 provider
+    # 专用文案）。裁决存 _vs_decision 供门禁段分流。
     from backend.emby_server import playback_gate as _gate
-    await run_db(_gate.ensure_binding_playback_allowed, db, user, request)
+    from backend.emby_server import pool_gate as _pool_gate_vs
+    _vs_decision = None
+    try:
+        await run_db(_gate.ensure_binding_playback_allowed,
+                     db, user, request)
+    except HTTPException:
+        _vs_decision = await run_db(
+            _pool_gate_vs.ensure_playback_allowed_for_item,
+            db, user, item, request)
+    if _vs_decision is None:
+        _vs_sign_consumed = await run_db(
+            _gate._request_uses_issued_play_sign, request, db)
+        _vs_decision = _pool_gate_vs.PoolDecision(
+            allowed=True,
+            kind="issued_sign" if _vs_sign_consumed else "bound")
     _pt.mark("auth_playback")
     # 三层路径授权门禁（FMBY 挂载-7，#1240 落库、本 PR 接线）：放在占租约
     # 之前，拒绝的请求不占播放路数；非挂载路径 / 无授权行时放行，
@@ -6904,151 +7188,372 @@ async def video_stream(
     # 用户自己的 ready 副本仍允许既有的一次轮换（anyone-reader 读副本）。
     _viewer_bound = False
     _rotate_on_quota = True
+    _on_user_copy = False
+    # 公共池分流（goal-33 PR-3，design §5.2）：裁决为 pool，
+    # 或已下发签名消费但观众是池 eligible 的未绑用户（签名只
+    # 可能由 PlaybackInfo 在池副本 ready 时按 §4.1 新规签发）
+    # 时，转存门禁段由池门禁替换——选路只许落池副本。
+    _pool_stream_mode = _vs_decision.kind == "pool" or (
+        _vs_decision.kind == "issued_sign"
+        and not await run_db(_gate.has_active_binding, db, user.id)
+        and await run_db(
+            _pool_gate_vs.pool_eligible, db, user, item)
+        == "eligible")
     if _requested_variant not in (play_variants.BYOS_DRIVE_RELAY,
                                   play_variants.BYOS115_DIRECT):
-        _play_sign_consume = await run_db(
-            _gate._request_uses_issued_play_sign, request, db)
-        _transfer_gate = await run_db(
-            _tv.ensure_user_copy_gate, db, item, user,
-            play_sign_consume=_play_sign_consume)
-        _gate_verdict = (_transfer_gate or {}).get("verdict")
-        # 准备中态等流（2026-10-27 极限优化）：准备中不再直接 409
-        # 让播放器拿无签地址连探 404、等它自己再查 PlaybackInfo
-        # （实测约 24 秒感知等待）。流请求本身在这里等：每 0.2 秒
-        # 重查一次门禁，转存好了（proceed / serve_115_copy）就继续
-        # 正常选路 302 到用户副本，失败/超时仍按旧 409/503 处理。
-        # 等流不 serve 任何字节、不回落共享，超时上限 15 秒（可配）。
-        if _gate_verdict == "preparing":
-            async def _re_gate():
+        if _pool_stream_mode:
+            # 池门禁替换转存门禁段（design §5.2）：preparing 先
+            # 等流（wait_for_transfer_ready 同形态；池单不在请求
+            # 内当场执行，由工人办），仍未好按
+            # raise_for_transfer_gate 回 409/503 明示；serve 时
+            # 池变体 fid 顶替选路 fid，随后在本分支内出字节
+            # （302 直链主形态 / 贡献者令牌中继后路），不落到
+            # 下方共享选路——池观众绝不走共享原件与 SA 中继。
+            async def _pool_re_gate():
                 return await run_db(
-                    _tv.ensure_user_copy_gate, db, item, user,
-                    play_sign_consume=_play_sign_consume)
-            # 点播当场先办（2026-10-29 用户亲点）：先当场执行
-            # 合格的同 provider copy 单，预算内办成即本请求
-            # 继续选路放行；没办成再走下面的等流轮询（工人
-            # 可能正在办同一单）。两条路都不 serve 字节、
-            # 不回落共享。
-            _transfer_gate = await _tv.maybe_run_play_inline(
-                _transfer_gate, _re_gate)
+                    _pool_gate_vs.ensure_pool_copy_gate, db, item, user)
+
+            _pool_gate_result = await _pool_re_gate()
+            _pool_verdict = (_pool_gate_result or {}).get("verdict")
+            if _pool_verdict == "preparing":
+                _pool_gate_result = await _tv.wait_for_transfer_ready(
+                    _pool_gate_result, _pool_re_gate)
+                _pool_verdict = (_pool_gate_result or {}).get("verdict")
+            _gate.raise_for_transfer_gate(_pool_gate_result)
+            _transfer_gate = _pool_gate_result
+            _gate_verdict = _pool_verdict
+            _play_fid, _play_variant = _tv.prefer_pool_variant(
+                _play_fid, _play_variant, _pool_gate_result)
+            if _tv.pool_shared_play_blocked(_requested_variant):
+                _tv.log_byos(
+                    "byos_gate_block", item=getattr(item, "id", None),
+                    user=getattr(user, "id", None),
+                    verdict=_pool_verdict,
+                    reason=(_pool_gate_result or {}).get("reason"),
+                    where="video_stream_pool")
+                raise HTTPException(
+                    status_code=409,
+                    detail=_tv.POOL_SHARED_BLOCKED_DETAIL)
+            _pool_member_id = (_pool_gate_result or {}).get("member_id")
+            _pool_variant_row = _play_variant
+            if not _play_fid or _pool_variant_row is None \
+                    or _pool_member_id is None:
+                # serve 态却拿不到池变体行：明示失败，不回落共享。
+                raise HTTPException(
+                    status_code=409,
+                    detail="公共池副本暂时无法播放，请稍后重试"
+                           "（不走共享播放）")
+            _pool_served_resp = None
+            if _drive_switch_on:
+                _pool_public_ok = await run_db(
+                    _tv.ensure_variant_copy_public,
+                    db, _pool_variant_row, _play_fid)
+                if _pool_public_ok:
+                    _pool_probe_key = (
+                        f"poolvar:{getattr(_pool_variant_row, 'id', '')}")
+                    _pool_q_cached = await run_db(
+                        _tv.usercopy_quota_probe_cached,
+                        _pool_probe_key, _play_fid)
+                    _pool_q_verdict = await run_db(
+                        _tv.probe_user_copy_quota_decision,
+                        _pool_probe_key, _play_fid)
+                    _pool_q_detail = await run_db(
+                        _tv.usercopy_quota_probe_detail,
+                        _pool_probe_key, _play_fid)
+                    _pool_q_page = _pool_q_detail.get("page") == "quota"
+                    if (_pool_q_verdict in ("quota", "interstitial")
+                            or _pool_q_page):
+                        _pool_q_divert = (
+                            _pool_q_verdict == "quota"
+                            or _tv.usercopy_quota_divert(_pool_q_detail))
+                        _pool_q_signal = (
+                            "quota" if (_pool_q_verdict == "quota"
+                                        or _pool_q_page)
+                            else _pool_q_verdict)
+                        _tv.log_byos(
+                            "byos_usercopy_quota"
+                            if _pool_q_signal == "quota"
+                            else "byos_usercopy_interstitial",
+                            item=getattr(item, "id", None),
+                            user=getattr(user, "id", None),
+                            fid=_play_fid, cached=_pool_q_cached,
+                            verdict=(_pool_q_signal if _pool_q_divert
+                                     else "direct"),
+                            shape=_pool_q_detail.get("shape"),
+                            page=_pool_q_detail.get("page"),
+                            scope="pool")
+                        if _pool_q_divert:
+                            _pool_served_resp = (
+                                await _pool_quota_relay_attempt(
+                                    request, db, item, user, _play_fid,
+                                    _pool_variant_row,
+                                    media_type=media_type,
+                                    member_id=_pool_member_id, pt=_pt))
+                            if _pool_served_resp is None:
+                                _note_play_start_safe(
+                                    item,
+                                    user_id=getattr(user, "id", None),
+                                    method="direct_302",
+                                    variant=play_variants.POOL_COPY,
+                                    result="error",
+                                    error_kind=(
+                                        "pool_quota"
+                                        if _pool_q_signal == "quota"
+                                        else "pool_interstitial"))
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail=(
+                                        _tv.POOLCOPY_QUOTA_DETAIL
+                                        if _pool_q_signal == "quota"
+                                        else _tv
+                                        .POOLCOPY_INTERSTITIAL_DETAIL))
+                    if _pool_served_resp is None:
+                        # 死副本对账（GA-032）：302 前先做与通用
+                        # fast302 同口径的存在性校验——副本被贡献
+                        # 者删除/撤享后 DB 行仍 ready 时，不许把
+                        # 谷歌 404 直发给观众。404 先对账：能自愈
+                        # （成员令牌重授 anyone-reader）就复检放
+                        # 行；不能自愈记 stale，门禁下轮不再判
+                        # serve，观众拿 409 明示。挂载不可定位
+                        # （_ensure 回 None）无法校验，照旧下发；
+                        # 瞬时故障（503）原样明示，不回落共享。
+                        _pool_force = drive_exists_rapid_retry(
+                            request, user, _play_fid)
+                        _pool_gone_retried = False
+                        while True:
+                            try:
+                                await _ensure_drive_file_playable(
+                                    db, item, _play_fid,
+                                    force_recheck=(
+                                        _pool_force
+                                        or _pool_gone_retried))
+                                break
+                            except HTTPException as exc:
+                                if exc.status_code != 404:
+                                    raise
+                                if _pool_gone_retried:
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail="公共池副本权限已恢复，"
+                                               "正在生效中，请稍后"
+                                               "重试") from exc
+                                _pool_gone_retried = True
+                                _pool_rec = await run_db(
+                                    _pool_gate_vs
+                                    .reconcile_dead_pool_copy,
+                                    db, _pool_variant_row)
+                                if (_pool_rec or {}).get(
+                                        "action") == "healed":
+                                    continue
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail="公共池副本已失效，正在"
+                                           "重新准备中，请稍后再试"
+                                    ) from exc
+                        # 主形态：免凭证 usercontent 302（副本已授
+                        # anyone-reader）。成功下发记 §5.3 + H1。
+                        await run_db(
+                            _pool_gate_vs.note_pool_play_served,
+                            _pool_member_id,
+                            getattr(_pool_variant_row, "id", None),
+                            getattr(item, "id", None),
+                            getattr(user, "id", None))
+                        _note_play_start_safe(
+                            item, user_id=getattr(user, "id", None),
+                            method="direct_302",
+                            variant=play_variants.POOL_COPY,
+                            result="ok")
+                        from backend.emby_server.drive_auth import (
+                            drive_usercontent_download_url)
+                        return _observe_traffic(
+                            RedirectResponse(
+                                drive_usercontent_download_url(_play_fid),
+                                status_code=302,
+                                headers=_strategy
+                                .DIRECT_REDIRECT_HEADERS))
+                else:
+                    # 授权限失败：贡献者令牌中继后路（后路开关在
+                    # attempt 内查）；后路失败明示 409，不回落共享。
+                    _pool_served_resp = await _pool_quota_relay_attempt(
+                        request, db, item, user, _play_fid,
+                        _pool_variant_row, media_type=media_type,
+                        member_id=_pool_member_id, pt=_pt)
+                    if _pool_served_resp is None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="公共池副本暂时无法播放，请稍后重试"
+                                   "（不走共享播放）")
+            else:
+                # 直链开关关：中继主线形态——贡献者令牌中继
+                # （中继开关开时）；否则明示不可用，不回落共享。
+                if await run_db(_strategy.drive_relay_enabled, db):
+                    _pool_served_resp = await _pool_quota_relay_attempt(
+                        request, db, item, user, _play_fid,
+                        _pool_variant_row, media_type=media_type,
+                        member_id=_pool_member_id, pt=_pt,
+                        via_fallback=False)
+                if _pool_served_resp is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="公共池副本暂时无法播放，请稍后重试"
+                               "（不走共享播放）")
+            # 贡献者令牌中继成功下发：§5.3 记账 + H1 后返回。
+            await run_db(
+                _pool_gate_vs.note_pool_play_served, _pool_member_id,
+                getattr(_pool_variant_row, "id", None),
+                getattr(item, "id", None), getattr(user, "id", None))
+            return _observe_traffic(_pool_served_resp)
+        elif _vs_decision.kind == "not_applicable":
+            # CMS 免门禁条目：与 PlaybackInfo 同口径直接 proceed，
+            # 不进用户转存门禁——不给未绑用户建个人转存单、
+            # 不落转存门禁留痕，选路照旧走下方通用分支。
+            _transfer_gate = {"verdict": "proceed",
+                              "reason": "no_binding_required"}
+            _gate_verdict = "proceed"
+        else:
+            _play_sign_consume = await run_db(
+                _gate._request_uses_issued_play_sign, request, db)
+            _transfer_gate = await run_db(
+                _tv.ensure_user_copy_gate, db, item, user,
+                play_sign_consume=_play_sign_consume)
             _gate_verdict = (_transfer_gate or {}).get("verdict")
-        if _gate_verdict == "preparing":
-            _transfer_gate = await _tv.wait_for_transfer_ready(
-                _transfer_gate, _re_gate)
-            _gate_verdict = (_transfer_gate or {}).get("verdict")
-        _gate.raise_for_transfer_gate(_transfer_gate)
-        _play_fid, _play_variant = _tv.prefer_user_variant(
-            _play_fid, _play_variant, _transfer_gate)
-        _on_user_copy = (
-            _play_variant is not None
-            and getattr(_play_variant, "owner_scope", None) == "user")
-        _quota_cached = False
-        _quota_verdict = None
-        if (_on_user_copy and _play_fid
-                and _is_user_drive_copy_variant(_play_variant)):
-            # 先问缓存再探测：顺序不能反，探测跑完缓存里就有了。
-            # _quota_cached 只喂日志（此前是否有缓存记录）；裁决
-            # 走 decision 入口（判定对缓存的读法在
-            # transfer_variant 收口：已知 quota 吃缓存、不重复
-            # 探；非 quota 的缓存先失效再新鲜探测，沿 2026-10-30
-            # 08:29 事故口径）。
-            _quota_cached = await run_db(
-                _tv.usercopy_quota_probe_cached,
+            # 准备中态等流（2026-10-27 极限优化）：准备中不再直接 409
+            # 让播放器拿无签地址连探 404、等它自己再查 PlaybackInfo
+            # （实测约 24 秒感知等待）。流请求本身在这里等：每 0.2 秒
+            # 重查一次门禁，转存好了（proceed / serve_115_copy）就继续
+            # 正常选路 302 到用户副本，失败/超时仍按旧 409/503 处理。
+            # 等流不 serve 任何字节、不回落共享，超时上限 15 秒（可配）。
+            if _gate_verdict == "preparing":
+                async def _re_gate():
+                    return await run_db(
+                        _tv.ensure_user_copy_gate, db, item, user,
+                        play_sign_consume=_play_sign_consume)
+                # 点播当场先办（2026-10-29 用户亲点）：先当场执行
+                # 合格的同 provider copy 单，预算内办成即本请求
+                # 继续选路放行；没办成再走下面的等流轮询（工人
+                # 可能正在办同一单）。两条路都不 serve 字节、
+                # 不回落共享。
+                _transfer_gate = await _tv.maybe_run_play_inline(
+                    _transfer_gate, _re_gate)
+                _gate_verdict = (_transfer_gate or {}).get("verdict")
+            if _gate_verdict == "preparing":
+                _transfer_gate = await _tv.wait_for_transfer_ready(
+                    _transfer_gate, _re_gate)
+                _gate_verdict = (_transfer_gate or {}).get("verdict")
+            _gate.raise_for_transfer_gate(_transfer_gate)
+            _play_fid, _play_variant = _tv.prefer_user_variant(
+                _play_fid, _play_variant, _transfer_gate)
+            _on_user_copy = (
+                _play_variant is not None
+                and getattr(_play_variant, "owner_scope", None) == "user")
+            _quota_cached = False
+            _quota_verdict = None
+            if (_on_user_copy and _play_fid
+                    and _is_user_drive_copy_variant(_play_variant)):
+                # 先问缓存再探测：顺序不能反，探测跑完缓存里就有了。
+                # _quota_cached 只喂日志（此前是否有缓存记录）；裁决
+                # 走 decision 入口（判定对缓存的读法在
+                # transfer_variant 收口：已知 quota 吃缓存、不重复
+                # 探；非 quota 的缓存先失效再新鲜探测，沿 2026-10-30
+                # 08:29 事故口径）。
+                _quota_cached = await run_db(
+                    _tv.usercopy_quota_probe_cached,
+                    getattr(user, "id", None), _play_fid)
+                _quota_verdict = await run_db(
+                    _tv.probe_user_copy_quota_decision,
+                    getattr(user, "id", None), _play_fid)
+            _probe_detail = await run_db(
+                _tv.usercopy_quota_probe_detail,
                 getattr(user, "id", None), _play_fid)
-            _quota_verdict = await run_db(
-                _tv.probe_user_copy_quota_decision,
-                getattr(user, "id", None), _play_fid)
-        _probe_detail = await run_db(
-            _tv.usercopy_quota_probe_detail,
-            getattr(user, "id", None), _play_fid)
-        _quota_page = _probe_detail.get("page") == "quota"
-        if _quota_verdict in ("quota", "interstitial") or _quota_page:
-            # 判定打点：应用日志里留一条带 item/user/fid/缓存命中/
-            # 探测形态/插页分类的结构化行（quota 与 interstitial
-            # 分事件名；改道时走向由下面 relay / 115 / 409 的打点
-            # 续记，只打信号时 verdict=direct 标明仍发直链）。
-            # 改道口径（2026-10-31 修订，用户亲点）：只看 detail
-            # 的 page——page=quota（Range 腿判死或 GET 腿整拉回
-            # 额度页）一律改道，判定函数 usercopy_quota_divert
-            # 全站一份；裁决 verdict=quota 时明细缺失也保守
-            # 改道。scan / html 插页只打信号、不改道（沿
-            # 2026-10-30 插页口径）。
-            _divert = (_quota_verdict == "quota"
-                       or _tv.usercopy_quota_divert(_probe_detail))
-            _signal_verdict = (
-                "quota" if (_quota_verdict == "quota" or _quota_page)
-                else _quota_verdict)
-            _tv.log_byos(
-                "byos_usercopy_quota" if _signal_verdict == "quota"
-                else "byos_usercopy_interstitial",
-                item=getattr(item, "id", None),
-                user=getattr(user, "id", None), fid=_play_fid,
-                cached=_quota_cached,
-                verdict=_signal_verdict if _divert else "direct",
-                shape=_probe_detail.get("shape"),
-                page=_probe_detail.get("page"))
-            if _divert:
-                _block_detail = (
-                    _tv.USERCOPY_QUOTA_DETAIL
-                    if _signal_verdict == "quota"
-                    else _tv.USERCOPY_INTERSTITIAL_DETAIL)
-                _block_kind = (
-                    "usercopy_quota" if _signal_verdict == "quota"
-                    else "usercopy_interstitial")
-                # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
-                # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
-                # 本段只有 page=quota（任一腿探到额度页）才进得
-                # 来；_block_detail / _block_kind 按信号裁决取，
-                # 改道时恒为额度口径。
-                # 额度后路（2026-10-29 用户亲令）：先试本人令牌中继取同一
-                # 份副本（API 额度与公开池分开）；中继未启用/无令牌/任何
-                # 失败才回下面的现行口径（115 优先 / 409 明示），分毫不差。
-                _quota_relay_resp = await _usercopy_quota_relay_attempt(
-                    request, db, item, user, _play_fid, _play_variant,
-                    media_type=media_type, pt=_pt)
-                if _quota_relay_resp is not None:
-                    return _observe_traffic(_quota_relay_resp)
-                _note_play_start_safe(
-                    item, user_id=getattr(user, "id", None),
-                    method="direct_302", variant=play_variants.DRIVE_DIRECT,
-                    result="error", error_kind=_block_kind)
-                raise HTTPException(status_code=409, detail=_block_detail)
-        elif _probe_detail.get("shape") == "get" and _probe_detail.get("page"):
-            # Range 健康但 GET 腿探到插页（scan / html）：只打
-            # 信号、仍发直链（page=quota 已在上面改道分支处理，
-            # 不会落到这里；事件名按 page 取，verdict 恒为
-            # direct）。
-            _tv.log_byos(
-                "byos_usercopy_quota"
-                if _probe_detail["page"] == "quota"
-                else "byos_usercopy_interstitial",
-                item=getattr(item, "id", None),
-                user=getattr(user, "id", None), fid=_play_fid,
-                cached=_quota_cached,
-                verdict="direct",
-                shape="get",
-                page=_probe_detail["page"])
-        # 只有可能播到共享 Drive 原件时才查绑定。本机文件 / 无 fid
-        # 走不到 SA 轮换，也不存在「静默播共享原件」；这里多查一次
-        # 会打到只实现了 close() 的会话桩。
-        if not _on_user_copy and _fid:
-            _uid = getattr(user, "id", None)
-            if _uid is not None:
-                _viewer_bound = bool(await run_db(
-                    _gate.has_active_binding, db, _uid))
-            if _viewer_bound:
-                _rotate_on_quota = False
-        if _tv.bound_shared_play_blocked(
-                _transfer_gate, has_binding=_viewer_bound,
-                play_variant=_play_variant):
-            _tv.log_byos(
-                "byos_gate_block",
-                item=getattr(item, "id", None),
-                user=getattr(user, "id", None),
-                verdict=_gate_verdict,
-                reason=(_transfer_gate or {}).get("reason"),
-                where="video_stream")
-            raise HTTPException(
-                status_code=409, detail=_tv.SHARED_BLOCKED_DETAIL)
+            _quota_page = _probe_detail.get("page") == "quota"
+            if _quota_verdict in ("quota", "interstitial") or _quota_page:
+                # 判定打点：应用日志里留一条带 item/user/fid/缓存命中/
+                # 探测形态/插页分类的结构化行（quota 与 interstitial
+                # 分事件名；改道时走向由下面 relay / 115 / 409 的打点
+                # 续记，只打信号时 verdict=direct 标明仍发直链）。
+                # 改道口径（2026-10-31 修订，用户亲点）：只看 detail
+                # 的 page——page=quota（Range 腿判死或 GET 腿整拉回
+                # 额度页）一律改道，判定函数 usercopy_quota_divert
+                # 全站一份；裁决 verdict=quota 时明细缺失也保守
+                # 改道。scan / html 插页只打信号、不改道（沿
+                # 2026-10-30 插页口径）。
+                _divert = (_quota_verdict == "quota"
+                           or _tv.usercopy_quota_divert(_probe_detail))
+                _signal_verdict = (
+                    "quota" if (_quota_verdict == "quota" or _quota_page)
+                    else _quota_verdict)
+                _tv.log_byos(
+                    "byos_usercopy_quota" if _signal_verdict == "quota"
+                    else "byos_usercopy_interstitial",
+                    item=getattr(item, "id", None),
+                    user=getattr(user, "id", None), fid=_play_fid,
+                    cached=_quota_cached,
+                    verdict=_signal_verdict if _divert else "direct",
+                    shape=_probe_detail.get("shape"),
+                    page=_probe_detail.get("page"))
+                if _divert:
+                    _block_detail = (
+                        _tv.USERCOPY_QUOTA_DETAIL
+                        if _signal_verdict == "quota"
+                        else _tv.USERCOPY_INTERSTITIAL_DETAIL)
+                    _block_kind = (
+                        "usercopy_quota" if _signal_verdict == "quota"
+                        else "usercopy_interstitial")
+                    # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
+                    # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
+                    # 本段只有 page=quota（任一腿探到额度页）才进得
+                    # 来；_block_detail / _block_kind 按信号裁决取，
+                    # 改道时恒为额度口径。
+                    # 额度后路（2026-10-29 用户亲令）：先试本人令牌中继取同一
+                    # 份副本（API 额度与公开池分开）；中继未启用/无令牌/任何
+                    # 失败才回下面的现行口径（115 优先 / 409 明示），分毫不差。
+                    _quota_relay_resp = await _usercopy_quota_relay_attempt(
+                        request, db, item, user, _play_fid, _play_variant,
+                        media_type=media_type, pt=_pt)
+                    if _quota_relay_resp is not None:
+                        return _observe_traffic(_quota_relay_resp)
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="direct_302", variant=play_variants.DRIVE_DIRECT,
+                        result="error", error_kind=_block_kind)
+                    raise HTTPException(status_code=409, detail=_block_detail)
+            elif _probe_detail.get("shape") == "get" and _probe_detail.get("page"):
+                # Range 健康但 GET 腿探到插页（scan / html）：只打
+                # 信号、仍发直链（page=quota 已在上面改道分支处理，
+                # 不会落到这里；事件名按 page 取，verdict 恒为
+                # direct）。
+                _tv.log_byos(
+                    "byos_usercopy_quota"
+                    if _probe_detail["page"] == "quota"
+                    else "byos_usercopy_interstitial",
+                    item=getattr(item, "id", None),
+                    user=getattr(user, "id", None), fid=_play_fid,
+                    cached=_quota_cached,
+                    verdict="direct",
+                    shape="get",
+                    page=_probe_detail["page"])
+            # 只有可能播到共享 Drive 原件时才查绑定。本机文件 / 无 fid
+            # 走不到 SA 轮换，也不存在「静默播共享原件」；这里多查一次
+            # 会打到只实现了 close() 的会话桩。
+            if not _on_user_copy and _fid:
+                _uid = getattr(user, "id", None)
+                if _uid is not None:
+                    _viewer_bound = bool(await run_db(
+                        _gate.has_active_binding, db, _uid))
+                if _viewer_bound:
+                    _rotate_on_quota = False
+            if _tv.bound_shared_play_blocked(
+                    _transfer_gate, has_binding=_viewer_bound,
+                    play_variant=_play_variant):
+                _tv.log_byos(
+                    "byos_gate_block",
+                    item=getattr(item, "id", None),
+                    user=getattr(user, "id", None),
+                    verdict=_gate_verdict,
+                    reason=(_transfer_gate or {}).get("reason"),
+                    where="video_stream")
+                raise HTTPException(
+                    status_code=409, detail=_tv.SHARED_BLOCKED_DETAIL)
     # 配额方案 1（限速 + 错峰）：总闸默认关，关时下面直接放行。
     # 开时只约束还没有用户自己副本的共享 Drive 起播。超限 429，
     # 错误码在 detail 前缀和 X-Error-Code。不轮换账号、不建秒传池。

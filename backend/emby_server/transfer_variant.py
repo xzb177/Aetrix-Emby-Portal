@@ -1018,6 +1018,12 @@ USERCOPY_QUOTA_DETAIL = "你的谷歌盘今日下载额度已满，约 24 小时
 
 USERCOPY_INTERSTITIAL_DETAIL = "你的谷歌盘副本被谷歌拦截页挡住，暂时无法直接播放，请稍后重试"
 
+#: 公共池副本的额度/拦截文案（goal-33 PR-3）：额度耗的是贡献者
+#: 的盘，不是观众本人的盘，文案不许写成「你的谷歌盘」。
+POOLCOPY_QUOTA_DETAIL = "公共池副本今日下载额度已满，约 24 小时后恢复"
+
+POOLCOPY_INTERSTITIAL_DETAIL = "公共池副本被谷歌拦截页挡住，暂时无法直接播放，请稍后重试"
+
 
 def usercopy_quota_probe_enabled() -> bool:
     """用户副本额度探测开关（TRANSFER_USERCOPY_QUOTA_PROBE_ENABLED），默认开。
@@ -1934,6 +1940,9 @@ QUOTA_UNAVAILABLE_DETAIL = (
     "共享盘额度已满，未能入队转存，不改播共享原件")
 QUOTA_NO_SHARED_DETAIL = "共享盘额度已满，不改播共享原件"
 SHARED_BLOCKED_DETAIL = "转存未就绪，不走共享播放"
+#: 公共池版（goal-33 PR-3）：池观众显式选了池副本以外的变体时
+#: 的拦截文案（pool_shared_play_blocked 的出口）。
+POOL_SHARED_BLOCKED_DETAIL = "公共池副本未就绪，不走共享播放"
 
 #: provider 人话名（门禁跨 provider 文案用）。
 _PROVIDER_LABELS = {"drive": "谷歌盘", "pan115": "115 网盘",
@@ -2102,6 +2111,37 @@ def prefer_user_variant(play_fid, play_variant, gate):
     return play_fid, play_variant
 
 
+def prefer_pool_variant(play_fid, play_variant, gate):
+    """池门禁确认 ready 池副本时，播出 fid 以门禁行为准（PR-3）。
+
+    与 prefer_user_variant 同纪律：``resolve_play_file_id`` 查询
+    异常会回共享原件、且它根本不认池副本——门禁已经拿到池副本
+    行时，不许沿用原件 fid（红线：池观众不许拿到共享原件 fid）。
+    """
+    variant = (gate or {}).get("variant")
+    if ((gate or {}).get("verdict") == "serve_pool_copy"
+            and variant is not None
+            and getattr(variant, "owner_scope", None) == "pool"):
+        fid = (getattr(variant, "variant_file_id", "") or "").strip()
+        if fid:
+            return fid, variant
+    return play_fid, play_variant
+
+
+def pool_shared_play_blocked(requested_variant) -> bool:
+    """池观众显式选了池副本以外的变体时，不许静默改播共享原件。
+
+    池版 bound_shared_play_blocked：池观众（未绑、池放行）手里
+    只有池副本一条路；没带变体（None）与显式选 pool_copy 都放行，
+    其余显式变体（drive_direct / drive_relay 等共享路线）一律挡。
+    """
+    if requested_variant is None:
+        return False
+    from backend.emby_server import play_variants as _pv
+
+    return requested_variant != _pv.POOL_COPY
+
+
 def ensure_user_copy_public(db, user_id, file_id) -> bool:
     """PlaybackInfo 发用户副本直链前确保 anyone-reader（自愈存量副本）。
 
@@ -2132,6 +2172,100 @@ def ensure_user_copy_public(db, user_id, file_id) -> bool:
     except Exception:
         logger.warning("用户副本 anyone-reader 自愈失败 user=%s",
                        user_id, exc_info=True)
+        return False
+
+
+def ensure_variant_copy_public(db, variant, file_id) -> bool:
+    """按变体 owner 解析令牌属主，确保副本 anyone-reader（PR-3）。
+
+    design §5.1 第 10 步的泛化：user 副本＝观众本人（直接转调
+    :func:`ensure_user_copy_public`，语义零变化）；pool 副本＝
+    成员绑定的属主——令牌只许来自成员行的绑定（binding_id），
+    绝不用观众本人的绑定、绝不用 SA 令牌。成员不存在/已非
+    active、绑定失效、令牌取不到、授权限失败一律 False（调用方
+    按各自口径处理：PlaybackInfo 不下发直链、取流端点走服务端
+    中继或明示失败；成员令牌绝不下发观众，GA-030），永不抛异常。
+    """
+    try:
+        fid = (file_id or "").strip()
+        if not fid or variant is None:
+            return False
+        scope = getattr(variant, "owner_scope", None)
+        if scope == "user":
+            try:
+                owner_id = int(getattr(variant, "owner_ref", "") or "")
+            except (TypeError, ValueError):
+                return False
+            return ensure_user_copy_public(db, owner_id, fid)
+        if scope != "pool":
+            return False
+        try:
+            member_id = int(getattr(variant, "owner_ref", "") or "")
+        except (TypeError, ValueError):
+            return False
+        member = (db.query(em.PoolMember)
+                  .filter(em.PoolMember.id == member_id).first())
+        if member is None or member.status != "active":
+            return False
+        binding_id = getattr(member, "binding_id", None)
+        if binding_id is None:
+            return False
+        binding = (db.query(em.UserStorageBinding)
+                   .filter(em.UserStorageBinding.id == binding_id)
+                   .first())
+        if binding is None or binding.status != "active":
+            return False
+        if _pool_copy_public_cache_valid(db, member_id, fid):
+            return True
+        from backend.emby_server import drive_oauth as _do
+        from backend.emby_server import drive_share as _ds
+        token = _do.get_binding_drive_access_token(db, binding)
+        if not token:
+            return False
+        ok = _ds.ensure_shared(fid, token) in ("ok", "already")
+        if ok:
+            _copy_public_cache_put(f"pool:{member_id}", fid)
+        return ok
+    except Exception:
+        logger.warning("池副本 anyone-reader 自愈失败 variant=%s",
+                       getattr(variant, "id", None), exc_info=True)
+        return False
+
+
+def _pool_copy_public_cache_valid(db, member_id, fid) -> bool:
+    """池版已公开缓存核对（与 _copy_public_cache_valid 同纪律）。
+
+    缓存键以 ``pool:<成员 id>`` 为属主段（不掺观众 id）；命中后仍
+    回库核对池变体行：status == ready 且 share_revoked_at 不晚于
+    缓存写入时间，任一不满足即失效、走原逻辑重新授权。
+    """
+    if copy_public_cache_ttl() <= 0:
+        return False
+    try:
+        from backend.database import CacheManager
+        raw = CacheManager.get(_copy_public_key(f"pool:{member_id}", fid),
+                               domain="playback")
+        if not raw:
+            return False
+        cached_at = datetime.fromisoformat(str(raw))
+        rows = (db.query(em.TransferVariant)
+                .filter(em.TransferVariant.owner_scope == "pool",
+                        em.TransferVariant.owner_ref == str(member_id),
+                        em.TransferVariant.variant_drive_id.like(
+                            "pooldrive:%"),
+                        em.TransferVariant.variant_file_id == fid)
+                .all())
+        if not rows:
+            return False
+        for row in rows:
+            if getattr(row, "status", None) != "ready":
+                return False
+            revoked = getattr(row, "share_revoked_at", None)
+            if revoked is not None and revoked >= cached_at:
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("池副本已公开缓存核对失败，按未命中", exc_info=True)
         return False
 
 

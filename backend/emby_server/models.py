@@ -2401,6 +2401,42 @@ class PoolUsageDaily(Base):
                         onupdate=datetime.now)
 
 
+class PoolPlayEvent(Base):
+    """公共贡献池播出原始事件（goal-33 PR-3，激励计量钩子 H1）。
+
+    一行 = 一次池播出成功下发（PlaybackInfo 下发池副本地址、或
+    video_stream 302/中继出字节）。只如实记录原始事件：哪个成员的
+    哪份副本、被哪个观众起播、何时。防刷判定（本人及同人多盘互看
+    不计、同观众同副本 30 分钟只计首次、单日上限冻结等）与聚合
+    结算都是 PR-6 的纯函数活，本表不落 counted 结论——明细行结论
+    由结算聚合时回填或现算，写入点不做防刷判定（design §11.5）。
+
+    写入纪律沿 PlayStartEvent：独立会话写、失败静默，绝不进起播
+    热路径的同步事务（见 pool_gate.note_pool_play_served）。
+    无外键（照 TransferVariant 先例）；新表由 create_all 建出。
+    """
+
+    __tablename__ = "pool_play_events"
+
+    __table_args__ = (
+        Index("ix_pool_play_events_member", "member_id"),
+        Index("ix_pool_play_events_variant", "variant_id"),
+        Index("ix_pool_play_events_viewer", "viewer_user_id"),
+        Index("ix_pool_play_events_created", "created_at"),
+        Index("ix_pool_play_events_member_created",
+              "member_id", "created_at"),
+        Index("ix_pool_play_events_viewer_variant_created",
+              "viewer_user_id", "variant_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, nullable=False)
+    variant_id = Column(Integer, nullable=False)
+    item_id = Column(Integer, nullable=False)
+    viewer_user_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class Pan115Account(Base):
     """115 账号配置档（Cookie 型，不依赖 115 OpenAPI）
 
