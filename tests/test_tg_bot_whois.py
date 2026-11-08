@@ -266,10 +266,10 @@ def test_bindings_status_shown(db):
     db.add(row)
     db.commit()
     _login(db, u)
-    # 面板第一页（精简卡）：只出 provider＋状态，不带 label / 凭据 id
+    # 面板第一页（精简卡）：2026-11-08 新设计一行汇总、标签认盘，
+    # 仍不出凭据 id（旧「无 label」口径已被用户新批准取代）
     out, _markup = handlers.handle_whois(db, {"id": STAFF_TG}, STAFF_TG, "binder")
-    assert "谷歌网盘" in out
-    assert "我的主盘" not in out
+    assert "💾 谷歌盘 ×1：我的主盘 ✓" in out
     assert "424242" not in out
     # 绑定详情子页：出账号名（用户自起的展示名），仍不出凭据 id
     from backend.tg_bot import whois_panel
