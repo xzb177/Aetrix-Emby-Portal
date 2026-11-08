@@ -638,8 +638,8 @@ def _member_quota(db: Session, member, quota_fn=None):
     """成员盘剩余（about.get 口径）：返回 {"limit","usage","free"} 或 None。
 
     quota_fn 可注入（测试用，签名 quota_fn(db, binding)）；默认走
-    transfer_variant._default_drive_quota（UserDriveApiClient
-    .about_storage，沿 quota_dashboard 同款路径）。读数按 binding_id
+    quota_dashboard._default_drive_quota（UserDriveApiClient
+    .about_storage，额度驾驶舱同款路径）。读数按 binding_id
     缓存 10 分钟。读不到/读失败回 None（未知）：选盘时按容量未知
     处理（不因一次 about 抖动把成员判死），不抛。
     """
@@ -658,7 +658,8 @@ def _member_quota(db: Session, member, quota_fn=None):
             if quota_fn is not None:
                 quota = quota_fn(db, binding)
             else:
-                quota = _tv._default_drive_quota(db, binding)
+                from backend.emby_server import quota_dashboard as _qd
+                quota = _qd._default_drive_quota(db, binding)
     except Exception:  # noqa: BLE001 — 配额读失败不挡选盘，按未知处理
         logger.warning("池成员 %s 配额读取失败，按未知处理",
                        getattr(member, "id", None), exc_info=True)
