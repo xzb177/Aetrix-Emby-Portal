@@ -97,6 +97,33 @@ const gameRankEnabled = computed({
   set: (v: boolean) => { form.value['bot_gamerank_enabled'] = v ? 'true' : 'false' },
 })
 
+// 每日播放排行榜：word 风格 true/false，总开关默认关、三榜分开关默认开
+const playrankEnabled = computed({
+  get: () => (form.value['bot_playrank_enabled'] ?? 'false') === 'true',
+  set: (v: boolean) => { form.value['bot_playrank_enabled'] = v ? 'true' : 'false' },
+})
+const playrankUsersEnabled = computed({
+  get: () => (form.value['bot_playrank_users_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['bot_playrank_users_enabled'] = v ? 'true' : 'false' },
+})
+const playrankSeriesEnabled = computed({
+  get: () => (form.value['bot_playrank_series_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['bot_playrank_series_enabled'] = v ? 'true' : 'false' },
+})
+const playrankMoviesEnabled = computed({
+  get: () => (form.value['bot_playrank_movies_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['bot_playrank_movies_enabled'] = v ? 'true' : 'false' },
+})
+const playrankPosterEnabled = computed({
+  get: () => (form.value['bot_playrank_poster_enabled'] ?? 'true') === 'true',
+  set: (v: boolean) => { form.value['bot_playrank_poster_enabled'] = v ? 'true' : 'false' },
+})
+
+const playrankFields = [
+  { key: 'bot_playrank_time', label: '发送时间', hint: '上海时间，如 21:30', suffix: '' },
+  { key: 'bot_playrank_top_n', label: '每榜条数', hint: '每个榜最多列几条，默认 5，范围 1-20', suffix: '条' },
+]
+
 const slotsFields = [
   { key: 'slots_bet_tiers', label: '注额档位', hint: '逗号分隔的能量数，默认 5,10,20', suffix: '能量' },
   { key: 'slots_pay_777', label: '777 倍数', hint: '777 三连赔付倍数，默认 20（另加抱走头奖池）', suffix: '倍' },
@@ -434,6 +461,40 @@ onMounted(load)
           <el-form-item label="总开关">
             <el-switch v-model="gameRankEnabled" />
             <span class="field-hint">统计红包、老虎机、骰子对决、红包雨的净赢能量。只发海报，不发能量，也不加称号（现有称号不能设一周有效期）。默认关。主群用「启用群 ID」里的第一个群</span>
+          </el-form-item>
+        </el-form>
+      </SectionCard>
+
+      <SectionCard
+        title="每日播放排行榜"
+        :icon="Trophy"
+        description="每天到点把今日电影榜、剧集榜、观看时长榜发到主群（海报图＋文字榜一条发，发出后置顶）"
+      >
+        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+          <el-form-item label="总开关">
+            <el-switch v-model="playrankEnabled" />
+            <span class="field-hint">关闭后定时与手动都不发。默认关。主群用「启用群 ID」里的第一个群；管理员也可在机器人私聊发 /playrank 手动推送验收。当天没人播放时不发空榜。不发能量</span>
+          </el-form-item>
+          <el-form-item v-for="f in playrankFields" :key="f.key" :label="f.label">
+            <el-input v-model="form[f.key]" class="field-input" />
+            <span class="field-suffix">{{ f.suffix }}</span>
+            <span class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+          <el-form-item label="观看时长榜">
+            <el-switch v-model="playrankUsersEnabled" />
+            <span class="field-hint">按今日总观看时长排用户，默认开</span>
+          </el-form-item>
+          <el-form-item label="剧集榜">
+            <el-switch v-model="playrankSeriesEnabled" />
+            <span class="field-hint">集汇总到剧，按总时长排，默认开</span>
+          </el-form-item>
+          <el-form-item label="电影榜">
+            <el-switch v-model="playrankMoviesEnabled" />
+            <span class="field-hint">按总时长排电影，默认开</span>
+          </el-form-item>
+          <el-form-item label="海报图">
+            <el-switch v-model="playrankPosterEnabled" />
+            <span class="field-hint">播报时配一张海报图（电影/剧集各前 5）与文字榜一起发，默认开；关掉只发文字</span>
           </el-form-item>
         </el-form>
       </SectionCard>

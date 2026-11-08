@@ -106,6 +106,20 @@ def start_rankpush_scheduler() -> bool:
             game_actions = gamerank.run_scheduled_tick(db)
             if game_actions:
                 logger.info("gamerank 调度动作：%s", game_actions)
+            # 每日播放排行榜（文字三榜）搭同一条分钟巡检（与 gamerank
+            # 同路，不新起线程）；自带 try 隔离，失败不拖累同拍其他榜。
+            try:
+                from backend.tg_bot import playrank
+
+                play_actions = playrank.run_scheduled_tick(db)
+                if play_actions:
+                    logger.info("playrank 调度动作：%s", play_actions)
+            except Exception:
+                logger.exception("playrank 调度 tick 失败")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
         except Exception:
             logger.exception("rankpush 调度 tick 失败")
             try:
