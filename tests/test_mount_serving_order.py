@@ -139,6 +139,9 @@ class _RecordingTimer:
         self.marks.append(name)
         self._real.mark(name)
 
+    def elapsed_ms(self):
+        return self._real.elapsed_ms()
+
     def done(self):
         self._real.done()
 
