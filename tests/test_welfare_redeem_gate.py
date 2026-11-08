@@ -111,6 +111,7 @@ def test_classification_spot_checks():
     # 自挣：本人行为入账
     assert earned["checkin"] is True
     assert earned["chat"] is True  # 发言＋站内影评共用 award_chat_points
+    assert earned["pool_reward"] is True  # 池贡献激励：本人贡献磁盘被播放/在线挣来的分，值钉死防错账（2026-11-08，#1895）
     # 非自挣：他人/系统/运气来源
     for t in ("transfer_in", "invitee", "rebate", "promotion", "redpacket",
               "code_redeem", "exchange", "recharge", "refund", "admin_grant",
