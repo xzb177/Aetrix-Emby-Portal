@@ -414,6 +414,10 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "transfer_sediment_max_items_per_round": ("int", 1, 200),
     "transfer_sediment_fuse_window_days": ("int", 7, 90),
     "transfer_sediment_fuse_unconsumed_ratio": ("float", 0.1, 1.0),
+    # 晚高峰静默窗（2026-11-08）：上海整点起止，默认 19→23，
+    # 起>止为跨午夜窗，起==止为关闭；读取侧同口径钳 [0, 23]。
+    "transfer_sediment_quiet_start_hour": ("int", 0, 23),
+    "transfer_sediment_quiet_end_hour": ("int", 0, 23),
     "transfer_sediment_fused": ("bool",),
     # 用户副本额度探测 ok 裁决复用 TTL（2026-11-08，秒）：判定点
     # （PlaybackInfo / video_stream）对健康副本探得 ok 后，裁决落
