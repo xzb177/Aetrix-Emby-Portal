@@ -1328,6 +1328,121 @@ def usercopy_quota_divert(detail) -> bool:
     return bool(detail) and detail.get("page") == "quota"
 
 
+#: 用户副本额度探测 ok 裁决复用 TTL 的 SystemConfig 键（秒）：
+#: 默认 300，0 = 关复用（回每次新鲜探测）。仅 SystemConfig 键
+#: （非 env），登记在 config_schema.TRANSFER_CONFIG_SCHEMA。
+KEY_USERCOPY_PROBE_OK_REUSE_TTL_SEC = "usercopy_probe_ok_reuse_ttl_sec"
+USERCOPY_PROBE_OK_REUSE_TTL_DEFAULT = 300
+_USERCOPY_PROBE_OK_REUSE_TTL_MAX = 3600
+
+#: ok 裁决复用键前缀（Redis）：键含用户 + 副本 fid。两个判定点
+#: 分别跑在 aetrix-api 与 aetrix-ea 两个进程（emby_api.main 挂的
+#: 是同一套 emby_server.api 路由），进程内缓存互相看不见，复用
+#: 记录必须落 Redis 才跨进程有效。
+_USERCOPY_PROBE_OK_REUSE_PREFIX = "aetrix:usercopy_probe_ok:"
+
+
+def _usercopy_probe_ok_reuse_key(user_id, fid) -> str:
+    return f"{_USERCOPY_PROBE_OK_REUSE_PREFIX}{user_id}:{fid}"
+
+
+def _usercopy_probe_ok_reuse_ttl() -> int:
+    """ok 裁决复用 TTL（秒）：SystemConfig 热读唯一口径。
+
+    走 integrations.store 热读（自带 60 秒缓存）+ 独立短会话，
+    不依赖判定点的请求会话。无行 / 非法 / 读失败一律回默认
+    300（fail-safe：配置读不到不改变已批准的复用行为，更不挡
+    播放）；钳 [0, 3600]，0 = 关复用。永不抛异常。
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.integrations import store
+        session = SessionLocal()
+        try:
+            raw = store.get_value(
+                session, KEY_USERCOPY_PROBE_OK_REUSE_TTL_SEC, "")
+        finally:
+            session.close()
+        value = int(str(raw).strip())
+    except Exception:  # noqa: BLE001 — 配置读不到回默认
+        return USERCOPY_PROBE_OK_REUSE_TTL_DEFAULT
+    if value < 0:
+        return USERCOPY_PROBE_OK_REUSE_TTL_DEFAULT
+    return min(value, _USERCOPY_PROBE_OK_REUSE_TTL_MAX)
+
+
+def _probe_ok_reuse_applies(user_id) -> bool:
+    """复用只服务用户副本判定点；池路径不走复用。
+
+    池的三处 decision 调用一律以 ``poolvar:<variant_id>`` 作
+    user_id（api 供播判定、pool_gate 熔断恢复探测）——熔断恢复
+    必须当场探、供播判定口径与复用上线前逐字一致，故见此前缀
+    直接不适用，读写都跳过。
+    """
+    return not str(user_id).startswith("poolvar:")
+
+
+def _probe_ok_reuse_hit(user_id, fid) -> bool:
+    """Redis 里有该副本近 TTL 内的 ok 复用记录 → True。
+
+    Redis 未启用 / 熔断 / 抛错一律按未命中——判定随即回现行
+    口径（失效缓存 + 新鲜探测），与复用上线前逐字一致，绝不
+    因缓存挂了挡播放。永不抛异常。
+    """
+    if not _probe_ok_reuse_applies(user_id):
+        return False
+    if _usercopy_probe_ok_reuse_ttl() <= 0:
+        return False
+    try:
+        from backend.database import get_redis
+        rc = get_redis()
+        if rc is None:
+            return False
+        return rc.get(_usercopy_probe_ok_reuse_key(user_id, fid)) == "1"
+    except Exception:  # noqa: BLE001 — Redis 不可用按未命中
+        return False
+
+
+def _probe_ok_reuse_store(user_id, fid) -> None:
+    """新鲜探测判 ok 后落复用记录（只缓存 ok 裁决）。
+
+    quota / error / interstitial 一律不经这里。写失败只丢这次
+    复用机会，不影响已得的裁决。永不抛异常。
+    """
+    if not _probe_ok_reuse_applies(user_id):
+        return
+    ttl = _usercopy_probe_ok_reuse_ttl()
+    if ttl <= 0:
+        return
+    try:
+        from backend.database import get_redis
+        rc = get_redis()
+        if rc is None:
+            return
+        rc.set(_usercopy_probe_ok_reuse_key(user_id, fid), "1", ex=ttl)
+    except Exception:  # noqa: BLE001 — 写不进不影响本次裁决
+        pass
+
+
+def _probe_ok_reuse_clear(user_id, fid) -> None:
+    """新鲜探测判 quota 时清掉可能残留的 ok 复用记录。
+
+    防御纵深：复用命中时根本不会走到新鲜探测，能走到这里说明
+    复用未命中或已关；仍顺手清一次，保证一条新 quota 之后不
+    会再有陈 ok 在 TTL 内盖住它。永不抛异常。
+    """
+    if not _probe_ok_reuse_applies(user_id):
+        return
+    try:
+        from backend.database import get_redis
+        rc = get_redis()
+        if rc is None:
+            return
+        rc.delete(_usercopy_probe_ok_reuse_key(user_id, fid))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def probe_user_copy_quota_decision(user_id, fid) -> str:
     """改道判定专用入口（PlaybackInfo / video_stream 两判定点）。
 
@@ -1347,6 +1462,20 @@ def probe_user_copy_quota_decision(user_id, fid) -> str:
       （缓存 quota 把 Range 已回 206 的 fid 反复改道）在 quota
       方向被本次定案有意让位：已知 quota 时宁可中继到期重探，
       不许每请求重探；其余方向的新鲜度保护不变。
+
+    2026-11-08 修订（用户亲点取舍，盘点浪费点 2）：ok 裁决加
+    一层短时复用——新鲜探测判 ok 后把裁决落 Redis（键含用户
+    + fid，TTL 默认 300 秒、SystemConfig 可配，见
+    _usercopy_probe_ok_reuse_ttl），判定先查完上面 quota 方向
+    的缓存口径、未命中 quota 时再查复用：命中直接返回 ok，
+    不再失效重探（PlaybackInfo 与 video_stream 两判定点同
+    一副本不再各付两腿）。取舍认账：ok 之后 TTL 内副本新撞
+    额度页，判定要等复用到期才探得到——与 quota 方向「吃
+    缓存到期重探」的既有定案同构。只缓存 ok：quota / error /
+    interstitial 绝不写复用、行为与本修订前逐字一致（新鲜探
+    测判 quota 时顺手清复用残留）；Redis 不可用时复用层整体
+    按未命中，判定回上面全部现行口径。池路径（poolvar: 前缀）
+    不走复用，逐字不变。
 
     失效/读取失败（缓存不可用）不阻断：吞掉异常照常探测——
     probe 对缓存异常本就按未命中处理。永不抛异常的口径与
@@ -1369,6 +1498,13 @@ def probe_user_copy_quota_decision(user_id, fid) -> str:
             # GET 腿额度页信号：裁决仍是 ok，改道由判定点按
             # 明细判（usercopy_quota_divert）；这里只负责不重探。
             return "ok"
+        # ok 裁决短时复用（2026-11-08 修订）：quota 方向的缓存
+        # 口径已在上面收口，走到这里的只有非 quota 情形；Redis
+        # 里有近 TTL 内的 ok 复用记录就直接吃，不再失效重探。
+        # Redis 不可用 / 池路径（poolvar:）在 _probe_ok_reuse_hit
+        # 内一律按未命中，行为回现行口径。
+        if _probe_ok_reuse_hit(user_id, fid):
+            return "ok"
     if fid:
         try:
             from backend.database import CacheManager
@@ -1378,7 +1514,16 @@ def probe_user_copy_quota_decision(user_id, fid) -> str:
                                 domain="playback")
         except Exception:  # noqa: BLE001 — 失效失败不阻断判定
             pass
-    return probe_user_copy_quota(user_id, fid)
+    verdict = probe_user_copy_quota(user_id, fid)
+    if verdict == "ok" and usercopy_quota_probe_enabled():
+        # 只缓存 ok 裁决：供两判定点（跨进程）短时复用。探测
+        # 开关关时 probe 的 ok 是「不探直放」的合成裁决，不落
+        # 复用——免得重开探测后吃到没真探过的陈 ok。
+        _probe_ok_reuse_store(user_id, fid)
+    elif verdict == "quota":
+        # 新 quota 不许被任何残留的陈 ok 复用记录盖住。
+        _probe_ok_reuse_clear(user_id, fid)
+    return verdict
 
 
 def is_transfer_dir_rel(rel: str) -> bool:

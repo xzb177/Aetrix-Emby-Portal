@@ -415,6 +415,13 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "transfer_sediment_fuse_window_days": ("int", 7, 90),
     "transfer_sediment_fuse_unconsumed_ratio": ("float", 0.1, 1.0),
     "transfer_sediment_fused": ("bool",),
+    # 用户副本额度探测 ok 裁决复用 TTL（2026-11-08，秒）：判定点
+    # （PlaybackInfo / video_stream）对健康副本探得 ok 后，裁决落
+    # Redis 跨进程复用本秒数，期内同副本再判不再重探（省每次 2 个
+    # usercontent 请求）；quota / error 裁决不复用。读取唯一实现
+    # transfer_variant._usercopy_probe_ok_reuse_ttl（热读 fail-safe、
+    # 无行回默认 300），范围与读取侧钳制 [0, 3600] 同口径，0 = 关。
+    "usercopy_probe_ok_reuse_ttl_sec": ("int", 0, 3600),
 }
 
 # Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的
