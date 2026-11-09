@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from backend.db_retry import commit_with_retry
 
 from backend.emby_server import drive_error_events
+from backend.emby_server import play_access_events
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import models as em
@@ -531,6 +532,7 @@ def janitor_tick(heavy: bool = True) -> dict:
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
               "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
               "decision_rounds_pruned": 0, "drive_error_events_pruned": 0,
+              "play_access_events_pruned": 0,
               "emby_tokens_purged": 0,
               "images_pruned": 0,
               "images_freed_bytes": 0, "ai_usage_pruned": 0,
@@ -615,6 +617,18 @@ def janitor_tick(heavy: bool = True) -> dict:
                 drive_error_events.purge_expired_events(db))
         except Exception as exc:  # noqa: BLE001
             logger.warning("清理 Drive 报错事件失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
+
+        # 起播取用事件（goal-38 审计第一步）：超保留期（默认
+        # 30 天，SystemConfig 可配）的删掉，只留近期可复盘的。
+        db = SessionLocal()
+        try:
+            result["play_access_events_pruned"] = (
+                play_access_events.purge_expired_events(db))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("清理起播取用事件失败: %s", exc)
             db.rollback()
         finally:
             db.close()

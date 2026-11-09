@@ -201,6 +201,9 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned",
                     # Drive 报错原因落库：报错事件保留期清理计数
                     # （干净时 0，参与全零断言）
                     "drive_error_events_pruned",
+                    # goal-38 审计第一步：起播取用事件保留期清理
+                    # 计数（干净时 0，参与全零断言）
+                    "play_access_events_pruned",
                     "emby_tokens_purged",
                     "images_pruned", "images_freed_bytes",
                     "thumbs_backfilled",

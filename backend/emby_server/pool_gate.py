@@ -1049,8 +1049,48 @@ def pool_serve_candidate(db: Session, item):
     return row, int(member.id)
 
 
+def _note_pool_gate_decision(result, item, user) -> None:
+    """池门禁决策留痕（goal-38 审计第一步）：verdict 算完落一行
+    （scope=pool_gate），与个人盘门禁 transfer_gate 同构——此前
+    池门禁本体不落 decision，serve/preparing/failed 只能靠建单
+    时的 pool_pick 一行间接推断，台账查不到「这次取用为什么被
+    拒」。留痕由 transfer_decisions 全程兜底（独立会话、失败
+    静默），本函数再包一层防组装异常漏进播放链。
+    """
+    try:
+        job_id = (result or {}).get("job_id")
+        _decisions.note_decision(
+            scope="pool_gate",
+            resource_key=f"item:{getattr(item, 'id', None)}",
+            candidates={
+                "item_id": getattr(item, "id", None),
+                "user_id": getattr(user, "id", None),
+                "member_id": (result or {}).get("member_id"),
+                "verdict": (result or {}).get("verdict"),
+                "reason": (result or {}).get("reason"),
+                "job_id": job_id,
+            },
+            decision=(result or {}).get("verdict") or "unknown",
+            reason=(result or {}).get("reason"),
+            execution_ref=(str(job_id) if job_id is not None
+                           else None))
+    except Exception:  # noqa: BLE001 — 留痕组装失败不能挡播放
+        pass
+
+
 def ensure_pool_copy_gate(db: Session, item, user, request=None, *,
                           quota_fn=None) -> dict:
+    """池转存门禁。语义见 ``_ensure_pool_copy_gate_impl``；
+    本包装只在 verdict 算完后补一行决策留痕（goal-38 审计
+    第一步），返回值逐字不变。"""
+    result = _ensure_pool_copy_gate_impl(
+        db, item, user, request, quota_fn=quota_fn)
+    _note_pool_gate_decision(result, item, user)
+    return result
+
+
+def _ensure_pool_copy_gate_impl(db: Session, item, user, request=None, *,
+                                quota_fn=None) -> dict:
     """池转存门禁（PR-2）：未绑用户的池副本判定（design §4.2/§6.2）。
 
     调用方保证：用户未绑定、池 eligible（见

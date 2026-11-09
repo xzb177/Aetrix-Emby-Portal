@@ -2116,6 +2116,59 @@ class DriveApiErrorEvent(Base):
     account_hash = Column(String(16), nullable=False, default="")
 
 
+class DrivePlayAccessEvent(Base):
+    """个人盘起播取用事件（goal-38 审计第一步）：一行 = 一次起播
+    取用侧的关键动作——绑定门禁被拒、副本选路命中/未命中、换线
+    失败终局。此前这类动作只有日志或干脆没痕：门禁 403 在抛错前
+    不落任何表，``resolve_play_file_id`` 纯读不记，换线失败只有
+    前置的中继 error 行。双盘审计台账要能按人/盘/片回答「谁在
+    什么时候取用被拒/没命中副本」，故单独立表，user_id /
+    binding_id / item_id 都是一等列（不学决策表把 user 藏进
+    JSON）。
+
+    写入纪律（照 TransferDecisionRound 先例）：独立会话、写失败
+    静默丢弃并计数，绝不影响播放主链路；写入模块
+    ``play_access_events`` 带进程内限频，同一
+    (user, item, action, result, reason) 短时重复只记一行。
+    行由 janitor 按保留期清理（默认 30 天，SystemConfig
+    play_access_events_retention_days 可配）。
+
+    不加外键（照 PlayStartEvent 先例）：用户/绑定/条目删掉后
+    事件行留着供复盘。
+    """
+
+    __tablename__ = "drive_play_access_events"
+
+    __table_args__ = (
+        Index("ix_drive_play_access_events_created", "created_at"),
+        Index("ix_drive_play_access_events_user_created",
+              "user_id", "created_at"),
+        Index("ix_drive_play_access_events_item_created",
+              "item_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    # 取用者（WebUser.id）；门禁在用户对象缺 id 时按 None 记
+    user_id = Column(Integer)
+    # 命中的绑定行 id（UserStorageBinding.id）；被拒类事件通常
+    # 为空，写入模块在有 user 时尽力解析其 active Drive 绑定
+    binding_id = Column(Integer)
+    # 条目 id（emby_items.id）
+    item_id = Column(Integer)
+    # 入口：playback_info | video_stream
+    entry = Column(String(20), nullable=False, default="")
+    # 动作：gate_reject（门禁被拒）| copy_resolve（副本选路）|
+    # switch_failed（换线失败终局）
+    action = Column(String(40), nullable=False, default="")
+    # 结果：denied | hit | miss | error
+    result = Column(String(40), nullable=False, default="")
+    # 原因原文（门禁 detail / 失败上下文），写入时截断 200 字
+    reason = Column(String(200))
+    # 上下文快照 JSON（variant_id / owner_scope 等，结构随 action）
+    detail = Column(Text)
+
+
 class TransferContentManifest(Base):
     """内容块哈希清单（换代线「分块清单同步」地基，2026-11-01）。
 
