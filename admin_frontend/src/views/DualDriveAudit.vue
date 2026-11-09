@@ -320,7 +320,7 @@ onMounted(() => void load())
 }
 
 .mono {
-  font-family: var(--au-font-mono, monospace);
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 
