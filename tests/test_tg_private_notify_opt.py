@@ -16,7 +16,11 @@ import os
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
-os.environ["TG_PROACTIVE_FLUSHER"] = "0"
+# 注意：TG_PROACTIVE_FLUSHER 不能在这里导入期写死——它由
+# proactive._flusher_enabled() 在 wake_flusher() 被调用时动态读，
+# 不是导入期读；导入期写死会泄漏进同进程后续全部用例（卫生守卫
+# test_zz_env_import_hygiene）。改由下方 autouse fixture 用
+# monkeypatch.setenv 按用例设置、用例结束自动撤销。
 
 import asyncio
 from datetime import datetime, timedelta
@@ -37,6 +41,14 @@ from backend import lottery, vitality
 from backend.emby_server import models as em
 from backend.emby_server import new_media_notify as nmn
 from backend.tg_bot import features, proactive
+
+
+@pytest.fixture(autouse=True)
+def _no_background_flusher(monkeypatch):
+    # 本文件用例手动调 flush_due 断言发送，后台刷盘线程必须关：
+    # 按用例设置 TG_PROACTIVE_FLUSHER=0，结束自动撤销，不许导入期
+    # 写死泄漏给同进程其它文件（见文件头注释）。
+    monkeypatch.setenv("TG_PROACTIVE_FLUSHER", "0")
 
 
 @pytest.fixture()
