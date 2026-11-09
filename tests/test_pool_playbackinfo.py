@@ -270,7 +270,12 @@ def _playbackinfo(client, token, guid):
     return r.json()
 
 
-def test_playbackinfo_pool_preparing_strips_urls(client, free_token, seed):
+def test_playbackinfo_pool_preparing_strips_urls(
+        client, free_token, seed, monkeypatch):
+    # 本用例只钉「等流超时后的准备中形态」：关掉等流（与
+    # test_pool_serve 的 stream 准备中用例同口径），避免为一份
+    # 永远办不完的池单白等满窗。等流命中形态见下一条用例。
+    monkeypatch.setenv("TRANSFER_WAIT_STREAM_ENABLED", "0")
     body = _playbackinfo(client, free_token, seed["movie"])
     assert ORIG_FID not in str(body)
     src = body["MediaSources"][0]
@@ -288,6 +293,56 @@ def test_playbackinfo_pool_preparing_strips_urls(client, free_token, seed):
         assert job.dest_drive_id == f"pooldrive:{seed['member_id']}"
     finally:
         db.close()
+
+
+def test_playbackinfo_pool_preparing_waits_then_serves(
+        client, free_token, seed, monkeypatch):
+    """池副本在飞时 PlaybackInfo 与 video_stream 同口径等流。
+
+    2026-11-09 实证（《今天是太阳雨》第 1 集）：池单点播时建单、
+    约 15 秒后办好，但 PlaybackInfo 当场回准备中形态、播放器报
+    「服务器未提供该资源的播放地址」且不重试——用户侧是一次硬
+    失败。video_stream 的池分支早已等流（wait_for_transfer_ready），
+    PlaybackInfo 池分支同口径等：等窗内副本就绪即按 serve 下发，
+    等不到仍回原准备中形态（上一条用例钉死）。
+    """
+    db = SessionLocal()
+    try:
+        row = em.TransferVariant(
+            item_id=seed["movie_id"], source_file_id=ORIG_FID,
+            variant_file_id="poolcopy",
+            variant_drive_id=f"pooldrive:{seed['member_id']}",
+            owner_scope="pool", owner_ref=str(seed["member_id"]),
+            status="ready", size_bytes=2_000_000_000)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        variant_row = row
+        calls = {"n": 0}
+
+        def _fake_gate(db_, item_, user_, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"verdict": "preparing", "reason": "job_in_flight",
+                        "job_id": 999, "pool": True,
+                        "detail": pool_gate.POOL_PREPARING_DETAIL}
+            return {"verdict": "serve_pool_copy",
+                    "reason": "has_ready_variant",
+                    "variant": variant_row,
+                    "member_id": seed["member_id"], "pool": True}
+
+        monkeypatch.setattr(
+            pool_gate, "ensure_pool_copy_gate", _fake_gate)
+    finally:
+        db.close()
+    body = _playbackinfo(client, free_token, seed["movie"])
+    # 等流期间门禁被重查过（不是当场按 preparing 打发）
+    assert calls["n"] >= 2
+    src = body["MediaSources"][0]
+    # 已按 serve 放行：不再是准备中形态（地址保留、状态非 preparing）
+    assert src.get("TransferStatus") in (None, "ready")
+    assert "DirectPlayUrl" in src
+    assert ORIG_FID not in str(body)
 
 
 def test_playbackinfo_pool_serve_no_longer_failed(
