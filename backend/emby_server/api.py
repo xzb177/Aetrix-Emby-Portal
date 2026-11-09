@@ -6902,6 +6902,21 @@ async def playback_info(
         if _pool_decision.kind == "pool":
             _pi_gate = await run_db(
                 _pool_gate_pi.ensure_pool_copy_gate, db, item, user)
+            if (_pi_gate or {}).get("verdict") == "preparing":
+                # 池副本在飞时与 video_stream 池分支同口径等流
+                # （2026-11-09《今天是太阳雨》实证：点播当场建单、
+                # 约 15 秒后办好，但 PlaybackInfo 立刻回准备中
+                # 形态，播放器报「未提供播放地址」且不重试，用户
+                # 侧是一次硬失败）。等窗内就绪即按 serve 继续
+                # 下发；等不到仍回原 preparing 形态（下方
+                # apply_transfer_status 覆盖清单，形态逐字不变）。
+                # 等流只重查门禁、不 serve 字节、不回落共享。
+                async def _pi_pool_regate():
+                    return await run_db(
+                        _pool_gate_pi.ensure_pool_copy_gate,
+                        db, item, user)
+                _pi_gate = await _tv_pi.wait_for_transfer_ready(
+                    _pi_gate, _pi_pool_regate)
             # PR-3：serve_pool_copy 正式接通——下方池播出段按池
             # 副本下发地址（不再映射 failed）；preparing/failed
             # 仍由紧接着的 apply_transfer_status 覆盖清单。
@@ -7240,6 +7255,26 @@ async def playback_info(
                                     if _pool_signal == "quota"
                                     else _tv_pool
                                     .POOLCOPY_INTERSTITIAL_DETAIL)
+                            if _keep_stream_p:
+                                # 改道保留的 /stream 地址必须带池
+                                # 变体身份：取流靠 video_stream 池
+                                # 分支续命，地址若仍是主线身份，
+                                # 客户端请求与门禁裁定对不上
+                                # （2026-11-09 死结的下发侧一半）。
+                                # 只打第一条源（只取第一条的老客户端
+                                # 占绝大多数）；已带变体标记的地址
+                                # 不重复打（多变体清单里各源已有
+                                # 各自标记，stream 侧按池副本出流
+                                # 兜底，见 video_stream 池分支）。
+                                _stamp_src = sources[0]
+                                for _url_key in ("DirectPlayUrl",
+                                                 "DirectStreamUrl"):
+                                    _u = _stamp_src.get(_url_key)
+                                    if _u and "variant=" not in _u:
+                                        _stamp_src[_url_key] = (
+                                            play_variants.variantize_url(
+                                                _u, item.guid,
+                                                play_variants.POOL_COPY))
                     if not _pool_diverted:
                         _pool_applied = await run_db(
                             _apply_poolcopy_direct, db, _pool_variant,
@@ -7542,16 +7577,25 @@ async def video_stream(
             _gate_verdict = _pool_verdict
             _play_fid, _play_variant = _tv.prefer_pool_variant(
                 _play_fid, _play_variant, _pool_gate_result)
-            if _tv.pool_shared_play_blocked(_requested_variant):
+            if _requested_variant is not None \
+                    and _requested_variant != play_variants.POOL_COPY:
+                # 池观众显式带了共享路线变体取流（多是 PlaybackInfo
+                # 额度改道后保留的主线地址被播放器照单全收）：池
+                # 观众只有池副本一条合法路线，裁定 serve 即按池
+                # 副本出流——绝不下发共享原件，但也不再 409 把
+                # 计划层已下发的腿毙掉（2026-11-09 死结实证：
+                # PlaybackInfo 因额度探测改道保留主线 /stream、
+                # 本处按变体身份 409，两层互毙，用户无路可走；
+                # 本分支下方已有完整的池播出链——公开链 302 /
+                # 额度时成员令牌中继 / 明示 409——与无变体请求
+                # 同口径走完即可）。只记一条改道打点留痕。
                 _tv.log_byos(
-                    "byos_gate_block", item=getattr(item, "id", None),
+                    "byos_ready_play", item=getattr(item, "id", None),
                     user=getattr(user, "id", None),
                     verdict=_pool_verdict,
                     reason=(_pool_gate_result or {}).get("reason"),
+                    requested_variant=_requested_variant,
                     where="video_stream_pool")
-                raise HTTPException(
-                    status_code=409,
-                    detail=_tv.POOL_SHARED_BLOCKED_DETAIL)
             _pool_member_id = (_pool_gate_result or {}).get("member_id")
             _pool_variant_row = _play_variant
             if not _play_fid or _pool_variant_row is None \

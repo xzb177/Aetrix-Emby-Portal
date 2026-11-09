@@ -2085,9 +2085,6 @@ QUOTA_UNAVAILABLE_DETAIL = (
     "共享盘额度已满，未能入队转存，不改播共享原件")
 QUOTA_NO_SHARED_DETAIL = "共享盘额度已满，不改播共享原件"
 SHARED_BLOCKED_DETAIL = "转存未就绪，不走共享播放"
-#: 公共池版（goal-33 PR-3）：池观众显式选了池副本以外的变体时
-#: 的拦截文案（pool_shared_play_blocked 的出口）。
-POOL_SHARED_BLOCKED_DETAIL = "公共池副本未就绪，不走共享播放"
 
 #: provider 人话名（门禁跨 provider 文案用）。
 _PROVIDER_LABELS = {"drive": "谷歌盘", "pan115": "115 网盘",
@@ -2271,20 +2268,6 @@ def prefer_pool_variant(play_fid, play_variant, gate):
         if fid:
             return fid, variant
     return play_fid, play_variant
-
-
-def pool_shared_play_blocked(requested_variant) -> bool:
-    """池观众显式选了池副本以外的变体时，不许静默改播共享原件。
-
-    池版 bound_shared_play_blocked：池观众（未绑、池放行）手里
-    只有池副本一条路；没带变体（None）与显式选 pool_copy 都放行，
-    其余显式变体（drive_direct / drive_relay 等共享路线）一律挡。
-    """
-    if requested_variant is None:
-        return False
-    from backend.emby_server import play_variants as _pv
-
-    return requested_variant != _pv.POOL_COPY
 
 
 def ensure_user_copy_public(db, user_id, file_id) -> bool:

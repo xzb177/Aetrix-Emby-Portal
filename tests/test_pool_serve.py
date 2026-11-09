@@ -360,13 +360,6 @@ def test_prefer_pool_variant():
         == ("orig", None)
 
 
-def test_pool_shared_play_blocked():
-    assert tv.pool_shared_play_blocked(None) is False
-    assert tv.pool_shared_play_blocked(play_variants.POOL_COPY) is False
-    assert tv.pool_shared_play_blocked("drive_direct") is True
-    assert tv.pool_shared_play_blocked("drive_relay") is True
-
-
 def test_ensure_variant_copy_public_pool_uses_member_token(seed, monkeypatch):
     from backend.emby_server import drive_share
     db = SessionLocal()
@@ -747,7 +740,95 @@ def test_stream_pool_preparing_409(client, free_token, seed, monkeypatch):
     assert ORIG_FID not in r.text
 
 
-def test_stream_pool_explicit_other_variant_409(client, free_token, seed):
+def test_stream_pool_explicit_other_variant_serves_pool_copy(
+        client, free_token, seed):
+    """池观众显式带共享路线变体取流 → 改走池副本出流，不再 409。
+
+    2026-11-09 死结实证（用户 qidor/《走马上任》S1E5）：PlaybackInfo
+    因池副本公开链额度探测改道而保留了主线（drive_direct 身份）
+    的 /stream 地址，播放器照此取流却被 stream 门禁以「显式选了
+    共享变体」409——计划层发的腿被门禁层毙掉，无路可走。池观众
+    本就只有池副本一条合法路线：门禁裁定 serve_pool_copy 时按
+    池副本出流（与无变体请求同形态），绝不下发共享原件。
+    """
+    db = SessionLocal()
+    try:
+        variant_id = _add_pool_variant(db, seed)
+    finally:
+        db.close()
+    r = _stream(client, free_token, seed["movie"],
+                query="?variant=drive_direct")
+    assert r.status_code == 302, r.text
+    loc = r.headers.get("location") or ""
+    assert "usercontent" in loc and POOL_FID in loc
+    assert ORIG_FID not in loc
+    assert ORIG_FID not in r.text
+    db = SessionLocal()
+    try:
+        events = _play_events(db)
+        assert len(events) == 1
+        assert events[0].variant_id == variant_id
+        assert events[0].viewer_user_id == seed["free_id"]
+    finally:
+        db.close()
+
+
+def test_stream_pool_explicit_relay_variant_serves_pool_copy(
+        client, free_token, seed, monkeypatch):
+    """组合覆盖：ready 池副本 + 计划层发的另一条直链腿（drive_relay）。
+
+    与 drive_direct 用例同形态：凡「有 ready 池副本 + 下发的腿是
+    共享路线变体」都会在 stream 门禁撞上同一裁定点，修法与变体
+    名无关，这里把第二条腿名也钉住，防按名打补丁式回归。
+    drive_relay 腿只在中继开关开 + 挂载可定位时才下发，故本用例
+    先把中继开关打开，让这条腿成为真正可下发的腿（与生产里
+    「计划发了这条腿」的组合一致）。
+    """
+    real_get = playback_strategy.store.get_value
+
+    def fake_get(db_, key, default="", **kwargs):
+        if key == playback_strategy.KEY_DRIVE_RELAY:
+            return "true"
+        return real_get(db_, key, default, **kwargs)
+
+    monkeypatch.setattr(playback_strategy.store, "get_value", fake_get)
+    db = SessionLocal()
+    try:
+        _add_pool_variant(db, seed)
+    finally:
+        db.close()
+    r = _stream(client, free_token, seed["movie"],
+                query="?variant=drive_relay")
+    assert r.status_code == 302, r.text
+    loc = r.headers.get("location") or ""
+    assert "usercontent" in loc and POOL_FID in loc
+    assert ORIG_FID not in loc
+    assert ORIG_FID not in r.text
+
+
+def test_stream_pool_quota_explicit_variant_relay_not_deadlocked(
+        client, free_token, seed, monkeypatch):
+    """死结完整形态：公开链额度改道 + 显式 drive_direct 取流。
+
+    PlaybackInfo 探测判 quota、后路开而保留 /stream；取流时门禁
+    不许再以变体身份 409，必须进池分支自身的额度处理——成员
+    令牌中继腿（令牌只在服务端用，绝不下发观众）。
+    """
+    from backend.emby_server import api as _api
+    from fastapi import Response
+
+    _quota_probe(monkeypatch)
+    _fallback_switch(monkeypatch, "true")
+    relay_calls = []
+
+    async def _fake_relay(request_, db_, item_, user_, play_fid,
+                          play_variant, **kwargs):
+        relay_calls.append({
+            "fid": play_fid,
+            "member_id": kwargs.get("member_id")})
+        return Response(content=b"pool-relay", media_type="video/mp4")
+
+    monkeypatch.setattr(_api, "_pool_quota_relay_attempt", _fake_relay)
     db = SessionLocal()
     try:
         _add_pool_variant(db, seed)
@@ -755,9 +836,36 @@ def test_stream_pool_explicit_other_variant_409(client, free_token, seed):
         db.close()
     r = _stream(client, free_token, seed["movie"],
                 query="?variant=drive_direct")
-    assert r.status_code == 409, r.text
-    assert tv.POOL_SHARED_BLOCKED_DETAIL in r.text
+    assert r.status_code == 200, r.text
+    assert r.content == b"pool-relay"
+    assert relay_calls and relay_calls[0]["fid"] == POOL_FID
+    assert relay_calls[0]["member_id"] == seed["member_id"]
+    assert MEMBER_TOKEN not in r.text
     assert ORIG_FID not in r.text
+
+
+def test_playbackinfo_pool_quota_fallback_url_stamped_pool_variant(
+        client, free_token, seed, monkeypatch):
+    """PlaybackInfo 额度改道保留 /stream 时，地址须带池变体身份。
+
+    改道后取流靠 video_stream 池分支的成员令牌中继续命，下发
+    地址若仍是主线变体身份，客户端的取流请求与门禁裁定对不上
+    （2026-11-09 死结的下发侧一半）。单源下发时把地址打上
+    pool_copy 变体标记，与门禁 serve 的路线同名。
+    """
+    _quota_probe(monkeypatch)
+    _fallback_switch(monkeypatch, "true")
+    db = SessionLocal()
+    try:
+        _add_pool_variant(db, seed)
+    finally:
+        db.close()
+    body = _playbackinfo(client, free_token, seed["movie"])
+    assert ORIG_FID not in str(body)
+    src = body["MediaSources"][0]
+    assert "variant=pool_copy" in (src.get("DirectStreamUrl") or "")
+    assert "variant=pool_copy" in (src.get("DirectPlayUrl") or "")
+    assert "usercontent" not in (src.get("DirectPlayUrl") or "")
 
 
 def test_stream_pool_off_403(client, free_token, seed):
