@@ -107,6 +107,11 @@ def test_spawn_thread_failure_releases_key(monkeypatch):
         def __init__(self, *a, **kw):
             raise RuntimeError("起不来")
 
+        def is_alive(self):
+            # 接口面对齐（构造即抛错、本无实例）：防同类替身被存进常驻
+            # 线程槽位后 .is_alive() 撞 AttributeError（卫生类别 2/4）。
+            return False
+
     monkeypatch.setattr(threading, "Thread", _BoomThread)
     assert dp.spawn_ensure_plan(7, 5) is False
     assert (7, 5) not in dp._PLAN_INFLIGHT

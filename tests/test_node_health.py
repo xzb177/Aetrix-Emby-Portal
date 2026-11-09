@@ -207,6 +207,12 @@ def test_start_health_daemon_waits_for_loop_entry():
         def start(self):
             pass
 
+        def is_alive(self):
+            # 假线程永不真跑：补齐 Thread 接口面，防被存进产品模块的
+            # 常驻线程槽位后，后续 .is_alive() 复查撞 AttributeError
+            # （卫生守卫 test_zz_fixture_hygiene 类别 2/4）。
+            return False
+
     started = []
     orig_thread = threading.Thread
 

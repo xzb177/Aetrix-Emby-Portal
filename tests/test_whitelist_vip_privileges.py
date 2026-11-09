@@ -22,18 +22,14 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 _fd, _tmp = tempfile.mkstemp(suffix=".db")
 os.close(_fd)
-os.environ["DATABASE_URL"] = "sqlite:///" + _tmp
 
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from backend import database as _dbmod  # noqa: E402
 
-_dbmod.engine = create_engine(os.environ["DATABASE_URL"])
-_dbmod.configure_session_local(sessionmaker(bind=_dbmod.engine))
 # 换绑后立刻建全表：防组合跑时后导入文件的 fixture 撞 no such table
 # 级联毒化（与 test_whitelist_vitality_exempt 同款纪律）。
-_dbmod.init_db()
 
 import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
@@ -46,6 +42,33 @@ from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server import transfer_variant as tv  # noqa: E402
 from backend.integrations import store as _store  # noqa: E402
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _hygiene_module_engine():
+    """测试卫生：本文件独占临时库在模块夹具内换绑、模块结束原样还原。
+
+    导入期顶层换绑会让全局 engine/SessionLocal 在 collection 后停在本文件
+    的临时库上，后面的文件/用例撞 no such table 或读错库（#1668 同族）；
+    换绑只在本模块用例期间生效。
+    """
+    _hyg_saved_engine = _dbmod.engine
+    _hyg_saved_factory = _dbmod.SessionLocal._factory
+    _hyg_saved_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = "sqlite:///" + _tmp
+    _dbmod.engine = create_engine(os.environ["DATABASE_URL"])
+    _dbmod.configure_session_local(sessionmaker(bind=_dbmod.engine))
+    _dbmod.init_db()
+    _hyg_engine = _dbmod.engine
+    try:
+        yield
+    finally:
+        _dbmod.engine = _hyg_saved_engine
+        _dbmod.configure_session_local(_hyg_saved_factory)
+        if _hyg_saved_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = _hyg_saved_url
+        _hyg_engine.dispose()
 
 @pytest.fixture()
 def db():

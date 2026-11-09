@@ -339,6 +339,11 @@ def test_maybe_notify_spawns_daemon_thread(monkeypatch):
         def start(self):
             created["started"] = True
 
+        def is_alive(self):
+            # 补齐 Thread 接口面（卫生类别 2/4）：假线程被存进常驻槽位时
+            # 后续 .is_alive() 复查不得撞 AttributeError。
+            return False
+
     monkeypatch.setattr(nmn.threading, "Thread", FakeThread)
     nmn.maybe_notify_new_media(1, "动漫库", datetime.now(), 5)
     assert created.get("started") is True
@@ -488,6 +493,10 @@ def _run_task_with_mocks(monkeypatch, scan_result):
 
         def start(self):
             self._target(*self._args)
+
+        def is_alive(self):
+            # start() 已同步跑完目标：恒不在跑（卫生类别 2/4 接口面对齐）。
+            return False
 
     monkeypatch.setattr(_nmn.threading, "Thread", SyncThread)
 

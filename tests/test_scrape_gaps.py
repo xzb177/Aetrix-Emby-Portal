@@ -20,25 +20,49 @@
 from types import SimpleNamespace
 
 import os
+import pytest
 import tempfile
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 _fd, _tmp = tempfile.mkstemp(suffix=".db")
 os.close(_fd)
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}"
 from backend import database as _dbmod
 from sqlalchemy import create_engine as _ce
 from sqlalchemy.orm import sessionmaker as _sm
-_dbmod.engine = _ce(os.environ["DATABASE_URL"])
 # 必须走 configure_session_local：直接赋值会把 SessionLocal 代理顶掉，
 # 导致同批次其他测试（如 test_sessionlocal_proxy）绑定到建库前的旧 factory。
-_dbmod.configure_session_local(_sm(bind=_dbmod.engine))
 from backend.database import init_db
-init_db()
 
 from backend.emby_server import tmdb
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _hygiene_module_engine():
+    """测试卫生：本文件独占临时库在模块夹具内换绑、模块结束原样还原。
+
+    导入期顶层换绑会让全局 engine/SessionLocal 在 collection 后停在本文件
+    的临时库上，后面的文件/用例撞 no such table 或读错库（#1668 同族）；
+    换绑只在本模块用例期间生效。
+    """
+    _hyg_saved_engine = _dbmod.engine
+    _hyg_saved_factory = _dbmod.SessionLocal._factory
+    _hyg_saved_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}"
+    _dbmod.engine = _ce(os.environ["DATABASE_URL"])
+    _dbmod.configure_session_local(_sm(bind=_dbmod.engine))
+    init_db()
+    _hyg_engine = _dbmod.engine
+    try:
+        yield
+    finally:
+        _dbmod.engine = _hyg_saved_engine
+        _dbmod.configure_session_local(_hyg_saved_factory)
+        if _hyg_saved_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = _hyg_saved_url
+        _hyg_engine.dispose()
 
 def test_fullwidth_colon_normalized_in_query():
     """全角冒号必须归一化为半角，否则 TMDB 搜不到"""

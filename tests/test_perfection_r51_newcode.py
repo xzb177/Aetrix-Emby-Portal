@@ -16,7 +16,6 @@ import tempfile
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 _fd, _tmppath = tempfile.mkstemp(suffix=".db"); os.close(_fd)
-os.environ["DATABASE_URL"] = "sqlite:///" + _tmppath
 # r51 注：不要在这里设置 EMBY_TMDB_CACHE_DIR——import 时设置是进程全局的，
 # 本文件字母排序在 test_image_season_poster_ws5.py 之后，会把它 fixture 要清
 # 的缓存目录劫持走，导致其 TestSeasonPosterClient 两个用例在全量运行时因
@@ -25,8 +24,6 @@ os.environ["DATABASE_URL"] = "sqlite:///" + _tmppath
 from backend import database as _dbmod
 from sqlalchemy import create_engine as _ce
 from sqlalchemy.orm import sessionmaker as _sm
-_dbmod.engine = _ce(os.environ["DATABASE_URL"])
-_dbmod.configure_session_local(_sm(bind=_dbmod.engine))
 
 import pytest
 from types import SimpleNamespace
@@ -36,8 +33,34 @@ from backend.emby_server import models as em
 from backend.emby_server import enrich_worker
 from backend.emby_server import tmdb as tmdb_mod
 
-init_db()
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _hygiene_module_engine():
+    """测试卫生：本文件独占临时库在模块夹具内换绑、模块结束原样还原。
+
+    导入期顶层换绑会让全局 engine/SessionLocal 在 collection 后停在本文件
+    的临时库上，后面的文件/用例撞 no such table 或读错库（#1668 同族）；
+    换绑只在本模块用例期间生效。
+    """
+    _hyg_saved_engine = _dbmod.engine
+    _hyg_saved_factory = _dbmod.SessionLocal._factory
+    _hyg_saved_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = "sqlite:///" + _tmppath
+    _dbmod.engine = _ce(os.environ["DATABASE_URL"])
+    _dbmod.configure_session_local(_sm(bind=_dbmod.engine))
+    init_db()
+    _hyg_engine = _dbmod.engine
+    try:
+        yield
+    finally:
+        _dbmod.engine = _hyg_saved_engine
+        _dbmod.configure_session_local(_hyg_saved_factory)
+        if _hyg_saved_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = _hyg_saved_url
+        _hyg_engine.dispose()
 
 @pytest.fixture()
 def db():
