@@ -2140,6 +2140,52 @@ export const fetchTransferDecisionRounds = (limit = 30) =>
   get<TransferDecisionRoundsResponse>(
     `/tasks/transfer-decision-rounds?limit=${limit}`)
 
+/** 双盘审计台账一行（goal-38 审计第一步，后端五路记录归一） */
+export interface AuditEventRow {
+  /** 来源路内唯一 id：<source>:<行 id> */
+  id: string
+  occurred_at: string | null
+  /** decision | member_event | reward | drive_error | play_access */
+  source: string
+  /** 原始类别：决策 scope / 取用 action / 报错 caller 等 */
+  category: string
+  action_label: string
+  user_id: number | null
+  member_id: number | null
+  binding_id: number | null
+  item_id: number | null
+  result: string
+  /** 归一结果组：success | rejected | in_progress | changed | error */
+  outcome: string
+  reason: string | null
+  detail: Record<string, unknown> | null
+}
+
+export interface AuditEventsResponse {
+  success: boolean
+  items: AuditEventRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export type AuditEventsQuery = {
+  source?: string
+  category?: string
+  user_id?: number
+  member_id?: number
+  binding_id?: number
+  item_id?: number
+  outcome?: string
+  start?: string
+  end?: string
+  limit?: number
+  offset?: number
+}
+
+export const fetchAuditEvents = (params: AuditEventsQuery) =>
+  get<AuditEventsResponse>('/audit/events', params)
+
 /** 取消排队中的转存任务；已被认领/已终态时后端回 409 并在 detail 里明示当前状态 */
 export const cancelTransferJob = (id: number) =>
   post<{ success: boolean; cancelled: boolean; job_id: number; message: string }>(

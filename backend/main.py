@@ -72,6 +72,7 @@ from backend.api.agents_admin import agents_admin_router
 from backend.api.agent_center import agent_center_router
 from backend.api.admin_services import services_router
 from backend.api.admin_tasks import tasks_router
+from backend.api.admin_audit import audit_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.admin_alerts import admin_alerts_router
 from backend.api.admin_diagnosis import admin_diagnosis_router
@@ -846,6 +847,8 @@ app.include_router(agents_admin_router)
 app.include_router(agent_center_router)
 app.include_router(services_router)
 app.include_router(tasks_router)
+# 双盘审计台账（goal-38 审计第一步）：五路留痕归一只读查询
+app.include_router(audit_router)
 # 订阅到期提醒的面板口径与手动执行（见 backend/api/reminders_admin.py）
 app.include_router(admin_reminders_router)
 # 系统告警：规则管理 / 告警记录 / 总开关（见 backend/api/admin_alerts.py）

@@ -6624,8 +6624,23 @@ async def playback_info(
     # 放行到下面的池门禁（播出是 PR-3 的活；本单 serve 态在下面
     # 映射为 failed 明示）。裁决存 _pi_decision 供下面复用。
     from backend.emby_server import pool_gate as _pool_gate_pi
-    _pi_decision = await run_db(
-        _pool_gate_pi.ensure_playback_allowed_for_item, db, user, item)
+    try:
+        _pi_decision = await run_db(
+            _pool_gate_pi.ensure_playback_allowed_for_item, db, user, item)
+    except HTTPException as _pi_gate_exc:
+        # 双盘审计（goal-38 第一步）：门禁被拒此前不落任何表，
+        # 这里只旁路记一行取用事件（写入失败静默），原样重抛、
+        # 判定与文案逐字不变。
+        if _pi_gate_exc.status_code == 403:
+            from backend.emby_server import play_access_events as _pae_pi
+            await run_db(
+                _pae_pi.note_play_access,
+                user_id=getattr(user, "id", None),
+                item_id=getattr(item, "id", None),
+                entry="playback_info", action="gate_reject",
+                result="denied",
+                reason=str(_pi_gate_exc.detail or ""))
+        raise
     _pt.mark("auth")
     # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
     try:
@@ -7437,9 +7452,25 @@ async def video_stream(
         await run_db(_gate.ensure_binding_playback_allowed,
                      db, user, request)
     except HTTPException:
-        _vs_decision = await run_db(
-            _pool_gate_vs.ensure_playback_allowed_for_item,
-            db, user, item, request)
+        try:
+            _vs_decision = await run_db(
+                _pool_gate_vs.ensure_playback_allowed_for_item,
+                db, user, item, request)
+        except HTTPException as _vs_gate_exc:
+            # 双盘审计（goal-38 第一步）：流端点门禁终局被拒
+            # 旁路记一行取用事件（写入失败静默），原样重抛、
+            # 判定与文案逐字不变。
+            if _vs_gate_exc.status_code == 403:
+                from backend.emby_server import (
+                    play_access_events as _pae_vs_gate)
+                await run_db(
+                    _pae_vs_gate.note_play_access,
+                    user_id=getattr(user, "id", None),
+                    item_id=getattr(item, "id", None),
+                    entry="video_stream", action="gate_reject",
+                    result="denied",
+                    reason=str(_vs_gate_exc.detail or ""))
+            raise
     if _vs_decision is None:
         _vs_sign_consumed = await run_db(
             _gate._request_uses_issued_play_sign, request, db)
@@ -7530,6 +7561,20 @@ async def video_stream(
         else:
             _play_fid, _play_variant = await run_db(
                 _tv.resolve_play_file_id, db, item, user)
+        # 双盘审计（goal-38 第一步）：副本选路命中/未命中此前
+        # 无事件（只能靠门禁决策行间接推断），旁路记一行取用
+        # 事件（限频、写入失败静默），选路结果逐字不变。
+        from backend.emby_server import play_access_events as _pae_vs
+        await run_db(
+            _pae_vs.note_play_access,
+            user_id=getattr(user, "id", None),
+            item_id=getattr(item, "id", None),
+            entry="video_stream", action="copy_resolve",
+            result="hit" if _play_variant is not None else "miss",
+            detail=({"variant_id": getattr(_play_variant, "id", None),
+                     "owner_scope": getattr(
+                         _play_variant, "owner_scope", None)}
+                    if _play_variant is not None else None))
     # 首播转存门禁（2026-10-26 用户亲定“先转存再播”）：绑定用户只走
     # 自己绑定盘里的副本，无副本先转存、转完再播，绝不静默回落共享
     # SA 中继。门禁在选路之后、阶段 6 换线之前：Drive 就绪副本已由
@@ -8461,6 +8506,21 @@ async def video_stream(
                 # 阶段 6：换线后直链仍失败，原因要带上切换上下文，
                 # 不许把一次切换失败读成普通的直链失败。
                 if _switch_attempted:
+                    # 双盘审计（goal-38 第一步）：换线失败终局
+                    # 旁路记一行取用事件（写入失败静默），原样
+                    # 重抛、文案逐字不变。
+                    from backend.emby_server import (
+                        play_access_events as _pae_sw)
+                    await run_db(
+                        _pae_sw.note_play_access,
+                        user_id=getattr(user, "id", None),
+                        item_id=getattr(item, "id", None),
+                        entry="video_stream", action="switch_failed",
+                        result="error",
+                        reason=f"换线后直链仍失败（上游 {exc.status_code}）",
+                        detail={"from": "drive_relay",
+                                "to": "drive_direct",
+                                "status": exc.status_code})
                     raise HTTPException(
                         status_code=exc.status_code,
                         detail="变体切换后仍失败（drive_relay→drive_direct）："
@@ -8469,6 +8529,17 @@ async def video_stream(
     if _switch_attempted and not _fast302:
         # 阶段 6：换线已发生、直链又没 materialize（挂载不可定位，
         # _ensure 回 None）——不许悄悄落到后面的通用分支，明确失败。
+        # 双盘审计（goal-38 第一步）：换线失败终局旁路记一行
+        # 取用事件（写入失败静默），判定逐字不变。
+        from backend.emby_server import play_access_events as _pae_sw2
+        await run_db(
+            _pae_sw2.note_play_access,
+            user_id=getattr(user, "id", None),
+            item_id=getattr(item, "id", None),
+            entry="video_stream", action="switch_failed",
+            result="error",
+            reason="换线后直链不可定位（挂载不可定位）",
+            detail={"from": "drive_relay", "to": "drive_direct"})
         raise HTTPException(
             status_code=409,
             detail="变体切换后仍失败（drive_relay→drive_direct）：挂载不可定位")
