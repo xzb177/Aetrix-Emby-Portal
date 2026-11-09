@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -75,6 +76,21 @@ def warm_fresh_sec() -> int:
 def warm_ttl_sec() -> int:
     """预热缓存 TTL 秒数。空/非整数回落 300；负数钳成 0。"""
     return env_int("FIRST_PLAY_WARM_TTL_SEC", _WARM_TTL_DEFAULT, 0, 86400)
+
+
+def _env_flag(name: str, default: str = "1") -> bool:
+    return (os.getenv(name, default) or default).strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def warm_signal_gate_enabled() -> bool:
+    """浏览预热信号门开关（FIRST_PLAY_WARM_SIGNAL_GATE，默认开）。
+
+    开：浏览触发的预热只给有真实播放信号的条目（见 has_play_signal）；
+    关（0）：回旧行为，浏览触发照常全暖。播放主链路（PlaybackInfo
+    冷预检、起播后 mode="next" 的下一集）不受本开关影响。
+    """
+    return _env_flag("FIRST_PLAY_WARM_SIGNAL_GATE", "1")
 
 
 #: 尾部探测字节数：只验尾部可达，不下载整段。
@@ -500,6 +516,10 @@ def warm_first_play_sync(db, item, user) -> dict:
 #   20 次令牌 + 20 次谷歌预检，配额与耗时都失控）。
 # - 预热本身已做 warm_usable 早退：已暖过的条目在线程里只做 DB
 #   解析、不再打谷歌，所以重复触发不会重复烧预检。
+# - 信号门（2026-11-08，FIRST_PLAY_WARM_SIGNAL_GATE 默认开）：浏览
+#   触发（detail 模式全部来源）在线程里先过 has_play_signal，无真实
+#   播放信号（继续观看 / 在追同剧 / 追剧订阅）的目标直接跳过、零
+#   Drive 请求；起播后的 mode="next" 不走门。关门（=0）回全暖旧行为。
 # - “下一集”口径与站内 NextUp 一致：同剧第一集未看（按
 #   season_number / episode_number / id 排序），不是按入库顺序。
 # ---------------------------------------------------------------------------
@@ -516,6 +536,55 @@ def _is_watched(db, user_id: int, item_id: int) -> bool:
     return bool(getattr(row, "played", False)
                 or (getattr(row, "playback_position_ticks", 0) or 0) > 0
                 or (getattr(row, "play_count", 0) or 0) > 0)
+
+
+def has_play_signal(db, user_id: int, item) -> bool:
+    """该用户对该条目有没有真实播放信号（全本地 DB 口径，零 Drive 请求）。
+
+    信号（与 goal-35 暖地址的信号口径合流）：
+    - 条目本身有观看记录（看过 / 有进度 / 有播放次数）——继续观看；
+    - 单集 / 季 / 剧：同剧任一集有观看记录——在追这部剧；
+    - 剧（或单集 / 季所属的剧）：有 active 的追剧订阅（SeriesFollow）。
+    任一命中即有信号。查询异常按无信号处理：预热宁可少暖，真播放
+    走 PlaybackInfo 冷路径自己验证，不受影响。
+    """
+    try:
+        if item is None or not user_id:
+            return False
+        if _is_watched(db, user_id, item.id):
+            return True
+        item_type = getattr(item, "item_type", None)
+        if item_type == "series":
+            series_id = item.id
+        elif item_type in ("episode", "season"):
+            series_id = getattr(item, "series_id", None)
+        else:
+            return False
+        if not series_id:
+            return False
+        from backend.emby_server import models as _em
+        from sqlalchemy import or_
+
+        ep_ids = (db.query(_em.MediaItem.id)
+                  .filter(_em.MediaItem.item_type == "episode",
+                          _em.MediaItem.series_id == series_id))
+        watched = (db.query(_em.UserMediaData.id)
+                   .filter(_em.UserMediaData.user_id == user_id,
+                           _em.UserMediaData.item_id.in_(ep_ids),
+                           or_(_em.UserMediaData.played == True,  # noqa: E712
+                               _em.UserMediaData.playback_position_ticks > 0,
+                               _em.UserMediaData.play_count > 0))
+                   .first())
+        if watched is not None:
+            return True
+        follow = (db.query(_em.SeriesFollow.id)
+                  .filter(_em.SeriesFollow.user_id == user_id,
+                          _em.SeriesFollow.series_item_id == series_id,
+                          _em.SeriesFollow.status == "active")
+                  .first())
+        return follow is not None
+    except Exception:  # noqa: BLE001 — 信号判定失败按无信号，绝不拖垮预热线程
+        return False
 
 
 def _episodes_of_series(db, series_id: int):
@@ -680,8 +749,14 @@ def _warm_thread_body(item_id: int, user_id: int, mode: str,
         session = _SL()
         item = session.query(_em.MediaItem).filter(
             _em.MediaItem.id == item_id).first()
-        user = session.query(_em.WebUser).filter(
-            _em.WebUser.id == user_id).first()
+        # WebUser 在 backend.models 里（emby_server.models 没有这个类）：
+        # 旧代码查 _em.WebUser 每次 AttributeError、被本函数的 except 吞掉，
+        # 整条浏览预热线程长期静默空转（2026-11-08 信号门一单实证：
+        # 生产只有 warm trigger、零 warm done）。照 audit/auth 的口径查。
+        from backend import models as _core
+
+        user = session.query(_core.WebUser).filter(
+            _core.WebUser.id == user_id).first()
         if item is None or user is None:
             return
         if mode == "next":
@@ -689,6 +764,16 @@ def _warm_thread_body(item_id: int, user_id: int, mode: str,
         else:  # "detail"
             target = warm_target_for_detail(session, user_id, item)
         if target is None:
+            return
+        # 信号门（默认开）：浏览触发（mode="detail" 的全部来源）在目标
+        # 没有真实播放信号时不预热——只看不播不再烧谷歌预检；有信号
+        # （继续观看 / 在追同剧 / 追剧订阅）照常暖。mode="next" 是真实
+        # 起播后的下一集，属播放主链路，不走本门。
+        if (mode != "next" and warm_signal_gate_enabled()
+                and not has_play_signal(session, user_id, target)):
+            _log_warm(
+                "warm skipped", item_id=target.id, user_id=user_id,
+                mode=mode, reason="no_play_signal")
             return
         if finish_ev is not None and target.id != item_id:
             finish_inflight(user_id, item_id, finish_ev)
