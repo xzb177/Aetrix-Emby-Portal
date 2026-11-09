@@ -696,6 +696,10 @@ class TransferConfigRequest(BaseModel):
     transfer_sediment_max_items_per_round: int = 20
     transfer_sediment_fuse_window_days: int = 30
     transfer_sediment_fuse_unconsumed_ratio: float = 0.7
+    # 晚高峰静默窗（上海整点，起含止不含）：默认 19→23，
+    # 起==止 = 关闭；窗内沉淀整轮跳过，不与播放抢 Drive 额度。
+    transfer_sediment_quiet_start_hour: int = 19
+    transfer_sediment_quiet_end_hour: int = 23
     transfer_sediment_fused: bool = False
 
 
@@ -745,6 +749,10 @@ def transfer_update_config(
                 request.transfer_sediment_fuse_window_days),
             transfer_sediment_fuse_unconsumed_ratio=(
                 request.transfer_sediment_fuse_unconsumed_ratio),
+            transfer_sediment_quiet_start_hour=(
+                request.transfer_sediment_quiet_start_hour),
+            transfer_sediment_quiet_end_hour=(
+                request.transfer_sediment_quiet_end_hour),
             transfer_sediment_fused=request.transfer_sediment_fused,
         )
         result = transfer_variant.write_transfer_config(

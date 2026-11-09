@@ -54,6 +54,13 @@ def db(db_factory):
     # 源挂载：mount://3 → drive:src-drive-1（_source_drive_id 解析面）
     session.add(em.StorageMount(id=3, name="sediment-src",
                                 path="drive:src-drive-1"))
+    # 晚高峰静默窗默认 19:00–23:00（上海）：本文件的用例不测
+    # 时间门，钉成关闭（起=止=0），免得套件在窗内整片翻红；
+    # 静默窗本身的用例在 test_transfer_sediment_quiet_hours.py。
+    session.add(base_models.SystemConfig(
+        key="transfer_sediment_quiet_start_hour", value="0"))
+    session.add(base_models.SystemConfig(
+        key="transfer_sediment_quiet_end_hour", value="0"))
     session.commit()
     yield session
     session.close()

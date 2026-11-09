@@ -33,6 +33,12 @@ provider 转存的秒传接力只认整文件 SHA1，而 SHA1 今天只来自转
   算/熔断/总开关约束）。不新造任何队列监控口径。
 - 日预算：transfer_sediment_daily_budget_gib（默认 200 GiB，
   按记账表当日 bytes_read 累计），本轮预计超限即停。
+- 晚高峰静默窗（2026-11-08 Drive API 降量批）：沉淀是全站最大
+  的 Drive 调用源，高峰时段与播放抢同一 SA/下载额度池——
+  transfer_sediment_quiet_start_hour / _end_hour 配的上海时段
+  （默认 19:00–23:00，支持跨午夜）内整轮跳过，stats 记
+  skipped_reason="quiet_hours"。门只在轮次入口判，已在跑的一
+  轮不中断；起 == 止 = 静默窗关闭（行为与没有这道门一致）。
 - 转化率熔断：沉淀满一个窗口期（默认 30 天）的批次里，未被
   任何转存/变体消费的比例超过阈值（默认 70%）且样本 ≥ 20，
   自动落 transfer_sediment_fused=true 停沉淀并响亮记日志；
@@ -56,7 +62,8 @@ transfer_sediment round ...，供按方案 §5 口径验覆盖率与转化率。
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from backend.emby_server import models as em
 from backend.emby_server import transfer_variant as tv
@@ -77,6 +84,8 @@ KEY_INTERVAL_SEC = "transfer_sediment_interval_sec"
 KEY_MAX_ITEMS_PER_ROUND = "transfer_sediment_max_items_per_round"
 KEY_FUSE_WINDOW_DAYS = "transfer_sediment_fuse_window_days"
 KEY_FUSE_UNCONSUMED_RATIO = "transfer_sediment_fuse_unconsumed_ratio"
+KEY_QUIET_START_HOUR = "transfer_sediment_quiet_start_hour"
+KEY_QUIET_END_HOUR = "transfer_sediment_quiet_end_hour"
 #: 熔断状态键（运行时落行）：true = 转化率熔断已触发、沉淀停摆，
 #: 等管理员核查后在后台清回 false。不是管理员日常开关，但同走
 #: 转存卡回读/保存，方便人工恢复。
@@ -87,6 +96,10 @@ INTERVAL_SEC_DEFAULT = 1800
 MAX_ITEMS_PER_ROUND_DEFAULT = 20
 FUSE_WINDOW_DAYS_DEFAULT = 30
 FUSE_UNCONSUMED_RATIO_DEFAULT = 0.70
+#: 晚高峰静默窗默认起止（Asia/Shanghai 整点，起含止不含）。
+QUIET_START_HOUR_DEFAULT = 19
+QUIET_END_HOUR_DEFAULT = 23
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 #: 熔断判定的最小样本：样本太少时比例噪声大，不判（防误熔断）。
 FUSE_MIN_SAMPLE = 20
 
@@ -172,6 +185,65 @@ def sediment_fused(db=None):
     return tv._system_config_bool(db, KEY_FUSED, False)
 
 
+def _quiet_hour(db, key, default):
+    """静默窗小时读数：SystemConfig 热读，合法域 [0, 23]。
+
+    不走 tv._system_config_int——它把 0 当未配（回 None），而
+    0 点是合法小时、起=止=0 还是关窗口径。无行/非法/越界/
+    异常一律回默认（fail-safe，与 fuse_unconsumed_ratio 同款
+    直读口径）。
+    """
+    if db is None:
+        return default
+    try:
+        from backend.integrations import store
+        raw = (store.get_value(db, key, "") or "").strip()
+        value = int(raw)
+    except Exception:
+        return default
+    return value if 0 <= value <= 23 else default
+
+
+def quiet_start_hour(db=None):
+    """静默窗起始小时（上海）：SystemConfig > 默认 19，钳 [0, 23]。"""
+    return _quiet_hour(db, KEY_QUIET_START_HOUR,
+                       QUIET_START_HOUR_DEFAULT)
+
+
+def quiet_end_hour(db=None):
+    """静默窗结束小时（上海）：SystemConfig > 默认 23，钳 [0, 23]。"""
+    return _quiet_hour(db, KEY_QUIET_END_HOUR, QUIET_END_HOUR_DEFAULT)
+
+
+def _shanghai_hour(now):
+    """把 now 折算成 Asia/Shanghai 的小时（0–23）。
+
+    aware 直接换算；naive 按 UTC 理解再换算（enrich_worker
+    ._in_night_window 同口径，生产容器本地时区即 UTC）。
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    aware = (now if now.tzinfo is not None
+             else now.replace(tzinfo=timezone.utc))
+    return aware.astimezone(SHANGHAI_TZ).hour
+
+
+def in_quiet_hours(db, now=None):
+    """now 是否落在晚高峰静默窗内（上海小时，起含止不含）。
+
+    起 > 止 = 跨午夜窗（如 22→6）；起 == 止 = 静默窗关闭，
+    恒 False（行为与没有这道门时一致）。
+    """
+    start = quiet_start_hour(db)
+    end = quiet_end_hour(db)
+    if start == end:
+        return False
+    hour = _shanghai_hour(now)
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
 def sediment_config_payload(db):
     """管理端转存卡回包（沉淀段）：各键当前生效值（默认已折算）。"""
     return {
@@ -185,6 +257,8 @@ def sediment_config_payload(db):
         KEY_MAX_ITEMS_PER_ROUND: max_items_per_round(db),
         KEY_FUSE_WINDOW_DAYS: fuse_window_days(db),
         KEY_FUSE_UNCONSUMED_RATIO: fuse_unconsumed_ratio(db),
+        KEY_QUIET_START_HOUR: quiet_start_hour(db),
+        KEY_QUIET_END_HOUR: quiet_end_hour(db),
         KEY_FUSED: sediment_fused(db),
     }
 
@@ -199,6 +273,8 @@ def write_sediment_config(db, *, transfer_sediment_enabled=None,
                           transfer_sediment_max_items_per_round=None,
                           transfer_sediment_fuse_window_days=None,
                           transfer_sediment_fuse_unconsumed_ratio=None,
+                          transfer_sediment_quiet_start_hour=None,
+                          transfer_sediment_quiet_end_hour=None,
                           transfer_sediment_fused=None):
     """管理端沉淀配置写入：走 config_service 的 transfer 家族校验。
 
@@ -222,7 +298,9 @@ def write_sediment_config(db, *, transfer_sediment_enabled=None,
             (KEY_INTERVAL_SEC, transfer_sediment_interval_sec),
             (KEY_MAX_ITEMS_PER_ROUND,
              transfer_sediment_max_items_per_round),
-            (KEY_FUSE_WINDOW_DAYS, transfer_sediment_fuse_window_days)):
+            (KEY_FUSE_WINDOW_DAYS, transfer_sediment_fuse_window_days),
+            (KEY_QUIET_START_HOUR, transfer_sediment_quiet_start_hour),
+            (KEY_QUIET_END_HOUR, transfer_sediment_quiet_end_hour)):
         if val is not None:
             values[key] = str(val)
     if transfer_sediment_fuse_unconsumed_ratio is not None:
@@ -538,8 +616,10 @@ def _queue_busy(db):
 def run_once(db, drive_api=None, now=None):
     """跑一轮沉淀（供后台线程与测试共用；不启动线程）。
 
-    顺序：总开关 → 消费回填＋熔断判定 → 源侧暂停 → 选片（需求
-    档豁免闲置门、追剧档过闲置门）→ 按日预算逐只沉淀。返回账目
+    顺序：总开关 → 晚高峰静默窗 → 消费回填＋熔断判定 → 源侧暂停
+    → 选片（需求档豁免闲置门、追剧档过闲置门）→ 按日预算逐只
+    沉淀。静默窗只挡新轮：已在跑的一轮不中断（沉淀本身有分段
+    与暂停机制）。返回账目
     dict：skipped_reason（整轮跳过原因，None=跑了）、selected /
     registered / already_registered / failed / bytes_read /
     budget_exhausted / by_tier（各档登记数）/ skip_reasons（分档
@@ -552,6 +632,9 @@ def run_once(db, drive_api=None, now=None):
              "skip_reasons": {}}
     if not sediment_enabled(db):
         stats["skipped_reason"] = "disabled"
+        return stats
+    if in_quiet_hours(db, now):
+        stats["skipped_reason"] = "quiet_hours"
         return stats
     try:
         refresh_consumption(db, now)
