@@ -21,14 +21,11 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 _fd, _tmppath = tempfile.mkstemp(suffix=".db")
 os.close(_fd)
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
 
 from backend import database as _dbmod
 from sqlalchemy import create_engine as _ce
 from sqlalchemy.orm import sessionmaker as _sm
 
-_dbmod.engine = _ce(os.environ["DATABASE_URL"])
-_dbmod.configure_session_local(_sm(bind=_dbmod.engine))
 
 import pytest
 from fastapi import HTTPException
@@ -42,8 +39,34 @@ from backend.emby_server import models as em
 from backend.emby_server import quota_dashboard as qd
 from backend.main import app
 
-init_db()
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _hygiene_module_engine():
+    """测试卫生：本文件独占临时库在模块夹具内换绑、模块结束原样还原。
+
+    导入期顶层换绑会让全局 engine/SessionLocal 在 collection 后停在本文件
+    的临时库上，后面的文件/用例撞 no such table 或读错库（#1668 同族）；
+    换绑只在本模块用例期间生效。
+    """
+    _hyg_saved_engine = _dbmod.engine
+    _hyg_saved_factory = _dbmod.SessionLocal._factory
+    _hyg_saved_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
+    _dbmod.engine = _ce(os.environ["DATABASE_URL"])
+    _dbmod.configure_session_local(_sm(bind=_dbmod.engine))
+    init_db()
+    _hyg_engine = _dbmod.engine
+    try:
+        yield
+    finally:
+        _dbmod.engine = _hyg_saved_engine
+        _dbmod.configure_session_local(_hyg_saved_factory)
+        if _hyg_saved_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = _hyg_saved_url
+        _hyg_engine.dispose()
 
 @pytest.fixture()
 def db():

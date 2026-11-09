@@ -112,10 +112,16 @@ def test_ephemeral_defaults_and_timer(monkeypatch):
             self.args = args or ()
             self.daemon = False
             self.started = False
+            self.cancelled = False
             timers.append(self)
 
         def start(self):
             self.started = True
+
+        def cancel(self):
+            # ephemeral 的顶替/取消路径会调 .cancel()：补齐接口面
+            # （卫生类别 3），防将来同键重调度时撞 AttributeError。
+            self.cancelled = True
 
     monkeypatch.setattr(ephemeral, "Timer", FakeTimer)
 
@@ -160,10 +166,15 @@ def test_ephemeral_timer_uses_delete_callable_captured_at_schedule(monkeypatch):
             self.args = args or ()
             self.kwargs = kwargs or {}
             self.daemon = False
+            self.cancelled = False
             timers.append(self)
 
         def start(self):
             pass
+
+        def cancel(self):
+            # 接口面对齐（卫生类别 3）：ephemeral 顶替/取消路径会调它。
+            self.cancelled = True
 
         def fire(self):
             self.function(*self.args, **self.kwargs)

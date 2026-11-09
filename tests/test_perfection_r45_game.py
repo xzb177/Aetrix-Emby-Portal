@@ -95,6 +95,10 @@ def test_spawn_evaluate_debounced(monkeypatch):
         def start(self):
             started.append(self._args)
 
+        def is_alive(self):
+            # 补齐 Thread 接口面（卫生类别 2/4）。
+            return False
+
     monkeypatch.setattr(panel_api.threading, "Thread", FakeThread)
     now = [1000.0]
     monkeypatch.setattr(panel_api.time, "monotonic", lambda: now[0])

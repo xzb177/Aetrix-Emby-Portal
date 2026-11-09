@@ -27,6 +27,11 @@ class _FakeThread:
     def start(self):
         return None
 
+    def is_alive(self):
+        # 补齐 Thread 接口面：假线程若被存进产品模块的常驻线程槽位，
+        # 后续 .is_alive() 复查不得撞 AttributeError（卫生类别 2/4）。
+        return False
+
 
 @pytest.fixture()
 def fake_thread(monkeypatch):

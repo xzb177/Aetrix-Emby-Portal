@@ -20,20 +20,10 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 _fd, _tmppath = tempfile.mkstemp(suffix=".db")
 os.close(_fd)
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
 
 from backend import database as _dbmod
 from sqlalchemy import create_engine as _ce
 from sqlalchemy.orm import sessionmaker as _sm
-
-# 本文件在 import 期换掉进程级 engine/SessionLocal/DATABASE_URL，且从不还原：
-# 排在本文件之后的测试文件会跑在 parity 的临时库上（r50 的 PlaybackInfo
-# 因此在新库上撞 403 门禁）。先存原值，模块跑完由文末 fixture 原样还原。
-_orig_engine = _dbmod.engine
-_orig_db_url = os.environ.get("DATABASE_URL")
-
-_dbmod.engine = _ce(os.environ["DATABASE_URL"])
-_dbmod.configure_session_local(_sm(bind=_dbmod.engine))
 
 import uuid
 
@@ -43,7 +33,6 @@ from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.emby_server import enrich_worker as ew
 from backend.emby_server.tmdb import TmdbClient
-init_db()
 
 
 def _reset_state():
@@ -69,16 +58,29 @@ def db():
 
 @pytest.fixture(autouse=True, scope="module")
 def _restore_db_engine():
-    # import 期换掉的进程级 engine/SessionLocal/DATABASE_URL，模块跑完原样
-    # 还原：否则排在本文件之后的测试文件会跑在 parity 的临时库上（成组才红，
-    # 单文件全过，极难定位；此前 #1287/#1289 同类泄漏即此形态）。
-    yield
-    _dbmod.engine = _orig_engine
-    _dbmod.configure_session_local(None)
-    if _orig_db_url is None:
-        os.environ.pop("DATABASE_URL", None)
-    else:
-        os.environ["DATABASE_URL"] = _orig_db_url
+    # 测试卫生：本文件独占临时库只许在模块夹具内换绑、模块结束原样
+    # 还原（全仓统一口径）。旧写法在 import 期就换绑、只靠本夹具在
+    # 模块跑完时还原——但 collection 阶段全局绑定已停在本文件的临时
+    # 库上，排在后面的测试文件会跑在错库上（r50 的 PlaybackInfo 曾
+    # 因此在新库上撞 403 门禁；#1287/#1289 同类泄漏即此形态）。
+    _hyg_saved_engine = _dbmod.engine
+    _hyg_saved_factory = _dbmod.SessionLocal._factory
+    _hyg_saved_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
+    _dbmod.engine = _ce(os.environ["DATABASE_URL"])
+    _dbmod.configure_session_local(_sm(bind=_dbmod.engine))
+    init_db()
+    _hyg_engine = _dbmod.engine
+    try:
+        yield
+    finally:
+        _dbmod.engine = _hyg_saved_engine
+        _dbmod.configure_session_local(_hyg_saved_factory)
+        if _hyg_saved_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = _hyg_saved_url
+        _hyg_engine.dispose()
 
 
 def _series(db, tmdb_id="239577", name="囚犯医生"):
