@@ -77,8 +77,8 @@ const routes: RouteRecordRaw[] = [
       // 上游源（FMBY #25 25-1）：只做源管理，聚合/探活/播放接入是后续步骤
       { path: 'upstream-sources', name: 'UpstreamSources', component: () => import('@/views/UpstreamSources.vue'), meta: { title: '上游源' } },
       { path: 'pool', name: 'PoolAdmin', component: () => import('@/views/PoolAdmin.vue'), meta: { title: '贡献池' } },
-      // 双盘审计台账（goal-38 审计第一步）：个人盘 + 贡献池全程留痕只读查询
-      { path: 'audit', name: 'DualDriveAudit', component: () => import('@/views/DualDriveAudit.vue'), meta: { title: '双盘审计' } },
+      // 双盘审计台账已并入「操作日志」页的双盘审计标签（Logs.vue ?tab=audit）：旧地址跳到对应标签，收藏不会 404
+      { path: 'audit', redirect: { path: '/logs', query: { tab: 'audit' } } },
       // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
       { path: 'storage-bindings', redirect: { path: '/upstream-sources', query: { tab: 'bindings' } } },
       { path: 'upstream-mappings', redirect: { path: '/upstream-sources', query: { tab: 'mappings' } } },

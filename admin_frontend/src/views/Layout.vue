@@ -214,8 +214,6 @@ const navGroups: NavGroup[] = [
       { path: '/upstream-sources', label: '上游源', icon: Server },
       // 贡献池：用户贡献盘组成的公共缓存池，成员生命周期管理（goal-33 PR-4）
       { path: '/pool', label: '贡献池', icon: Users },
-      // 双盘审计：个人盘 + 贡献池全程留痕台账（goal-38 审计第一步）
-      { path: '/audit', label: '双盘审计', icon: ScrollText },
       // 重新布局批 3：四观测页降为上游源页标签，导航不再单列（旧路由跳到对应标签）
       // 重新布局批 5：115/GDrive 账号降为服务器与线路页「存储账号」标签，导航不再单列（旧路由跳到对应子标签）
     ],
@@ -225,6 +223,7 @@ const navGroups: NavGroup[] = [
     icon: Settings,
     items: [
       { path: '/settings', label: '系统设置', icon: Settings, superOnly: true },
+      // 操作日志：页内含「双盘审计」标签（双盘留痕台账已并入本页，旧 /admin/audit 跳到该标签）
       { path: '/logs', label: '操作日志', icon: ScrollText },
       // Batch E（健康体系合并）：「服务健康」＋「健康总览」合并为一页「系统健康」，导航只留一个入口
       { path: '/health', label: '系统健康', icon: Activity },
